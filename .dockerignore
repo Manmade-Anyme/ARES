@@ -1,0 +1,51 @@
+# flyctl launch added from .gitignore
+# Python
+**/__pycache__
+**/*.py[cod]
+**/*$py.class
+**/*.so
+
+# Environments
+**/.env
+**/.venv
+**/env
+**/venv
+**/ENV
+**/env.bak
+**/venv.bak
+
+# Virtual environment utilities
+**/.Python
+**/build
+**/develop-eggs
+**/dist
+**/downloads
+**/eggs
+**/.eggs
+**/lib
+**/lib64
+**/parts
+**/sdist
+**/var
+**/wheels
+**/share/python-wheels
+
+# IDEs / Editors
+**/.vscode
+**/.idea
+**/*.swp
+**/*.swo
+**/.DS_Store
+
+# Logs
+**/*.log
+
+# Type checking
+**/.mypy_cache
+**/.pyre
+**/.pytype
+
+# flyctl launch added from .venv/.gitignore
+# Created by venv; see https://docs.python.org/3/library/venv.html
+.venv/**/*
+fly.toml
