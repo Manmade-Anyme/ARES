@@ -1,0 +1,5 @@
+dhanhq
+httpx
+pydantic-settings
+supabase
+python-dateutil
