@@ -3,3 +3,6 @@ httpx
 pydantic-settings
 supabase
 python-dateutil
+pandas
+numpy
+pyarrow

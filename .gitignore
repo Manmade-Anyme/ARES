@@ -43,3 +43,9 @@ share/python-wheels/
 .mypy_cache/
 .pyre/
 .pytype/
+
+# Backtest data cache
+data/
+
+# Backtest reports (generated)
+reports/backtest/
