@@ -56,7 +56,8 @@ class OIFetcher:
             )
         )
         
-        if not response or response.get("status") != "success" or "errorType" in response.get("data", {}) if isinstance(response.get("data"), dict) else False:
+        has_error_type = isinstance(response.get("data"), dict) and "errorType" in response.get("data")
+        if not response or response.get("status") != "success" or has_error_type:
             error_msg = "Unknown API error"
             error_type = ""
             
@@ -125,7 +126,8 @@ class OIFetcher:
         if not response or "data" not in response:
             raise ValueError("Invalid or empty option chain response from Dhan API")
             
-        if response.get("status") == "failure" or "errorType" in response.get("data", {}) if isinstance(response.get("data"), dict) else False:
+        has_error_type = isinstance(response.get("data"), dict) and "errorType" in response.get("data")
+        if response.get("status") == "failure" or has_error_type:
             error_msg = "Unknown API error"
             error_type = ""
             

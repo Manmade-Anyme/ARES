@@ -79,7 +79,8 @@ class PriceFetcher:
         if not response or "data" not in response:
             raise ValueError("Empty or missing 'data' in Dhan API response for intraday_minute_data.")
             
-        if response.get("status") == "failure" or "errorType" in response.get("data", {}) if isinstance(response.get("data"), dict) else False:
+        has_error_type = isinstance(response.get("data"), dict) and "errorType" in response.get("data")
+        if response.get("status") == "failure" or has_error_type:
             # Robust error extraction
             error_msg = "Unknown API error"
             error_type = ""
