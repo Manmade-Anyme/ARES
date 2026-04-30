@@ -1,8 +1,9 @@
 import asyncio
 import httpx
+from config import settings
 
 async def test():
-    url = "https://discord.com/api/webhooks/1490772670910824618/tWEUD6hre51E1m8-zDw8ffgf0t6yQ2ga_vmA3iCOXZnf69W_BmvDGQ-xaAMmHeEG-_2c"
+    url = settings.discord_webhook_url
     msg = f"""```diff
 + =================================================================
 + 🤖 ARES (Adaptive Reversal & Entry Signal) - Initialization
