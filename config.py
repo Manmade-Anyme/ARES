@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     exhaustion_volume_multiplier: float = 2.5
     exhaustion_body_ratio: float = 0.3
     exhaustion_iv_spike_threshold: float = 1.0
-    exhaustion_min_candles: int = 10
+    exhaustion_min_candles: int = 5
 
     # Targets
     target_1_pts: float = 40.0

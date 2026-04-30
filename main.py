@@ -9,32 +9,42 @@ from storage import Storage
 from config import settings
 from alerts import send_discord, send_startup_alert, send_error_alert
 
+# ANSI Color Codes for Premium Terminal UI
+G = "\033[92m"  # Green
+Y = "\033[93m"  # Yellow
+R = "\033[91m"  # Red
+C = "\033[96m"  # Cyan
+B = "\033[1m"   # Bold
+W = "\033[97m"  # White
+RESET = "\033[0m"
+
 def print_banner(pdh: float, pdl: float):
     """Prints the ARES startup banner with configuration details."""
-    print("=" * 65)
-    print("  ARES (Adaptive Reversal & Entry Signal) - Initialization")
-    print("=" * 65)
-    print(f"[+] Target Asset : {settings.yahoo_symbol} (1-minute timeframe)")
-    print(f"[+] Detectors    : Failed Breakout, OI Wall, Exhaustion")
-    print(f"[+] Session      : 09:15 to 23:30 IST")
-    print(f"[+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals")
-    print(f"[+] PDH / PDL    : {pdh} / {pdl}")
-    print("=" * 65)
+    print(f"{C}{'=' * 65}{RESET}")
+    print(f"{C}{B}  ARES (Adaptive Reversal & Entry Signal) - Initialization{RESET}")
+    print(f"{C}{'=' * 65}{RESET}")
+    print(f"{G}[+] Target Asset : {W}{settings.yahoo_symbol} (1-minute timeframe){RESET}")
+    print(f"{G}[+] Detectors    : {W}Failed Breakout, OI Wall, Exhaustion{RESET}")
+    print(f"{G}[+] Session      : {W}09:15 to 23:30 IST{RESET}")
+    print(f"{G}[+] Cooldown     : {W}{settings.signal_cooldown_minutes} minutes between signals{RESET}")
+    print(f"{G}[+] PDH / PDL    : {W}{pdh} / {pdl}{RESET}")
+    print(f"{C}{'=' * 65}{RESET}")
 
 def format_signal_console(signal, spot):
     """Formats and prints a detailed signal alert to the console."""
-    print("\n" + "━" * 65)
-    print(f"🚨 SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})")
-    print(f"   Spot  : {spot:.2f}")
-    print(f"   Trade : {signal.strike_to_trade} {signal.option_type}")
-    print(f"   Entry : {signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}")
-    print(f"   SL    : {signal.stop_loss:.2f} (Spot Ref)")
-    print(f"   Targets: T1={signal.target_1:.2f} | T2={signal.target_2:.2f}")
-    print(f"   Confidence: {signal.confidence}")
-    print("   Reasons:")
+    color = G if signal.direction.value == "BULLISH" else R
+    print("\n" + f"{color}{B}━" * 65 + RESET)
+    print(f"{color}{B}🚨 SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value}){RESET}")
+    print(f"   {W}Spot  : {spot:.2f}{RESET}")
+    print(f"   {W}Trade : {B}{signal.strike_to_trade} {signal.option_type}{RESET}")
+    print(f"   {W}Entry : {G}{signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}{RESET}")
+    print(f"   {W}SL    : {R}{signal.stop_loss:.2f} (Spot Ref){RESET}")
+    print(f"   {W}Targets: T1={G}{signal.target_1:.2f}{W} | T2={G}{signal.target_2:.2f}{RESET}")
+    print(f"   {W}Confidence: {B}{signal.confidence}{RESET}")
+    print(f"   {W}Reasons:{RESET}")
     for r in signal.reasons:
-        print(f"     • {r}")
-    print("━" * 65 + "\n")
+        print(f"     {W}• {r}{RESET}")
+    print(f"{color}{B}━" * 65 + RESET + "\n")
 
 async def run():
     """
@@ -50,7 +60,7 @@ async def run():
     try:
         pdh, pdl = await price_fetcher.fetch_previous_day_ohlc()
     except Exception as e:
-        print(f"[-] WARNING: Dynamic PDH/PDL fetch failed ({e}). Using last known safe defaults.")
+        print(f"{Y}[-] WARNING: Dynamic PDH/PDL fetch failed ({e}). Using last known safe defaults.{RESET}")
         pdh, pdl = 24100.0, 23900.0
         
     level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
@@ -71,18 +81,18 @@ async def run():
         if current_time >= time(9, 15) and now.date() != last_vwap_reset_date:
             price_fetcher.reset_vwap()
             last_vwap_reset_date = now.date()
-            print(f"[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.")
+            print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
             
         # Session gate: only run between 09:15 and 23:30
         if not (time(9, 15) <= current_time <= time(23, 30)):
             if not waiting_printed:
-                print(f"[{now.strftime('%H:%M:%S')}] ⏸️ Outside session hours (09:15 - 23:30). Sleeping...")
+                print(f"{Y}[{now.strftime('%H:%M:%S')}] ⏸️ Outside session hours (09:15 - 23:30). Sleeping...{RESET}")
                 waiting_printed = True
             await asyncio.sleep(30)
             continue
             
         if waiting_printed:
-            print(f"[{now.strftime('%H:%M:%S')}] ▶️ Session Active. Starting market monitoring...")
+            print(f"{G}[{now.strftime('%H:%M:%S')}] ▶️ Session Active. Starting market monitoring...{RESET}")
             waiting_printed = False
             
         try:
@@ -114,7 +124,7 @@ async def run():
             # Terminal UI: Track Warmup State
             buffer_len = len(engine.candle_buffer)
             if buffer_len == settings.candle_buffer_size and not buffers_full_printed:
-                print(f"[{now.strftime('%H:%M:%S')}] ✅ BUFFERS FULL: ARES is now actively scoring all setups.")
+                print(f"{G}{B}[{now.strftime('%H:%M:%S')}] ✅ BUFFERS FULL: ARES is now actively scoring all setups.{RESET}")
                 buffers_full_printed = True
             
             # Process signal
@@ -123,24 +133,24 @@ async def run():
                 try:
                     await storage.log_signal(signal, spot)
                 except Exception as db_err:
-                    print(f"[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}")
+                    print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
                 
                 try:
                     await send_discord(signal, spot)
                 except Exception as alert_err:
-                    print(f"[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}")
+                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
                 
         except Exception as e:
             error_str = str(e).lower()
             if "401" in error_str or "auth" in error_str:
-                print(f"\n[{now.strftime('%H:%M:%S')}] ❌ ERROR: Dhan API Authentication failed.")
-                print(f"   Details: {e}")
-                print(f"   Action : Check your DHAN_ACCESS_TOKEN in the .env file.")
-                print(f"   Retrying in 60s...\n")
+                print(f"{R}[{now.strftime('%H:%M:%S')}] ❌ ERROR: Dhan API Authentication failed.{RESET}")
+                print(f"   {W}Details: {e}{RESET}")
+                print(f"   {W}Action : Check your DHAN_ACCESS_TOKEN in the .env file.{RESET}")
+                print(f"   {Y}Retrying in 60s...\n{RESET}")
                 await send_error_alert(f"Dhan API Authentication failed: {e}")
                 await asyncio.sleep(60)
             else:
-                print(f"[{now.strftime('%H:%M:%S')}] ⚠️ Warning: Fetch cycle error - {e}")
+                print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Warning: Fetch cycle error - {e}{RESET}")
                 await send_error_alert(f"Fetch cycle error - {e}")
             
         await asyncio.sleep(settings.poll_interval_seconds)

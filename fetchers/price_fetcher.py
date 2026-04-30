@@ -25,8 +25,8 @@ class PriceFetcher:
         Set cumulative VWAP accumulators to 0.
         """
         self.dhan = dhanhq(
-            client_id=settings.dhan_client_id,
-            access_token=settings.dhan_access_token
+            settings.dhan_client_id,
+            settings.dhan_access_token
         )
         self.cumulative_tp_vol: float = 0.0
         self.cumulative_vol: int = 0

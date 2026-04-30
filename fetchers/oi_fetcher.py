@@ -23,8 +23,8 @@ class OIFetcher:
         Initialize the previous OI snapshot dictionary.
         """
         self.dhan = dhanhq(
-            client_id=settings.dhan_client_id,
-            access_token=settings.dhan_access_token
+            settings.dhan_client_id,
+            settings.dhan_access_token
         )
         # Tracks previous cycle OI. Keys format: "<strike>_<type>" (e.g., "24000_CE")
         self._prev_oi_snapshot: Dict[str, int] = {}

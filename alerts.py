@@ -5,19 +5,25 @@ from config import settings
 
 def format_signal(signal: AresSignal, spot: float) -> str:
     """
-    Formats the AresSignal into a clear, scannable Discord message.
+    Formats the AresSignal into a premium, color-coded Discord message using diff blocks.
     """
     reasons_str = "\n".join([f"     • {r}" for r in signal.reasons])
     
-    msg = f"""```text
-🚨 SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
-   Spot  : {spot:.2f}
-   Trade : {signal.strike_to_trade} {signal.option_type}
-   Entry : {signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}
-   SL    : {signal.stop_loss:.2f} (Spot Ref)
-   Targets: T1={signal.target_1:.2f} | T2={signal.target_2:.2f}
-   Confidence: {signal.confidence}
-   Reasons:
+    # Use diff block markers for color coding (+ for green/bullish, - for red/bearish)
+    marker = "+" if signal.direction.value == "BULLISH" else "-"
+    icon = "📈" if signal.direction.value == "BULLISH" else "📉"
+    
+    msg = f"""```diff
+{marker} {icon} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
+   
+   📍 Spot  : {spot:.2f}
+   ⚡ Trade : {signal.strike_to_trade} {signal.option_type}
+   ✅ Entry : {signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}
+   🛑 SL    : {signal.stop_loss:.2f} (Spot Ref)
+   🎯 Target: T1={signal.target_1:.2f} | T2={signal.target_2:.2f}
+   ⭐ Conf. : {signal.confidence}
+   
+   📝 Reasons:
 {reasons_str}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```"""
@@ -47,17 +53,17 @@ async def send_startup_alert(pdh: float, pdl: float) -> None:
     if not settings.discord_webhook_url:
         return
         
-    msg = f"""```text
-=================================================================
-  ARES (Adaptive Reversal & Entry Signal) - Initialization
-=================================================================
-[+] Target Asset : {settings.yahoo_symbol} (1-minute timeframe)
-[+] Detectors    : Failed Breakout, OI Wall, Exhaustion
-[+] Session      : 09:15 to 23:30 IST
-[+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals
-[+] PDH / PDL    : {pdh} / {pdl}
-=================================================================
-```"""
+    msg = f"""```diff
++ =================================================================
++ 🤖 ARES (Adaptive Reversal & Entry Signal) - Initialization
++ =================================================================
++ [+] Target Asset : {settings.yahoo_symbol} (1-minute timeframe)
++ [+] Detectors    : Failed Breakout, OI Wall, Exhaustion
++ [+] Session      : 09:15 to 23:30 IST
++ [+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals
++ [+] PDH / PDL    : {pdh} / {pdl}
++ =================================================================
++ ```"""
 
     payload = {"content": msg}
     
@@ -78,14 +84,14 @@ async def send_error_alert(error_msg: str) -> None:
     ist = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(ist).strftime("%H:%M:%S")
     
-    msg = f"""```text
-🚨 SYSTEM ALERT — ACTION REQUIRED
-──────────────────────────────────
-Error  : {error_msg}
-Time   : {now_ist} IST
-
-Action : Check logs and restart system.
-──────────────────────────────────
+    msg = f"""```diff
+- 🚨 SYSTEM ALERT — ACTION REQUIRED
+- ──────────────────────────────────
+- ❌ Error  : {error_msg}
+- 🕒 Time   : {now_ist} IST
+-
+- 🛠️ Action : Check logs and restart system.
+- ──────────────────────────────────
 ```"""
 
     payload = {"content": msg}
