@@ -33,8 +33,7 @@ class FailedBreakoutDetector:
     """
 
     def __init__(self):
-        """Initialize the detector with empty levels and no active breakout."""
-        self.levels: List[ResistanceLevel] = []
+        """Initialize the detector with no active breakout."""
         self.active: Optional[BreakoutState] = None
 
     def update(
@@ -45,7 +44,8 @@ class FailedBreakoutDetector:
         atm_ce_oi: int,
         atm_ce_oi_prev: int,
         atm_pe_oi: int,
-        atm_pe_oi_prev: int
+        atm_pe_oi_prev: int,
+        levels: List[ResistanceLevel]
     ) -> Optional[AresSignal]:
         """
         Evaluate the latest candle against the support/resistance levels to detect
@@ -59,13 +59,14 @@ class FailedBreakoutDetector:
             atm_ce_oi_prev: Previous Open Interest for the ATM Call option.
             atm_pe_oi: Current Open Interest for the ATM Put option.
             atm_pe_oi_prev: Previous Open Interest for the ATM Put option.
+            levels: Current key structural support and resistance levels.
             
         Returns:
             An AresSignal object if a high-confidence failed breakout is detected, otherwise None.
         """
         # Step 1: If no active breakout, scan for a new level cross
         if not self.active:
-            for lvl in self.levels:
+            for lvl in levels:
                 # Crossed above resistance
                 crossed_above = candle.open < lvl.price and candle.close > lvl.price
                 # Crossed below support
@@ -117,7 +118,8 @@ class FailedBreakoutDetector:
                 score=score,
                 weak_vol=weak_volume,
                 iv_falling=iv_falling,
-                writers_held=writers_holding
+                writers_held=writers_holding,
+                levels=levels
             )
             self.active = None  # Reset state after generating signal
             return signal
@@ -132,7 +134,8 @@ class FailedBreakoutDetector:
         score: int,
         weak_vol: bool,
         iv_falling: bool,
-        writers_held: bool
+        writers_held: bool,
+        levels: List[ResistanceLevel]
     ) -> AresSignal:
         """
         Constructs the final AresSignal based on the collected conditions.
@@ -147,18 +150,46 @@ class FailedBreakoutDetector:
             reasons.append("IV is dropping rapidly (IV Crush)")
         if writers_held:
             reasons.append("Option writers did not cover their positions")
-
-        # Determine trade targets and stop loss bidirectionally
+            
+        # --- Dynamic Target Selection ---
+        target_1 = None
+        target_2 = None
+        
         if direction == Direction.BEARISH:
             option_type = "PE"
             stop_loss = level + settings.breakout_stop_buffer
-            target_1 = candle.close - settings.target_1_pts
-            target_2 = candle.close - settings.target_2_pts
+            
+            # Find supports below spot
+            supports = sorted([lvl.price for lvl in levels if lvl.price < candle.close], reverse=True)
+            if len(supports) >= 1:
+                target_1 = supports[0]
+                reasons.append(f"Target 1 set at structural support: {target_1:.2f}")
+            if len(supports) >= 2:
+                target_2 = supports[1]
+                reasons.append(f"Target 2 set at structural support: {target_2:.2f}")
+            
+            # Fallback to fixed points if levels not found or too close
+            if not target_1 or abs(target_1 - candle.close) < 15:
+                target_1 = candle.close - settings.target_1_pts
+            if not target_2 or abs(target_2 - candle.close) < 30:
+                target_2 = candle.close - settings.target_2_pts
         else:
             option_type = "CE"
             stop_loss = level - settings.breakout_stop_buffer
-            target_1 = candle.close + settings.target_1_pts
-            target_2 = candle.close + settings.target_2_pts
+            
+            # Find resistances above spot
+            resistances = sorted([lvl.price for lvl in levels if lvl.price > candle.close])
+            if len(resistances) >= 1:
+                target_1 = resistances[0]
+                reasons.append(f"Target 1 set at structural resistance: {target_1:.2f}")
+            if len(resistances) >= 2:
+                target_2 = resistances[1]
+                reasons.append(f"Target 2 set at structural resistance: {target_2:.2f}")
+                
+            if not target_1 or abs(target_1 - candle.close) < 15:
+                target_1 = candle.close + settings.target_1_pts
+            if not target_2 or abs(target_2 - candle.close) < 30:
+                target_2 = candle.close + settings.target_2_pts
 
         # Calculate entry zone (+/- setting points around the close)
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)

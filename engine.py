@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from statistics import mean
 from typing import Optional, List, Dict, Any
 
-from models import OHLCVCandle, ATMStrikes, AresSignal
+from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel
 from config import settings
 
 from detectors.breakout import FailedBreakoutDetector
@@ -39,7 +39,8 @@ class AresEngine:
         candle: OHLCVCandle,
         full_chain: List[Dict[str, Any]],
         atm: ATMStrikes,
-        iv_change_pct: float
+        iv_change_pct: float,
+        levels: List[ResistanceLevel]
     ) -> Optional[AresSignal]:
         """
         Process a single tick of data through the detection pipeline.
@@ -54,9 +55,10 @@ class AresEngine:
         
         Args:
             candle: The latest closed OHLCV candle.
-            full_chain: The complete NIFTY option chain.
-            atm: The ATM strikes context.
+            full_chain: The complete NIFTY option chain from OIFetcher.
+            atm: The ATM strikes context including spot price and ATM IV/OI.
             iv_change_pct: The percentage change in ATM Implied Volatility.
+            levels: A list of ResistanceLevel objects (structural levels + OI walls) used for target calculation.
             
         Returns:
             An AresSignal if a detector triggers and cooldown is clear, otherwise None.
@@ -94,7 +96,8 @@ class AresEngine:
                 atm_ce_oi=atm.ce.oi,
                 atm_ce_oi_prev=atm.ce.oi_prev,
                 atm_pe_oi=atm.pe.oi,
-                atm_pe_oi_prev=atm.pe.oi_prev
+                atm_pe_oi_prev=atm.pe.oi_prev,
+                levels=levels
             )
             or
             self.oi_wall_detector.detect(
@@ -106,7 +109,8 @@ class AresEngine:
             self.exhaustion_detector.update(
                 candle=candle,
                 iv_current=atm.ce.iv,
-                iv_prev=iv_prev
+                iv_prev=iv_prev,
+                levels=levels
             )
         )
 

@@ -44,7 +44,7 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
             response = await client.post(settings.discord_webhook_url, json=payload)
             response.raise_for_status()
         except Exception as e:
-            print(f"[-] Discord signal alert failed: {e}")
+            print(f"[-] Discord signal alert failed: {type(e).__name__} - {e}")
 
 async def send_startup_alert(pdh: float, pdl: float) -> None:
     """
@@ -63,7 +63,7 @@ async def send_startup_alert(pdh: float, pdl: float) -> None:
 + [+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals
 + [+] PDH / PDL    : {pdh} / {pdl}
 + =================================================================
-+ ```"""
+```"""
 
     payload = {"content": msg}
     
@@ -72,7 +72,7 @@ async def send_startup_alert(pdh: float, pdl: float) -> None:
             response = await client.post(settings.discord_webhook_url, json=payload)
             response.raise_for_status()
         except Exception as e:
-            print(f"[-] Discord startup alert failed: {e}")
+            print(f"[-] Discord startup alert failed: {type(e).__name__} - {e}")
 
 async def send_error_alert(error_msg: str) -> None:
     """
@@ -101,4 +101,4 @@ async def send_error_alert(error_msg: str) -> None:
             response = await client.post(settings.discord_webhook_url, json=payload)
             response.raise_for_status()
         except Exception as e:
-            print(f"[-] Discord error alert failed: {e}")
+            print(f"[-] Discord error alert failed: {type(e).__name__} - {e}")

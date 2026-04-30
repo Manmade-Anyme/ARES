@@ -1,8 +1,8 @@
 from collections import deque
 from statistics import mean
-from typing import Optional
+from typing import Optional, List
 
-from models import OHLCVCandle, AresSignal, SetupType, Direction
+from models import OHLCVCandle, AresSignal, SetupType, Direction, ResistanceLevel
 from config import settings
 
 
@@ -24,7 +24,7 @@ class ExhaustionDetector:
         """
         self.volume_history = deque(maxlen=20)
 
-    def update(self, candle: OHLCVCandle, iv_current: float, iv_prev: float) -> Optional[AresSignal]:
+    def update(self, candle: OHLCVCandle, iv_current: float, iv_prev: float, levels: List[ResistanceLevel]) -> Optional[AresSignal]:
         """
         Process the latest candle to determine if an exhaustion reversal pattern has formed.
         
@@ -32,6 +32,7 @@ class ExhaustionDetector:
             candle: The latest closed 1-minute OHLCV candle.
             iv_current: The current ATM Implied Volatility.
             iv_prev: The previous cycle's ATM Implied Volatility.
+            levels: Current key structural support and resistance levels.
             
         Returns:
             An AresSignal if the exhaustion pattern is detected, otherwise None.
@@ -61,8 +62,6 @@ class ExhaustionDetector:
         
         if volume_climax and doji_like:
             # Determine direction
-            # A green doji (close > open) at the top of a move indicates the final push upwards -> Bearish Reversal
-            # A red doji (close < open) at the bottom indicates the final push downwards -> Bullish Reversal
             if candle.close > candle.open:
                 direction = Direction.BEARISH
             else:
@@ -72,7 +71,8 @@ class ExhaustionDetector:
                 candle=candle,
                 direction=direction,
                 avg_vol=avg_vol,
-                iv_spiked=iv_spiked
+                iv_spiked=iv_spiked,
+                levels=levels
             )
             
         return None
@@ -82,33 +82,66 @@ class ExhaustionDetector:
         candle: OHLCVCandle,
         direction: Direction,
         avg_vol: float,
-        iv_spiked: bool
+        iv_spiked: bool,
+        levels: List[ResistanceLevel]
     ) -> AresSignal:
         """
         Constructs the AresSignal for an Exhaustion Reversal.
         """
         vol_ratio = candle.volume / avg_vol if avg_vol > 0 else 0
         
+        time_str = candle.timestamp.strftime("%I:%M%p").lower()
+        # Remove leading zero from hour if present (e.g., 09:15am -> 9:15am)
+        if time_str.startswith("0"):
+            time_str = time_str[1:]
+            
         reasons = [
             f"Volume climax detected ({vol_ratio:.1f}x average volume)",
-            "Candle formed a doji-like indecision pattern"
+            f"Candle formed a doji-like indecision pattern at {time_str}"
         ]
         
         if iv_spiked:
             reasons.append("Sudden spike in Implied Volatility (IV) confirmed panic/exhaustion")
             
+        # --- Dynamic Target Selection ---
+        target_1 = None
+        target_2 = None
+        
         if direction == Direction.BEARISH:
             option_type = "PE"
-            # Stop above the high of the exhaustion candle
             stop_loss = candle.high + settings.exhaustion_stop_buffer
-            target_1 = candle.close - settings.target_1_pts
-            target_2 = candle.close - settings.target_2_pts
+            
+            # Find supports below spot
+            supports = sorted([lvl.price for lvl in levels if lvl.price < candle.close], reverse=True)
+            if len(supports) >= 1:
+                target_1 = supports[0]
+                reasons.append(f"Target 1 set at structural support: {target_1:.2f}")
+            if len(supports) >= 2:
+                target_2 = supports[1]
+                reasons.append(f"Target 2 set at structural support: {target_2:.2f}")
+            
+            # Fallback to fixed points if levels not found or too close
+            if not target_1 or abs(target_1 - candle.close) < 15:
+                target_1 = candle.close - settings.target_1_pts
+            if not target_2 or abs(target_2 - candle.close) < 30:
+                target_2 = candle.close - settings.target_2_pts
         else:
             option_type = "CE"
-            # Stop below the low of the exhaustion candle
             stop_loss = candle.low - settings.exhaustion_stop_buffer
-            target_1 = candle.close + settings.target_1_pts
-            target_2 = candle.close + settings.target_2_pts
+            
+            # Find resistances above spot
+            resistances = sorted([lvl.price for lvl in levels if lvl.price > candle.close])
+            if len(resistances) >= 1:
+                target_1 = resistances[0]
+                reasons.append(f"Target 1 set at structural resistance: {target_1:.2f}")
+            if len(resistances) >= 2:
+                target_2 = resistances[1]
+                reasons.append(f"Target 2 set at structural resistance: {target_2:.2f}")
+                
+            if not target_1 or abs(target_1 - candle.close) < 15:
+                target_1 = candle.close + settings.target_1_pts
+            if not target_2 or abs(target_2 - candle.close) < 30:
+                target_2 = candle.close + settings.target_2_pts
 
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)
         strike_to_trade = int(round(candle.close / settings.strike_interval) * settings.strike_interval)

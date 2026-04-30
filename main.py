@@ -72,6 +72,7 @@ async def run():
     last_vwap_reset_date = None
     waiting_printed = False
     buffers_full_printed = False
+    last_error_msg = None
     
     while True:
         now = datetime.now()
@@ -105,7 +106,7 @@ async def run():
             atm, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry_date)
             
             # Build and update dynamic levels
-            engine.breakout_detector.levels = level_fetcher.build_levels(
+            levels = level_fetcher.build_levels(
                 spot_price=spot,
                 full_chain=full_chain,
                 oi_wall_threshold=settings.oi_wall_min_oi
@@ -119,7 +120,7 @@ async def run():
             prev_iv = current_iv
             
             # Run the engine
-            signal = engine.tick(candle, full_chain, atm, iv_change_pct)
+            signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels)
             
             # Terminal UI: Track Warmup State
             buffer_len = len(engine.candle_buffer)
@@ -139,19 +140,30 @@ async def run():
                     await send_discord(signal, spot)
                 except Exception as alert_err:
                     print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
+            
+            # Clear error tracking on successful cycle
+            last_error_msg = None
                 
         except Exception as e:
             error_str = str(e).lower()
+            current_error = str(e)
+            
             if "401" in error_str or "auth" in error_str:
                 print(f"{R}[{now.strftime('%H:%M:%S')}] ❌ ERROR: Dhan API Authentication failed.{RESET}")
                 print(f"   {W}Details: {e}{RESET}")
                 print(f"   {W}Action : Check your DHAN_ACCESS_TOKEN in the .env file.{RESET}")
                 print(f"   {Y}Retrying in 60s...\n{RESET}")
-                await send_error_alert(f"Dhan API Authentication failed: {e}")
+                
+                if last_error_msg != current_error:
+                    await send_error_alert(f"Dhan API Authentication failed: {e}")
+                    last_error_msg = current_error
+                    
                 await asyncio.sleep(60)
             else:
                 print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Warning: Fetch cycle error - {e}{RESET}")
-                await send_error_alert(f"Fetch cycle error - {e}")
+                if last_error_msg != current_error:
+                    await send_error_alert(f"Fetch cycle error - {e}")
+                    last_error_msg = current_error
             
         await asyncio.sleep(settings.poll_interval_seconds)
 

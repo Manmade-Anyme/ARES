@@ -24,10 +24,15 @@ class PriceFetcher:
         Initialize the Dhan API client using settings from config.
         Set cumulative VWAP accumulators to 0.
         """
-        self.dhan = dhanhq(
-            settings.dhan_client_id,
-            settings.dhan_access_token
-        )
+        try:
+            from dhanhq import DhanContext
+            context = DhanContext(settings.dhan_client_id, settings.dhan_access_token)
+            self.dhan = dhanhq(context)
+        except ImportError:
+            self.dhan = dhanhq(
+                settings.dhan_client_id,
+                settings.dhan_access_token
+            )
         self.cumulative_tp_vol: float = 0.0
         self.cumulative_vol: int = 0
 
@@ -99,7 +104,9 @@ class PriceFetcher:
                 
             raise ValueError(f"Dhan API Error ({error_type}): {error_msg}")
             
-        data = response["data"]
+        data = response.get("data")
+        if not data or not isinstance(data, dict):
+            raise ValueError(f"No intraday data returned or data is not a dictionary. Raw data: {data}")
         
         # Determine the time key used by Dhan (can be "start_Time" or "timestamp" depending on segment)
         time_key = "start_Time" if "start_Time" in data else "timestamp"

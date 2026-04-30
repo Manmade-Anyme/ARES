@@ -25,29 +25,29 @@ Aggregates and formats critical price levels (like PDH, PDL, VWAP) into a standa
 ## Orchestration Layer (Engine)
 
 ### `AresEngine` (in `engine.py`)
-The main orchestrator. It holds state (recent candles, IV history) and coordinates the fetchers, detectors, and alerts.
+The main orchestrator. It maintains rolling state buffers for volume and IV, and strictly enforces signal cooldowns to prevent over-trading.
 
 **Methods:**
-- `poll()`: The main loop method. Coordinates fetching data, checking cooldowns, running detectors, and dispatching alerts.
+- `tick(candle: OHLCVCandle, full_chain: List[Dict], atm: ATMStrikes, iv_change_pct: float, levels: List[ResistanceLevel]) -> Optional[AresSignal]`: Processes a single market cycle. Runs detectors in priority order (Breakout > OI Wall > Exhaustion) and returns a signal if conditions are met and cooldown is clear.
 
 ## Detection Layer (Detectors)
 
 ### `FailedBreakoutDetector` (in `detectors/breakout.py`)
-Tracks "fake-outs" where price crosses a significant level but fails to hold. Stateful detector.
+Tracks "fake-outs" where price crosses a significant level but fails to hold. Stateful detector that monitors breakouts for up to a configurable number of confirmation candles. Now includes structural target selection.
 
 ### `OIWallDetector` (in `detectors/oi_wall.py`)
-Identifies structural rejection at strikes with massive fresh Open Interest. Stateless detector.
+Identifies structural rejection at strikes with massive fresh Open Interest. Stateless detector that checks for price "bounces" or "wick rejections" at key OI levels.
 
 ### `ExhaustionDetector` (in `detectors/exhaustion.py`)
-Catches "blow-off tops" or "panic bottoms" using volume/price divergence.
+Identifies volume climaxes combined with doji-like indecision at price extremes. Uses dynamic target selection based on structural support/resistance.
 
 ## Models (in `models.py`)
 
 - `OHLCVCandle`: Dataclass representing a single 1-minute candle (open, high, low, close, volume, vwap, timestamp).
 - `OptionRow`: Dataclass for a single option contract (strike, type, ltp, iv, oi, oi_prev, oi_change_pct, gamma, theta).
-- `ATMStrikes`: Container for the ATM Call and Put `OptionRow`s.
-- `ResistanceLevel`: Dataclass defining a support/resistance level (price, type, strength).
-- `AresSignal`: Output dataclass generated when a detector finds a setup (setup_type, direction, confidence, entry, stop_loss, targets, reasons).
+- `ATMStrikes`: Container for the ATM Call and Put `OptionRow`s and current spot price.
+- `ResistanceLevel`: Dataclass defining a support/resistance level (price, source, strength).
+- `AresSignal`: Output dataclass containing full trade parameters: `setup_type`, `direction`, `trigger_price`, `entry_zone`, `stop_loss`, `target_1`, `target_2`, `confidence`, `reasons`, `timestamp`, `strike_to_trade`, and `option_type`.
 
 ## Broadcasting Layer
 

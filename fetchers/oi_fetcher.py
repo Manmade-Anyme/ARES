@@ -22,10 +22,15 @@ class OIFetcher:
         Initialize the Dhan API client using settings from config.
         Initialize the previous OI snapshot dictionary.
         """
-        self.dhan = dhanhq(
-            settings.dhan_client_id,
-            settings.dhan_access_token
-        )
+        try:
+            from dhanhq import DhanContext
+            context = DhanContext(settings.dhan_client_id, settings.dhan_access_token)
+            self.dhan = dhanhq(context)
+        except ImportError:
+            self.dhan = dhanhq(
+                settings.dhan_client_id,
+                settings.dhan_access_token
+            )
         # Tracks previous cycle OI. Keys format: "<strike>_<type>" (e.g., "24000_CE")
         self._prev_oi_snapshot: Dict[str, int] = {}
         self._cached_expiry: str = None
@@ -145,12 +150,16 @@ class OIFetcher:
             raise ValueError(f"Dhan API Error ({error_type}): {error_msg}")
             
         # The Dhan API response format might put the chain inside "oc" or "data" -> "data" -> "oc"
-        if "oc" in response["data"]:
-            oc = response["data"]["oc"]
-        elif "data" in response["data"] and "oc" in response["data"]["data"]:
-            oc = response["data"]["data"]["oc"]
+        resp_data = response.get("data")
+        if not resp_data or not isinstance(resp_data, dict):
+            raise ValueError(f"Invalid option chain response: 'data' is not a dictionary. Raw data: {resp_data}")
+
+        if "oc" in resp_data:
+            oc = resp_data["oc"]
+        elif "data" in resp_data and isinstance(resp_data["data"], dict) and "oc" in resp_data["data"]:
+            oc = resp_data["data"]["oc"]
         else:
-            raise ValueError(f"Invalid option chain response structure: {response['data'].keys()}")
+            raise ValueError(f"Invalid option chain response structure: {resp_data.keys()}")
         
         # Calculate ATM strike using the configured strike interval
         atm_strike = round(spot_price / settings.strike_interval) * settings.strike_interval

@@ -23,7 +23,8 @@ ARES follows a strict **five-layer architecture** designed for modularity, perfo
 ARES evaluates three distinct market phenomena in strict **short-circuit priority order**:
 
 ### 1. 🚨 Failed Breakout (Highest Priority)
-*   **Logic:** Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically via Yahoo Finance or massive OI wall) but fails to hold.
+*   **Logic:** Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically or massive OI wall) but fails to hold.
+*   **Dynamic Targets:** Automatically sets Profit Targets (T1/T2) at the next available structural support/resistance levels.
 *   **Scoring:** Evaluated on a 4-point scale:
     *   `Closed Back`: Price returned past the level (Required).
     *   `Weak Volume`: Breakout candle volume < Rolling Average.
@@ -37,6 +38,7 @@ ARES evaluates three distinct market phenomena in strict **short-circuit priorit
 
 ### 3. 💥 Exhaustion Reversal (Medium Priority)
 *   **Logic:** Catches "blow-off tops" or "panic bottoms" using volume/price divergence.
+*   **Dynamic Targets:** Uses structural levels to define exit zones, ensuring realistic profit booking.
 *   **Triggers:** Triggers when a volume climax (extreme spike) coincides with a doji-like indecision candle at a local price extreme, often accompanied by an IV spike.
 
 ---
@@ -127,9 +129,16 @@ EXHAUSTION_BODY_RATIO=0.3
 EXHAUSTION_IV_SPIKE_THRESHOLD=1.0
 EXHAUSTION_MIN_CANDLES=5
 
+# ==========================================
+# Targets & Zones
+# ==========================================
 TARGET_1_PTS=40.0
 TARGET_2_PTS=80.0
 STRIKE_INTERVAL=50
+ENTRY_ZONE_OFFSET_PTS=5.0
+OI_WALL_STOP_BUFFER=10.0
+EXHAUSTION_STOP_BUFFER=20.0
+LEVEL_SCAN_RANGE=500.0
 ```
 
 ### 2. Database Initialization
@@ -182,7 +191,8 @@ The application is configured to automatically scale up at 09:15 IST and down at
 ## 🚀 Operational Parameters
 
 *   **Session Window:** Actively polls from **09:20 to 15:25 IST** (Standard NSE session).
-*   **Warmup State:** Requires **20 candles** (configurable) to fill rolling volume/IV buffers before generating signals.
+*   **Warmup State:** Requires **30 candles** (configurable via `CANDLE_BUFFER_SIZE`) to fill rolling volume/IV buffers before generating signals.
+*   **Premium UI:** Full ANSI color support in the terminal for high-visibility signal monitoring.
 *   **Signal Cooldown:** Enforces a strict **5-minute cooldown** between alerts to prevent over-trading in choppy conditions.
 *   **Zero Hardcoding:** All thresholds (Volume ratios, IV drops, OI walls) are fully configurable via environment variables.
 
