@@ -5,6 +5,9 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Persistent Position Management**: Introduced a Supabase-backed `PositionManager` to track active trades across sessions. This includes loading daily trades into memory on startup and pushing updates to the database to preserve state.
+- **Dynamic Trailing Stops**: Evaluated on every tick against live spot prices. When Target 1 (T1) is reached, the stop loss is automatically trailed to the entry price to secure risk-free trades.
+- **Trade Update Alerts**: Extended `alerts.py` with `send_trade_update()`, sending color-coded Discord alerts when a trade hits T1 or gets stopped out.
 - **Dynamic Target Selection**: Implemented structural-based profit targets (T1, T2) in `FailedBreakoutDetector` and `ExhaustionDetector`. The system now automatically identifies the next significant support/resistance levels from the option chain and structural data to set realistic exit points.
 - **Premium Terminal UI**: Added full ANSI color support to the local console output. Includes a high-visibility startup banner, color-coded signal alerts (Green for Bullish, Red for Bearish), and real-time status tracking for rolling buffer warmup.
 - **Alert Timestamps**: Signal reasons now include the exact candle timestamp (e.g., "at 11:53am") for better temporal traceability in Discord and console alerts.

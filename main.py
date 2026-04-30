@@ -6,6 +6,7 @@ from fetchers.price_fetcher import PriceFetcher
 from fetchers.oi_fetcher import OIFetcher
 from fetchers.level_fetcher import LevelFetcher
 from storage import Storage
+from position_manager import PositionManager
 from config import settings
 from alerts import send_discord, send_startup_alert, send_error_alert
 
@@ -55,6 +56,7 @@ async def run():
     oi_fetcher = OIFetcher()
     level_fetcher = LevelFetcher()
     storage = Storage()
+    position_manager = PositionManager()
     
     # Make this dynamic via Yahoo Finance Oracle 
     try:
@@ -137,9 +139,20 @@ async def run():
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
                 
                 try:
+                    position_manager.add_trade(signal, spot)
+                except Exception as pm_err:
+                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
+                
+                try:
                     await send_discord(signal, spot)
                 except Exception as alert_err:
                     print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
+            
+            # Update active trades with new spot price
+            try:
+                await position_manager.update_trades(spot)
+            except Exception as pm_update_err:
+                print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager update_trades failed: {pm_update_err}{RESET}")
             
             # Clear error tracking on successful cycle
             last_error_msg = None

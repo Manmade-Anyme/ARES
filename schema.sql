@@ -20,3 +20,16 @@ CREATE TABLE ares_signals (
 
 -- Optional: Add an index on timestamp for faster time-series queries later
 CREATE INDEX idx_ares_signals_timestamp ON ares_signals (timestamp DESC);
+
+CREATE TABLE active_trades (
+  id uuid primary key,
+  setup_type text not null,
+  direction text not null,
+  entry_price numeric not null,
+  stop_loss numeric not null,
+  target_1 numeric not null,
+  target_2 numeric not null,
+  state text not null default 'OPEN',
+  added_time_ist text,
+  created_at timestamptz default now()
+);

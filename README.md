@@ -13,7 +13,7 @@ ARES follows a strict **five-layer architecture** designed for modularity, perfo
 1.  **🧩 Ingestion Layer:** Asynchronous fetchers (`PriceFetcher`, `OIFetcher`) poll the DhanHQ API for 1-min candles and real-time Option Chains.
 2.  **⚙️ Orchestration Layer:** The `AresEngine` manages the evaluation pipeline, maintaining rolling state buffers (Volume, IV) and enforcing signal cooldowns.
 3.  **🔬 Detection Layer:** A suite of specialized detectors (`FailedBreakout`, `OIWall`, `Exhaustion`) score market conditions against technical and structural levels.
-4.  **💾 Persistence Layer:** All generated signals are logged to **Supabase (PostgreSQL)** for post-session performance auditing and backtesting.
+4.  **💾 Persistence Layer:** All generated signals and **active trade states** are logged to **Supabase (PostgreSQL)** for post-session performance auditing and backtesting.
 5.  **📢 Broadcasting Layer:** Signals are formatted into rich, scannable alerts and dispatched via **Discord Webhooks** and the local console.
 
 ---
@@ -40,6 +40,14 @@ ARES evaluates three distinct market phenomena in strict **short-circuit priorit
 *   **Logic:** Catches "blow-off tops" or "panic bottoms" using volume/price divergence.
 *   **Dynamic Targets:** Uses structural levels to define exit zones, ensuring realistic profit booking.
 *   **Triggers:** Triggers when a volume climax (extreme spike) coincides with a doji-like indecision candle at a local price extreme, often accompanied by an IV spike.
+
+---
+
+## 🛡️ Trade Management (Position Manager)
+ARES actively tracks its signals using a persistent **Position Manager**:
+*   **Trailing Stops**: Once a trade reaches Target 1 (T1), the Stop Loss is automatically trailed to the entry price to lock in a risk-free position.
+*   **Persistent State**: Active trades are synced in real-time with a Supabase PostgreSQL database (`active_trades` table) and loaded into memory on startup, ensuring no data loss across system restarts.
+*   **Discord Tracking**: Any state change (hitting T1 or Stop Loss) instantly triggers a dedicated Discord update via Webhooks.
 
 ---
 
@@ -157,8 +165,23 @@ CREATE TABLE ares_signals (
   target_2 numeric,
   strike integer,
   option_type text,
-  reasons jsonb,
   timestamp timestamptz,
+  created_at timestamptz default now()
+);
+
+-- Optional: Add an index on timestamp for faster time-series queries later
+CREATE INDEX idx_ares_signals_timestamp ON ares_signals (timestamp DESC);
+
+CREATE TABLE active_trades (
+  id uuid primary key,
+  setup_type text not null,
+  direction text not null,
+  entry_price numeric not null,
+  stop_loss numeric not null,
+  target_1 numeric not null,
+  target_2 numeric not null,
+  state text not null default 'OPEN',
+  added_time_ist text,
   created_at timestamptz default now()
 );
 ```

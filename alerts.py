@@ -102,3 +102,43 @@ async def send_error_alert(error_msg: str) -> None:
             response.raise_for_status()
         except Exception as e:
             print(f"[-] Discord error alert failed: {type(e).__name__} - {e}")
+
+async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
+    """
+    Sends an alert when an active trade state changes (e.g., T1 Hit, Trailing Stop triggered, SL Hit).
+    """
+    if not settings.discord_webhook_url:
+        return
+
+    # Color code based on direction and update type
+    color_marker = "+" if update_type == "T1_HIT" else "-"
+    icon = "🎯" if update_type == "T1_HIT" else "🛑"
+    
+    action_text = ""
+    if update_type == "T1_HIT":
+        action_text = "Target 1 Reached! Stop Loss trailed to Entry."
+    elif update_type == "SL_HIT":
+        if trade["state"] == "T1_HIT" or trade.get("stop_loss") == trade.get("entry_price"):
+            action_text = "Trailing Stop Loss Hit at Entry. Trade Closed."
+        else:
+            action_text = "Stop Loss Hit. Trade Closed."
+
+    msg = f"""```diff
+{color_marker} {icon} TRADE UPDATE: {trade['setup_type']} ({trade['direction']})
+   
+   📍 Spot    : {spot:.2f}
+   ⚡ Action  : {action_text}
+   ✅ Entry   : {trade['entry_price']:.2f}
+   🛑 New SL  : {trade['stop_loss']:.2f}
+   📊 Status  : {trade['state']}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```"""
+
+    payload = {"content": msg}
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(settings.discord_webhook_url, json=payload)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"[-] Discord trade update alert failed: {type(e).__name__} - {e}")

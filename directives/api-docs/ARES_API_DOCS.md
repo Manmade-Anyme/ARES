@@ -59,3 +59,14 @@ Formats and dispatches Discord notifications asynchronously.
 - `send_discord(signal: AresSignal, spot: float) -> None`: Dispatches the formatted signal to Discord.
 - `send_startup_alert(pdh: float, pdl: float) -> None`: Sends an initialization message to Discord at startup.
 - `send_error_alert(error_msg: str) -> None`: Sends system-level error alerts to Discord.
+- `send_trade_update(trade: dict, spot: float, update_type: str) -> None`: Sends an alert when an active trade state changes (e.g., T1 Hit, Trailing Stop triggered, SL Hit).
+
+## Position Management Layer
+
+### `PositionManager` (in `position_manager.py`)
+Tracks active trades, evaluates trailing stops against live spot prices on every tick, and persists state to Supabase.
+
+**Methods:**
+- `_initialize_db() -> None`: Fetches active trades from Supabase on startup, purges expired records from previous days, and loads today's trades into memory.
+- `add_trade(signal: AresSignal, spot: float) -> None`: Pushes a new trade into the active memory array and asynchronously logs it to Supabase as 'OPEN'.
+- `update_trades(spot_price: float) -> None`: Iterates over active trades, tracking trailing stops (e.g., trailing SL to entry price once T1 is hit) or stops triggering. Broadcasts state changes via Discord.
