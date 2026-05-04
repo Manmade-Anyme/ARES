@@ -50,7 +50,7 @@ async def send_startup_alert(pdh: float, pdl: float) -> None:
     """
     Sends a startup message to Discord with the current PDH/PDL and status.
     """
-    webhook_url = settings.discord_health_webhook_url or settings.discord_webhook_url
+    webhook_url = settings.discord_webhook_url
     if not webhook_url:
         return
         
