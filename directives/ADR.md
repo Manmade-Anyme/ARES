@@ -18,6 +18,12 @@ We have adopted a layered architecture to separate concerns and ensure maintaina
 - **Layer 5: Broadcasting (Alerts)**
     - Discord and Console.
     - Decisions: Pre-format messages into rich Markdown for readability on mobile/desktop.
+- **Layer 6: Position Management (Tracking)**
+    - Managed by `PositionManager`.
+    - Decisions: Persistent state tracking using Supabase. Real-time evaluation of trailing stops to entry (T1 logic) to minimize risk.
+- **Layer 7: Analysis (Backtesting)**
+    - Managed by `backtest/` suite.
+    - Decisions: Export historical results to TradingView PineScript (v6) for visual audit.
 
 ## 2. Tech Stack Decisions
 - **Python 3.10+**: Chosen for `asyncio` support and robust library ecosystem.

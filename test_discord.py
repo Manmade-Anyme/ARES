@@ -1,31 +1,33 @@
 import asyncio
-import httpx
 from config import settings
+from alerts import send_startup_alert, send_heartbeat
+from fetchers.price_fetcher import PriceFetcher
 
 async def test():
-    url = settings.discord_webhook_url
-    msg = f"""```diff
-+ =================================================================
-+ 🤖 ARES (Adaptive Reversal & Entry Signal) - Initialization
-+ =================================================================
-+ [+] Target Asset : ^NSEI (1-minute timeframe)
-+ [+] Detectors    : Failed Breakout, OI Wall, Exhaustion
-+ [+] Session      : 09:15 to 23:30 IST
-+ [+] Cooldown     : 5 minutes between signals
-+ [+] PDH / PDL    : 24334.69921875 / 24059.94921875
-+ =================================================================
-+ ```"""
+    print("[*] Fetching dynamic PDH and PDL for the test...")
+    pf = PriceFetcher()
+    try:
+        pdh, pdl = await pf.fetch_previous_day_ohlc()
+        print(f"[+] Fetched PDH/PDL: {pdh:.2f} / {pdl:.2f}")
+    except Exception as e:
+        print(f"[-] Failed to fetch dynamic PDH/PDL: {e}")
+        pdh, pdl = 24100.0, 23900.0
 
-    payload = {"content": msg}
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            print("Success")
-        except Exception as e:
-            print(f"Exception type: {type(e)}")
-            print(f"Exception message: {e}")
-            if hasattr(e, 'response') and e.response:
-                print(f"Response text: {e.response.text}")
+    # Test Signal Webhook via Startup Alert
+    print(f"\n[*] Testing Signal/Startup Webhook...")
+    try:
+        await send_startup_alert(pdh, pdl)
+        print("[+] Signal Webhook Success (Startup Alert)")
+    except Exception as e:
+        print(f"[-] Signal Webhook Failed: {e}")
+
+    # Test Health Webhook via Heartbeat
+    print(f"\n[*] Testing Health Webhook...")
+    try:
+        await send_heartbeat(spot=pdh, buffer_len=30)
+        print("[+] Health Webhook Success (Heartbeat Alert)")
+    except Exception as e:
+        print(f"[-] Health Webhook Failed: {e}")
 
 asyncio.run(test())
+

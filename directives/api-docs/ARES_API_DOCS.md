@@ -70,3 +70,11 @@ Tracks active trades, evaluates trailing stops against live spot prices on every
 - `_initialize_db() -> None`: Fetches active trades from Supabase on startup, purges expired records from previous days, and loads today's trades into memory.
 - `add_trade(signal: AresSignal, spot: float) -> None`: Pushes a new trade into the active memory array and asynchronously logs it to Supabase as 'OPEN'.
 - `update_trades(spot_price: float) -> None`: Iterates over active trades, tracking trailing stops (e.g., trailing SL to entry price once T1 is hit) or stops triggering. Broadcasts state changes via Discord.
+
+## Analysis Layer (Backtesting)
+
+### `PineScriptExporter` (in `backtest/pinescript_exporter.py`)
+Generates a PineScript v6 file for TradingView visualization.
+
+**Methods:**
+- `export(trades: List[Dict], filename: str) -> None`: Takes a list of trade dictionaries and generates a formatted PineScript file with entry/exit markers and a performance table.

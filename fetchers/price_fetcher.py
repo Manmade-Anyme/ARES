@@ -217,4 +217,9 @@ class PriceFetcher:
             if target_idx == -1:
                 target_idx = valid_indexes[-1]
                 
-            return float(highs[target_idx]), float(lows[target_idx])
+            def round_to_tick(val: float, tick_size: float = 0.05) -> float:
+                return round(val / tick_size) * tick_size
+                
+            pdh = round_to_tick(float(highs[target_idx]))
+            pdl = round_to_tick(float(lows[target_idx]))
+            return pdh, pdl

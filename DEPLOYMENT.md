@@ -58,6 +58,7 @@ fly secrets set \
   SUPABASE_URL="https://your-project.supabase.co" \
   SUPABASE_KEY="your_supabase_anon_key" \
   DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..." \
+  DISCORD_HEALTH_WEBHOOK_URL="https://discord.com/api/webhooks/..." \
   NIFTY_SECURITY_ID="13" \
   NIFTY_EXCHANGE="IDX_I"
 ```

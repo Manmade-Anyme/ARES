@@ -8,7 +8,7 @@ from fetchers.level_fetcher import LevelFetcher
 from storage import Storage
 from position_manager import PositionManager
 from config import settings
-from alerts import send_discord, send_startup_alert, send_error_alert
+from alerts import send_discord, send_startup_alert, send_error_alert, send_heartbeat
 
 # ANSI Color Codes for Premium Terminal UI
 G = "\033[92m"  # Green
@@ -28,7 +28,7 @@ def print_banner(pdh: float, pdl: float):
     print(f"{G}[+] Detectors    : {W}Failed Breakout, OI Wall, Exhaustion{RESET}")
     print(f"{G}[+] Session      : {W}09:15 to 23:30 IST{RESET}")
     print(f"{G}[+] Cooldown     : {W}{settings.signal_cooldown_minutes} minutes between signals{RESET}")
-    print(f"{G}[+] PDH / PDL    : {W}{pdh} / {pdl}{RESET}")
+    print(f"{G}[+] PDH / PDL    : {W}{pdh:.2f} / {pdl:.2f}{RESET}")
     print(f"{C}{'=' * 65}{RESET}")
 
 def format_signal_console(signal, spot):
@@ -75,6 +75,7 @@ async def run():
     waiting_printed = False
     buffers_full_printed = False
     last_error_msg = None
+    last_heartbeat_time = None
     
     while True:
         now = datetime.now()
@@ -127,8 +128,17 @@ async def run():
             # Terminal UI: Track Warmup State
             buffer_len = len(engine.candle_buffer)
             if buffer_len == settings.candle_buffer_size and not buffers_full_printed:
-                print(f"{G}{B}[{now.strftime('%H:%M:%S')}] ✅ BUFFERS FULL: ARES is now actively scoring all setups.{RESET}")
+                print(f"{G}{B}[{now.strftime('%H:%M:%S')}] ✅ BUFFERS FULL: ARES is now actively scoring all setups.{RESET}", flush=True)
                 buffers_full_printed = True
+                
+            # Heartbeat logging every 15 minutes
+            if last_heartbeat_time is None or (now - last_heartbeat_time).total_seconds() >= 900:
+                print(f"{C}[{now.strftime('%H:%M:%S')}] 💓 HEARTBEAT: ARES Engine active | Spot: {spot:.2f} | Buffers: {buffer_len}/{settings.candle_buffer_size}{RESET}", flush=True)
+                try:
+                    await send_heartbeat(spot, buffer_len)
+                except Exception as hb_err:
+                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord heartbeat failed: {hb_err}{RESET}")
+                last_heartbeat_time = now
             
             # Process signal
             if signal:
@@ -184,4 +194,10 @@ if __name__ == "__main__":
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
-        print("\n⏹️ ARES monitoring stopped by user.")
+        print("\n⏹️ ARES monitoring stopped by user.", flush=True)
+    except Exception as fatal_error:
+        print(f"\n{R}🚨 FATAL ERROR: ARES crashed! {fatal_error}{RESET}", flush=True)
+        try:
+            asyncio.run(send_error_alert(f"FATAL SYSTEM CRASH: {fatal_error}"))
+        except:
+            pass

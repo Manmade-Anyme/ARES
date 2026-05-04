@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # Discord
     discord_webhook_url: str
+    discord_health_webhook_url: str | None = None
 
     # Supabase
     supabase_url: str

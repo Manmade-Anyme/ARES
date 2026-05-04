@@ -50,7 +50,8 @@ async def send_startup_alert(pdh: float, pdl: float) -> None:
     """
     Sends a startup message to Discord with the current PDH/PDL and status.
     """
-    if not settings.discord_webhook_url:
+    webhook_url = settings.discord_health_webhook_url or settings.discord_webhook_url
+    if not webhook_url:
         return
         
     msg = f"""```diff
@@ -61,7 +62,7 @@ async def send_startup_alert(pdh: float, pdl: float) -> None:
 + [+] Detectors    : Failed Breakout, OI Wall, Exhaustion
 + [+] Session      : 09:15 to 23:30 IST
 + [+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals
-+ [+] PDH / PDL    : {pdh} / {pdl}
++ [+] PDH / PDL    : {pdh:.2f} / {pdl:.2f}
 + =================================================================
 ```"""
 
@@ -69,7 +70,7 @@ async def send_startup_alert(pdh: float, pdl: float) -> None:
     
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(settings.discord_webhook_url, json=payload)
+            response = await client.post(webhook_url, json=payload)
             response.raise_for_status()
         except Exception as e:
             print(f"[-] Discord startup alert failed: {type(e).__name__} - {e}")
@@ -78,7 +79,8 @@ async def send_error_alert(error_msg: str) -> None:
     """
     Sends a system alert regarding errors to Discord.
     """
-    if not settings.discord_webhook_url:
+    webhook_url = settings.discord_health_webhook_url or settings.discord_webhook_url
+    if not webhook_url:
         return
         
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -98,10 +100,39 @@ async def send_error_alert(error_msg: str) -> None:
     
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(settings.discord_webhook_url, json=payload)
+            response = await client.post(webhook_url, json=payload)
             response.raise_for_status()
         except Exception as e:
             print(f"[-] Discord error alert failed: {type(e).__name__} - {e}")
+
+async def send_heartbeat(spot: float, buffer_len: int) -> None:
+    """
+    Sends a periodic heartbeat to Discord health channel.
+    """
+    webhook_url = settings.discord_health_webhook_url or settings.discord_webhook_url
+    if not webhook_url:
+        return
+        
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist).strftime("%H:%M:%S")
+    
+    msg = f"""```diff
++ 💓 HEARTBEAT: ARES Engine Active
++ ──────────────────────────────────
++ 📍 Spot    : {spot:.2f}
++ 📊 Buffers : {buffer_len}/{settings.candle_buffer_size}
++ 🕒 Time    : {now_ist} IST
++ ──────────────────────────────────
+```"""
+
+    payload = {"content": msg}
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(webhook_url, json=payload)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"[-] Discord heartbeat alert failed: {type(e).__name__} - {e}")
 
 async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     """

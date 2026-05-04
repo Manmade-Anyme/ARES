@@ -15,6 +15,7 @@ ARES follows a strict **five-layer architecture** designed for modularity, perfo
 3.  **🔬 Detection Layer:** A suite of specialized detectors (`FailedBreakout`, `OIWall`, `Exhaustion`) score market conditions against technical and structural levels.
 4.  **💾 Persistence Layer:** All generated signals and **active trade states** are logged to **Supabase (PostgreSQL)** for post-session performance auditing and backtesting.
 5.  **📢 Broadcasting Layer:** Signals are formatted into rich, scannable alerts and dispatched via **Discord Webhooks** and the local console.
+6.  **📊 Analysis Layer:** A specialized `backtest/` suite allows for historical simulation and visual export of signals to TradingView via PineScript.
 
 ---
 
@@ -51,6 +52,14 @@ ARES actively tracks its signals using a persistent **Position Manager**:
 
 ---
 
+## 📊 Backtesting & Visualization
+ARES includes a robust backtesting module to validate strategies against historical data:
+*   **High-Fidelity Simulation**: Simulates trade execution using historical 1-minute OHLC data.
+*   **PineScript Exporter**: Generates TradingView-compatible PineScript (v6) code. This allows traders to visually inspect every signal, entry, stop-loss, and target level directly on a TradingView chart.
+*   **Performance Metrics**: Automatically calculates PnL, Win Rate, and Drawdown for the simulated period.
+
+---
+
 ## 🛠️ Tech Stack & Engineering Paradigms
 
 *   **Language:** Python 3.10+ (Asyncio-driven for non-blocking I/O).
@@ -76,10 +85,14 @@ ares/
 │   ├── breakout.py        # Stateful detector for Failed Breakouts
 │   ├── oi_wall.py         # Stateless structural rejection detector
 │   └── exhaustion.py      # Volume history & price extreme tracker
+├── backtest/          # Analysis Layer
+│   ├── pinescript_exporter.py # Generates TradingView v6 visualization scripts
+│   ├── engine.py          # Historical simulation engine
+│   └── report.py          # Performance metrics & PDF/Markdown reporting
 ├── engine.py          # The "Brain" — Orchestrates evaluation & priority
 ├── alerts.py          # Formatting & Discord broadcasting
 ├── storage.py         # Supabase persistence logic
-└── main.py            # Entry point, polling loop, and session gate
+├── main.py            # Entry point, polling loop, and session gate
 ```
 
 ---
@@ -102,6 +115,7 @@ NIFTY_EXCHANGE="IDX_I"           # Default for Indices
 # Discord
 # ==========================================
 DISCORD_WEBHOOK_URL="your_discord_webhook"
+DISCORD_HEALTH_WEBHOOK_URL="your_health_webhook"  # Optional: For heartbeats and system alerts
 
 # ==========================================
 # Supabase
