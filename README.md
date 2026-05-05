@@ -200,7 +200,15 @@ CREATE TABLE active_trades (
 );
 ```
 
-### 3. Local Execution
+### 3. Row Level Security (RLS) Note
+If you use the **Anon/Public key** (default in `.env`), you must either disable RLS or add a permissive policy for the bot to work. If you see code `42501`, run these in the SQL Editor:
+
+```sql
+ALTER TABLE active_trades DISABLE ROW LEVEL SECURITY;
+ALTER TABLE ares_signals DISABLE ROW LEVEL SECURITY;
+```
+
+### 4. Local Execution
 Start the monitoring engine:
 
 ```bash

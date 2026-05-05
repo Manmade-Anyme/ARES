@@ -33,3 +33,7 @@ CREATE TABLE active_trades (
   added_time_ist text,
   created_at timestamptz default now()
 );
+
+-- Note: If you encounter RLS errors (Code 42501), run these in the Supabase SQL Editor:
+-- ALTER TABLE active_trades DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE ares_signals DISABLE ROW LEVEL SECURITY;
