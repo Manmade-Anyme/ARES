@@ -24,7 +24,7 @@ ARES follows a strict **five-layer architecture** designed for modularity, perfo
 ARES evaluates three distinct market phenomena in strict **short-circuit priority order**:
 
 ### 1. 🚨 Failed Breakout (Highest Priority)
-*   **Logic:** Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically from Dhan or massive OI wall) but fails to hold.
+*   **Logic**: Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically from Dhan Historical API or massive OI wall) but fails to hold.
 *   **Dynamic Targets:** Automatically sets Profit Targets (T1/T2) at the next available structural support/resistance levels.
 *   **Scoring:** Evaluated on a 4-point scale:
     *   `Closed Back`: Price returned past the level (Required).
@@ -78,7 +78,7 @@ ares/
 ├── config.py          # Strict Pydantic configuration & thresholds
 ├── models.py          # Domain models (OHLCVCandle, AresSignal, OptionRow)
 ├── fetchers/          # Ingestion Layer
-│   ├── price_fetcher.py   # DhanHQ minute data, VWAP logic & dynamic PDH/PDL via Dhan Historical API
+│   ├── price_fetcher.py   # DhanHQ minute data, VWAP logic & dynamic PDH/PDL via Dhan Historical Daily API
 │   ├── oi_fetcher.py      # DhanHQ Option Chain processing
 │   └── level_fetcher.py   # Dynamic level construction (PDH/PDL + OI walls)
 ├── detectors/         # Detection Layer

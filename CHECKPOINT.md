@@ -1,24 +1,25 @@
 # Session Checkpoint
-**Date:** 2026-05-05
-**Session:** #1
+**Date:** 2026-05-06
+**Session:** #2
 
 ## Completed This Session
-- **TASK-004: Supabase RLS Fix** — Resolved the "42501" RLS policy violation error that was blocking trade persistence.
-- **Diagnostics Verified** — Confirmed that `PositionManager` can now successfully `INSERT`, `SELECT`, and `DELETE` records from Supabase using the `anon` key.
-- **Documentation Sync** — Updated `README.md`, `schema.sql`, and `CHANGELOG.md` with the fix and troubleshooting steps.
-- **ADR Creation** — Recorded the decision to disable RLS for simplicity in `directives/adr/TASK-004_supabase-rls-policy.md`.
+- **TASK-005: Dhan API PDH/PDL Migration** — Successfully migrated Previous Day High (PDH) and Previous Day Low (PDL) fetching from Yahoo Finance to the Dhan API's historical daily data endpoint.
+- **Improved Error Handling** — Implemented multi-step error extraction in `fetchers/price_fetcher.py` and `fetchers/oi_fetcher.py` to handle various Dhan API failure formats and added transient error retries.
+- **Fixed Undefined Variable** — Resolved a runtime error in `OIFetcher` where the `loop` variable was undefined during `asyncio.run_in_executor` calls.
+- **Documentation Sync** — Synchronized `README.md`, `CHANGELOG.md`, `ADR.md`, and `ARES_API_DOCS.md` with the latest changes.
+- **JSDoc Style Comments** — Added `@param`, `@returns`, and `@throws` tags to core fetcher methods for better documentation traceability.
 
 ## Open Tasks
-- [ ] Monitor `main.py` for successful signal persistence during the next live setup.
-- [ ] Verify that `PositionManager` correctly wipes old trades on the next day's startup (scheduled for 09:15 IST tomorrow).
+- [ ] Monitor live signal accuracy during the next NSE session.
+- [ ] Verify the automatic stop-loss trailing logic in a live trade.
 
 ## Blockers
 - None.
 
 ## Agent States
-- **Architect**: Reviewed the Supabase error and decided on the RLS disablement strategy (recorded in ADR).
-- **Code Generator**: Implemented diagnostic scripts to verify the fix and updated `schema.sql`.
-- **Documentation Agent**: Updated `README.md` and `CHANGELOG.md`.
+- **Architect**: Reviewed the migration logic and confirmed consolidation of data sources (Dhan API).
+- **Code Generator**: Implemented the `historical_daily_data` fetcher and fixed the `loop` variable bug.
+- **Documentation Agent**: Updated all project documentation and added JSDoc-style docstrings.
 
 ## Resume Instructions
-The system is currently running in a stable state. Next session should focus on monitoring live signal accuracy and ensuring the `PositionManager` correctly handles the daily cleanup at the start of the next session.
+The system is ready for live monitoring. The next session should focus on validating signal generation against live market data and ensuring the new Dhan-based PDH/PDL levels are accurate.

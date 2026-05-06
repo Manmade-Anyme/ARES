@@ -1,7 +1,7 @@
 # ADR: TASK-005 Migrate PDH/PDL Fetching to Dhan API
 
 **Date:** 2026-05-06
-**Status:** draft
+**Status:** complete
 
 ## Problem Statement
 The current system fetches Previous Day High (PDH) and Previous Day Low (PDL) from Yahoo Finance using `httpx`. The user wants to consolidate all data fetching to the Dhan API to reduce dependencies and improve reliability.

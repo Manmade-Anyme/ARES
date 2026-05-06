@@ -10,7 +10,7 @@ Responsible for fetching 1-minute intraday candles for the NIFTY 50 index using 
 **Methods:**
 - `reset_vwap() -> None`: Resets cumulative VWAP accumulators to 0. Called at the start of every trading session.
 - `fetch_latest_candle() -> OHLCVCandle`: Fetches the most recently completed 1-minute candle from Dhan API and computes the incremental VWAP.
-- `fetch_previous_day_ohlc() -> Tuple[float, float]`: Fetches the previous trading day's high and low for NIFTY 50 from Yahoo Finance's free public chart endpoint (fallback/primary oracle).
+- `fetch_previous_day_ohlc() -> Tuple[float, float]`: Fetches the previous trading day's high and low for the target asset directly from the Dhan API using historical daily data.
 
 ### `OIFetcher` (in `fetchers/oi_fetcher.py`)
 Fetches the NIFTY option chain from the Dhan API every cycle. It tracks the previous cycle's Open Interest (OI) for each strike and side to compute the OI change percentage dynamically.

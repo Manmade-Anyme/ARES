@@ -40,6 +40,9 @@ class OIFetcher:
         """
         Fetch the nearest expiry date from the Dhan API.
         Caches the result for the current day to avoid redundant API calls.
+        
+        @returns {str} The nearest expiry date in YYYY-MM-DD format.
+        @throws {ValueError} If the API response is malformed or empty.
         """
         from datetime import datetime
         now_date = datetime.now().date()
@@ -48,16 +51,28 @@ class OIFetcher:
             return self._cached_expiry
             
         loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: self.dhan.expiry_list(
-                under_security_id=int(settings.security_id),
-                under_exchange_segment=settings.exchange_segment
-            )
-        )
+        max_retries = 3
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.dhan.expiry_list(
+                        under_security_id=int(settings.security_id),
+                        under_exchange_segment=settings.exchange_segment
+                    )
+                )
+                if response and response.get("status") == "success":
+                    break
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+            except Exception:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                raise
         
-        has_error_type = isinstance(response.get("data"), dict) and "errorType" in response.get("data")
-        if not response or response.get("status") != "success" or has_error_type:
+        if not response or "data" not in response:
             error_msg = "Unknown API error"
             error_type = ""
             
@@ -99,29 +114,45 @@ class OIFetcher:
         
         Note: The dhan.option_chain API requires an expiry date. We pass it as a parameter here.
         
-        Args:
-            spot_price: The current underlying spot price of NIFTY.
-            expiry: The current expiry date string in YYYY-MM-DD format.
+        @param {float} spot_price - The current underlying spot price of NIFTY.
+        @param {str} expiry - The current expiry date string in YYYY-MM-DD format.
             
-        Returns:
-            A tuple containing:
+        @returns {Tuple[ATMStrikes, List[Dict[str, Any]]]} A tuple containing:
                 - An ATMStrikes object for the current spot price.
                 - The full option chain as a list of dictionaries.
                 
-        Raises:
-            ValueError: If the ATM strike is not found in the option chain response.
+        @throws {ValueError} If the ATM strike is not found or API fails.
         """
         loop = asyncio.get_running_loop()
-        
-        # The Dhan API is synchronous, run it in an executor to avoid blocking
-        response = await loop.run_in_executor(
-            None,
-            lambda: self.dhan.option_chain(
-                under_security_id=int(settings.security_id),
-                under_exchange_segment=settings.exchange_segment,
-                expiry=expiry
-            )
-        )
+        max_retries = 3
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.dhan.option_chain(
+                        under_security_id=int(settings.security_id),
+                        under_exchange_segment=settings.exchange_segment,
+                        expiry=expiry
+                    )
+                )
+                if response and response.get("status") == "success":
+                    break
+                
+                # Check for transient failure with empty remarks
+                remarks = response.get("remarks") if response else None
+                if isinstance(remarks, dict) and all(v is None for v in remarks.values()):
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+            except Exception:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                raise
         
         if not response or "data" not in response:
             raise ValueError("Invalid or empty option chain response from Dhan API")

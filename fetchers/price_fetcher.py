@@ -54,27 +54,57 @@ class PriceFetcher:
             - Increment cumulative (typical price * volume)
             - VWAP = cumulative (typical price * volume) / cumulative volume
             
-        Returns:
-            OHLCVCandle: The most recently completed candle with VWAP populated.
-            
-        Raises:
-            ValueError: If the response data from Dhan is empty or malformed.
+        @returns {OHLCVCandle} The most recently completed candle with VWAP populated.
+        @throws {ValueError} If the response data from Dhan is empty or malformed.
         """
         loop = asyncio.get_running_loop()
         
         today = datetime.now().strftime("%Y-%m-%d")
-        response: Dict[str, Any] = await loop.run_in_executor(
-            None,
-            lambda: self.dhan.intraday_minute_data(
-                settings.security_id,
-                settings.exchange_segment,
-                settings.instrument_type,
-                today,
-                today
-            )
-        )
         
+        max_retries = 3
+        last_exception = None
+        response = None
+        
+        for attempt in range(max_retries):
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.dhan.intraday_minute_data(
+                        settings.security_id,
+                        settings.exchange_segment,
+                        settings.instrument_type,
+                        today,
+                        today
+                    )
+                )
+                
+                if response and response.get("status") == "success":
+                    break
+                
+                # If we get a failure with no error message (transient Dhan backend issue)
+                remarks = response.get("remarks") if response else None
+                if isinstance(remarks, dict) and all(v is None for v in remarks.values()):
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                
+                # If it's a real error with a message, we don't necessarily want to retry 
+                # (e.g. invalid token), but for "Unknown" we should.
+                if response and response.get("status") == "failure":
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0 * (attempt + 1))
+                        continue
+                        
+            except Exception as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                raise e
+
         if not response or "data" not in response:
+            if last_exception:
+                raise last_exception
             raise ValueError("Empty or missing 'data' in Dhan API response for intraday_minute_data.")
             
         has_error_type = isinstance(response.get("data"), dict) and "errorType" in response.get("data")
@@ -99,7 +129,7 @@ class PriceFetcher:
                     error_msg = data_field
                     
             if error_msg == "Unknown API error":
-                error_msg = f"Unknown API error. Raw response: {response}"
+                error_msg = f"Unknown API error (Empty Remarks). Raw response: {response}"
                 
             raise ValueError(f"Dhan API Error ({error_type}): {error_msg}")
             
@@ -172,8 +202,8 @@ class PriceFetcher:
         Fetch the previous trading day's high and low for the target asset
         directly from the Dhan API using historical daily data.
         
-        Returns:
-            Tuple[float, float]: (previous_day_high, previous_day_low)
+        @returns {Tuple[float, float]} (previous_day_high, previous_day_low)
+        @throws {ValueError} If the API response is malformed or historical data is insufficient.
         """
         loop = asyncio.get_running_loop()
         
@@ -182,17 +212,30 @@ class PriceFetcher:
         to_date = now.strftime("%Y-%m-%d")
         from_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
 
-        response = await loop.run_in_executor(
-            None,
-            lambda: self.dhan.historical_daily_data(
-                security_id=settings.security_id,
-                exchange_segment=settings.exchange_segment,
-                instrument_type=settings.instrument_type,
-                from_date=from_date,
-                to_date=to_date
-            )
-        )
-        
+        max_retries = 3
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.dhan.historical_daily_data(
+                        security_id=settings.security_id,
+                        exchange_segment=settings.exchange_segment,
+                        instrument_type=settings.instrument_type,
+                        from_date=from_date,
+                        to_date=to_date
+                    )
+                )
+                if response and response.get("status") == "success":
+                    break
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+            except Exception:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                raise
+
         if not response or response.get("status") != "success":
             error_msg = response.get("remarks") if response else "Empty response"
             raise ValueError(f"Failed to fetch historical daily data from Dhan: {error_msg}")

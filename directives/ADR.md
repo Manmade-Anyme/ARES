@@ -4,8 +4,8 @@
 We have adopted a layered architecture to separate concerns and ensure maintainability.
 
 - **Layer 1: Ingestion (Fetchers)**
-    - Uses `asyncio` and `httpx` to pull data from DhanHQ.
-    - Decisions: Decouple price fetching from OI fetching to allow for independent polling intervals if needed.
+    - Uses `asyncio` and the `dhanhq` library to pull data from DhanHQ.
+    - Decisions: Decouple price fetching from OI fetching to allow for independent polling intervals. Consolidated all market data ingestion (including historical PDH/PDL) into Dhan API, removing third-party dependencies like Yahoo Finance.
 - **Layer 2: Orchestration (Engine)**
     - Centralizes the "tick" logic.
     - Decisions: Maintains stateful rolling buffers (Volume, IV) to provide context to detectors.
