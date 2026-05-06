@@ -1,25 +1,25 @@
 # Session Checkpoint
-**Date:** 2026-05-06
-**Session:** #2
+**Date:** 2026-05-07
+**Session:** #3
 
 ## Completed This Session
-- **TASK-005: Dhan API PDH/PDL Migration** — Successfully migrated Previous Day High (PDH) and Previous Day Low (PDL) fetching from Yahoo Finance to the Dhan API's historical daily data endpoint.
-- **Improved Error Handling** — Implemented multi-step error extraction in `fetchers/price_fetcher.py` and `fetchers/oi_fetcher.py` to handle various Dhan API failure formats and added transient error retries.
-- **Fixed Undefined Variable** — Resolved a runtime error in `OIFetcher` where the `loop` variable was undefined during `asyncio.run_in_executor` calls.
-- **Documentation Sync** — Synchronized `README.md`, `CHANGELOG.md`, `ADR.md`, and `ARES_API_DOCS.md` with the latest changes.
-- **JSDoc Style Comments** — Added `@param`, `@returns`, and `@throws` tags to core fetcher methods for better documentation traceability.
+- **Deterministic Target Sorting** — Refined `FailedBreakoutDetector` and `ExhaustionDetector` to ensure Target 1 (T1) is always the closer target to the entry price.
+- **Target Proximity Filtering** — Implemented a minimum 20-point distance check for structural targets (supports/resistances) in both detectors.
+- **ADR Task-006: Target Management** — Documented the architectural decision for target sorting and proximity filtering.
+- **Documentation Sync** — Updated `README.md` and `CHANGELOG.md` to reflect the new target selection rules.
 
 ## Open Tasks
 - [ ] Monitor live signal accuracy during the next NSE session.
 - [ ] Verify the automatic stop-loss trailing logic in a live trade.
+- [ ] Review if the 20-point proximity filter should be made a configurable environment variable.
 
 ## Blockers
 - None.
 
 ## Agent States
-- **Architect**: Reviewed the migration logic and confirmed consolidation of data sources (Dhan API).
-- **Code Generator**: Implemented the `historical_daily_data` fetcher and fixed the `loop` variable bug.
-- **Documentation Agent**: Updated all project documentation and added JSDoc-style docstrings.
+- **Architect**: Optimized target selection logic for predictability and Risk/Reward consistency.
+- **Documentation Agent**: Updated ADR-006, README, and CHANGELOG; added descriptive docstrings to detectors.
+- **Product Manager**: Updated session checkpoint and verified documentation alignment.
 
 ## Resume Instructions
-The system is ready for live monitoring. The next session should focus on validating signal generation against live market data and ensuring the new Dhan-based PDH/PDL levels are accurate.
+The system has improved signal quality by ensuring profit targets are both predictable (T1 is nearest) and significant (min 20-point distance). Next session should focus on observing how these filters impact the number of valid signals during market volatility.

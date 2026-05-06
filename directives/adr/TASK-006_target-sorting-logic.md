@@ -7,11 +7,13 @@
 The detectors (`FailedBreakoutDetector` and `ExhaustionDetector`) dynamically select Profit Targets (T1 and T2) based on structural levels (PDH/PDL, OI Walls). However, depending on the order in which levels were scanned, T2 could sometimes be closer to the entry price than T1. This inconsistency made it difficult for the `PositionManager` to enforce trailing stop logic (which triggers at T1) and made Discord alerts less intuitive for the trader.
 
 ## Decision
-Implement a deterministic sorting post-process in both detectors to ensure that `Target 1` is always the level closest to the entry price, regardless of the direction (Bullish/Bearish).
+1.  **Deterministic Sorting**: Implement a post-process in both detectors to ensure that `Target 1` is always the level closest to the entry price, regardless of the direction (Bullish/Bearish).
+2.  **Proximity Filtering**: Filter out structural levels (supports/resistances) that are within **20 points** of the current spot price during target selection. This ensures that selected structural targets offer meaningful profit potential.
 
 ## Rationale
 - **Predictability**: The `PositionManager` can safely assume T1 is the first milestone.
 - **Risk Management**: Trailing the stop loss to entry at T1 is only logical if T1 is the nearest target.
+- **Minimum Profitability**: Structural levels that are too close to the entry price (e.g., < 20 points) lead to premature T1 hits and insignificant profit booking. Filtering these ensures the system waits for the next significant level or falls back to more substantial fixed-point targets.
 - **UI/UX Consistency**: Discord alerts will always list the targets in chronological order of expected hit.
 - **Robustness**: Swapping the targets also requires swapping the corresponding "reason" strings to ensure the alert documentation remains accurate.
 

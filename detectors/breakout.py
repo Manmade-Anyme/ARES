@@ -168,6 +168,9 @@ class FailedBreakoutDetector:
             
             # Find supports below spot
             supports = sorted([lvl.price for lvl in levels if lvl.price < candle.close], reverse=True)
+            # Add minimum distance check
+            supports = [s for s in supports if abs(s - candle.close) >= 20]
+            
             if len(supports) >= 1:
                 target_1 = supports[0]
                 reasons.append(f"Target 1 set at structural support: {target_1:.2f}")
@@ -186,6 +189,9 @@ class FailedBreakoutDetector:
             
             # Find resistances above spot
             resistances = sorted([lvl.price for lvl in levels if lvl.price > candle.close])
+            # Add minimum distance check
+            resistances = [r for r in resistances if abs(r - candle.close) >= 20]
+            
             if len(resistances) >= 1:
                 target_1 = resistances[0]
                 reasons.append(f"Target 1 set at structural resistance: {target_1:.2f}")

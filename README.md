@@ -46,7 +46,7 @@ ARES evaluates three distinct market phenomena in strict **short-circuit priorit
 
 ## 🛡️ Trade Management (Position Manager)
 ARES actively tracks its signals using a persistent **Position Manager**:
-*   **Deterministic Targets**: The system ensures that **Target 1 (T1)** is always the level closest to the entry price, while **Target 2 (T2)** is the secondary objective. This ensures logical trade progression.
+*   **Deterministic Targets**: The system ensures that **Target 1 (T1)** is always the level closest to the entry price. Additionally, any structural level within **20 points** of the entry is filtered out to ensure targets remain significant.
 *   **Trailing Stops**: Once a trade reaches Target 1 (T1), the Stop Loss is automatically trailed to the entry price to lock in a risk-free position.
 *   **Persistent State**: Active trades are synced in real-time with a Supabase PostgreSQL database (`active_trades` table) and loaded into memory on startup, ensuring no data loss across system restarts.
 *   **Discord Tracking**: Any state change (hitting T1 or Stop Loss) instantly triggers a dedicated Discord update via Webhooks.
