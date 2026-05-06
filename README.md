@@ -10,7 +10,7 @@ It continuously monitors 1-minute price action, Option Interest (OI), and Implie
 
 ARES follows a strict **five-layer architecture** designed for modularity, performance, and fault tolerance.
 
-1.  **🧩 Ingestion Layer:** Asynchronous fetchers (`PriceFetcher`, `OIFetcher`) poll the DhanHQ API for 1-min candles and real-time Option Chains.
+1.  **🧩 Ingestion Layer:** Asynchronous fetchers (`PriceFetcher`, `OIFetcher`) poll the DhanHQ API for 1-min candles, real-time Option Chains, and previous day OHLC levels.
 2.  **⚙️ Orchestration Layer:** The `AresEngine` manages the evaluation pipeline, maintaining rolling state buffers (Volume, IV) and enforcing signal cooldowns.
 3.  **🔬 Detection Layer:** A suite of specialized detectors (`FailedBreakout`, `OIWall`, `Exhaustion`) score market conditions against technical and structural levels.
 4.  **💾 Persistence Layer:** All generated signals and **active trade states** are logged to **Supabase (PostgreSQL)** for post-session performance auditing and backtesting.
@@ -24,7 +24,7 @@ ARES follows a strict **five-layer architecture** designed for modularity, perfo
 ARES evaluates three distinct market phenomena in strict **short-circuit priority order**:
 
 ### 1. 🚨 Failed Breakout (Highest Priority)
-*   **Logic:** Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically or massive OI wall) but fails to hold.
+*   **Logic:** Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically from Dhan or massive OI wall) but fails to hold.
 *   **Dynamic Targets:** Automatically sets Profit Targets (T1/T2) at the next available structural support/resistance levels.
 *   **Scoring:** Evaluated on a 4-point scale:
     *   `Closed Back`: Price returned past the level (Required).
@@ -78,7 +78,7 @@ ares/
 ├── config.py          # Strict Pydantic configuration & thresholds
 ├── models.py          # Domain models (OHLCVCandle, AresSignal, OptionRow)
 ├── fetchers/          # Ingestion Layer
-│   ├── price_fetcher.py   # DhanHQ minute data, VWAP logic & dynamic PDH/PDL via Yahoo Finance
+│   ├── price_fetcher.py   # DhanHQ minute data, VWAP logic & dynamic PDH/PDL via Dhan Historical API
 │   ├── oi_fetcher.py      # DhanHQ Option Chain processing
 │   └── level_fetcher.py   # Dynamic level construction (PDH/PDL + OI walls)
 ├── detectors/         # Detection Layer

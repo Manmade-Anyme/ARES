@@ -20,7 +20,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Exhaustion Detector Refactor**: Re-engineered the signal generation logic to prioritize structural levels over fixed offsets, falling back to fixed points only when structural levels are unavailable or too tight.
 - **Syncronized Warm-up Thresholds**: Aligned all detector and engine warm-up requirements with a single source of truth in `Settings` to ensure consistent signal scoring.
 - **Discord Alert Formatting**: Refined the Discord embed structure using diff blocks for high-contrast color coding and improved scannability.
-- **Robust PDH/PDL Oracle**: Updated `PriceFetcher` to use a refined Yahoo Finance polling logic with tick-size rounding (0.05) to ensure accurate structural levels.
+- **Dhan API PDH/PDL Oracle**: Migrated the previous day level fetching from Yahoo Finance to the Dhan API's historical daily data endpoint. This removes the external dependency on `httpx` for price fetching and improves structural level accuracy by using broker-native data.
 
 ### Fixed
 - **Fly.io Persistence**: Resolved issues with Docker volume mounts that were interfering with source code visibility. Optimized the structure for persistent trade logging.

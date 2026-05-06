@@ -1,8 +1,6 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Tuple
-
-import httpx
 
 from dhanhq import dhanhq
 
@@ -171,55 +169,61 @@ class PriceFetcher:
 
     async def fetch_previous_day_ohlc(self) -> Tuple[float, float]:
         """
-        Fetch the previous trading day's high and low for NIFTY 50 
-        from Yahoo Finance's free public chart endpoint to ensure reliability.
+        Fetch the previous trading day's high and low for the target asset
+        directly from the Dhan API using historical daily data.
         
         Returns:
             Tuple[float, float]: (previous_day_high, previous_day_low)
         """
-        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{settings.yahoo_symbol}?range=5d&interval=1d"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=headers, timeout=10.0)
-            response.raise_for_status()
-            data = response.json()
+        loop = asyncio.get_running_loop()
+        
+        # Calculate dates for the last 7 days to ensure we capture the last trading session
+        now = datetime.now()
+        to_date = now.strftime("%Y-%m-%d")
+        from_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        response = await loop.run_in_executor(
+            None,
+            lambda: self.dhan.historical_daily_data(
+                security_id=settings.security_id,
+                exchange_segment=settings.exchange_segment,
+                instrument_type=settings.instrument_type,
+                from_date=from_date,
+                to_date=to_date
+            )
+        )
+        
+        if not response or response.get("status") != "success":
+            error_msg = response.get("remarks") if response else "Empty response"
+            raise ValueError(f"Failed to fetch historical daily data from Dhan: {error_msg}")
             
-            result = data.get("chart", {}).get("result", [])
-            if not result:
-                raise ValueError("Could not parse chart result from Yahoo Finance.")
-                
-            quote = result[0].get("indicators", {}).get("quote", [])
-            if not quote:
-                raise ValueError("Could not parse quote indicators from Yahoo Finance.")
-                
-            highs = quote[0].get("high", [])
-            lows = quote[0].get("low", [])
-            timestamps = result[0].get("timestamp", [])
+        data = response.get("data", {})
+        highs = data.get("high", [])
+        lows = data.get("low", [])
+        timestamps = data.get("timestamp", [])
+        
+        if not highs or not lows or not timestamps:
+            raise ValueError("Incomplete historical data returned from Dhan API.")
             
-            valid_indexes = [i for i in range(len(timestamps)) if highs[i] is not None and lows[i] is not None]
-            if not valid_indexes:
-                raise ValueError("No valid daily candle data found.")
+        # We want the last completed day. 
+        # Typically, Dhan's historical_daily_data returns data up to the last closed session.
+        # We verify if the last entry is for today.
+        last_ts = timestamps[-1]
+        last_date = datetime.fromtimestamp(last_ts).date()
+        today_date = now.date()
+        
+        # If the last entry is today, we take the one before it (the actual "previous" day)
+        # Otherwise, we take the last entry.
+        idx = -1
+        if last_date >= today_date:
+            if len(highs) < 2:
+                raise ValueError("Insufficient historical data to determine previous day levels.")
+            idx = -2
             
-            from datetime import datetime, timezone, timedelta
-            # IST offset
-            now_ist_date = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
+        def round_to_tick(val: float, tick_size: float = 0.05) -> float:
+            return round(val / tick_size) * tick_size
             
-            target_idx = -1
-            for idx in reversed(valid_indexes):
-                ts = timestamps[idx]
-                dt_ist = (datetime.fromtimestamp(ts, tz=timezone.utc) + timedelta(hours=5, minutes=30)).date()
-                if dt_ist < now_ist_date:
-                    target_idx = idx
-                    break
-                    
-            if target_idx == -1:
-                target_idx = valid_indexes[-1]
-                
-            def round_to_tick(val: float, tick_size: float = 0.05) -> float:
-                return round(val / tick_size) * tick_size
-                
-            pdh = round_to_tick(float(highs[target_idx]))
-            pdl = round_to_tick(float(lows[target_idx]))
-            return pdh, pdl
+        pdh = round_to_tick(float(highs[idx]))
+        pdl = round_to_tick(float(lows[idx]))
+        
+        return pdh, pdl
