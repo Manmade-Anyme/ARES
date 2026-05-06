@@ -139,6 +139,13 @@ class FailedBreakoutDetector:
     ) -> AresSignal:
         """
         Constructs the final AresSignal based on the collected conditions.
+        
+        This method handles:
+        1. Confidence scoring and reason string generation.
+        2. Dynamic Target selection based on structural support/resistance.
+        3. Fallback to fixed point targets if structural levels are too tight or missing.
+        4. Deterministic sorting to ensure Target 1 (T1) is always the closer target,
+           which is critical for the Position Manager's trailing stop logic.
         """
         confidence = "HIGH" if score >= 3 else "MEDIUM"
         
@@ -190,6 +197,14 @@ class FailedBreakoutDetector:
                 target_1 = candle.close + settings.target_1_pts
             if not target_2 or abs(target_2 - candle.close) < 30:
                 target_2 = candle.close + settings.target_2_pts
+
+        # Ensure correct ordering (T1 is closer to entry than T2)
+        if direction == Direction.BEARISH and target_1 < target_2:
+            target_1, target_2 = target_2, target_1
+            reasons = [r.replace("Target 1", "TEMP").replace("Target 2", "Target 1").replace("TEMP", "Target 2") for r in reasons]
+        elif direction == Direction.BULLISH and target_1 > target_2:
+            target_1, target_2 = target_2, target_1
+            reasons = [r.replace("Target 1", "TEMP").replace("Target 2", "Target 1").replace("TEMP", "Target 2") for r in reasons]
 
         # Calculate entry zone (+/- setting points around the close)
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)

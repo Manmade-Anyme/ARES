@@ -21,6 +21,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Syncronized Warm-up Thresholds**: Aligned all detector and engine warm-up requirements with a single source of truth in `Settings` to ensure consistent signal scoring.
 - **Discord Alert Formatting**: Refined the Discord embed structure using diff blocks for high-contrast color coding and improved scannability.
 - **Dhan API PDH/PDL Oracle**: Migrated the previous day level fetching from Yahoo Finance to the Dhan API's historical daily data endpoint. This removes the external dependency on Yahoo Finance for price fetching and improves structural level accuracy by using broker-native data.
+- **Deterministic Target Sorting**: Refined `FailedBreakoutDetector` and `ExhaustionDetector` to ensure profit targets are always sorted by proximity to the entry price. Target 1 (T1) is now guaranteed to be the closer target, simplifying trade management for the Position Manager.
 - **Improved Error Handling**: Implemented multi-step error extraction for Dhan API responses to handle various failure formats (remarks, data fields, raw strings). Added transient error retries for `fetch_latest_candle` and `fetch_chain`.
 - **Discord Alert Routing**: Fixed initialization message routing to ensure it goes to the primary signal channel while heartbeats stay in the health channel.
 

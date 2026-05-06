@@ -36,9 +36,9 @@ def test_bearish_failed_breakout_dynamic_targets(breakout_detector, sample_level
     assert signal.setup_type == SetupType.FAILED_BREAKOUT
     assert signal.direction == Direction.BEARISH
     
-    # Target 1 should be nearest support below spot (24090.0) -> 24000.0
-    assert signal.target_1 == 24000.0
-    assert signal.target_2 == 24090.0 - settings.target_2_pts  # Fallback expected since only 1 support < 24090
+    # After sorting, T1 will be the closer target
+    assert signal.target_1 == 24090.0 - settings.target_2_pts  # 24020.0 is closer to 24090 than 24000
+    assert signal.target_2 == 24000.0
 
 def test_bullish_failed_breakout_dynamic_targets(breakout_detector, sample_levels):
     # Downward breakdown below 24100
@@ -60,6 +60,6 @@ def test_bullish_failed_breakout_dynamic_targets(breakout_detector, sample_level
     assert signal.setup_type == SetupType.FAILED_BREAKOUT
     assert signal.direction == Direction.BULLISH
     
-    # Target 1 should be nearest resistance above spot (24115.0) -> 24200.0
-    assert signal.target_1 == 24200.0
-    assert signal.target_2 == 24115.0 + settings.target_2_pts # Fallback expected
+    # After sorting, T1 will be the closer target
+    assert signal.target_1 == 24115.0 + settings.target_2_pts # 24185.0 is closer to 24115 than 24200
+    assert signal.target_2 == 24200.0

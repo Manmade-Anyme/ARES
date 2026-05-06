@@ -87,6 +87,13 @@ class ExhaustionDetector:
     ) -> AresSignal:
         """
         Constructs the AresSignal for an Exhaustion Reversal.
+        
+        This method handles:
+        1. Contextual reason generation including volume climax and timestamps.
+        2. Dynamic Target selection based on structural support/resistance.
+        3. Fallback to fixed point targets if structural levels are too tight or missing.
+        4. Deterministic sorting to ensure Target 1 (T1) is always the closer target,
+           which is critical for the Position Manager's trailing stop logic.
         """
         vol_ratio = candle.volume / avg_vol if avg_vol > 0 else 0
         
@@ -142,6 +149,14 @@ class ExhaustionDetector:
                 target_1 = candle.close + settings.target_1_pts
             if not target_2 or abs(target_2 - candle.close) < 30:
                 target_2 = candle.close + settings.target_2_pts
+
+        # Ensure correct ordering (T1 is closer to entry than T2)
+        if direction == Direction.BEARISH and target_1 < target_2:
+            target_1, target_2 = target_2, target_1
+            reasons = [r.replace("Target 1", "TEMP").replace("Target 2", "Target 1").replace("TEMP", "Target 2") for r in reasons]
+        elif direction == Direction.BULLISH and target_1 > target_2:
+            target_1, target_2 = target_2, target_1
+            reasons = [r.replace("Target 1", "TEMP").replace("Target 2", "Target 1").replace("TEMP", "Target 2") for r in reasons]
 
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)
         strike_to_trade = int(round(candle.close / settings.strike_interval) * settings.strike_interval)
