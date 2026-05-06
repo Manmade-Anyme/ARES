@@ -149,7 +149,7 @@ async def run():
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
                 
                 try:
-                    position_manager.add_trade(signal, spot)
+                    position_manager.add_trade(signal, spot, atm=atm)
                 except Exception as pm_err:
                     print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
                 

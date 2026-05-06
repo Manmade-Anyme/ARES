@@ -37,3 +37,30 @@ CREATE TABLE active_trades (
 -- Note: If you encounter RLS errors (Code 42501), run these in the Supabase SQL Editor:
 -- ALTER TABLE active_trades DISABLE ROW LEVEL SECURITY;
 -- ALTER TABLE ares_signals DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE trade_analytics DISABLE ROW LEVEL SECURITY;
+
+CREATE TABLE trade_analytics (
+  id uuid PRIMARY KEY,
+  signal_id bigint, -- Optional link to ares_signals
+  setup_type text NOT NULL,
+  direction text NOT NULL,
+  
+  -- Price & Time
+  entry_timestamp timestamptz NOT NULL,
+  exit_timestamp timestamptz,
+  entry_price numeric NOT NULL,
+  exit_price numeric,
+  pnl_points numeric,
+  
+  -- Outcome
+  result_state text DEFAULT 'OPEN', -- OPEN, T1_HIT, T2_HIT, STOPPED_OUT, EXPIRED
+  
+  -- Deep Context (JSONB for ML flexibility)
+  market_context jsonb, -- { "reasons": [...], "spot_at_signal": 24500, "confidence": "HIGH" }
+  oi_data jsonb,        -- { "pcr": 0.8, "atm_ce_oi": 1200000, "atm_pe_oi": 1500000, "oi_change_pct": 5.2 }
+  
+  created_at timestamptz DEFAULT now()
+);
+
+-- Index for temporal analysis
+CREATE INDEX idx_trade_analytics_entry ON trade_analytics (entry_timestamp DESC);

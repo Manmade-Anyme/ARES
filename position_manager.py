@@ -4,9 +4,10 @@ from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from typing import List, Dict, Any
 
-from models import AresSignal
+from models import AresSignal, ATMStrikes
 from config import settings
 from alerts import send_trade_update
+from storage import AnalyticsLogger
 
 
 class PositionManager:
@@ -19,6 +20,7 @@ class PositionManager:
             settings.supabase_url,
             settings.supabase_key
         )
+        self.analytics = AnalyticsLogger()
         self.active_trades: List[Dict[str, Any]] = []
         self._initialize_db()
 
@@ -54,9 +56,10 @@ class PositionManager:
         except Exception as e:
             print(f"Failed to initialize PositionManager DB: {e}")
 
-    def add_trade(self, signal: AresSignal, spot: float):
+    def add_trade(self, signal: AresSignal, spot: float, atm: ATMStrikes = None):
         """
         Formats an AresSignal, pushes it to Supabase as OPEN, and stores it in memory.
+        Also logs entry to the permanent trade_analytics table.
         """
         trade_id = str(uuid.uuid4())
         trade_data = {
@@ -85,6 +88,12 @@ class PositionManager:
             loop.run_in_executor(None, _insert)
         except Exception as e:
             print(f"Failed to push new trade to Supabase: {e}")
+            
+        # 2. Log to permanent Analytics table
+        try:
+            self.analytics.log_entry(trade_id, signal, spot, atm)
+        except Exception as e:
+            print(f"Failed to log trade to Analytics: {e}")
 
     async def update_trades(self, spot_price: float):
         """
@@ -141,6 +150,13 @@ class PositionManager:
                     loop.run_in_executor(None, _update)
                 except Exception as e:
                     print(f"Failed to update trade in Supabase: {e}")
+
+                # Update permanent Analytics table on exit
+                if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
+                    try:
+                        self.analytics.log_exit(trade["id"], spot_price, update_type)
+                    except Exception as e:
+                        print(f"Failed to log trade exit to Analytics: {e}")
                     
                 # Send Discord alert
                 try:
