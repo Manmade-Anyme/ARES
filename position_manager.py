@@ -14,6 +14,9 @@ class PositionManager:
     """
     Manages active trades, evaluates trailing stops based on live spot price,
     and persists state to Supabase.
+    
+    Implements lazy initialization: if the database is unreachable on startup,
+    it will retry connecting during the update loop until successful.
     """
     def __init__(self):
         self.supabase: Client = create_client(
@@ -22,6 +25,7 @@ class PositionManager:
         )
         self.analytics = AnalyticsLogger()
         self.active_trades: List[Dict[str, Any]] = []
+        self.is_initialized = False
         self._initialize_db()
 
     def _initialize_db(self):
@@ -52,8 +56,10 @@ class PositionManager:
                         pass
                         
             self.active_trades = valid_trades
+            self.is_initialized = True
             print(f"PositionManager initialized. Loaded {len(self.active_trades)} active trades for today.")
         except Exception as e:
+            self.is_initialized = False
             print(f"Failed to initialize PositionManager DB: {e}")
 
     def add_trade(self, signal: AresSignal, spot: float, atm: ATMStrikes = None):
@@ -100,6 +106,11 @@ class PositionManager:
         Loops through active trades and evaluates live price action against the active trailing stops.
         If state changes or SL is hit, updates the row in Supabase and triggers a Discord alert.
         """
+        if not self.is_initialized:
+            self._initialize_db()
+            if not self.is_initialized:
+                return  # Skip update if still not initialized
+                
         for trade in self.active_trades:
             if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
                 continue

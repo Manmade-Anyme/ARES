@@ -31,3 +31,4 @@ All notable changes to the ARES trading system will be documented in this file.
 - **VWAP Reset Logic**: Fixed a bug where VWAP could persist across sessions; it now strictly resets at 09:15 IST daily.
 - **Supabase RLS Permissions**: Resolved "42501: new row violates row-level security policy" errors by documenting and implementing the necessary SQL commands to disable or configure RLS for the `active_trades` and `ares_signals` tables.
 - **Redundant Logging**: Removed excessive "warming up" console messages, replacing them with a single "BUFFERS FULL" confirmation once the system is active.
+- **Position Manager Resilience**: Added lazy initialization and retry logic to `PositionManager` to ensure active trades are eventually loaded even if the initial Supabase connection fails due to temporary network outages.
