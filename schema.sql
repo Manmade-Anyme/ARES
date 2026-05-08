@@ -23,6 +23,7 @@ CREATE INDEX idx_ares_signals_timestamp ON ares_signals (timestamp DESC);
 
 CREATE TABLE active_trades (
   id uuid primary key,
+  signal_id text,
   setup_type text not null,
   direction text not null,
   entry_price numeric not null,
