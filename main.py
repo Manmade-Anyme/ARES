@@ -36,7 +36,7 @@ def format_signal_console(signal, spot):
     color = G if signal.direction.value == "BULLISH" else R
     emoji = "🐂 🟢" if signal.direction.value == "BULLISH" else "🐻 🔴"
     print("\n" + f"{color}{B}━" * 65 + RESET)
-    print(f"{color}{B}🚨 {emoji} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value}){RESET}")
+    print(f"{color}{B}🚨 {emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value}){RESET}")
     print(f"   {W}Spot  : {spot:.2f}{RESET}")
     print(f"   {W}Trade : {B}{signal.strike_to_trade} {signal.option_type}{RESET}")
     print(f"   {W}Entry : {G}{signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}{RESET}")

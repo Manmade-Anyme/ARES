@@ -70,6 +70,7 @@ class PositionManager:
         trade_id = str(uuid.uuid4())
         trade_data = {
             "id": trade_id,
+            "signal_id": getattr(signal, "signal_id", f"{__import__('random').randint(0, 9999):04d}"),
             "setup_type": signal.setup_type.value,
             "direction": signal.direction.value,
             "entry_price": float(spot),

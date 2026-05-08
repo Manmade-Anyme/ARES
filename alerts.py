@@ -11,10 +11,10 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     
     # Use diff block markers for color coding (+ for green/bullish, - for red/bearish)
     marker = "+" if signal.direction.value == "BULLISH" else "-"
-    icon = "📈" if signal.direction.value == "BULLISH" else "📉"
+    emoji = "🚨 🐂 🟢" if signal.direction.value == "BULLISH" else "🚨 🐻 🔴"
     
     msg = f"""```diff
-{marker} {icon} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
+{marker} {emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
    
    📍 Spot  : {spot:.2f}
    ⚡ Trade : {signal.strike_to_trade} {signal.option_type}
@@ -144,6 +144,7 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     # Color code based on direction and update type
     color_marker = "+" if update_type == "T1_HIT" else "-"
     icon = "🎯" if update_type == "T1_HIT" else "🛑"
+    dir_emoji = "🐂 🟢" if trade['direction'] == "BULLISH" else "🐻 🔴"
     
     action_text = ""
     if update_type == "T1_HIT":
@@ -155,7 +156,7 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
             action_text = "Stop Loss Hit. Trade Closed."
 
     msg = f"""```diff
-{color_marker} {icon} TRADE UPDATE: {trade['setup_type']} ({trade['direction']})
+{color_marker} {icon} #{trade.get('signal_id', '0000')} TRADE UPDATE: {trade['setup_type']} ({trade['direction']})
    
    📍 Spot    : {spot:.2f}
    ⚡ Action  : {action_text}

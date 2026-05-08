@@ -14,6 +14,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Improved Entry Logic**: Added `entry_zone_offset_pts` to the configuration, allowing for a configurable price range for optimal entry around the trigger price.
 - **Structural Stop Buffers**: Introduced specific stop-loss buffers for each detector type (`oi_wall_stop_buffer`, `exhaustion_stop_buffer`, `breakout_stop_buffer`) for more granular risk management.
 - **Backtesting & PineScript Export**: Integrated a new backtesting suite capable of simulating historical performance. Added a PineScript exporter that generates TradingView-compatible code (v6) for visual strategy validation, including entry/exit markers and profit/loss tables.
+- **Signal Tracking IDs**: Added a random 4-digit identifier (e.g., `#0501`) to every generated trade signal. This ID is passed along to subsequent trade updates to help easily track and differentiate multiple signals in Discord and the local console.
 - **UI Refinement**: Rounded Previous Day High (PDH) and Low (PDL) values to 2 decimal places in the startup dashboard alert for improved terminal aesthetics and clarity.
 
 ### Changed

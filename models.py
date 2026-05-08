@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import List, Tuple
+import random
 
 class SetupType(Enum):
     """
@@ -112,3 +113,4 @@ class AresSignal:
     timestamp: datetime
     strike_to_trade: int
     option_type: str
+    signal_id: str = field(default_factory=lambda: f"{random.randint(0, 9999):04d}")
