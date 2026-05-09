@@ -48,8 +48,10 @@ ARES evaluates three distinct market phenomena in strict **short-circuit priorit
 ARES actively tracks its signals using a persistent **Position Manager**:
 *   **Deterministic Targets**: The system ensures that **Target 1 (T1)** is always the level closest to the entry price. Additionally, any structural level within **20 points** of the entry is filtered out to ensure targets remain significant.
 *   **Trailing Stops**: Once a trade reaches Target 1 (T1), the Stop Loss is automatically trailed to the entry price to lock in a risk-free position.
-*   **Persistent State**: Active trades are synced in real-time with a Supabase PostgreSQL database (`active_trades` table) and loaded into memory on startup, ensuring no data loss across system restarts.
-*   **Discord Tracking**: Any state change (hitting T1 or Stop Loss) instantly triggers a dedicated Discord update via Webhooks.
+*   **Persistent State**: Active trades are synced in real-time with a Supabase PostgreSQL database (`active_trades` table) and loaded into memory on startup, ensuring no data loss across system restarts. Connection is resilient with lazy initialization.
+*   **Tracking IDs**: Every generated trade signal is assigned a random 4-digit identifier (e.g., `#0501`) that persists through all subsequent trade updates.
+*   **Analytics Persistence**: Detailed trade histories, market context, and OI data are logged to a `trade_analytics` table upon trade completion for rigorous monthly performance analysis and ML training.
+*   **Discord Tracking**: Any state change (hitting T1 or Stop Loss) instantly triggers a dedicated Discord update via Webhooks with color-coded formatting.
 
 ---
 
@@ -180,6 +182,7 @@ CREATE TABLE ares_signals (
   target_2 numeric,
   strike integer,
   option_type text,
+  reasons jsonb,
   timestamp timestamptz,
   created_at timestamptz default now()
 );
@@ -189,6 +192,7 @@ CREATE INDEX idx_ares_signals_timestamp ON ares_signals (timestamp DESC);
 
 CREATE TABLE active_trades (
   id uuid primary key,
+  signal_id text,
   setup_type text not null,
   direction text not null,
   entry_price numeric not null,
@@ -199,6 +203,32 @@ CREATE TABLE active_trades (
   added_time_ist text,
   created_at timestamptz default now()
 );
+
+CREATE TABLE trade_analytics (
+  id uuid PRIMARY KEY,
+  signal_id bigint, -- Optional link to ares_signals
+  setup_type text NOT NULL,
+  direction text NOT NULL,
+  
+  -- Price & Time
+  entry_timestamp timestamptz NOT NULL,
+  exit_timestamp timestamptz,
+  entry_price numeric NOT NULL,
+  exit_price numeric,
+  pnl_points numeric,
+  
+  -- Outcome
+  result_state text DEFAULT 'OPEN', -- OPEN, T1_HIT, T2_HIT, STOPPED_OUT, EXPIRED
+  
+  -- Deep Context (JSONB for ML flexibility)
+  market_context jsonb, -- { "reasons": [...], "spot_at_signal": 24500, "confidence": "HIGH" }
+  oi_data jsonb,        -- { "pcr": 0.8, "atm_ce_oi": 1200000, "atm_pe_oi": 1500000, "oi_change_pct": 5.2 }
+  
+  created_at timestamptz DEFAULT now()
+);
+
+-- Index for temporal analysis
+CREATE INDEX idx_trade_analytics_entry ON trade_analytics (entry_timestamp DESC);
 ```
 
 ### 3. Row Level Security (RLS) Note
@@ -207,6 +237,7 @@ If you use the **Anon/Public key** (default in `.env`), you must either disable 
 ```sql
 ALTER TABLE active_trades DISABLE ROW LEVEL SECURITY;
 ALTER TABLE ares_signals DISABLE ROW LEVEL SECURITY;
+ALTER TABLE trade_analytics DISABLE ROW LEVEL SECURITY;
 ```
 
 ### 4. Local Execution

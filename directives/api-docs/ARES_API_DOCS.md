@@ -47,7 +47,7 @@ Identifies volume climaxes combined with doji-like indecision at price extremes.
 - `OptionRow`: Dataclass for a single option contract (strike, type, ltp, iv, oi, oi_prev, oi_change_pct, gamma, theta).
 - `ATMStrikes`: Container for the ATM Call and Put `OptionRow`s and current spot price.
 - `ResistanceLevel`: Dataclass defining a support/resistance level (price, source, strength).
-- `AresSignal`: Output dataclass containing full trade parameters: `setup_type`, `direction`, `trigger_price`, `entry_zone`, `stop_loss`, `target_1`, `target_2`, `confidence`, `reasons`, `timestamp`, `strike_to_trade`, and `option_type`.
+- `AresSignal`: Output dataclass containing full trade parameters: `signal_id`, `setup_type`, `direction`, `trigger_price`, `entry_zone`, `stop_loss`, `target_1`, `target_2`, `confidence`, `reasons`, `timestamp`, `strike_to_trade`, and `option_type`.
 
 ## Broadcasting Layer
 
@@ -61,15 +61,30 @@ Formats and dispatches Discord notifications asynchronously.
 - `send_error_alert(error_msg: str) -> None`: Sends system-level error alerts to Discord.
 - `send_trade_update(trade: dict, spot: float, update_type: str) -> None`: Sends an alert when an active trade state changes (e.g., T1 Hit, Trailing Stop triggered, SL Hit).
 
+## Persistence Layer (Storage & Analytics)
+
+### `Storage` (in `storage.py`)
+Handles persisting ARES signals to a Supabase PostgreSQL database for post-session review and backtesting.
+
+**Methods:**
+- `log_signal(signal: AresSignal, spot: float) -> None`: Asynchronously logs a generated signal to the `ares_signals` table without blocking the main event loop.
+
+### `AnalyticsLogger` (in `storage.py`)
+Handles permanent storage of trade results and detailed market context in the `trade_analytics` table for post-session analysis and machine learning.
+
+**Methods:**
+- `log_entry(trade_id: str, signal: AresSignal, spot: float, atm: Any = None) -> None`: Creates a new entry in `trade_analytics` at the moment a trade is opened, capturing OI data and market context.
+- `log_exit(trade_id: str, exit_price: float, final_state: str) -> None`: Updates an existing entry with exit details and calculates P&L.
+
 ## Position Management Layer
 
 ### `PositionManager` (in `position_manager.py`)
-Tracks active trades, evaluates trailing stops against live spot prices on every tick, and persists state to Supabase.
+Tracks active trades, evaluates trailing stops against live spot prices on every tick, and persists state to Supabase. Now includes lazy initialization to handle temporary network outages.
 
 **Methods:**
 - `_initialize_db() -> None`: Fetches active trades from Supabase on startup, purges expired records from previous days, and loads today's trades into memory.
-- `add_trade(signal: AresSignal, spot: float) -> None`: Pushes a new trade into the active memory array and asynchronously logs it to Supabase as 'OPEN'.
-- `update_trades(spot_price: float) -> None`: Iterates over active trades, tracking trailing stops (e.g., trailing SL to entry price once T1 is hit) or stops triggering. Broadcasts state changes via Discord.
+- `add_trade(signal: AresSignal, spot: float, atm: ATMStrikes = None) -> None`: Pushes a new trade into the active memory array, logs entry to `AnalyticsLogger`, and asynchronously logs it to Supabase as 'OPEN'. Every trade is assigned a 4-digit signal tracking ID.
+- `update_trades(spot_price: float) -> None`: Iterates over active trades, tracking trailing stops (e.g., trailing SL to entry price once T1 is hit) or stops triggering. Broadcasts state changes via Discord and logs exits to `AnalyticsLogger`.
 
 ## Analysis Layer (Backtesting)
 

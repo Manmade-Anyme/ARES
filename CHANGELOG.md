@@ -16,16 +16,18 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Backtesting & PineScript Export**: Integrated a new backtesting suite capable of simulating historical performance. Added a PineScript exporter that generates TradingView-compatible code (v6) for visual strategy validation, including entry/exit markers and profit/loss tables.
 - **Signal Tracking IDs**: Added a random 4-digit identifier (e.g., `#0501`) to every generated trade signal. This ID is passed along to subsequent trade updates to help easily track and differentiate multiple signals in Discord and the local console.
 - **UI Refinement**: Rounded Previous Day High (PDH) and Low (PDL) values to 2 decimal places in the startup dashboard alert for improved terminal aesthetics and clarity.
+- **Analytics Persistence**: Created a `trade_analytics` table and an `AnalyticsLogger` class to capture detailed trade histories, market context, and OI data for monthly performance analysis and ML training.
 
 ### Changed
 - **Exhaustion Detector Refactor**: Re-engineered the signal generation logic to prioritize structural levels over fixed offsets, falling back to fixed points only when structural levels are unavailable or too tight.
 - **Syncronized Warm-up Thresholds**: Aligned all detector and engine warm-up requirements with a single source of truth in `Settings` to ensure consistent signal scoring.
-- **Discord Alert Formatting**: Refined the Discord embed structure using diff blocks for high-contrast color coding and improved scannability.
+- **Discord Alert Formatting**: Refined the Discord embed structure using diff blocks for high-contrast color coding and improved scannability. Fixed Discord alert chunking to be "code-block aware," ensuring that long messages split correctly without breaking triple-backtick formatting.
 - **Dhan API PDH/PDL Oracle**: Migrated the previous day level fetching from Yahoo Finance to the Dhan API's historical daily data endpoint. This removes the external dependency on Yahoo Finance for price fetching and improves structural level accuracy by using broker-native data.
 - **Deterministic Target Sorting**: Refined `FailedBreakoutDetector` and `ExhaustionDetector` to ensure profit targets are always sorted by proximity to the entry price. Target 1 (T1) is now guaranteed to be the closer target.
 - **Target Proximity Filtering**: Implemented a minimum 20-point distance requirement for structural profit targets in both detectors. This prevents the system from selecting levels too close to the entry price, ensuring a minimum favorable Risk/Reward ratio for dynamic targets.
 - **Improved Error Handling**: Implemented multi-step error extraction for Dhan API responses to handle various failure formats (remarks, data fields, raw strings). Added transient error retries for `fetch_latest_candle` and `fetch_chain`.
 - **Discord Alert Routing**: Fixed initialization message routing to ensure it goes to the primary signal channel while heartbeats stay in the health channel.
+- **Timezone Normalization**: Standardized all system timestamps across ARES to India Standard Time (IST) for consistent reporting.
 
 ### Fixed
 - **Fly.io Persistence**: Resolved issues with Docker volume mounts that were interfering with source code visibility. Optimized the structure for persistent trade logging.
@@ -33,3 +35,4 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Supabase RLS Permissions**: Resolved "42501: new row violates row-level security policy" errors by documenting and implementing the necessary SQL commands to disable or configure RLS for the `active_trades` and `ares_signals` tables.
 - **Redundant Logging**: Removed excessive "warming up" console messages, replacing them with a single "BUFFERS FULL" confirmation once the system is active.
 - **Position Manager Resilience**: Added lazy initialization and retry logic to `PositionManager` to ensure active trades are eventually loaded even if the initial Supabase connection fails due to temporary network outages.
+- **Supabase Schema Mismatch**: Fixed PGRST204 errors when inserting active trades by adding the missing `signal_id` column to the `active_trades` database table and keeping the application schema synchronized.
