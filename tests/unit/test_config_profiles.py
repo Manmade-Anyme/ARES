@@ -8,7 +8,7 @@ from dataclasses import fields as dc_fields
 from datetime import date
 from config import Settings, Secrets
 from config_profiles import TuningConfig, EXPIRY_CONFIG, NON_EXPIRY_CONFIG
-import expiry_detector
+from detectors import expiry_detector
 
 
 # ─── TuningConfig Dataclass Tests ────────────────────────────────────────────

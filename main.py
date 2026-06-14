@@ -9,7 +9,7 @@ from storage import Storage
 from position_manager import PositionManager
 from config import settings
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
-from expiry_detector import is_expiry_day_from_api, is_expiry_day_simple
+from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple
 from alerts import send_discord, send_startup_alert, send_error_alert
 
 # ANSI Color Codes for Premium Terminal UI
