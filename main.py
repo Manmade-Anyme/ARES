@@ -8,7 +8,7 @@ from fetchers.level_fetcher import LevelFetcher
 from storage import Storage
 from position_manager import PositionManager
 from config import settings
-from alerts import send_discord, send_startup_alert, send_error_alert, send_heartbeat
+from alerts import send_discord, send_startup_alert, send_error_alert
 
 # ANSI Color Codes for Premium Terminal UI
 G = "\033[92m"  # Green
@@ -135,10 +135,6 @@ async def run():
             # Heartbeat logging every 15 minutes
             if last_heartbeat_time is None or (now - last_heartbeat_time).total_seconds() >= 900:
                 print(f"{C}[{now.strftime('%H:%M:%S')}] 💓 HEARTBEAT: ARES Engine active | Spot: {spot:.2f} | Buffers: {buffer_len}/{settings.candle_buffer_size}{RESET}", flush=True)
-                try:
-                    await send_heartbeat(spot, buffer_len)
-                except Exception as hb_err:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord heartbeat failed: {hb_err}{RESET}")
                 last_heartbeat_time = now
             
             # Process signal
