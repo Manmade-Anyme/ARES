@@ -8,6 +8,8 @@ from fetchers.level_fetcher import LevelFetcher
 from storage import Storage
 from position_manager import PositionManager
 from config import settings
+from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
+from expiry_detector import is_expiry_day_from_api, is_expiry_day_simple
 from alerts import send_discord, send_startup_alert, send_error_alert
 
 # ANSI Color Codes for Premium Terminal UI
@@ -19,11 +21,13 @@ B = "\033[1m"   # Bold
 W = "\033[97m"  # White
 RESET = "\033[0m"
 
-def print_banner(pdh: float, pdl: float):
+def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT"):
     """Prints the ARES startup banner with configuration details."""
     print(f"{C}{'=' * 65}{RESET}")
     print(f"{C}{B}  ARES (Adaptive Reversal & Entry Signal) - Initialization{RESET}")
     print(f"{C}{'=' * 65}{RESET}")
+    profile_color = Y if profile_name == "EXPIRY" else G
+    print(f"{profile_color}[+] Config       : {W}{B}{profile_name} DAY PROFILE{RESET}")
     print(f"{G}[+] Target Asset : {W}{settings.yahoo_symbol} (1-minute timeframe){RESET}")
     print(f"{G}[+] Detectors    : {W}Failed Breakout, OI Wall, Exhaustion{RESET}")
     print(f"{G}[+] Session      : {W}09:15 to 23:30 IST{RESET}")
@@ -52,6 +56,21 @@ async def run():
     """
     Main entry point for the ARES Trading System.
     """
+    # ── Step 1: Detect expiry day and apply config profile ──
+    try:
+        is_expiry = await is_expiry_day_from_api()
+    except Exception:
+        is_expiry = is_expiry_day_simple()
+
+    if is_expiry:
+        profile_name = "EXPIRY"
+        settings.apply_profile(EXPIRY_CONFIG)
+        print(f"{Y}{B}[ARES] 📅 EXPIRY DAY detected — applying aggressive config profile.{RESET}")
+    else:
+        profile_name = "NON-EXPIRY"
+        settings.apply_profile(NON_EXPIRY_CONFIG)
+        print(f"{G}{B}[ARES] 📅 Non-expiry day — applying standard config profile.{RESET}")
+
     engine = AresEngine()
     price_fetcher = PriceFetcher()
     oi_fetcher = OIFetcher()
@@ -68,8 +87,9 @@ async def run():
         
     level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
     
-    print_banner(pdh, pdl)
+    print_banner(pdh, pdl, profile_name)
     await send_startup_alert(pdh, pdl)
+
     
     prev_iv = None
     last_vwap_reset_date = None
