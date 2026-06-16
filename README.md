@@ -264,7 +264,17 @@ fly secrets set DHAN_CLIENT_ID="your_id" DHAN_ACCESS_TOKEN="your_token" SUPABASE
 fly deploy
 ```
 
-The application is configured to automatically scale up at 09:15 IST and down at 15:25 IST via a GitHub Actions cron job.
+### 5. Automated Start/Stop Schedule (GitHub Actions)
+ARES is configured to automatically scale up at 09:15 IST and down at 15:30 IST to save Fly.io compute costs.
+
+1. Generate a Fly Deploy Token:
+```bash
+fly tokens create deploy
+```
+2. In your GitHub Repository, go to **Settings** -> **Secrets and variables** -> **Actions**.
+3. Click **New repository secret**.
+4. Name it `FLY_API_TOKEN` and paste your generated token.
+5. The `.github/workflows/fly-schedule.yml` file will now automatically manage scaling every weekday. You can also manually trigger `start` and `stop` from the Actions tab.
 
 ---
 

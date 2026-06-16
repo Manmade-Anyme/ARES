@@ -12,6 +12,7 @@ Welcome to the ARES knowledge base. ARES is a high-performance, asynchronous alg
 - [[06_Position_Manager|Trade Management (Position Manager)]] - How active trades and trailing stops are managed.
 - [[07_Storage|Persistence Layer (Storage)]] - Database interactions with Supabase.
 - [[08_Configuration|Configuration & Settings]] - Environment variables and threshold parameters.
+- [[09_Deployment|Deployment & Automation]] - Fly.io deployment and GitHub Actions automation.
 
 ## Operational Parameters
 
