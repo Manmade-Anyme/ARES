@@ -2,6 +2,15 @@ name: Fly App Schedule
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action (start or stop)'
+        required: true
+        default: 'start'
+        type: choice
+        options:
+          - start
+          - stop
   schedule:
     - cron: '45 3 * * 1-5' # 9:15 AM IST
     - cron: '0 10 * * 1-5' # 3:30 PM IST
@@ -13,13 +22,13 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       
       - name: Start App (9:15 AM IST)
-        if: github.event.schedule == '45 3 * * 1-5'
+        if: github.event.schedule == '45 3 * * 1-5' || github.event.inputs.action == 'start'
         run: flyctl scale count 1 -a ares-xzy-gq
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           
       - name: Stop App (3:30 PM IST)
-        if: github.event.schedule == '0 10 * * 1-5'
+        if: github.event.schedule == '0 10 * * 1-5' || github.event.inputs.action == 'stop'
         run: flyctl scale count 0 -a ares-xzy-gq
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
