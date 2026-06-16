@@ -13,14 +13,19 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     marker = "+" if signal.direction.value == "BULLISH" else "-"
     emoji = "🚨 🐂 🟢" if signal.direction.value == "BULLISH" else "🚨 🐻 🔴"
     
+    # Get current IST time
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
+    
     msg = f"""```diff
 {marker} {emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
    
-   📍 Spot  : {spot:.2f}
-   ⚡ Trade : {signal.strike_to_trade} {signal.option_type}
+   🕒 Time  : {now_ist} IST
    ✅ Entry : {signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}
    🛑 SL    : {signal.stop_loss:.2f} (Spot Ref)
    🎯 Target: T1={signal.target_1:.2f} | T2={signal.target_2:.2f}
+   📍 Spot  : {spot:.2f}
+   ⚡ Trade : {signal.strike_to_trade} {signal.option_type}
    ⭐ Conf. : {signal.confidence}
    
    📝 Reasons:
@@ -105,35 +110,6 @@ async def send_error_alert(error_msg: str) -> None:
         except Exception as e:
             print(f"[-] Discord error alert failed: {type(e).__name__} - {e}")
 
-async def send_heartbeat(spot: float, buffer_len: int) -> None:
-    """
-    Sends a periodic heartbeat to Discord health channel.
-    """
-    webhook_url = settings.discord_health_webhook_url or settings.discord_webhook_url
-    if not webhook_url:
-        return
-        
-    ist = timezone(timedelta(hours=5, minutes=30))
-    now_ist = datetime.now(ist).strftime("%H:%M:%S")
-    
-    msg = f"""```diff
-+ 💓 HEARTBEAT: ARES Engine Active
-+ ──────────────────────────────────
-+ 📍 Spot    : {spot:.2f}
-+ 📊 Buffers : {buffer_len}/{settings.candle_buffer_size}
-+ 🕒 Time    : {now_ist} IST
-+ ──────────────────────────────────
-```"""
-
-    payload = {"content": msg}
-    
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(webhook_url, json=payload)
-            response.raise_for_status()
-        except Exception as e:
-            print(f"[-] Discord heartbeat alert failed: {type(e).__name__} - {e}")
-
 async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     """
     Sends an alert when an active trade state changes (e.g., T1 Hit, Trailing Stop triggered, SL Hit).
@@ -155,9 +131,14 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
         else:
             action_text = "Stop Loss Hit. Trade Closed."
 
+    # Get current IST time
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
+
     msg = f"""```diff
 {color_marker} {icon} #{trade.get('signal_id', '0000')} TRADE UPDATE: {trade['setup_type']} ({trade['direction']})
    
+   🕒 Time    : {now_ist} IST
    📍 Spot    : {spot:.2f}
    ⚡ Action  : {action_text}
    ✅ Entry   : {trade['entry_price']:.2f}

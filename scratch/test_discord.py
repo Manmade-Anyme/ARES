@@ -1,6 +1,6 @@
 import asyncio
 from config import settings
-from alerts import send_startup_alert, send_heartbeat
+from alerts import send_startup_alert, send_error_alert
 from fetchers.price_fetcher import PriceFetcher
 
 async def test():
@@ -21,13 +21,12 @@ async def test():
     except Exception as e:
         print(f"[-] Signal Webhook Failed: {e}")
 
-    # Test Health Webhook via Heartbeat
+    # Test Health Webhook via Error Alert
     print(f"\n[*] Testing Health Webhook...")
     try:
-        await send_heartbeat(spot=pdh, buffer_len=30)
-        print("[+] Health Webhook Success (Heartbeat Alert)")
+        await send_error_alert("Test error message")
+        print("[+] Health Webhook Success (Error Alert)")
     except Exception as e:
         print(f"[-] Health Webhook Failed: {e}")
 
 asyncio.run(test())
-

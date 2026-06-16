@@ -79,6 +79,7 @@ ARES includes a robust backtesting module to validate strategies against histori
 ```text
 ares/
 ├── config.py          # Strict Pydantic configuration & thresholds
+├── config_profiles.py # Performance configurations & thresholds
 ├── models.py          # Domain models (OHLCVCandle, AresSignal, OptionRow)
 ├── fetchers/          # Ingestion Layer
 │   ├── price_fetcher.py   # DhanHQ minute data, VWAP logic & dynamic PDH/PDL via Dhan Historical Daily API
@@ -87,12 +88,14 @@ ares/
 ├── detectors/         # Detection Layer
 │   ├── breakout.py        # Stateful detector for Failed Breakouts
 │   ├── oi_wall.py         # Stateless structural rejection detector
-│   └── exhaustion.py      # Volume history & price extreme tracker
+│   ├── exhaustion.py      # Volume history & price extreme tracker
+│   └── expiry_detector.py # Expiry day detection (Dhan API check/Tuesday fallback)
 ├── backtest/          # Analysis Layer
 │   ├── pinescript_exporter.py # Generates TradingView v6 visualization scripts
 │   ├── engine.py          # Historical simulation engine
 │   └── report.py          # Performance metrics & PDF/Markdown reporting
 ├── engine.py          # The "Brain" — Orchestrates evaluation & priority
+├── position_manager.py # Persistent trade position & trailing stop manager
 ├── alerts.py          # Formatting & Discord broadcasting
 ├── storage.py         # Supabase persistence logic
 ├── main.py            # Entry point, polling loop, and session gate
