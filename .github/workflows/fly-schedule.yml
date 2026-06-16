@@ -1,6 +1,7 @@
 name: Fly App Schedule
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '45 3 * * 1-5' # 9:15 AM IST
     - cron: '0 10 * * 1-5' # 3:30 PM IST
