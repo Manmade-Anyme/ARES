@@ -30,7 +30,7 @@ def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT"):
     print(f"{profile_color}[+] Config       : {W}{B}{profile_name} DAY PROFILE{RESET}")
     print(f"{G}[+] Target Asset : {W}{settings.yahoo_symbol} (1-minute timeframe){RESET}")
     print(f"{G}[+] Detectors    : {W}Failed Breakout, OI Wall, Exhaustion{RESET}")
-    print(f"{G}[+] Session      : {W}09:15 to 23:30 IST{RESET}")
+    print(f"{G}[+] Session      : {W}09:15 to 15:30 IST{RESET}")
     print(f"{G}[+] Cooldown     : {W}{settings.signal_cooldown_minutes} minutes between signals{RESET}")
     print(f"{G}[+] PDH / PDL    : {W}{pdh:.2f} / {pdl:.2f}{RESET}")
     print(f"{C}{'=' * 65}{RESET}")
@@ -108,10 +108,10 @@ async def run():
             last_vwap_reset_date = now.date()
             print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
             
-        # Session gate: only run between 09:15 and 23:30
-        if not (time(9, 15) <= current_time <= time(23, 30)):
+        # Session gate: only run between 09:15 and 15:30
+        if not (time(9, 15) <= current_time <= time(15, 30)):
             if not waiting_printed:
-                print(f"{Y}[{now.strftime('%H:%M:%S')}] ⏸️ Outside session hours (09:15 - 23:30). Sleeping...{RESET}")
+                print(f"{Y}[{now.strftime('%H:%M:%S')}] ⏸️ Outside session hours (09:15 - 15:30). Sleeping...{RESET}")
                 waiting_printed = True
             await asyncio.sleep(30)
             continue
