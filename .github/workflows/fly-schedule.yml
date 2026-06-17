@@ -12,7 +12,7 @@ on:
           - start
           - stop
   schedule:
-    - cron: '45 3 * * 1-5' # 9:15 AM IST
+    - cron: '30 3 * * 1-5' # 9:00 AM IST
     - cron: '0 10 * * 1-5' # 3:30 PM IST
 
 jobs:
@@ -21,8 +21,8 @@ jobs:
     steps:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       
-      - name: Start App (9:15 AM IST)
-        if: github.event.schedule == '45 3 * * 1-5' || github.event.inputs.action == 'start'
+      - name: Start App (9:00 AM IST)
+        if: github.event.schedule == '30 3 * * 1-5' || github.event.inputs.action == 'start'
         run: flyctl scale count 1 -a ares-xzy-gq --yes
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
