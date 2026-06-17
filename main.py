@@ -88,7 +88,7 @@ async def run():
     level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
     
     print_banner(pdh, pdl, profile_name)
-    await send_startup_alert(pdh, pdl)
+    await send_startup_alert(pdh, pdl, profile_name)
 
     
     prev_iv = None

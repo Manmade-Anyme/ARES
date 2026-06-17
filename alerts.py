@@ -51,7 +51,7 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         except Exception as e:
             print(f"[-] Discord signal alert failed: {type(e).__name__} - {e}")
 
-async def send_startup_alert(pdh: float, pdl: float) -> None:
+async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAULT") -> None:
     """
     Sends a startup message to Discord with the current PDH/PDL and status.
     """
@@ -63,6 +63,7 @@ async def send_startup_alert(pdh: float, pdl: float) -> None:
 + =================================================================
 + 🤖 ARES (Adaptive Reversal & Entry Signal) - Initialization
 + =================================================================
++ [+] Config       : {profile_name} DAY PROFILE
 + [+] Target Asset : {settings.yahoo_symbol} (1-minute timeframe)
 + [+] Detectors    : Failed Breakout, OI Wall, Exhaustion
 + [+] Session      : 09:15 to 23:30 IST
