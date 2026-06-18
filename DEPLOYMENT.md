@@ -88,17 +88,54 @@ You should see something like:
 
 ---
 
-## 4. Troubleshooting & Maintenance
+## 4. Scaling, Lifecycle & Scheduled Execution
 
-### Instance Refused Connection / Healthcheck Failures
-If you see healthcheck failures in the Fly logs, ensure that `fly.toml` does **not** contain an `[http_service]` block. ARES does not listen on a port, so network healthchecks will inevitably fail and cause Fly to restart the container constantly.
+The system is configured to run strictly during NSE Market Hours (09:15 to 15:30 IST). To minimize costs and ensure reliable starts/stops, we use an external precision scheduling service (specifically [cron-job.com](https://cron-job.com)) targeting the Fly.io Machines API.
 
-### Scaling and Cron Jobs
-The system is designed to run only during NSE Market Hours (09:15 to 15:30 IST).
-To save costs and avoid GitHub Actions scheduling delays, scaling is handled as follows:
+### 4.1 Automated Lifecycle Flow
+1. **Auto Start (09:10 IST):** Triggered via a `POST` request from `cron-job.com` to the Fly Machines `/start` API.
+2. **Graceful Exit (15:30 IST):** The ARES engine (`main.py`) monitors the time and breaks the execution loop at 15:30 IST. The process exits normally, which powers down the Fly Machine.
+3. **Auto Stop Safety Backup (15:35 IST):** A secondary `POST` request from `cron-job.com` to the Fly Machines `/stop` API acts as a backup shutdown trigger (does not delete the machine).
 
-1. **Auto Stop (Scale to 0):** Handled entirely by `main.py`. The process checks the time and automatically breaks its loop at 15:30 IST. Since `[http_service]` is removed from `fly.toml`, Fly simply lets the machine power down and scale to zero.
-2. **Auto Start (Scale to 1):** Configured via an external precision cron service (e.g., [cron-job.org](https://cron-job.org)). 
-   * **URL:** `POST https://api.machines.dev/v1/apps/<APP_NAME>/machines/<MACHINE_ID>/start`
-   * **Header:** `Authorization: Bearer <FLY_DEPLOY_TOKEN>`
-   * **Schedule:** `08:55 AM IST`, Monday - Friday.
+### 4.2 Step-by-Step Setup Guide
+
+#### Step 1: Retrieve App & Machine Details
+Find your Machine ID and verify your App Name by running:
+```bash
+fly machine list
+```
+*Note: Your app name is `ares-xzy-gq`.*
+
+#### Step 2: Generate Fly API Deploy Token
+Generate a scoped token for authorization:
+```bash
+fly tokens create deploy -a ares-xzy-gq
+```
+*Keep this token safe; you will need it for the cron configuration.*
+
+#### Step 3: Configure the "Start" Cron Job (cron-job.com)
+1. Log in to `cron-job.com` and click **Create Cronjob**.
+2. Set the following options:
+   - **Title:** `ARES Start`
+   - **Address (URL):** `https://api.machines.dev/v1/apps/ares-xzy-gq/machines/<YOUR_MACHINE_ID>/start`
+   - **Request Method:** `POST`
+   - **Schedule:** Select **Custom/Cron expression** -> `10 9 * * 1-5` (Runs at 09:10 AM, Monday to Friday).
+   - **Timezone:** `Asia/Kolkata`.
+3. Add these two **Request Headers**:
+   - `Authorization` : `Bearer <YOUR_FLY_DEPLOY_TOKEN>`
+   - `Content-Type` : `application/json`
+4. Click **Create**.
+
+#### Step 4: Configure the "Stop" Cron Job (Safety Backup)
+*Note: Calling the `/stop` endpoint changes the state to `stopped`. It will NOT delete or destroy the machine.*
+1. Create a second Cron Job.
+2. Set the following options:
+   - **Title:** `ARES Stop`
+   - **Address (URL):** `https://api.machines.dev/v1/apps/ares-xzy-gq/machines/<YOUR_MACHINE_ID>/stop`
+   - **Request Method:** `POST`
+   - **Schedule:** Select **Custom/Cron expression** -> `35 15 * * 1-5` (Runs at 03:35 PM, Monday to Friday).
+   - **Timezone:** `Asia/Kolkata`.
+3. Add the same **Request Headers**:
+   - `Authorization` : `Bearer <YOUR_FLY_DEPLOY_TOKEN>`
+   - `Content-Type` : `application/json`
+4. Click **Create**.
