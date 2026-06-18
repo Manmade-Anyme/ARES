@@ -122,8 +122,13 @@ class PositionManager:
             
             # Evaluate trailing stop logic
             if direction == "BULLISH":
+                # Check if T2 hit
+                if spot_price >= trade["target_2"]:
+                    trade["state"] = "CLOSED"
+                    state_changed = True
+                    update_type = "T2_HIT"
                 # Check if T1 hit and we haven't trailed yet
-                if trade["state"] == "OPEN" and spot_price >= trade["target_1"]:
+                elif trade["state"] == "OPEN" and spot_price >= trade["target_1"]:
                     trade["state"] = "T1_HIT"
                     trade["stop_loss"] = trade["entry_price"]
                     state_changed = True
@@ -132,10 +137,18 @@ class PositionManager:
                 elif spot_price <= trade["stop_loss"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
-                    update_type = "SL_HIT"
+                    if trade["stop_loss"] == trade["entry_price"]:
+                        update_type = "T1_HIT"  # Trailed SL hit, logged as a T1 win
+                    else:
+                        update_type = "SL_HIT"
             elif direction == "BEARISH":
+                # Check if T2 hit
+                if spot_price <= trade["target_2"]:
+                    trade["state"] = "CLOSED"
+                    state_changed = True
+                    update_type = "T2_HIT"
                 # Check if T1 hit and we haven't trailed yet
-                if trade["state"] == "OPEN" and spot_price <= trade["target_1"]:
+                elif trade["state"] == "OPEN" and spot_price <= trade["target_1"]:
                     trade["state"] = "T1_HIT"
                     trade["stop_loss"] = trade["entry_price"]
                     state_changed = True
@@ -144,7 +157,10 @@ class PositionManager:
                 elif spot_price >= trade["stop_loss"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
-                    update_type = "SL_HIT"
+                    if trade["stop_loss"] == trade["entry_price"]:
+                        update_type = "T1_HIT"  # Trailed SL hit, logged as a T1 win
+                    else:
+                        update_type = "SL_HIT"
                     
             if state_changed:
                 # Prepare update payload
