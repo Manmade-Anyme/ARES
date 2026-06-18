@@ -59,7 +59,22 @@ class TuningConfig:
 # ─── The two profiles ────────────────────────────────────────────────────────
 
 NON_EXPIRY_CONFIG = TuningConfig(
-    # All defaults above ARE the non-expiry values, so no overrides needed.
+    signal_cooldown_minutes=15,
+    breakout_confirmation_candles=3,
+    breakout_weak_volume_ratio=0.75,
+    breakout_iv_falling_threshold=-3.0,
+    breakout_stop_buffer=25.0,
+    oi_wall_min_oi=4000000,
+    oi_wall_min_oi_change_pct=5.0,
+    oi_wall_approach_distance=80.0,
+    oi_wall_test_distance=20.0,
+    oi_wall_stop_buffer=25.0,
+    exhaustion_volume_multiplier=2.5,
+    exhaustion_body_ratio=0.35,
+    exhaustion_iv_spike_threshold=3.0,
+    target_1_pts=35.0,
+    target_2_pts=70.0,
+    level_scan_range=500.0,
 )
 
 EXPIRY_CONFIG = TuningConfig(
