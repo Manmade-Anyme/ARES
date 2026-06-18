@@ -95,7 +95,10 @@ If you see healthcheck failures in the Fly logs, ensure that `fly.toml` does **n
 
 ### Scaling and Cron Jobs
 The system is designed to run only during NSE Market Hours (09:15 to 15:30 IST).
-To save costs, the GitHub Actions workflow in this repository automatically scales the Fly machines:
-*   `fly scale count 1` at 09:10 IST.
-*   `fly scale count 0` at 15:35 IST.
-*(Requires setting `FLY_API_TOKEN` as a repository secret in GitHub).*
+To save costs and avoid GitHub Actions scheduling delays, scaling is handled as follows:
+
+1. **Auto Stop (Scale to 0):** Handled entirely by `main.py`. The process checks the time and automatically breaks its loop at 15:30 IST. Since `[http_service]` is removed from `fly.toml`, Fly simply lets the machine power down and scale to zero.
+2. **Auto Start (Scale to 1):** Configured via an external precision cron service (e.g., [cron-job.org](https://cron-job.org)). 
+   * **URL:** `POST https://api.machines.dev/v1/apps/<APP_NAME>/machines/<MACHINE_ID>/start`
+   * **Header:** `Authorization: Bearer <FLY_DEPLOY_TOKEN>`
+   * **Schedule:** `08:55 AM IST`, Monday - Friday.

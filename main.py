@@ -109,9 +109,13 @@ async def run():
             print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
             
         # Session gate: only run between 09:15 and 15:30
-        if not (time(9, 15) <= current_time <= time(15, 30)):
+        if current_time >= time(15, 30):
+            print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
+            break
+            
+        if current_time < time(9, 15):
             if not waiting_printed:
-                print(f"{Y}[{now.strftime('%H:%M:%S')}] ⏸️ Outside session hours (09:15 - 15:30). Sleeping...{RESET}")
+                print(f"{Y}[{now.strftime('%H:%M:%S')}] ⏸️ Pre-market (09:15 start). Sleeping...{RESET}")
                 waiting_printed = True
             await asyncio.sleep(30)
             continue
