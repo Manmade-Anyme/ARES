@@ -13,8 +13,7 @@ Because ARES is a background algorithmic engine (it polls an API and sends webho
     *   *Mac/Linux:* `curl -L https://fly.io/install.sh | sh`
     *   *Windows:* `pwsh -Command "iwr https://fly.io/install.ps1 -useb | iex"`
 3.  **Fly Account:** Run `fly auth login` to authenticate or sign up.
-4.  **Dhan API Credentials:** You need a Client ID and JWT Access Token.
-5.  **Supabase Credentials:** URL and Anon Key for Postgres persistence.
+4.  **Supabase Credentials:** URL and Anon Key for Postgres persistence. Also stores the Dhan credentials (`client_id`, `access_token`) inside the `api_keys` table.
 6.  **Discord Webhook URL:** For signal routing.
 
 ---
@@ -53,8 +52,6 @@ Push your secrets directly to Fly's encrypted vault:
 
 ```bash
 fly secrets set \
-  DHAN_CLIENT_ID="your_dhan_client_id" \
-  DHAN_ACCESS_TOKEN="your_dhan_jwt_token" \
   SUPABASE_URL="https://your-project.supabase.co" \
   SUPABASE_KEY="your_supabase_anon_key" \
   DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..." \

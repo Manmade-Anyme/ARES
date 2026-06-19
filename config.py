@@ -7,8 +7,6 @@ class Secrets(BaseSettings):
     Credentials and API keys only.
     Loaded from .env file or environment variables (e.g., fly.io secrets).
     """
-    dhan_client_id: str
-    dhan_access_token: str
     security_id: str = "13"
     exchange_segment: str = "IDX_I"
 
@@ -37,6 +35,8 @@ class Settings:
     def __init__(self):
         self._secrets = Secrets()
         self._tuning: TuningConfig = NON_EXPIRY_CONFIG  # default until apply_profile() is called
+        self.dhan_client_id: str = ""
+        self.dhan_access_token: str = ""
 
     def apply_profile(self, tuning: TuningConfig) -> None:
         """Swap the active tuning profile (called once at startup)."""

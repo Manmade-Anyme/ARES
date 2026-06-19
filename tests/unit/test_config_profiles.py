@@ -62,8 +62,8 @@ class TestSettings:
     def test_settings_exposes_secrets(self):
         """settings.xxx should work for secret fields."""
         s = Settings()
-        assert s.dhan_client_id  # loaded from env
-        assert s.dhan_access_token
+        assert hasattr(s, "dhan_client_id")
+        assert hasattr(s, "dhan_access_token")
         assert s.discord_webhook_url
 
     def test_settings_exposes_tuning(self):
@@ -133,13 +133,17 @@ class TestExpiryDetector:
     @pytest.mark.asyncio
     async def test_api_fallback_on_tuesday(self):
         """When API fails on Tuesday, fallback returns True."""
-        with patch.object(expiry_detector, "_today_ist", return_value=date(2026, 6, 16)):
+        with patch.object(expiry_detector, "_today_ist", return_value=date(2026, 6, 16)), \
+             patch("dhanhq.dhanhq") as mock_dhanhq:
+            mock_dhanhq.side_effect = Exception("API offline")
             result = await expiry_detector.is_expiry_day_from_api()
             assert result is True
 
     @pytest.mark.asyncio
     async def test_api_fallback_on_wednesday(self):
         """When API fails on Wednesday, fallback returns False."""
-        with patch.object(expiry_detector, "_today_ist", return_value=date(2026, 6, 17)):
+        with patch.object(expiry_detector, "_today_ist", return_value=date(2026, 6, 17)), \
+             patch("dhanhq.dhanhq") as mock_dhanhq:
+            mock_dhanhq.side_effect = Exception("API offline")
             result = await expiry_detector.is_expiry_day_from_api()
             assert result is False

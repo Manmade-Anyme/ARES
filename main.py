@@ -5,7 +5,7 @@ from engine import AresEngine
 from fetchers.price_fetcher import PriceFetcher
 from fetchers.oi_fetcher import OIFetcher
 from fetchers.level_fetcher import LevelFetcher
-from storage import Storage
+from storage import Storage, load_dhan_credentials_from_supabase
 from position_manager import PositionManager
 from config import settings
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
@@ -56,6 +56,9 @@ async def run():
     """
     Main entry point for the ARES Trading System.
     """
+    # ── Step 0: Fetch Dhan credentials from Supabase ──
+    load_dhan_credentials_from_supabase()
+
     # ── Step 1: Detect expiry day and apply config profile ──
     try:
         is_expiry = await is_expiry_day_from_api()
@@ -197,7 +200,18 @@ async def run():
             if "401" in error_str or "auth" in error_str:
                 print(f"{R}[{now.strftime('%H:%M:%S')}] ❌ ERROR: Dhan API Authentication failed.{RESET}")
                 print(f"   {W}Details: {e}{RESET}")
-                print(f"   {W}Action : Check your DHAN_ACCESS_TOKEN in the .env file.{RESET}")
+                print(f"   {W}Action : Reloading credentials from Supabase...{RESET}")
+                
+                try:
+                    load_dhan_credentials_from_supabase()
+                    from dhanhq import DhanContext, dhanhq
+                    context = DhanContext(settings.dhan_client_id, settings.dhan_access_token)
+                    price_fetcher.dhan = dhanhq(context)
+                    oi_fetcher.dhan = dhanhq(context)
+                    print(f"{G}   [+] Credentials reloaded successfully.{RESET}")
+                except Exception as reload_err:
+                    print(f"{R}   [!] Supabase credentials reload failed: {reload_err}{RESET}")
+                
                 print(f"   {Y}Retrying in 60s...\n{RESET}")
                 
                 if last_error_msg != current_error:

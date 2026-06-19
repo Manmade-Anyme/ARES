@@ -192,3 +192,23 @@ class AnalyticsLogger:
             loop.run_in_executor(None, _update)
         except Exception as e:
             print(f"Failed to log trade analytics exit: {e}")
+
+
+def load_dhan_credentials_from_supabase() -> None:
+    """
+    Fetch Dhan client_id and access_token from Supabase and update settings.
+    """
+    from supabase import create_client
+    from config import settings
+
+    print("[+] Connecting to Supabase to fetch Dhan credentials...")
+    supabase = create_client(settings.supabase_url, settings.supabase_key)
+    response = supabase.table("api_keys").select("client_id, access_token").eq("provider", "DHAN").execute()
+    if not response.data:
+        raise ValueError("No DHAN credentials found in Supabase api_keys table")
+
+    data = response.data[0]
+    settings.dhan_client_id = data["client_id"]
+    settings.dhan_access_token = data["access_token"]
+    print("[+] Successfully loaded Dhan credentials from Supabase.")
+

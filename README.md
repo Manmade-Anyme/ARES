@@ -109,13 +109,9 @@ ares/
 Clone the repository and create a `.env` file based on `.env.example`.
 
 ```bash
-# ==========================================
-# Dhan API
-# ==========================================
-DHAN_CLIENT_ID="your_client_id"
-DHAN_ACCESS_TOKEN="your_jwt_token"
-NIFTY_SECURITY_ID="13"           # Default for NIFTY 50
-NIFTY_EXCHANGE="IDX_I"           # Default for Indices
+# NOTE: DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN are fetched dynamically from Supabase.
+# Ensure your credentials are added in your Supabase `api_keys` table.
+
 
 # ==========================================
 # Discord
@@ -257,7 +253,7 @@ ARES is fully dockerized and configured for Fly.io.
 2. Run `fly launch` (do not override the existing `fly.toml` unless needed).
 3. Set your secrets in Fly:
 ```bash
-fly secrets set DHAN_CLIENT_ID="your_id" DHAN_ACCESS_TOKEN="your_token" SUPABASE_URL="your_url" SUPABASE_KEY="your_key" DISCORD_WEBHOOK_URL="your_webhook"
+fly secrets set SUPABASE_URL="your_url" SUPABASE_KEY="your_key" DISCORD_WEBHOOK_URL="your_webhook"
 ```
 4. Deploy the application:
 ```bash
