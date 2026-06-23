@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 from models import OHLCVCandle, AresSignal, SetupType, Direction
@@ -14,17 +15,20 @@ class OIWallDetector:
     - CE walls above spot act as resistance. A bearish rejection here signals a PE buy.
     - PE walls below spot act as support. A bullish bounce here signals a CE buy.
     
-    This detector is stateless and evaluates the conditions on every cycle using
-    the current candle and the full option chain.
+    This detector manages its own cooldown so it never blocks or is blocked by
+    other detectors.
     """
 
     def __init__(self):
         self.last_debug: Optional[Dict[str, Any]] = None
+        self.last_signal_time: Optional[datetime] = None
 
     def detect(self, spot: float, full_chain: List[Dict[str, Any]], candle: OHLCVCandle) -> Optional[AresSignal]:
         """
         Scan the option chain for nearby OI walls and check if the current candle
         shows a rejection or bounce confirming the wall's defense.
+
+        Each detector manages its own cooldown independently.
         
         Args:
             spot: The current NIFTY spot price.
@@ -34,6 +38,12 @@ class OIWallDetector:
         Returns:
             An AresSignal if a rejection/bounce is confirmed, otherwise None.
         """
+        # Self-cooldown: skip if this detector fired recently
+        if self.last_signal_time:
+            elapsed = datetime.now() - self.last_signal_time
+            if elapsed < timedelta(minutes=settings.signal_cooldown_minutes):
+                return None
+
         nearest_ce_wall = None
         nearest_pe_wall = None
         
@@ -71,7 +81,7 @@ class OIWallDetector:
             approaching = distance < settings.oi_wall_approach_distance
             tested_wall = candle.high >= (strike - settings.oi_wall_test_distance)
             rejected = candle.close < candle.open  # Bearish candle
-            writers_holding = nearest_ce_wall["ce_oi"] >= nearest_ce_wall["ce_oi_prev"]
+            writers_holding = nearest_ce_wall["ce_oi"] >= nearest_ce_wall["ce_oi_prev"] * 0.95
             
             debug["ce"] = dict(
                 strike=strike,
@@ -85,6 +95,7 @@ class OIWallDetector:
             )
             
             if approaching and tested_wall and rejected and writers_holding:
+                self.last_signal_time = datetime.now()
                 debug["ce"]["fired"] = True
                 self.last_debug = debug
                 return self._build_signal(
@@ -103,7 +114,7 @@ class OIWallDetector:
             approaching = distance < settings.oi_wall_approach_distance
             tested_wall = candle.low <= (strike + settings.oi_wall_test_distance)
             bounced = candle.close > candle.open  # Bullish candle
-            writers_holding = nearest_pe_wall["pe_oi"] >= nearest_pe_wall["pe_oi_prev"]
+            writers_holding = nearest_pe_wall["pe_oi"] >= nearest_pe_wall["pe_oi_prev"] * 0.95
             
             debug["pe"] = dict(
                 strike=strike,
@@ -117,6 +128,7 @@ class OIWallDetector:
             )
             
             if approaching and tested_wall and bounced and writers_holding:
+                self.last_signal_time = datetime.now()
                 debug["pe"]["fired"] = True
                 self.last_debug = debug
                 return self._build_signal(

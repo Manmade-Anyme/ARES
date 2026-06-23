@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 
 from models import OHLCVCandle, ResistanceLevel, AresSignal, SetupType, Direction
@@ -35,6 +35,7 @@ class FailedBreakoutDetector:
     def __init__(self):
         """Initialize the detector with no active breakout."""
         self.active: Optional[BreakoutState] = None
+        self.last_signal_time: Optional[datetime] = None
 
     def update(
         self,
@@ -64,6 +65,12 @@ class FailedBreakoutDetector:
         Returns:
             An AresSignal object if a high-confidence failed breakout is detected, otherwise None.
         """
+        # Self-cooldown: skip if this detector fired recently
+        if self.last_signal_time:
+            elapsed = datetime.now() - self.last_signal_time
+            if elapsed < timedelta(minutes=settings.signal_cooldown_minutes):
+                return None
+
         # Step 1: If no active breakout, scan for a new level cross
         if not self.active:
             for lvl in levels:
@@ -121,6 +128,7 @@ class FailedBreakoutDetector:
                 writers_held=writers_holding,
                 levels=levels
             )
+            self.last_signal_time = datetime.now()
             self.active = None  # Reset state after generating signal
             return signal
             

@@ -1,5 +1,4 @@
 from collections import deque
-from datetime import datetime, timedelta
 from statistics import mean
 from typing import Optional, List, Dict, Any
 
@@ -15,8 +14,8 @@ class AresEngine:
     """
     AresEngine orchestrates the three core ARES detectors on every cycle tick.
     
-    It maintains rolling buffers for volume and IV, and strictly enforces a signal cooldown
-    period to prevent spam during choppy market conditions.
+    It maintains rolling buffers for volume and IV. Each detector manages its own
+    signal cooldown independently so one detector's signal never blocks another.
     
     It operates completely standalone.
     """
@@ -31,8 +30,6 @@ class AresEngine:
         
         self.candle_buffer: deque = deque(maxlen=settings.candle_buffer_size)
         self.iv_buffer: deque = deque(maxlen=settings.iv_buffer_size)
-        
-        self.last_signal_time: Optional[datetime] = None
 
     def tick(
         self,
@@ -67,25 +64,20 @@ class AresEngine:
         self.candle_buffer.append(candle)
         self.iv_buffer.append(atm.ce.iv)
 
-        # 2. Cooldown check
-        if self.last_signal_time:
-            elapsed = datetime.now() - self.last_signal_time
-            if elapsed < timedelta(minutes=settings.signal_cooldown_minutes):
-                return None
-
-        # 3. Calculate average volume
+        # 2. Calculate average volume
         if len(self.candle_buffer) > 0:
             avg_volume = mean([c.volume for c in self.candle_buffer])
         else:
             avg_volume = float(candle.volume)
 
-        # 4. Get previous IV
+        # 3. Get previous IV
         if len(self.iv_buffer) >= 2:
             iv_prev = self.iv_buffer[-2]
         else:
             iv_prev = self.iv_buffer[-1]
 
-        # 5. Run detectors in priority order
+        # 4. Run detectors in priority order.
+        # Each detector manages its own internal cooldown so they never block each other.
         # We use 'or' to short-circuit: if a higher-priority detector returns a signal,
         # the subsequent ones won't execute.
         signal = (
@@ -114,9 +106,4 @@ class AresEngine:
             )
         )
 
-        # 6. Set cooldown if signal fired
-        if signal:
-            self.last_signal_time = datetime.now()
-
-        # 7. Return the result
         return signal

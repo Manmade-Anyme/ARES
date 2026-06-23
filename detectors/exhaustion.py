@@ -1,4 +1,5 @@
 from collections import deque
+from datetime import datetime, timedelta
 from statistics import mean
 from typing import Optional, List
 
@@ -14,7 +15,8 @@ class ExhaustionDetector:
     with an indecision candle (doji-like) at an extreme price level. It signifies
     absorption by larger players and an impending reversal.
     
-    The detector maintains a rolling history of volume to establish a dynamic baseline.
+    The detector maintains a rolling history of volume to establish a dynamic baseline
+    and manages its own cooldown so it never blocks or is blocked by other detectors.
     """
 
     def __init__(self):
@@ -23,10 +25,13 @@ class ExhaustionDetector:
         to compute a moving average of volume.
         """
         self.volume_history = deque(maxlen=20)
+        self.last_signal_time: Optional[datetime] = None
 
     def update(self, candle: OHLCVCandle, iv_current: float, iv_prev: float, levels: List[ResistanceLevel]) -> Optional[AresSignal]:
         """
         Process the latest candle to determine if an exhaustion reversal pattern has formed.
+        
+        Each detector manages its own cooldown independently.
         
         Args:
             candle: The latest closed 1-minute OHLCV candle.
@@ -37,6 +42,12 @@ class ExhaustionDetector:
         Returns:
             An AresSignal if the exhaustion pattern is detected, otherwise None.
         """
+        # Self-cooldown: skip if this detector fired recently
+        if self.last_signal_time:
+            elapsed = datetime.now() - self.last_signal_time
+            if elapsed < timedelta(minutes=settings.signal_cooldown_minutes):
+                return None
+
         self.volume_history.append(candle.volume)
         
         # Need enough history to establish a reliable average volume
@@ -61,6 +72,7 @@ class ExhaustionDetector:
         iv_spiked = (iv_current - iv_prev) > settings.exhaustion_iv_spike_threshold
         
         if volume_climax and doji_like:
+            self.last_signal_time = datetime.now()
             # Determine direction
             if candle.close > candle.open:
                 direction = Direction.BEARISH

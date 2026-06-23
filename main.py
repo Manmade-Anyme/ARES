@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from engine import AresEngine
 from fetchers.price_fetcher import PriceFetcher
@@ -171,8 +171,16 @@ async def run():
                 oi_debug = engine.oi_wall_detector.last_debug or {}
                 signal_label = signal.setup_type.value if signal else "NONE"
 
+                # Detect if OI wall debug data is stale (detector skipped due to cooldown)
+                oi_cooldown = engine.oi_wall_detector.last_signal_time
+                oi_stale = False
+                if oi_cooldown:
+                    elapsed = datetime.now() - oi_cooldown
+                    oi_stale = elapsed < timedelta(minutes=settings.signal_cooldown_minutes)
+
                 lines = [f"CYCLE DEBUG — {now.strftime('%H:%M:%S')} IST | Spot: {spot:.2f}"]
-                lines.append(f"ENGINE → {signal_label}")
+                stale_tag = " (CACHED)" if oi_stale else ""
+                lines.append(f"ENGINE → {signal_label}{stale_tag}")
 
                 ce = oi_debug.get("ce")
                 pe = oi_debug.get("pe")
