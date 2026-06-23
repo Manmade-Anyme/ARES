@@ -137,13 +137,15 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
         return
 
     # Color code based on direction and update type
-    color_marker = "+" if update_type == "T1_HIT" else "-"
-    icon = "🎯" if update_type == "T1_HIT" else "🛑"
+    color_marker = "+" if update_type in ["T1_HIT", "T2_HIT"] else "-"
+    icon = "🎯" if update_type in ["T1_HIT", "T2_HIT"] else "🛑"
     dir_emoji = "🐂 🟢" if trade['direction'] == "BULLISH" else "🐻 🔴"
     
     action_text = ""
     if update_type == "T1_HIT":
         action_text = "Target 1 Reached! Stop Loss trailed to Entry."
+    elif update_type == "T2_HIT":
+        action_text = "Target 2 Reached! Trade Closed with Full Profit."
     elif update_type == "SL_HIT":
         if trade["state"] == "T1_HIT" or trade.get("stop_loss") == trade.get("entry_price"):
             action_text = "Trailing Stop Loss Hit at Entry. Trade Closed."
