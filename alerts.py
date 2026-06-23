@@ -139,7 +139,6 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     # Color code based on direction and update type
     color_marker = "+" if update_type in ["T1_HIT", "T2_HIT"] else "-"
     icon = "🎯" if update_type in ["T1_HIT", "T2_HIT"] else "🛑"
-    dir_emoji = "🐂 🟢" if trade['direction'] == "BULLISH" else "🐻 🔴"
     
     action_text = ""
     if update_type == "T1_HIT":
