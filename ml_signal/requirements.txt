@@ -1,0 +1,11 @@
+xgboost
+scikit-learn
+optuna
+shap
+pandas
+numpy
+dhanhq
+supabase
+pydantic-settings
+python-dateutil
+joblib
