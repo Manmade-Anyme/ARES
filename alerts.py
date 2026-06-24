@@ -111,24 +111,6 @@ async def send_error_alert(error_msg: str) -> None:
         except Exception as e:
             print(f"[-] Discord error alert failed: {type(e).__name__} - {e}")
 
-async def send_debug_alert(msg: str) -> None:
-    """
-    Sends a debug/probe message to the health Discord channel.
-    Used for runtime diagnostics in Fly.io where stdout logs aren't accessible.
-    """
-    webhook_url = settings.discord_health_webhook_url or settings.discord_webhook_url
-    if not webhook_url:
-        return
-
-    payload = {"content": f"```\n{msg}\n```"}
-
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(webhook_url, json=payload)
-            response.raise_for_status()
-        except Exception as e:
-            print(f"[-] Discord debug alert failed: {type(e).__name__} - {e}")
-
 async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     """
     Sends an alert when an active trade state changes (e.g., T1 Hit, Trailing Stop triggered, SL Hit).

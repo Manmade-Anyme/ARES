@@ -18,9 +18,6 @@ class OIWallDetector:
     the current candle and the full option chain.
     """
 
-    def __init__(self):
-        self.last_debug: Optional[Dict[str, Any]] = None
-
     def detect(self, spot: float, full_chain: List[Dict[str, Any]], candle: OHLCVCandle) -> Optional[AresSignal]:
         """
         Scan the option chain for nearby OI walls and check if the current candle
@@ -61,8 +58,6 @@ class OIWallDetector:
                     if nearest_pe_wall is None or strike > nearest_pe_wall["strike"]:
                         nearest_pe_wall = row
 
-        debug = dict(ce=None, pe=None)
-        
         # 3. CE wall rejection check (Bearish setup -> buy PE)
         if nearest_ce_wall:
             strike = float(nearest_ce_wall["strike"])
@@ -73,20 +68,7 @@ class OIWallDetector:
             rejected = candle.close < candle.open  # Bearish candle
             writers_holding = nearest_ce_wall["ce_oi"] >= nearest_ce_wall["ce_oi_prev"]
             
-            debug["ce"] = dict(
-                strike=strike,
-                oi=nearest_ce_wall["ce_oi"],
-                oi_change_pct=nearest_ce_wall["ce_oi_change_pct"],
-                distance_from_spot=distance,
-                approaching=approaching,
-                tested_wall=tested_wall,
-                rejected=rejected,
-                writers_holding=writers_holding,
-            )
-            
             if approaching and tested_wall and rejected and writers_holding:
-                debug["ce"]["fired"] = True
-                self.last_debug = debug
                 return self._build_signal(
                     candle=candle,
                     spot=spot,
@@ -105,20 +87,7 @@ class OIWallDetector:
             bounced = candle.close > candle.open  # Bullish candle
             writers_holding = nearest_pe_wall["pe_oi"] >= nearest_pe_wall["pe_oi_prev"]
             
-            debug["pe"] = dict(
-                strike=strike,
-                oi=nearest_pe_wall["pe_oi"],
-                oi_change_pct=nearest_pe_wall["pe_oi_change_pct"],
-                distance_from_spot=distance,
-                approaching=approaching,
-                tested_wall=tested_wall,
-                bounced=bounced,
-                writers_holding=writers_holding,
-            )
-            
             if approaching and tested_wall and bounced and writers_holding:
-                debug["pe"]["fired"] = True
-                self.last_debug = debug
                 return self._build_signal(
                     candle=candle,
                     spot=spot,
@@ -127,7 +96,6 @@ class OIWallDetector:
                     option_type="CE"
                 )
 
-        self.last_debug = debug
         return None
 
     def _build_signal(

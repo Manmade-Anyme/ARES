@@ -10,7 +10,7 @@ from position_manager import PositionManager
 from config import settings
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple
-from alerts import send_discord, send_startup_alert, send_error_alert, send_debug_alert
+from alerts import send_discord, send_startup_alert, send_error_alert
 
 # ANSI Color Codes for Premium Terminal UI
 G = "\033[92m"  # Green
@@ -93,25 +93,12 @@ async def run():
     print_banner(pdh, pdl, profile_name)
     await send_startup_alert(pdh, pdl, profile_name)
 
-    # Startup debug probe — confirms active config in Discord health channel
-    debug_lines = [
-        f"ARES DEBUG — {profile_name} PROFILE ACTIVE",
-        f"OI_WALL: min_oi={settings.oi_wall_min_oi}, change%>={settings.oi_wall_min_oi_change_pct}",
-        f"         approach<{settings.oi_wall_approach_distance}, test<{settings.oi_wall_test_distance}, stop_buf={settings.oi_wall_stop_buffer}",
-        f"EXHAUSTION: vol_mult={settings.exhaustion_volume_multiplier}, body_ratio<{settings.exhaustion_body_ratio}",
-        f"            iv_threshold={settings.exhaustion_iv_spike_threshold}",
-        f"TARGETS: T1={settings.target_1_pts}pts, T2={settings.target_2_pts}pts",
-        f"COOLDOWN: {settings.signal_cooldown_minutes}min, SCAN_RANGE={settings.level_scan_range}",
-    ]
-    await send_debug_alert("\n".join(debug_lines))
-
     prev_iv = None
     last_vwap_reset_date = None
     waiting_printed = False
     buffers_full_printed = False
     last_error_msg = None
     last_heartbeat_time = None
-    last_debug_alert_time = None
     
     while True:
         now = datetime.now()
@@ -164,31 +151,6 @@ async def run():
             
             # Run the engine
             signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels)
-
-            # Debug probe — rate-limited to once per 5 min, sent to Discord health channel
-            DEBUG_INTERVAL = 300  # 5 minutes
-            if last_debug_alert_time is None or (now - last_debug_alert_time).total_seconds() >= DEBUG_INTERVAL:
-                oi_debug = engine.oi_wall_detector.last_debug or {}
-                signal_label = signal.setup_type.value if signal else "NONE"
-
-                lines = [f"CYCLE DEBUG — {now.strftime('%H:%M:%S')} IST | Spot: {spot:.2f}"]
-                lines.append(f"ENGINE → {signal_label}")
-
-                ce = oi_debug.get("ce")
-                pe = oi_debug.get("pe")
-                if ce:
-                    c = ce
-                    lines.append(f"CE_WALL {c['strike']}: OI={c['oi']/100000:.1f}L Δ={c['oi_change_pct']:.1f}% dist={c['distance_from_spot']:.0f}")
-                    lines.append(f"  approach={c['approaching']} tested={c['tested_wall']} rejected={c['rejected']} writers={c['writers_holding']}")
-                if pe:
-                    p = pe
-                    lines.append(f"PE_WALL {p['strike']}: OI={p['oi']/100000:.1f}L Δ={p['oi_change_pct']:.1f}% dist={p['distance_from_spot']:.0f}")
-                    lines.append(f"  approach={p['approaching']} tested={p['tested_wall']} bounced={p['bounced']} writers={p['writers_holding']}")
-                if not ce and not pe:
-                    lines.append("OI_WALL: no candidate walls found")
-
-                await send_debug_alert("\n".join(lines))
-                last_debug_alert_time = now
 
             # Terminal UI: Track Warmup State
             buffer_len = len(engine.candle_buffer)
