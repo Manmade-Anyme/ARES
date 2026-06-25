@@ -51,13 +51,15 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         except Exception as e:
             print(f"[-] Discord signal alert failed: {type(e).__name__} - {e}")
 
-async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAULT") -> None:
+async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAULT", ml_active: bool = False) -> None:
     """
     Sends a startup message to Discord with the current PDH/PDL and status.
     """
     webhook_url = settings.discord_webhook_url
     if not webhook_url:
         return
+
+    ml_line = "+ [+] ML Data Collection : ACTIVE (recording 50+ features per cycle)" if ml_active else "+ [+] ML Data Collection : inactive (table not found)"
         
     msg = f"""```diff
 + =================================================================
@@ -69,6 +71,7 @@ async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAUL
 + [+] Session      : 09:15 to 23:30 IST
 + [+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals
 + [+] PDH / PDL    : {pdh:.2f} / {pdl:.2f}
++ {ml_line}
 + =================================================================
 ```"""
 
