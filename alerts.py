@@ -121,9 +121,10 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     if not settings.discord_webhook_url:
         return
 
-    # Color code based on direction and update type
-    color_marker = "+" if update_type in ["T1_HIT", "T2_HIT"] else "-"
-    icon = "🎯" if update_type in ["T1_HIT", "T2_HIT"] else "🛑"
+    # Color code based on direction
+    is_bullish = trade.get("direction") == "BULLISH"
+    color_marker = "+" if is_bullish else "-"
+    icon = "🐂 🟢" if is_bullish else "🐻 🔴"
     
     action_text = ""
     if update_type == "T1_HIT":
