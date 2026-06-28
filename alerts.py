@@ -17,6 +17,17 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     ist = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
     
+    sizing_str = ""
+    if getattr(signal, "suggested_lots", None) is not None:
+        sizing_str = f"""
+   📐 Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%):
+     • Available Capital : ₹{signal.capital:,.2f}
+     • Option Entry Prem : ₹{signal.option_premium:.2f} (Delta: {signal.option_delta:+.4f})
+     • Calculated Lots   : {signal.suggested_lots} (Nifty Lot Size: {settings.nifty_lot_size})
+     • Option SL Price   : ₹{signal.option_sl:.2f}
+     • Option TP1 Target : ₹{signal.option_target:.2f}
+"""
+
     msg = f"""```diff
 {marker} {emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
    
@@ -27,7 +38,7 @@ def format_signal(signal: AresSignal, spot: float) -> str:
    📍 Spot  : {spot:.2f}
    ⚡ Trade : {signal.strike_to_trade} {signal.option_type}
    ⭐ Conf. : {signal.confidence}
-   
+{sizing_str}
    📝 Reasons:
 {reasons_str}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
