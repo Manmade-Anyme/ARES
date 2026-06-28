@@ -220,8 +220,12 @@ class OIFetcher:
             # Dhan API uses 'last_price' in the oc dictionary
             ce_ltp = float(ce_data.get("last_price", 0.0))
             ce_iv = float(ce_data.get("iv", 0.0))
-            ce_gamma = float(ce_data.get("gamma", 0.0))
-            ce_theta = float(ce_data.get("theta", 0.0))
+            
+            ce_greeks = ce_data.get("greeks", {})
+            ce_gamma = float(ce_greeks.get("gamma", 0.0))
+            ce_theta = float(ce_greeks.get("theta", 0.0))
+            ce_delta = float(ce_greeks.get("delta", 0.0))
+            ce_vega = float(ce_greeks.get("vega", 0.0))
             
             ce_key = f"{strike}_CE"
             ce_oi_prev = self._prev_oi_snapshot.get(ce_key, ce_oi)
@@ -240,8 +244,12 @@ class OIFetcher:
             pe_oi = int(pe_data.get("oi", 0))
             pe_ltp = float(pe_data.get("last_price", 0.0))
             pe_iv = float(pe_data.get("iv", 0.0))
-            pe_gamma = float(pe_data.get("gamma", 0.0))
-            pe_theta = float(pe_data.get("theta", 0.0))
+            
+            pe_greeks = pe_data.get("greeks", {})
+            pe_gamma = float(pe_greeks.get("gamma", 0.0))
+            pe_theta = float(pe_greeks.get("theta", 0.0))
+            pe_delta = float(pe_greeks.get("delta", 0.0))
+            pe_vega = float(pe_greeks.get("vega", 0.0))
             
             pe_key = f"{strike}_PE"
             pe_oi_prev = self._prev_oi_snapshot.get(pe_key, pe_oi)
@@ -262,11 +270,13 @@ class OIFetcher:
                 "ce_oi_change_pct": ce_oi_change_pct,
                 "ce_ltp": ce_ltp,
                 "ce_iv": ce_iv,
+                "ce_delta": ce_delta,
                 "pe_oi": pe_oi,
                 "pe_oi_prev": pe_oi_prev,
                 "pe_oi_change_pct": pe_oi_change_pct,
                 "pe_ltp": pe_ltp,
-                "pe_iv": pe_iv
+                "pe_iv": pe_iv,
+                "pe_delta": pe_delta
             })
             
             # Build ATM rows if this is the target strike
@@ -281,7 +291,9 @@ class OIFetcher:
                     oi_prev=ce_oi_prev,
                     oi_change_pct=ce_oi_change_pct,
                     gamma=ce_gamma,
-                    theta=ce_theta
+                    theta=ce_theta,
+                    delta=ce_delta,
+                    vega=ce_vega
                 )
                 atm_pe_row = OptionRow(
                     strike=strike,
@@ -292,7 +304,9 @@ class OIFetcher:
                     oi_prev=pe_oi_prev,
                     oi_change_pct=pe_oi_change_pct,
                     gamma=pe_gamma,
-                    theta=pe_theta
+                    theta=pe_theta,
+                    delta=pe_delta,
+                    vega=pe_vega
                 )
                 
         if not atm_found:

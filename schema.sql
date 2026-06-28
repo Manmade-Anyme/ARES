@@ -57,7 +57,7 @@ CREATE TABLE trade_analytics (
   result_state text DEFAULT 'OPEN', -- OPEN, T1_HIT, T2_HIT, STOPPED_OUT, EXPIRED
   
   -- Deep Context (JSONB for ML flexibility)
-  market_context jsonb, -- { "reasons": [...], "spot_at_signal": 24500, "confidence": "HIGH" }
+  market_context jsonb, -- { "reasons": [...], "spot_at_signal": 24500, "confidence": "HIGH", "options_sizing": { "suggested_lots": 1, "option_sl": 70.0, "option_target": 115.0, ... } }
   oi_data jsonb,        -- { "pcr": 0.8, "atm_ce_oi": 1200000, "atm_pe_oi": 1500000, "oi_change_pct": 5.2 }
   
   created_at timestamptz DEFAULT now()

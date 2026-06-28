@@ -20,7 +20,22 @@ Fetches the NIFTY option chain from the Dhan API every cycle. It tracks the prev
 - `fetch_chain(spot_price: float, expiry: str) -> Tuple[ATMStrikes, List[Dict[str, Any]]]`: Fetches the current option chain, calculates OI changes, and builds ATM strikes and the full chain.
 
 ### `LevelFetcher` (in `fetchers/level_fetcher.py`)
-Aggregates and formats critical price levels (like PDH, PDL, VWAP) into a standardized `ResistanceLevel` format.
+Consolidates and formats critical price levels (like PDH, PDL, VWAP) into a standardized `ResistanceLevel` format.
+
+## Options Calculation & Sizing Layer
+
+### `options_math.py`
+Provides utility functions to compute risk-managed lot sizes, fetch account balance from Dhan API, select appropriate option strikes based on target delta values, and calculate stop loss and target prices for the option premium.
+
+**Functions:**
+- `calculate_risk_amount(capital: float, risk_pct: float) -> float`: Calculates the risk amount based on capital and risk percentage.
+- `calculate_points(entry: float, exit: float) -> float`: Returns the absolute price difference.
+- `translate_to_premium(points: float, delta: float) -> float`: Translates index points to option premium points based on the delta.
+- `calculate_lots(risk_amt: float, sl_points: float, lot_size: int) -> int`: Computes the suggested lot size.
+- `calculate_affordable_lots(capital: float, premium: float, lot_size: int) -> int`: Computes the maximum affordable lots.
+- `fetch_dhan_capital(dhan_client: Any) -> float`: Asynchronously retrieves available balance from Dhan (availabelBalance field).
+- `find_optimal_strike(direction: str, full_chain: list) -> Tuple[Optional[int], Optional[str], Optional[float], Optional[float]]`: Scans the option chain to find the contract with delta absolute value between 0.45 and 0.55, picking the one closest to 0.45.
+- `process_fvg_calculation(signal: AresSignal, full_chain: list, dhan_client: Any) -> None`: Coordinates contract selection, capital fetching, and lot/premium SL/target calculations for the generated signal.
 
 ## Orchestration Layer (Engine)
 

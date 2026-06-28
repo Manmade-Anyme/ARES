@@ -12,6 +12,7 @@ from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple
 from alerts import send_discord, send_startup_alert, send_error_alert
 from ml_signal.collector import MLCollector
+from options_math import process_options_calculation
 
 # ANSI Color Codes for Premium Terminal UI
 G = "\033[92m"  # Green
@@ -48,6 +49,9 @@ def format_signal_console(signal, spot):
     print(f"   {W}SL    : {R}{signal.stop_loss:.2f} (Spot Ref){RESET}")
     print(f"   {W}Targets: T1={G}{signal.target_1:.2f}{W} | T2={G}{signal.target_2:.2f}{RESET}")
     print(f"   {W}Confidence: {B}{signal.confidence}{RESET}")
+    if getattr(signal, "suggested_lots", None) is not None:
+        print(f"   {W}Suggested Lots : {G}{signal.suggested_lots}{RESET} ({W}Capital: ₹{signal.capital:,.2f}{RESET} | {W}Risk: {signal.risk_pct:.1f}%{RESET})")
+        print(f"   {W}Option SL      : {R}₹{signal.option_sl:.2f}{RESET} | {W}Option Target: {G}₹{signal.option_target:.2f}{RESET} ({W}Premium: ₹{signal.option_premium:.2f}{RESET} | {W}Delta: {signal.option_delta:+.4f}{RESET})")
     print(f"   {W}Reasons:{RESET}")
     for r in signal.reasons:
         print(f"     {W}• {r}{RESET}")
@@ -192,6 +196,12 @@ async def run():
             
             # Process signal
             if signal:
+                # Run options calculations (sizing, optimal strike selection)
+                try:
+                    await process_options_calculation(signal, full_chain, price_fetcher.dhan)
+                except Exception as sizing_err:
+                    print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
+
                 format_signal_console(signal, spot)
                 try:
                     await storage.log_signal(signal, spot)
