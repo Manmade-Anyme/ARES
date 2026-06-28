@@ -131,6 +131,18 @@ class AnalyticsLogger:
             "entry_spot": float(spot)
         }
 
+        # Add Option Sizing calculations if populated
+        if getattr(signal, "suggested_lots", None) is not None:
+            market_context["options_sizing"] = {
+                "suggested_lots": signal.suggested_lots,
+                "option_sl": signal.option_sl,
+                "option_target": signal.option_target,
+                "capital": signal.capital,
+                "delta": signal.option_delta,
+                "premium": signal.option_premium,
+                "risk_pct": signal.risk_pct
+            }
+
         data = {
             "id": trade_id,
             "setup_type": signal.setup_type.value,

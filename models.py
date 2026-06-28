@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import random
 
 class SetupType(Enum):
@@ -57,6 +57,8 @@ class OptionRow:
     oi_change_pct: float
     gamma: float = 0.0
     theta: float = 0.0
+    delta: float = 0.0
+    vega: float = 0.0
 
 
 @dataclass
@@ -114,3 +116,10 @@ class AresSignal:
     strike_to_trade: int
     option_type: str
     signal_id: str = field(default_factory=lambda: f"{random.randint(0, 9999):04d}")
+    suggested_lots: Optional[int] = None
+    option_sl: Optional[float] = None
+    option_target: Optional[float] = None
+    capital: Optional[float] = None
+    option_delta: Optional[float] = None
+    option_premium: Optional[float] = None
+    risk_pct: Optional[float] = None

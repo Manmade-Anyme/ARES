@@ -10,7 +10,9 @@ from position_manager import PositionManager
 from config import settings
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple
-from alerts import send_discord, send_startup_alert, send_error_alert, send_debug_alert
+from alerts import send_discord, send_startup_alert, send_error_alert
+from ml_signal.collector import MLCollector
+from options_math import process_options_calculation
 
 # ANSI Color Codes for Premium Terminal UI
 G = "\033[92m"  # Green
@@ -47,6 +49,9 @@ def format_signal_console(signal, spot):
     print(f"   {W}SL    : {R}{signal.stop_loss:.2f} (Spot Ref){RESET}")
     print(f"   {W}Targets: T1={G}{signal.target_1:.2f}{W} | T2={G}{signal.target_2:.2f}{RESET}")
     print(f"   {W}Confidence: {B}{signal.confidence}{RESET}")
+    if getattr(signal, "suggested_lots", None) is not None:
+        print(f"   {W}Suggested Lots : {G}{signal.suggested_lots}{RESET} ({W}Capital: ₹{signal.capital:,.2f}{RESET} | {W}Risk: {signal.risk_pct:.1f}%{RESET})")
+        print(f"   {W}Option SL      : {R}₹{signal.option_sl:.2f}{RESET} | {W}Option Target: {G}₹{signal.option_target:.2f}{RESET} ({W}Premium: ₹{signal.option_premium:.2f}{RESET} | {W}Delta: {signal.option_delta:+.4f}{RESET})")
     print(f"   {W}Reasons:{RESET}")
     for r in signal.reasons:
         print(f"     {W}• {r}{RESET}")
@@ -80,6 +85,7 @@ async def run():
     level_fetcher = LevelFetcher()
     storage = Storage()
     position_manager = PositionManager()
+    ml_collector = MLCollector(settings.supabase_url, settings.supabase_key)
     
     # Make this dynamic via Yahoo Finance Oracle 
     try:
@@ -91,7 +97,16 @@ async def run():
     level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
     
     print_banner(pdh, pdl, profile_name)
-    await send_startup_alert(pdh, pdl, profile_name)
+
+    # Initialize ML Data Collection Logger
+    ml_table_ok = ml_collector.check_table_exists()
+    if ml_table_ok:
+        print(f"{G}[+] ML Data Collection Logger: {B}ACTIVE{RESET} (recording 50+ features per cycle)")
+    else:
+        print(f"{Y}[!] ML Data Collection Logger: table 'ml_collection' not found{RESET}")
+        print(f"{Y}    Run ml_signal/schema.sql in Supabase SQL Editor to enable.{RESET}")
+
+    await send_startup_alert(pdh, pdl, profile_name, ml_active=ml_table_ok)
 
     # Startup debug probe — confirms active config in Discord health channel
     debug_lines = [
@@ -104,6 +119,7 @@ async def run():
         f"COOLDOWN: {settings.signal_cooldown_minutes}min, SCAN_RANGE={settings.level_scan_range}",
     ]
     await send_debug_alert("\n".join(debug_lines))
+
 
     prev_iv = None
     last_vwap_reset_date = None
@@ -165,6 +181,21 @@ async def run():
             # Run the engine
             signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels)
 
+            # ML Data Collection: log feature snapshot for every cycle
+            ml_collector.snapshot(
+                candle=candle,
+                atm=atm,
+                full_chain=full_chain,
+                levels=levels,
+                spot=spot,
+                signal=signal,
+                pdh=pdh,
+                pdl=pdl,
+                is_expiry=is_expiry,
+                dte=None,
+                timestamp=now,
+            )
+
             # Debug probe — rate-limited to once per 5 min, sent to Discord health channel
             DEBUG_INTERVAL = 300  # 5 minutes
             if last_debug_alert_time is None or (now - last_debug_alert_time).total_seconds() >= DEBUG_INTERVAL:
@@ -206,11 +237,18 @@ async def run():
                 
             # Heartbeat logging every 15 minutes
             if last_heartbeat_time is None or (now - last_heartbeat_time).total_seconds() >= 900:
-                print(f"{C}[{now.strftime('%H:%M:%S')}] 💓 HEARTBEAT: ARES Engine active | Spot: {spot:.2f} | Buffers: {buffer_len}/{settings.candle_buffer_size}{RESET}", flush=True)
+                ml_stats = ml_collector.stats
+                print(f"{C}[{now.strftime('%H:%M:%S')}] 💓 HEARTBEAT: Spot={spot:.2f} | Buffers={buffer_len}/{settings.candle_buffer_size} | ML Snapshots={ml_stats['total_snapshots']} (Signals: {ml_stats['signals_recorded']}){RESET}", flush=True)
                 last_heartbeat_time = now
             
             # Process signal
             if signal:
+                # Run options calculations (sizing, optimal strike selection)
+                try:
+                    await process_options_calculation(signal, full_chain, price_fetcher.dhan)
+                except Exception as sizing_err:
+                    print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
+
                 format_signal_console(signal, spot)
                 try:
                     await storage.log_signal(signal, spot)

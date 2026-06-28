@@ -8,3 +8,4 @@
 | TASK-005 | 2026-05-06 | Dhan PDH/PDL Fetching | Approved |
 | TASK-006 | 2026-05-06 | Target Sorting Logic | Approved |
 | TASK-007 | 2026-05-06 | Trade Analytics Persistence | Approved |
+| TASK-009 | 2026-06-25 | ML Data Collection Pipeline | Approved |

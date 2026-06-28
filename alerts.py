@@ -17,6 +17,16 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     ist = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
     
+    sizing_str = ""
+    if getattr(signal, "suggested_lots", None) is not None:
+        sizing_str = f"""
+   📐 Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%):
+     • Option Entry Prem : ₹{signal.option_premium:.2f} (Delta: {signal.option_delta:+.4f})
+     • Calculated Lots   : {signal.suggested_lots} (Nifty Lot Size: {settings.nifty_lot_size})
+     • Option SL Price   : ₹{signal.option_sl:.2f}
+     • Option TP1 Target : ₹{signal.option_target:.2f}
+"""
+
     msg = f"""```diff
 {marker} {emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
    
@@ -27,7 +37,7 @@ def format_signal(signal: AresSignal, spot: float) -> str:
    📍 Spot  : {spot:.2f}
    ⚡ Trade : {signal.strike_to_trade} {signal.option_type}
    ⭐ Conf. : {signal.confidence}
-   
+{sizing_str}
    📝 Reasons:
 {reasons_str}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -51,13 +61,15 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         except Exception as e:
             print(f"[-] Discord signal alert failed: {type(e).__name__} - {e}")
 
-async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAULT") -> None:
+async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAULT", ml_active: bool = False) -> None:
     """
     Sends a startup message to Discord with the current PDH/PDL and status.
     """
     webhook_url = settings.discord_webhook_url
     if not webhook_url:
         return
+
+    ml_line = "+ [+] ML Data Collection : ACTIVE (recording 50+ features per cycle)" if ml_active else "+ [+] ML Data Collection : inactive (table not found)"
         
     msg = f"""```diff
 + =================================================================
@@ -69,6 +81,7 @@ async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAUL
 + [+] Session      : 09:15 to 23:30 IST
 + [+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals
 + [+] PDH / PDL    : {pdh:.2f} / {pdl:.2f}
++ {ml_line}
 + =================================================================
 ```"""
 
@@ -111,24 +124,6 @@ async def send_error_alert(error_msg: str) -> None:
         except Exception as e:
             print(f"[-] Discord error alert failed: {type(e).__name__} - {e}")
 
-async def send_debug_alert(msg: str) -> None:
-    """
-    Sends a debug/probe message to the health Discord channel.
-    Used for runtime diagnostics in Fly.io where stdout logs aren't accessible.
-    """
-    webhook_url = settings.discord_health_webhook_url or settings.discord_webhook_url
-    if not webhook_url:
-        return
-
-    payload = {"content": f"```\n{msg}\n```"}
-
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(webhook_url, json=payload)
-            response.raise_for_status()
-        except Exception as e:
-            print(f"[-] Discord debug alert failed: {type(e).__name__} - {e}")
-
 async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     """
     Sends an alert when an active trade state changes (e.g., T1 Hit, Trailing Stop triggered, SL Hit).
@@ -136,9 +131,10 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     if not settings.discord_webhook_url:
         return
 
-    # Color code based on direction and update type
-    color_marker = "+" if update_type in ["T1_HIT", "T2_HIT"] else "-"
-    icon = "🎯" if update_type in ["T1_HIT", "T2_HIT"] else "🛑"
+    # Color code based on direction
+    is_bullish = trade.get("direction") == "BULLISH"
+    color_marker = "+" if is_bullish else "-"
+    icon = "🐂 🟢" if is_bullish else "🐻 🔴"
     
     action_text = ""
     if update_type == "T1_HIT":

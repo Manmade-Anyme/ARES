@@ -55,6 +55,12 @@ class TuningConfig:
     entry_zone_offset_pts: float = 5.0
     level_scan_range: float = 500.0
 
+    # Options lot sizing calculations
+    risk_per_trade_pct: float = 10.0
+    nifty_lot_size: int = 65
+    default_capital: float = 100000.0
+
+
 
 # ─── The two profiles ────────────────────────────────────────────────────────
 

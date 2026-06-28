@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, AsyncMock, MagicMock
 from datetime import datetime, timezone, timedelta
 from models import AresSignal, SetupType, Direction
-from alerts import format_signal, send_trade_update
+from alerts import format_signal, send_trade_update, send_startup_alert
 
 class TestAlerts(unittest.TestCase):
 
@@ -67,6 +67,50 @@ class TestAlerts(unittest.TestCase):
         payload = call_args[1]["json"]
         content = payload["content"]
         self.assertIn("🕒 Time    : 16-Jun-2026 12:30:45 IST", content)
+
+    @patch('alerts.settings')
+    @patch('alerts.httpx.AsyncClient')
+    def test_send_startup_alert_with_ml_active(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        import asyncio
+        asyncio.run(send_startup_alert(pdh=24200.0, pdl=24000.0, profile_name="NON-EXPIRY", ml_active=True))
+
+        mock_client.post.assert_called_once()
+        call_args = mock_client.post.call_args
+        payload = call_args[1]["json"]
+        content = payload["content"]
+        self.assertIn("ML Data Collection : ACTIVE", content)
+
+    @patch('alerts.settings')
+    @patch('alerts.httpx.AsyncClient')
+    def test_send_startup_alert_with_ml_inactive(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        import asyncio
+        asyncio.run(send_startup_alert(pdh=24200.0, pdl=24000.0, profile_name="EXPIRY", ml_active=False))
+
+        mock_client.post.assert_called_once()
+        call_args = mock_client.post.call_args
+        payload = call_args[1]["json"]
+        content = payload["content"]
+        self.assertIn("ML Data Collection : inactive", content)
+        self.assertIn("EXPIRY DAY PROFILE", content)
+
+    @patch('alerts.settings')
+    @patch('alerts.httpx.AsyncClient')
+    def test_send_startup_alert_skips_when_no_webhook(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = ""
+
+        import asyncio
+        asyncio.run(send_startup_alert(pdh=24200.0, pdl=24000.0, ml_active=True))
+
+        mock_client_class.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
