@@ -21,7 +21,6 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     if getattr(signal, "suggested_lots", None) is not None:
         sizing_str = f"""
    📐 Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%):
-     • Available Capital : ₹{signal.capital:,.2f}
      • Option Entry Prem : ₹{signal.option_premium:.2f} (Delta: {signal.option_delta:+.4f})
      • Calculated Lots   : {signal.suggested_lots} (Nifty Lot Size: {settings.nifty_lot_size})
      • Option SL Price   : ₹{signal.option_sl:.2f}
