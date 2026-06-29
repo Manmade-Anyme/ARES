@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from models import OHLCVCandle, AresSignal, SetupType, Direction
 from config import settings
@@ -98,6 +98,63 @@ class OIWallDetector:
 
         return None
 
+    def _evaluate_confidence(
+        self,
+        candle: OHLCVCandle,
+        wall: Dict[str, Any],
+        direction: Direction
+    ) -> Tuple[str, List[str]]:
+        """
+        Evaluates setup conditions to determine confidence tier and detailed reasons.
+        """
+        strike = float(wall["strike"])
+        extra_reasons = []
+        
+        # 1. Wall Magnitude
+        oi_val = wall["ce_oi"] if direction == Direction.BEARISH else wall["pe_oi"]
+        if oi_val >= 1.5 * settings.oi_wall_min_oi:
+            extra_reasons.append("Massive wall size confirms strong barrier (>1.5x min)")
+            mag_score = 1
+        else:
+            mag_score = 0
+            
+        # 2. Active Defence (OI Growth)
+        oi_change_pct = wall["ce_oi_change_pct"] if direction == Direction.BEARISH else wall["pe_oi_change_pct"]
+        if oi_change_pct >= 1.5 * settings.oi_wall_min_oi_change_pct:
+            extra_reasons.append("Aggressive active defending by option writers (>1.5x min change)")
+            growth_score = 1
+        else:
+            growth_score = 0
+            
+        # 3. Exact Level Penetration
+        if direction == Direction.BEARISH:
+            pierced = candle.high >= strike
+        else:
+            pierced = candle.low <= strike
+            
+        if pierced:
+            extra_reasons.append("Price tested wall deeply / pierced the strike")
+            pierce_score = 1
+        else:
+            pierce_score = 0
+            
+        # 4. Wick Rejection
+        candle_range = candle.high - candle.low
+        wick_score = 0
+        if candle_range > 2.0:
+            if direction == Direction.BEARISH:
+                if (candle.high - max(candle.open, candle.close)) >= 0.4 * candle_range:
+                    extra_reasons.append("Candle showed heavy overhead supply (long upper wick)")
+                    wick_score = 1
+            else:
+                if (min(candle.open, candle.close) - candle.low) >= 0.4 * candle_range:
+                    extra_reasons.append("Candle showed strong absorption/buying tail (long lower wick)")
+                    wick_score = 1
+                    
+        score = mag_score + growth_score + pierce_score + wick_score
+        confidence = "HIGH" if score >= 2 else "MEDIUM"
+        return confidence, extra_reasons
+
     def _build_signal(
         self,
         candle: OHLCVCandle,
@@ -124,6 +181,9 @@ class OIWallDetector:
             "Option writers defended the level (OI did not drop)"
         ]
         
+        confidence, extra_reasons = self._evaluate_confidence(candle, wall, direction)
+        reasons.extend(extra_reasons)
+        
         if direction == Direction.BEARISH:
             stop_loss = strike + settings.oi_wall_stop_buffer  # Just beyond the wall
             target_1 = candle.close - settings.target_1_pts
@@ -144,7 +204,7 @@ class OIWallDetector:
             stop_loss=stop_loss,
             target_1=target_1,
             target_2=target_2,
-            confidence="HIGH",  # Writers defending a massive wall is inherently high confidence
+            confidence=confidence,
             reasons=reasons,
             timestamp=candle.timestamp,
             strike_to_trade=strike_to_trade,
