@@ -26,7 +26,7 @@ Every task must follow this workflow:
     - Update `CHANGELOG.md`.
     - Update documentation files.
     - Sync relevant notes to the Obsidian Vault (`~/Documents/Obsidian`).
-3.  **Commit & Push**: Commit with `feat([TASK_ID]): [Short Description]` and push the branch.
+3.  **Commit & Push**: Commit with `feat([TASK_ID]): [Detailed Description]` and push the branch.
 4.  **Raise PR**: Create a Pull Request using `gh pr create`. Print the PR URL and halt execution. Do not merge the PR yourself.
 5.  **Merge Cleanup**: Once the human merges the PR:
     - Switch to `main` and pull.
