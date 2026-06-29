@@ -2,12 +2,13 @@ import unittest
 from unittest.mock import patch, MagicMock
 from datetime import datetime
 from collections import deque
+import asyncio
 
 from ml_signal.collector import MLCollector
 from ml_signal.config import MLConfig
 
 
-class TestMLCollector(unittest.TestCase):
+class TestMLCollector(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.config = MLConfig()
@@ -70,7 +71,7 @@ class TestMLCollector(unittest.TestCase):
         self.assertFalse(result)
 
     @patch("ml_signal.collector.create_client")
-    def test_snapshot_basic(self, mock_create_client):
+    async def test_snapshot_basic(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_supabase.table().select().limit().execute.return_value = MagicMock(data=[])
         mock_create_client.return_value = mock_supabase
@@ -78,12 +79,25 @@ class TestMLCollector(unittest.TestCase):
         collector = MLCollector(self.url, self.key, self.config)
         candle = self._make_mock_candle()
         atm = self._make_mock_atm()
-        levels = self._make_mock_levels()
+        
+        # Test line 93-96 levels format variations (floats, dicts)
+        lvl_obj = MagicMock()
+        lvl_obj.price = 24200.0
+        levels = [
+            lvl_obj,
+            24000.0,
+            {"price": 23900.0}
+        ]
+
+        # Test line 68-78 compute totals from chain with filled values
+        full_chain = [
+            {"ce": {"oi": 50000}, "pe": {"oi": 60000}}
+        ]
 
         collector.snapshot(
             candle=candle,
             atm=atm,
-            full_chain=[],
+            full_chain=full_chain,
             levels=levels,
             spot=24120.0,
             signal=None,
@@ -91,13 +105,16 @@ class TestMLCollector(unittest.TestCase):
             pdl=24000.0,
             is_expiry=False,
         )
+        
+        # Give event loop tasks a brief moment to execute run_in_executor (covers line 224)
+        await asyncio.sleep(0.05)
 
         stats = collector.stats
         self.assertEqual(stats["total_snapshots"], 1)
         self.assertEqual(stats["signals_recorded"], 0)
 
     @patch("ml_signal.collector.create_client")
-    def test_snapshot_with_signal(self, mock_create_client):
+    async def test_snapshot_with_signal(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_supabase.table().select().limit().execute.return_value = MagicMock(data=[])
         mock_create_client.return_value = mock_supabase
@@ -123,13 +140,14 @@ class TestMLCollector(unittest.TestCase):
             pdl=None,
             is_expiry=False,
         )
+        await asyncio.sleep(0.05)
 
         stats = collector.stats
         self.assertEqual(stats["total_snapshots"], 1)
         self.assertEqual(stats["signals_recorded"], 1)
 
     @patch("ml_signal.collector.create_client")
-    def test_snapshot_insert_called(self, mock_create_client):
+    async def test_snapshot_insert_called(self, mock_create_client):
         mock_supabase = MagicMock()
         table_mock = MagicMock()
         mock_supabase.table.return_value = table_mock
@@ -150,12 +168,13 @@ class TestMLCollector(unittest.TestCase):
             pdl=None,
             is_expiry=False,
         )
+        await asyncio.sleep(0.05)
 
         mock_supabase.table.assert_called_once_with("ml_collection")
         self.assertTrue(table_mock.insert.called)
 
     @patch("ml_signal.collector.create_client")
-    def test_volume_history_maintained(self, mock_create_client):
+    async def test_volume_history_maintained(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_supabase.table.return_value = MagicMock()
         mock_create_client.return_value = mock_supabase
@@ -176,6 +195,7 @@ class TestMLCollector(unittest.TestCase):
                 pdl=None,
                 is_expiry=False,
             )
+        await asyncio.sleep(0.05)
 
         self.assertEqual(collector.stats["volume_history_size"], 3)
 
@@ -229,7 +249,7 @@ class TestMLCollector(unittest.TestCase):
         self.assertEqual(stats["iv_history_size"], 0)
 
     @patch("ml_signal.collector.create_client")
-    def test_snapshot_insert_error_does_not_raise(self, mock_create_client):
+    async def test_snapshot_insert_error_does_not_raise(self, mock_create_client):
         mock_supabase = MagicMock()
         table_mock = MagicMock()
         table_mock.insert.return_value = table_mock
@@ -253,6 +273,7 @@ class TestMLCollector(unittest.TestCase):
                 pdl=None,
                 is_expiry=False,
             )
+            await asyncio.sleep(0.05)
         except Exception:
             self.fail("snapshot() raised an exception on insert failure")
 
@@ -277,6 +298,29 @@ class TestMLCollector(unittest.TestCase):
         self.assertEqual(result["close"], 0)
         self.assertEqual(result["volume"], 0)
 
+    @patch("ml_signal.collector.create_client")
+    @patch("asyncio.get_running_loop")
+    async def test_snapshot_no_event_loop(self, mock_get_loop, mock_create_client):
+        mock_get_loop.side_effect = RuntimeError("No event loop")
+        mock_supabase = MagicMock()
+        mock_create_client.return_value = mock_supabase
+
+        collector = MLCollector(self.url, self.key, self.config)
+        candle = self._make_mock_candle()
+        atm = self._make_mock_atm()
+
+        collector.snapshot(
+            candle=candle,
+            atm=atm,
+            full_chain=[],
+            levels=[],
+            spot=24120.0,
+            signal=None,
+            pdh=None,
+            pdl=None,
+            is_expiry=False,
+        )
+        self.assertEqual(collector.stats["total_snapshots"], 1)
 
 if __name__ == '__main__':
     unittest.main()

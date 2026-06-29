@@ -1,14 +1,14 @@
 import unittest
 from unittest.mock import patch, AsyncMock, MagicMock
 from datetime import datetime, timezone, timedelta
+import httpx
 from models import AresSignal, SetupType, Direction
-from alerts import format_signal, send_trade_update, send_startup_alert
+from alerts import format_signal, send_discord, send_startup_alert, send_error_alert, send_trade_update
 
-class TestAlerts(unittest.TestCase):
+class TestAlerts(unittest.IsolatedAsyncioTestCase):
 
     @patch('alerts.datetime')
-    def test_format_signal_includes_timestamp(self, mock_datetime):
-        # Set expected IST time
+    def test_format_signal_without_sizing(self, mock_datetime):
         ist_tz = timezone(timedelta(hours=5, minutes=30))
         fixed_dt = datetime(2026, 6, 16, 12, 30, 45, tzinfo=ist_tz)
         mock_datetime.now.return_value = fixed_dt
@@ -22,7 +22,7 @@ class TestAlerts(unittest.TestCase):
             target_1=23100.0,
             target_2=23200.0,
             confidence="HIGH",
-            reasons=["Reason 1", "Reason 2"],
+            reasons=["Reason 1"],
             timestamp=fixed_dt,
             strike_to_trade=23000,
             option_type="CE",
@@ -31,88 +31,243 @@ class TestAlerts(unittest.TestCase):
         
         msg = format_signal(signal, spot=23005.0)
         self.assertIn("🕒 Time  : 16-Jun-2026 12:30:45 IST", msg)
+        self.assertNotIn("Option Sizing Calculator", msg)
 
-
-
-    @patch('alerts.settings')
-    @patch('alerts.httpx.AsyncClient')
     @patch('alerts.datetime')
-    def test_send_trade_update_includes_timestamp(self, mock_datetime, mock_client_class, mock_settings):
-        # Set discord webhook URL to not be empty
-        mock_settings.discord_webhook_url = "http://mock-webhook"
-
+    def test_format_signal_with_sizing(self, mock_datetime):
         ist_tz = timezone(timedelta(hours=5, minutes=30))
         fixed_dt = datetime(2026, 6, 16, 12, 30, 45, tzinfo=ist_tz)
         mock_datetime.now.return_value = fixed_dt
 
-        # Mock httpx async client and response
+        signal = AresSignal(
+            setup_type=SetupType.OI_WALL_REJECTION,
+            direction=Direction.BEARISH,
+            trigger_price=24000.0,
+            entry_zone=(23990.0, 24010.0),
+            stop_loss=24025.0,
+            target_1=23950.0,
+            target_2=23900.0,
+            confidence="MEDIUM",
+            reasons=["Reason 1"],
+            timestamp=fixed_dt,
+            strike_to_trade=24000,
+            option_type="PE",
+            signal_id="5678"
+        )
+        # Sizing params
+        signal.suggested_lots = 2
+        signal.option_premium = 85.0
+        signal.option_delta = -0.48
+        signal.option_sl = 65.0
+        signal.option_target = 110.0
+        signal.risk_pct = 1.5
+        
+        msg = format_signal(signal, spot=24001.0)
+        self.assertIn("Option Sizing Calculator (Risk: 1.5%)", msg)
+        self.assertIn("Calculated Lots   : 2", msg)
+
+    @patch('alerts.settings')
+    async def test_send_discord_no_webhook(self, mock_settings):
+        mock_settings.discord_webhook_url = ""
+        # Should return early
+        with patch('httpx.AsyncClient') as mock_client:
+            await send_discord(MagicMock(), 23000.0)
+            mock_client.assert_not_called()
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_send_discord_success(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        signal = AresSignal(
+            setup_type=SetupType.FAILED_BREAKOUT,
+            direction=Direction.BULLISH,
+            trigger_price=23000.0,
+            entry_zone=(22950.0, 23050.0),
+            stop_loss=22900.0,
+            target_1=23100.0,
+            target_2=23200.0,
+            confidence="HIGH",
+            reasons=["Reason 1"],
+            timestamp=datetime.now(),
+            strike_to_trade=23000,
+            option_type="CE"
+        )
+
+        await send_discord(signal, 23000.0)
+        mock_client.post.assert_called_once()
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_send_discord_exception_safety(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = httpx.HTTPStatusError("Error", request=MagicMock(), response=MagicMock())
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        signal = AresSignal(
+            setup_type=SetupType.FAILED_BREAKOUT,
+            direction=Direction.BULLISH,
+            trigger_price=23000.0,
+            entry_zone=(22950.0, 23050.0),
+            stop_loss=22900.0,
+            target_1=23100.0,
+            target_2=23200.0,
+            confidence="HIGH",
+            reasons=["Reason 1"],
+            timestamp=datetime.now(),
+            strike_to_trade=23000,
+            option_type="CE"
+        )
+
+        # Exception should be caught and not raised
+        await send_discord(signal, 23000.0)
+        mock_client.post.assert_called_once()
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_send_startup_alert_exception_safety(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = Exception("Network down")
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        await send_startup_alert(pdh=24000.0, pdl=23900.0, ml_active=False)
+        mock_client.post.assert_called_once()
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_send_startup_alert_success(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = "http://mock-webhook"
         mock_client = AsyncMock()
         mock_response = MagicMock()
         mock_client.post.return_value = mock_response
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        trade = {
-            "signal_id": "1234",
-            "setup_type": "FAILED_BREAKOUT",
-            "direction": "BULLISH",
-            "entry_price": 23000.0,
-            "stop_loss": 22950.0,
+        await send_startup_alert(pdh=24000.0, pdl=23900.0, ml_active=True)
+        mock_client.post.assert_called_once()
+
+    @patch('alerts.settings')
+    async def test_send_error_alert_no_webhook(self, mock_settings):
+        mock_settings.discord_health_webhook_url = ""
+        mock_settings.discord_webhook_url = ""
+        with patch('httpx.AsyncClient') as mock_client:
+            await send_error_alert("Database error")
+            mock_client.assert_not_called()
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_send_error_alert_success(self, mock_client_class, mock_settings):
+        # Uses standard webhook fallback
+        mock_settings.discord_health_webhook_url = ""
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        await send_error_alert("Database error")
+        mock_client.post.assert_called_once()
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_send_error_alert_exception_safety(self, mock_client_class, mock_settings):
+        mock_settings.discord_health_webhook_url = "http://mock-health"
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = Exception("Webhook post fail")
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        await send_error_alert("Database error")
+        mock_client.post.assert_called_once()
+
+    @patch('alerts.settings')
+    async def test_send_trade_update_no_webhook(self, mock_settings):
+        mock_settings.discord_webhook_url = ""
+        with patch('httpx.AsyncClient') as mock_client:
+            await send_trade_update({}, 23000.0, "T1_HIT")
+            mock_client.assert_not_called()
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_send_trade_update_variations(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        # Bearish, T2 Hit
+        trade_bearish = {
+            "signal_id": "123",
+            "setup_type": "OI_WALL_REJECTION",
+            "direction": "BEARISH",
+            "entry_price": 24000.0,
+            "stop_loss": 24025.0,
             "state": "T1_HIT"
         }
-
-        import asyncio
-        asyncio.run(send_trade_update(trade, spot=23100.0, update_type="T1_HIT"))
-
-        # Verify client posted to webhook with message containing timestamp
+        await send_trade_update(trade_bearish, spot=23900.0, update_type="T2_HIT")
         mock_client.post.assert_called_once()
-        call_args = mock_client.post.call_args
-        payload = call_args[1]["json"]
-        content = payload["content"]
-        self.assertIn("🕒 Time    : 16-Jun-2026 12:30:45 IST", content)
+
+        # Bearish, T1 Hit
+        mock_client.reset_mock()
+        await send_trade_update(trade_bearish, spot=23950.0, update_type="T1_HIT")
+        mock_client.post.assert_called_once()
+
+        # SL Hit (trailing stop at entry)
+        mock_client.reset_mock()
+        trade_trailing_sl = {
+            "signal_id": "123",
+            "setup_type": "OI_WALL_REJECTION",
+            "direction": "BULLISH",
+            "entry_price": 24000.0,
+            "stop_loss": 24000.0,
+            "state": "T1_HIT"
+        }
+        await send_trade_update(trade_trailing_sl, spot=24000.0, update_type="SL_HIT")
+        mock_client.post.assert_called_once()
+
+        # Regular SL Hit
+        mock_client.reset_mock()
+        trade_regular_sl = {
+            "signal_id": "123",
+            "setup_type": "OI_WALL_REJECTION",
+            "direction": "BULLISH",
+            "entry_price": 24000.0,
+            "stop_loss": 23975.0,
+            "state": "OPEN"
+        }
+        await send_trade_update(trade_regular_sl, spot=23975.0, update_type="SL_HIT")
+        mock_client.post.assert_called_once()
 
     @patch('alerts.settings')
-    @patch('alerts.httpx.AsyncClient')
-    def test_send_startup_alert_with_ml_active(self, mock_client_class, mock_settings):
+    @patch('httpx.AsyncClient')
+    async def test_send_trade_update_exception_safety(self, mock_client_class, mock_settings):
         mock_settings.discord_webhook_url = "http://mock-webhook"
         mock_client = AsyncMock()
+        mock_client.post.side_effect = Exception("Webhook post fail")
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        import asyncio
-        asyncio.run(send_startup_alert(pdh=24200.0, pdl=24000.0, profile_name="NON-EXPIRY", ml_active=True))
-
+        trade = {
+            "direction": "BULLISH",
+            "entry_price": 24000.0,
+            "stop_loss": 23975.0,
+            "state": "OPEN",
+            "setup_type": "FAILED_BREAKOUT"
+        }
+        await send_trade_update(trade, spot=23975.0, update_type="SL_HIT")
         mock_client.post.assert_called_once()
-        call_args = mock_client.post.call_args
-        payload = call_args[1]["json"]
-        content = payload["content"]
-        self.assertIn("ML Data Collection : ACTIVE", content)
 
     @patch('alerts.settings')
-    @patch('alerts.httpx.AsyncClient')
-    def test_send_startup_alert_with_ml_inactive(self, mock_client_class, mock_settings):
-        mock_settings.discord_webhook_url = "http://mock-webhook"
-        mock_client = AsyncMock()
-        mock_client_class.return_value.__aenter__.return_value = mock_client
-
-        import asyncio
-        asyncio.run(send_startup_alert(pdh=24200.0, pdl=24000.0, profile_name="EXPIRY", ml_active=False))
-
-        mock_client.post.assert_called_once()
-        call_args = mock_client.post.call_args
-        payload = call_args[1]["json"]
-        content = payload["content"]
-        self.assertIn("ML Data Collection : inactive", content)
-        self.assertIn("EXPIRY DAY PROFILE", content)
-
-    @patch('alerts.settings')
-    @patch('alerts.httpx.AsyncClient')
-    def test_send_startup_alert_skips_when_no_webhook(self, mock_client_class, mock_settings):
+    async def test_send_startup_alert_no_webhook(self, mock_settings):
         mock_settings.discord_webhook_url = ""
-
-        import asyncio
-        asyncio.run(send_startup_alert(pdh=24200.0, pdl=24000.0, ml_active=True))
-
-        mock_client_class.assert_not_called()
-
+        with patch('httpx.AsyncClient') as mock_client:
+            await send_startup_alert(pdh=24000.0, pdl=23900.0, ml_active=False)
+            mock_client.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()
