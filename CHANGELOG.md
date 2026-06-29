@@ -5,6 +5,7 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **OI Wall Dynamic Confidence Scoring**: Implemented a 4-point dynamic scoring logic for the `OIWallDetector` setup. Confidence is evaluated dynamically based on wall magnitude, active OI building, strike penetration, and intraday wick rejections. Sets confidence to `HIGH` if score >= 2, else `MEDIUM`.
 - **FVG Options Lot Sizing & Delta Strike Selection**: Integrated options contract risk management calculations and delta-based strike selection (`options_math.py`). The system now scans the option chain to select the contract with absolute delta closest to 0.45, fetches available trading balance from Dhan HQ API (`availabelBalance`), suggests lots to trade (taking risk parameters and lot size of 65 into account), formats calculations in Discord signals, and logs them in Supabase under `reasons` and `market_context`.
 - **Persistent Position Management**: Introduced a Supabase-backed `PositionManager` to track active trades across sessions. This includes loading daily trades into memory on startup and pushing updates to the database to preserve state.
 - **Dynamic Trailing Stops**: Evaluated on every tick against live spot prices. When Target 1 (T1) is reached, the stop loss is automatically trailed to the entry price to secure risk-free trades.
