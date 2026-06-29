@@ -1,25 +1,23 @@
 # Session Checkpoint
-**Date:** 2026-05-07
-**Session:** #3
+**Date:** 2026-06-29
+**Session:** #4
 
 ## Completed This Session
-- **Deterministic Target Sorting** — Refined `FailedBreakoutDetector` and `ExhaustionDetector` to ensure Target 1 (T1) is always the closer target to the entry price.
-- **Target Proximity Filtering** — Implemented a minimum 20-point distance check for structural targets (supports/resistances) in both detectors.
-- **ADR Task-006: Target Management** — Documented the architectural decision for target sorting and proximity filtering.
-- **Documentation Sync** — Updated `README.md` and `CHANGELOG.md` to reflect the new target selection rules.
+- **Decoupled Option Sizing Details** — Removed the `Option Sizing` info string from the runtime `reasons` list of the signal. This resolves the duplicate information issue in the Discord and console formatted alerts.
+- **Persistence Layer Calculations** — Moved the construction and appending of the `Option Sizing` info string directly into the database insertion layers (`DatabaseLogger` and `AnalyticsLogger`) so it continues to populate `reasons` and `market_context` in Supabase correctly.
+- **Test Alignment** — Updated options calculation and alert formatting unit tests to match the new decoupled reasons list behavior.
 
 ## Open Tasks
 - [ ] Monitor live signal accuracy during the next NSE session.
-- [ ] Verify the automatic stop-loss trailing logic in a live trade.
-- [ ] Review if the 20-point proximity filter should be made a configurable environment variable.
+- [ ] Verify database insertions of decoupled option sizing details during live signals.
 
 ## Blockers
 - None.
 
 ## Agent States
-- **Architect**: Optimized target selection logic for predictability and Risk/Reward consistency.
-- **Documentation Agent**: Updated ADR-006, README, and CHANGELOG; added descriptive docstrings to detectors.
-- **Product Manager**: Updated session checkpoint and verified documentation alignment.
+- **Architect**: Decoupled option sizing logic from the core reasons block to optimize presentation layer formatting.
+- **Documentation Agent**: Updated session checkpoint, CHANGELOG, and Obsidian documentation notes (`07_Storage.md`, `11_Options_Math.md`).
+- **Product Manager**: Verified database persistence compliance and updated user alert formats.
 
 ## Resume Instructions
-The system has improved signal quality by ensuring profit targets are both predictable (T1 is nearest) and significant (min 20-point distance). Next session should focus on observing how these filters impact the number of valid signals during market volatility.
+The system has resolved the duplicate option sizing display on Discord/console by separating representation from database persistence. Future runs should verify that the Supabase `ares_signals` and `trade_analytics` tables still correctly log the sizing details under `reasons`.

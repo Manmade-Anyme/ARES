@@ -54,6 +54,14 @@ class Storage:
             spot: The current NIFTY spot price when the signal was generated.
         """
         def _insert():
+            reasons = list(signal.reasons)
+            if getattr(signal, "suggested_lots", None) is not None:
+                reasons.append(
+                    f"Option Sizing: {signal.suggested_lots} lots suggested | "
+                    f"Capital: ₹{signal.capital:,.2f} | Risk: {signal.risk_pct:.1f}% | "
+                    f"Option SL: ₹{signal.option_sl:.2f} | Option Target: ₹{signal.option_target:.2f} | "
+                    f"Premium: ₹{signal.option_premium:.2f} | Delta: {signal.option_delta:+.4f}"
+                )
             data = {
                 "setup_type": signal.setup_type.value,
                 "direction": signal.direction.value,
@@ -65,7 +73,7 @@ class Storage:
                 "target_2": signal.target_2,
                 "strike": signal.strike_to_trade,
                 "option_type": signal.option_type,
-                "reasons": signal.reasons,  # Supabase handles list -> jsonb serialization
+                "reasons": reasons,  # Supabase handles list -> jsonb serialization
                 "timestamp": signal.timestamp.isoformat()
             }
             # Execute the insert
@@ -124,8 +132,17 @@ class AnalyticsLogger:
             except Exception as e:
                 print(f"AnalyticsLogger: Failed to parse OI data for entry: {e}")
 
+        db_reasons = list(signal.reasons)
+        if getattr(signal, "suggested_lots", None) is not None:
+            db_reasons.append(
+                f"Option Sizing: {signal.suggested_lots} lots suggested | "
+                f"Capital: ₹{signal.capital:,.2f} | Risk: {signal.risk_pct:.1f}% | "
+                f"Option SL: ₹{signal.option_sl:.2f} | Option Target: ₹{signal.option_target:.2f} | "
+                f"Premium: ₹{signal.option_premium:.2f} | Delta: {signal.option_delta:+.4f}"
+            )
+
         market_context = {
-            "reasons": signal.reasons,
+            "reasons": db_reasons,
             "spot_at_signal": float(signal.trigger_price),
             "confidence": signal.confidence,
             "entry_spot": float(spot)

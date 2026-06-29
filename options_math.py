@@ -142,11 +142,5 @@ async def process_options_calculation(signal: AresSignal, full_chain: list, dhan
     signal.option_premium = ltp
     signal.risk_pct = risk_pct
 
-    # Append to reasons list for database persistence
-    signal.reasons.append(
-        f"Option Sizing: {adjusted_lots} lots suggested | "
-        f"Capital: ₹{cap_val:,.2f} | Risk: {risk_pct:.1f}% | "
-        f"Option SL: ₹{opt_sl_price:.2f} | Option Target: ₹{opt_tp_price:.2f} | "
-        f"Premium: ₹{ltp:.2f} | Delta: {delta:+.4f}"
-    )
+
 
