@@ -32,6 +32,8 @@ class TestAlerts(unittest.TestCase):
         msg = format_signal(signal, spot=23005.0)
         self.assertIn("🕒 Time  : 16-Jun-2026 12:30:45 IST", msg)
 
+
+
     @patch('alerts.settings')
     @patch('alerts.httpx.AsyncClient')
     @patch('alerts.datetime')

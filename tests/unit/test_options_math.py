@@ -98,4 +98,4 @@ class TestOptionsMath(unittest.TestCase):
         self.assertAlmostEqual(signal.option_sl, 82.8 - (27.75 * 0.45982), places=4)
         self.assertAlmostEqual(signal.option_target, 82.8 + (70.0 * 0.45982), places=4)
         self.assertEqual(signal.suggested_lots, 1)
-        self.assertTrue(any("Option Sizing: 1 lots suggested" in r for r in signal.reasons))
+        self.assertFalse(any("Option Sizing" in r for r in signal.reasons))
