@@ -98,18 +98,24 @@ class FailedBreakoutDetector:
             closed_back = candle.close < self.active.level
             writers_holding = atm_ce_oi >= atm_ce_oi_prev
             direction = Direction.BEARISH
+            oi_change = ((atm_ce_oi - atm_ce_oi_prev) / atm_ce_oi_prev * 100.0) if atm_ce_oi_prev > 0 else 0.0
+            deep_close = (self.active.level - candle.close) >= 5.0
         else:
             closed_back = candle.close > self.active.level
             writers_holding = atm_pe_oi >= atm_pe_oi_prev
             direction = Direction.BULLISH
+            oi_change = ((atm_pe_oi - atm_pe_oi_prev) / atm_pe_oi_prev * 100.0) if atm_pe_oi_prev > 0 else 0.0
+            deep_close = (candle.close - self.active.level) >= 5.0
 
         weak_volume = self.active.breakout_candle.volume < (avg_volume * settings.breakout_weak_volume_ratio)
         iv_falling = iv_change_pct < settings.breakout_iv_falling_threshold
+        writers_active = oi_change >= 3.0
         
-        # Score is the sum of True conditions
-        score = sum([closed_back, writers_holding, weak_volume, iv_falling])
+        # Score is the sum of True conditions (scale of 0 to 6)
+        score = sum([closed_back, writers_holding, weak_volume, iv_falling, writers_active, deep_close])
 
         # If it closed back and meets the minimum failure score, trigger the signal
+        # Note: breakout_failure_min_score defaults to 2, which fits our 6-point scale too
         if closed_back and score >= settings.breakout_failure_min_score:
             signal = self._build_signal(
                 candle=candle,
@@ -119,6 +125,8 @@ class FailedBreakoutDetector:
                 weak_vol=weak_volume,
                 iv_falling=iv_falling,
                 writers_held=writers_holding,
+                writers_active=writers_active,
+                deep_close=deep_close,
                 levels=levels
             )
             self.active = None  # Reset state after generating signal
@@ -135,6 +143,8 @@ class FailedBreakoutDetector:
         weak_vol: bool,
         iv_falling: bool,
         writers_held: bool,
+        writers_active: bool,
+        deep_close: bool,
         levels: List[ResistanceLevel]
     ) -> AresSignal:
         """
@@ -147,7 +157,7 @@ class FailedBreakoutDetector:
         4. Deterministic sorting to ensure Target 1 (T1) is always the closer target,
            which is critical for the Position Manager's trailing stop logic.
         """
-        confidence = "HIGH" if score >= 3 else "MEDIUM"
+        confidence = "HIGH" if score >= 4 else "MEDIUM"
         
         # Dynamically build reasons
         reasons = [f"Price closed back past level {level}"]
@@ -157,6 +167,10 @@ class FailedBreakoutDetector:
             reasons.append("IV is dropping rapidly (IV Crush)")
         if writers_held:
             reasons.append("Option writers did not cover their positions")
+        if writers_active:
+            reasons.append("Option writers actively defended and added positions (>=3% OI growth)")
+        if deep_close:
+            reasons.append("Price closed back deeply past level (>=5.0 points)")
             
         # --- Dynamic Target Selection ---
         target_1 = None

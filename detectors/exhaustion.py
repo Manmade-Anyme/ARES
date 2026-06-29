@@ -97,6 +97,32 @@ class ExhaustionDetector:
         """
         vol_ratio = candle.volume / avg_vol if avg_vol > 0 else 0
         
+        # 1. Extreme Volume Climax (1.5x of threshold)
+        extreme_volume = candle.volume >= 1.5 * avg_vol * settings.exhaustion_volume_multiplier
+        
+        # 2. Extreme Doji Body Ratio (0.5x of threshold)
+        body = abs(candle.close - candle.open)
+        candle_range = candle.high - candle.low
+        extreme_doji = candle_range > 0 and (body / candle_range) <= 0.5 * settings.exhaustion_body_ratio
+        
+        # 3. IV Climax
+        iv_panic = iv_spiked
+        
+        # 4. Structural Level Match (within 10 points)
+        near_level = False
+        for lvl in levels:
+            if direction == Direction.BEARISH:
+                if abs(lvl.price - candle.high) <= 10.0:
+                    near_level = True
+                    break
+            else:
+                if abs(lvl.price - candle.low) <= 10.0:
+                    near_level = True
+                    break
+                    
+        score = sum([extreme_volume, extreme_doji, iv_panic, near_level])
+        confidence = "HIGH" if score >= 2 else "MEDIUM"
+        
         time_str = candle.timestamp.strftime("%I:%M%p").lower()
         # Remove leading zero from hour if present (e.g., 09:15am -> 9:15am)
         if time_str.startswith("0"):
@@ -107,8 +133,14 @@ class ExhaustionDetector:
             f"Candle formed a doji-like indecision pattern at {time_str}"
         ]
         
+        if extreme_volume:
+            reasons.append("Extreme climactic volume spike confirms high selling/buying pressure")
+        if extreme_doji:
+            reasons.append("Extreme doji-like body ratio confirms high price indecision")
         if iv_spiked:
             reasons.append("Sudden spike in Implied Volatility (IV) confirmed panic/exhaustion")
+        if near_level:
+            reasons.append("Exhaustion occurred at a significant key structural level")
             
         # --- Dynamic Target Selection ---
         target_1 = None
@@ -155,7 +187,7 @@ class ExhaustionDetector:
                 target_1 = candle.close + settings.target_1_pts
             if not target_2 or abs(target_2 - candle.close) < 30:
                 target_2 = candle.close + settings.target_2_pts
-
+ 
         # Ensure correct ordering (T1 is closer to entry than T2)
         if direction == Direction.BEARISH and target_1 < target_2:
             target_1, target_2 = target_2, target_1
@@ -163,10 +195,10 @@ class ExhaustionDetector:
         elif direction == Direction.BULLISH and target_1 > target_2:
             target_1, target_2 = target_2, target_1
             reasons = [r.replace("Target 1", "TEMP").replace("Target 2", "Target 1").replace("TEMP", "Target 2") for r in reasons]
-
+ 
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)
         strike_to_trade = int(round(candle.close / settings.strike_interval) * settings.strike_interval)
-
+ 
         return AresSignal(
             setup_type=SetupType.EXHAUSTION_REVERSAL,
             direction=direction,
@@ -175,7 +207,7 @@ class ExhaustionDetector:
             stop_loss=stop_loss,
             target_1=target_1,
             target_2=target_2,
-            confidence="MEDIUM",  # Exhaustion setups are inherently trickier to time perfectly
+            confidence=confidence,
             reasons=reasons,
             timestamp=candle.timestamp,
             strike_to_trade=strike_to_trade,
