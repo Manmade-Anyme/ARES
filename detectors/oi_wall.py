@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict, Any, Tuple
 
-from models import OHLCVCandle, AresSignal, SetupType, Direction
+from models import OHLCVCandle, AresSignal, SetupType, Direction, ResistanceLevel
 from config import settings
 
 
@@ -18,7 +18,7 @@ class OIWallDetector:
     the current candle and the full option chain.
     """
 
-    def detect(self, spot: float, full_chain: List[Dict[str, Any]], candle: OHLCVCandle) -> Optional[AresSignal]:
+    def detect(self, spot: float, full_chain: List[Dict[str, Any]], candle: OHLCVCandle, levels: List[ResistanceLevel]) -> Optional[AresSignal]:
         """
         Scan the option chain for nearby OI walls and check if the current candle
         shows a rejection or bounce confirming the wall's defense.
@@ -27,6 +27,7 @@ class OIWallDetector:
             spot: The current NIFTY spot price.
             full_chain: The full option chain from OIFetcher.
             candle: The latest closed 1-minute OHLCV candle.
+            levels: Current key structural support and resistance levels.
             
         Returns:
             An AresSignal if a rejection/bounce is confirmed, otherwise None.
@@ -74,7 +75,8 @@ class OIWallDetector:
                     spot=spot,
                     wall=nearest_ce_wall,
                     direction=Direction.BEARISH,
-                    option_type="PE"
+                    option_type="PE",
+                    levels=levels
                 )
 
         # 4. PE wall bounce check (Bullish setup -> buy CE)
@@ -93,7 +95,8 @@ class OIWallDetector:
                     spot=spot,
                     wall=nearest_pe_wall,
                     direction=Direction.BULLISH,
-                    option_type="CE"
+                    option_type="CE",
+                    levels=levels
                 )
 
         return None
@@ -161,7 +164,8 @@ class OIWallDetector:
         spot: float,
         wall: Dict[str, Any],
         direction: Direction,
-        option_type: str
+        option_type: str,
+        levels: List[ResistanceLevel]
     ) -> AresSignal:
         """
         Constructs the AresSignal for an OI Wall rejection or bounce.
@@ -184,14 +188,57 @@ class OIWallDetector:
         confidence, extra_reasons = self._evaluate_confidence(candle, wall, direction)
         reasons.extend(extra_reasons)
         
+        # --- Dynamic Target Selection ---
+        target_1 = None
+        target_2 = None
+
         if direction == Direction.BEARISH:
             stop_loss = strike + settings.oi_wall_stop_buffer  # Just beyond the wall
-            target_1 = candle.close - settings.target_1_pts
-            target_2 = candle.close - settings.target_2_pts
+            
+            # Find supports below spot
+            supports = sorted([lvl.price for lvl in levels if lvl.price < candle.close], reverse=True)
+            # Filter out levels within 20 points of entry
+            supports = [s for s in supports if abs(s - candle.close) >= 20]
+            
+            if len(supports) >= 1:
+                target_1 = supports[0]
+                reasons.append(f"Target 1 set at structural support: {target_1:.2f}")
+            if len(supports) >= 2:
+                target_2 = supports[1]
+                reasons.append(f"Target 2 set at structural support: {target_2:.2f}")
+            
+            # Fallback to fixed points if levels not found or too close
+            if not target_1 or abs(target_1 - candle.close) < 15:
+                target_1 = candle.close - settings.target_1_pts
+            if not target_2 or abs(target_2 - candle.close) < 30:
+                target_2 = candle.close - settings.target_2_pts
         else:
             stop_loss = strike - settings.oi_wall_stop_buffer  # Just beyond the wall
-            target_1 = candle.close + settings.target_1_pts
-            target_2 = candle.close + settings.target_2_pts
+            
+            # Find resistances above spot
+            resistances = sorted([lvl.price for lvl in levels if lvl.price > candle.close])
+            # Filter out levels within 20 points of entry
+            resistances = [r for r in resistances if abs(r - candle.close) >= 20]
+            
+            if len(resistances) >= 1:
+                target_1 = resistances[0]
+                reasons.append(f"Target 1 set at structural resistance: {target_1:.2f}")
+            if len(resistances) >= 2:
+                target_2 = resistances[1]
+                reasons.append(f"Target 2 set at structural resistance: {target_2:.2f}")
+                
+            if not target_1 or abs(target_1 - candle.close) < 15:
+                target_1 = candle.close + settings.target_1_pts
+            if not target_2 or abs(target_2 - candle.close) < 30:
+                target_2 = candle.close + settings.target_2_pts
+
+        # Ensure correct ordering (T1 is closer to entry than T2)
+        if direction == Direction.BEARISH and target_1 < target_2:
+            target_1, target_2 = target_2, target_1
+            reasons = [r.replace("Target 1", "TEMP").replace("Target 2", "Target 1").replace("TEMP", "Target 2") for r in reasons]
+        elif direction == Direction.BULLISH and target_1 > target_2:
+            target_1, target_2 = target_2, target_1
+            reasons = [r.replace("Target 1", "TEMP").replace("Target 2", "Target 1").replace("TEMP", "Target 2") for r in reasons]
 
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)
         strike_to_trade = int(round(spot / settings.strike_interval) * settings.strike_interval)
