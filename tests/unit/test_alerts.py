@@ -30,7 +30,13 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         )
         
         msg = format_signal(signal, spot=23005.0)
-        self.assertIn("🕒 Time  : 16-Jun-2026 12:30:45 IST", msg)
+        self.assertIn(":clock3: Time  : 16-Jun-2026 12:30:45 IST", msg)
+        self.assertIn(":round_pushpin: Spot  : 23005.00", msg)
+        self.assertIn(":white_check_mark: Entry : **22950.00 - 23050.00**", msg)
+        self.assertIn(":octagonal_sign: SL    : **22900.00 **(Spot Ref)", msg)
+        self.assertIn(":dart: Target: **T1=23100.00 | T2=23200.00**", msg)
+        self.assertIn(":zap: Trade : **23000 CE**", msg)
+        self.assertIn(":star: Confidence : HIGH", msg)
         self.assertNotIn("Option Sizing Calculator", msg)
 
     @patch('alerts.datetime')
@@ -63,8 +69,11 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         signal.risk_pct = 1.5
         
         msg = format_signal(signal, spot=24001.0)
-        self.assertIn("Option Sizing Calculator (Risk: 1.5%)", msg)
-        self.assertIn("Calculated Lots   : 2", msg)
+        self.assertIn(":triangular_ruler: Option Sizing Calculator (Risk: 1.5%) -", msg)
+        self.assertIn(":1234: Lots   : **2** (Nifty Lot Size: 65)", msg)
+        self.assertIn(":white_check_mark: Entry : **₹ 85.00** (Delta: -0.4800)", msg)
+        self.assertIn(":octagonal_sign: SL  : **₹ 65.00**", msg)
+        self.assertIn(":dart: Target : **₹ 110.00**", msg)
 
     @patch('alerts.settings')
     async def test_send_discord_no_webhook(self, mock_settings):
