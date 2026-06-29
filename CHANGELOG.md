@@ -5,6 +5,10 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Project Test Coverage Upgrades**: Upgraded the project unit test suite coverage to 100% across all target logic files, including `alerts.py`, `options_math.py`, `storage.py`, `position_manager.py`, `fetchers/price_fetcher.py`, `ml_signal/collector.py`, and `detectors/exhaustion.py`.
+- **Database/Supabase Test Isolation**: Implemented a pre-import module reloading patch mechanism to prevent tests from executing real database calls to Supabase, mock-testing all persistence pipelines.
+- **Dhan API Mock Testing**: Refactored the price fetcher unit tests to isolate the DhanHQ API client, testing all transient retry mechanisms, API failure handlers, and timestamp parsing formats.
+- **Robust Exception Coverage**: Added comprehensive test cases covering event loop runtime errors, empty/null API responses, date parsing errors, and structural level doji wick checks.
 - **Failed Breakout 6-Point Confidence Upgrades**: Refactored the `FailedBreakoutDetector` scoring to support a 6-point evaluation scale, incorporating active OI growth ($\ge 3.0\%$) and deep close-back penetration ($\ge 5.0$ points). Sets confidence to `HIGH` if score >= 4, else `MEDIUM`.
 - **Exhaustion Reversal Dynamic Confidence Scoring**: Upgraded the `ExhaustionDetector` from static `MEDIUM` confidence to a dynamic 4-point scoring scale evaluating extreme volume climaxes, extreme doji body ratios, panic IV spikes, and structural level testing. Sets confidence to `HIGH` if score >= 2, else `MEDIUM`.
 - **OI Wall Dynamic Confidence Scoring**: Implemented a 4-point dynamic scoring logic for the `OIWallDetector` setup. Confidence is evaluated dynamically based on wall magnitude, active OI building, strike penetration, and intraday wick rejections. Sets confidence to `HIGH` if score >= 2, else `MEDIUM`.
