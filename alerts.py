@@ -11,10 +11,7 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     
     # Use diff block markers for color coding (+ for green/bullish, - for red/bearish)
     marker = "+" if signal.direction.value == "BULLISH" else "-"
-    if signal.direction.value == "BULLISH":
-        emoji = ":rotating_light: :ox: :green_circle:"
-    else:
-        emoji = ":rotating_light: :bear: :red_circle:"
+    emoji = "🚨 🐂 🟢" if signal.direction.value == "BULLISH" else "🚨 🐻 🔴"
     
     # Get current IST time
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -24,24 +21,24 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     if getattr(signal, "suggested_lots", None) is not None:
         sizing_str = f"""
 
-   :triangular_ruler: Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%) -
-   :1234: Lots   : **{signal.suggested_lots}** (Nifty Lot Size: {settings.nifty_lot_size})
-   :white_check_mark: Entry : **₹ {signal.option_premium:.2f}** (Delta: {signal.option_delta:+.4f})
-   :octagonal_sign: SL  : **₹ {signal.option_sl:.2f}**
-   :dart: Target : **₹ {signal.option_target:.2f}**"""
+   📐 Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%) -
+   🔢 Lots   : **{signal.suggested_lots}** (Nifty Lot Size: {settings.nifty_lot_size})
+   ✅ Entry : **₹ {signal.option_premium:.2f}** (Delta: {signal.option_delta:+.4f})
+   🛑 SL  : **₹ {signal.option_sl:.2f}**
+   🎯 Target : **₹ {signal.option_target:.2f}**"""
 
     msg = f"""```diff
 {marker} {emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
    
-   :clock3: Time  : {now_ist} IST
-   :round_pushpin: Spot  : {spot:.2f}
-   :white_check_mark: Entry : **{signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}**
-   :octagonal_sign: SL    : **{signal.stop_loss:.2f} **(Spot Ref)
-   :dart: Target: **T1={signal.target_1:.2f} | T2={signal.target_2:.2f}**
-   :zap: Trade : **{signal.strike_to_trade} {signal.option_type}**
-   :star: Confidence : {signal.confidence}{sizing_str}
+   🕒 Time  : {now_ist} IST
+   📍 Spot  : {spot:.2f}
+   ✅ Entry : **{signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}**
+   🛑 SL    : **{signal.stop_loss:.2f} **(Spot Ref)
+   🎯 Target: **T1={signal.target_1:.2f} | T2={signal.target_2:.2f}**
+   ⚡ Trade : **{signal.strike_to_trade} {signal.option_type}**
+   ⭐ Confidence : {signal.confidence}{sizing_str}
 
-   :pencil: Reasons:
+   📝 Reasons:
 {reasons_str}
 ```"""
     return msg
@@ -136,7 +133,7 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     # Color code based on direction
     is_bullish = trade.get("direction") == "BULLISH"
     color_marker = "+" if is_bullish else "-"
-    icon = ":rotating_light: :ox: :green_circle:" if is_bullish else ":rotating_light: :bear: :red_circle:"
+    icon = "🚨 🐂 🟢" if is_bullish else "🚨 🐻 🔴"
     
     action_text = ""
     if update_type == "T1_HIT":
@@ -156,12 +153,12 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     msg = f"""```diff
 {color_marker} {icon} #{trade.get('signal_id', '0000')} TRADE UPDATE: {trade['setup_type']} ({trade['direction']})
    
-   :clock3: Time    : {now_ist} IST
-   :round_pushpin: Spot    : {spot:.2f}
-   :zap: Action  : {action_text}
-   :white_check_mark: Entry   : **{trade['entry_price']:.2f}**
-   :octagonal_sign: New SL  : **{trade['stop_loss']:.2f}**
-   :star: Status  : **{trade['state']}**
+   🕒 Time    : {now_ist} IST
+   📍 Spot    : {spot:.2f}
+   ⚡ Action  : {action_text}
+   ✅ Entry   : **{trade['entry_price']:.2f}**
+   🛑 New SL  : **{trade['stop_loss']:.2f}**
+   ⭐ Status  : **{trade['state']}**
 ```"""
 
     payload = {"content": msg}
