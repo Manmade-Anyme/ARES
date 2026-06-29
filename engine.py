@@ -103,7 +103,8 @@ class AresEngine:
             self.oi_wall_detector.detect(
                 spot=atm.spot_price,
                 full_chain=full_chain,
-                candle=candle
+                candle=candle,
+                levels=levels
             )
             or
             self.exhaustion_detector.update(
