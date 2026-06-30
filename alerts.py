@@ -29,7 +29,7 @@ def format_signal(signal: AresSignal, spot: float) -> str:
 
     msg = f"""```diff
 {marker} {emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
-   
+```
    🕒 Time  : {now_ist} IST
    📍 Spot  : {spot:.2f}
    ✅ Entry : **{signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}**
@@ -39,8 +39,7 @@ def format_signal(signal: AresSignal, spot: float) -> str:
    ⭐ Confidence : {signal.confidence}{sizing_str}
 
    📝 Reasons:
-{reasons_str}
-```"""
+{reasons_str}"""
     return msg
 
 async def send_discord(signal: AresSignal, spot: float) -> None:
@@ -152,14 +151,13 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
 
     msg = f"""```diff
 {color_marker} {icon} #{trade.get('signal_id', '0000')} TRADE UPDATE: {trade['setup_type']} ({trade['direction']})
-   
+```
    🕒 Time    : {now_ist} IST
    📍 Spot    : {spot:.2f}
    ⚡ Action  : {action_text}
    ✅ Entry   : **{trade['entry_price']:.2f}**
    🛑 New SL  : **{trade['stop_loss']:.2f}**
-   ⭐ Status  : **{trade['state']}**
-```"""
+   ⭐ Status  : **{trade['state']}**"""
 
     payload = {"content": msg}
 
