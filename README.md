@@ -19,32 +19,65 @@ ARES follows a strict **five-layer architecture** designed for modularity, perfo
 
 ---
 
-## 🎯 Detection Strategies
+## 🎯 Detection Strategies & Confidence Scoring
 
-ARES evaluates three distinct market phenomena in strict **short-circuit priority order**:
+ARES evaluates three distinct market phenomena in strict **short-circuit priority order**, utilizing dynamic confidence scoring matrices:
 
 ### 1. 🚨 Failed Breakout (Highest Priority)
 *   **Logic**: Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically from Dhan Historical API or massive OI wall) but fails to hold.
-*   **Dynamic Targets:** Automatically sets Profit Targets (T1/T2) at the next available structural support/resistance levels.
-*   **Scoring:** Evaluated on a 4-point scale:
+*   **Dynamic Targets**: Automatically sets Profit Targets (T1/T2) at the next available structural support/resistance levels.
+*   **Dynamic Scoring (6-Point Matrix)**:
     *   `Closed Back`: Price returned past the level (Required).
     *   `Weak Volume`: Breakout candle volume < Rolling Average.
     *   `IV Crush`: Dropping Implied Volatility during the cross.
     *   `OI Defense`: Option writers held or increased their positions.
-*   **Direction:** Fully bidirectional (handles both Bullish and Bearish failures).
+    *   `Active OI Growth`: Strong open interest growth ($\ge 3.0\%$) confirming defense.
+    *   `Deep Close-Back`: Index closes back inside the level by $\ge 5.0$ points.
+*   **Confidence Rating**: Sets confidence to `HIGH` if the score is $\ge 4$, otherwise `MEDIUM`.
+*   **Direction**: Fully bidirectional (handles both Bullish and Bearish failures).
 
 ### 2. 🧱 OI Wall Rejection (High Priority)
-*   **Logic:** Identifies structural rejection at strikes with massive fresh Open Interest.
-*   **Confirmation:** Detects price "bounces" or "wick rejections" when the spot price tests a strike where the OI significantly exceeds a configured threshold.
+*   **Logic**: Identifies structural rejection at strikes with massive fresh Open Interest.
+*   **Confirmation**: Detects price "bounces" or "wick rejections" when the spot price tests a strike where the OI significantly exceeds a configured threshold.
+*   **Dynamic Targets**: Profit targets (T1/T2) are calculated dynamically based on structural support/resistance levels from PDH/PDL and option chain walls, ensuring a minimum 20-point target proximity filter and deterministic proximity-based target sorting (T1 is guaranteed to be the closer target).
+*   **Dynamic Scoring (4-Point Matrix)**:
+    *   `Wall Magnitude`: Size of the OI wall compared to thresholds.
+    *   `Active OI Building`: Net positive intraday OI build-up at the wall.
+    *   `Strike Penetration`: Extent to which price penetrated the strike before rejecting.
+    *   `Intraday Wick Rejection`: Technical wick signature showing immediate rejection.
+*   **Confidence Rating**: Sets confidence to `HIGH` if the score is $\ge 2$, otherwise `MEDIUM`.
 
 ### 3. 💥 Exhaustion Reversal (Medium Priority)
-*   **Logic:** Catches "blow-off tops" or "panic bottoms" using volume/price divergence.
-*   **Dynamic Targets:** Uses structural levels to define exit zones, ensuring realistic profit booking.
-*   **Triggers:** Triggers when a volume climax (extreme spike) coincides with a doji-like indecision candle at a local price extreme, often accompanied by an IV spike.
+*   **Logic**: Catches "blow-off tops" or "panic bottoms" using volume/price divergence.
+*   **Dynamic Targets**: Uses structural levels (PDH/PDL, option chain walls) to define exit zones, ensuring realistic profit booking.
+*   **Triggers**: Triggers when a volume climax (extreme spike) coincides with a doji-like indecision candle at a local price extreme, often accompanied by an IV spike.
+*   **Dynamic Scoring (4-Point Matrix)**:
+    *   `Extreme Volume Climax`: Climax candle volume $\ge 2.5\times$ rolling average.
+    *   `Extreme Doji Body Ratio`: Tiny real body relative to wicks ($\le 0.3$).
+    *   `Panic IV Spike`: Rapid IV expansion during the exhaustion candle.
+    *   `Structural Level Testing`: Price actively testing a key horizontal level or wall.
+*   **Confidence Rating**: Sets confidence to `HIGH` if the score is $\ge 2$, otherwise `MEDIUM`.
+
+---
+
+## ⚖️ Option Sizing & Delta-Based Strike Selection
+
+ARES integrates dynamic options contract selection and risk-managed lot sizing (implemented in [options_math.py](file:///Users/manmadeanyme/Documents/Work/ARES/options_math.py)):
+
+*   **Delta-Based Strike Selection**: Rather than trading arbitrary strikes, the system scans the live option chain to select the contract (CE or PE) with an absolute delta closest to **0.45** (target range: `0.45` to `0.55`).
+*   **Capital-Aware Ingress**: Queries the DhanHQ API dynamically for available trading balance (`availabelBalance` or `availableBalance`). If the API call fails, it falls back to the configured default capital.
+*   **Risk-Managed Lot Sizing**:
+    *   Computes the max risk amount based on a user-defined percentage of available capital (`risk_per_trade_pct`).
+    *   Translates index-based profit targets (T1) and stop-loss (SL) points into option premium movement using the selected option's delta:
+        $$\text{Option Target/SL Price} = \text{LTP} \pm (\text{Index Points} \times |\text{Delta}|)$$
+    *   Calculates suggested lots based on risk and affordable lots based on entry premium and lot size (default size `65` for Nifty).
+    *   Suggests the lower of the two: $\min(\text{suggested\_lots}, \text{affordable\_lots})$ to prevent over-allocation.
+*   **Decoupled formatting**: Option sizing details are persisted in Supabase under `market_context` / `reasons` and presented clearly in Discord alerts.
 
 ---
 
 ## 🛡️ Trade Management (Position Manager)
+
 ARES actively tracks its signals using a persistent **Position Manager**:
 *   **Deterministic Targets**: The system ensures that **Target 1 (T1)** is always the level closest to the entry price. Additionally, any structural level within **20 points** of the entry is filtered out to ensure targets remain significant.
 *   **Trailing Stops**: Once a trade reaches Target 1 (T1), the Stop Loss is automatically trailed to the entry price to lock in a risk-free position.
@@ -56,6 +89,7 @@ ARES actively tracks its signals using a persistent **Position Manager**:
 ---
 
 ## 📊 Backtesting & Visualization
+
 ARES includes a robust backtesting module to validate strategies against historical data:
 *   **High-Fidelity Simulation**: Simulates trade execution using historical 1-minute OHLC data.
 *   **PineScript Exporter**: Generates TradingView-compatible PineScript (v6) code. This allows traders to visually inspect every signal, entry, stop-loss, and target level directly on a TradingView chart.
@@ -71,6 +105,7 @@ ARES includes a robust backtesting module to validate strategies against histori
 *   **Configuration:** **Pydantic-Settings** for a "fail-fast" paradigm—invalid environment variables prevent the system from starting.
 *   **Broker API:** [DhanHQ Python SDK](https://dhanhq.co/docs/v2/) (Primary data ingress).
 *   **Database:** Supabase (PostgreSQL) for persistence.
+*   **Unit Testing**: Comprehensive test suite using `pytest` verifying target logic files with mock-isolated broker and database boundaries.
 
 ---
 
@@ -81,6 +116,7 @@ ares/
 ├── config.py          # Strict Pydantic configuration & thresholds
 ├── config_profiles.py # Performance configurations & thresholds
 ├── models.py          # Domain models (OHLCVCandle, AresSignal, OptionRow)
+├── options_math.py    # Option sizing and delta-based strike selection math
 ├── fetchers/          # Ingestion Layer
 │   ├── price_fetcher.py   # DhanHQ minute data, VWAP logic & dynamic PDH/PDL via Dhan Historical Daily API
 │   ├── oi_fetcher.py      # DhanHQ Option Chain processing
@@ -246,7 +282,19 @@ Start the monitoring engine:
 python main.py
 ```
 
-### 4. Fly.io Deployment
+### 5. Running Unit Tests
+ARES features a 100% test coverage suite that isolates API and database dependencies using pytest and mock configurations.
+
+To run the unit tests:
+```bash
+pytest tests/
+```
+To run tests with a coverage report:
+```bash
+pytest --cov=. tests/
+```
+
+### 6. Fly.io Deployment
 ARES is fully dockerized and configured for Fly.io.
 
 1. Install `flyctl` and login.
@@ -260,7 +308,7 @@ fly secrets set SUPABASE_URL="your_url" SUPABASE_KEY="your_key" DISCORD_WEBHOOK_
 fly deploy
 ```
 
-### 5. Automated Start/Stop Schedule (GitHub Actions)
+### 7. Automated Start/Stop Schedule (GitHub Actions)
 ARES is configured to automatically scale up at 09:15 IST and down at 15:30 IST to save Fly.io compute costs.
 
 1. Generate a Fly Deploy Token:
