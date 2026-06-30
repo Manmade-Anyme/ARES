@@ -31,4 +31,4 @@ Every task must follow this workflow:
 5.  **Merge Cleanup**: Once the human merges the PR:
     - Switch to `main` and pull.
     - Delete the local branch (`git branch -d feature/[TASK_ID]-[description]`). Do not delete the remote branch.
-    - Sync final status logs to the Obsidian Vault.
+    - Sync final status logs to the Obsidian Vault (`~/Documents/Obsidian`).
