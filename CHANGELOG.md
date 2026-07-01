@@ -5,6 +5,10 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Silent IV & Greek Ingestion Fix**: Refactored option chain parsing in [OIFetcher](file:///Users/manmadeanyme/Documents/Work/ARES/fetchers/oi_fetcher.py) and [LiveRunner](file:///Users/manmadeanyme/Documents/Work/ARES/ml_signal/live.py) to use the broker-native `"implied_volatility"` key instead of `"iv"`, and corrected Greek metrics extraction from the nested `"greeks"` sub-dictionary.
+- **Sluggish Market Speed Filter**: Integrated a 15-minute rolling range filter in [AresEngine](file:///Users/manmadeanyme/Documents/Work/ARES/engine.py) to suppress `MEDIUM` confidence signals when Nifty 50 trades in a range of $< 15.0$ points.
+- **Anti-IV Crush Filter**: Integrated an IV percentile overlay in [AresEngine](file:///Users/manmadeanyme/Documents/Work/ARES/engine.py) to suppress Call entries when ATM IV is in the top 90th percentile of its 20-candle lookback.
+- **Remediation Test Suite**: Added dedicated unit test files [test_oi_fetcher.py](file:///Users/manmadeanyme/Documents/Work/ARES/tests/unit/test_oi_fetcher.py), [test_ml_live.py](file:///Users/manmadeanyme/Documents/Work/ARES/tests/unit/test_ml_live.py), and [test_engine_remediation.py](file:///Users/manmadeanyme/Documents/Work/ARES/tests/unit/test_engine_remediation.py) ensuring 100% test coverage of the remediation logic.
 - **Project Test Coverage Upgrades**: Upgraded the project unit test suite coverage to 100% across all target logic files, including `alerts.py`, `options_math.py`, `storage.py`, `position_manager.py`, `fetchers/price_fetcher.py`, `ml_signal/collector.py`, and `detectors/exhaustion.py`.
 - **Database/Supabase Test Isolation**: Implemented a pre-import module reloading patch mechanism to prevent tests from executing real database calls to Supabase, mock-testing all persistence pipelines.
 - **Dhan API Mock Testing**: Refactored the price fetcher unit tests to isolate the DhanHQ API client, testing all transient retry mechanisms, API failure handlers, and timestamp parsing formats.
