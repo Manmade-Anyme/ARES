@@ -18,19 +18,7 @@ Choose the appropriate mode based on scope:
     1. Ask clarifying questions one at a time.
     2. Map out decision trees and document insights.
 
-## 2. Commit Attribution & AI Identity
-
-When the AI agent creates commits in this workspace, they must use the verified Git identity configured for agent work:
-- Name: `manmadeanyme`
-- Email: `manmadeanyme@gmail.com`
-
-Rules:
-1. Prefer the configured global Git identity for AI-authored commits unless the user explicitly requests a different identity.
-2. If a repository-local override is needed, set it for that repository with `git config user.name "manmadeanyme"` and `git config user.email "manmadeanyme@gmail.com"`.
-3. Do not attribute AI-authored commits to the user’s personal account unless the user explicitly asks for that behavior.
-4. Before pushing, verify the active identity with `git config user.name` and `git config user.email`.
-
-## 3. Git Branching & PR Gate
+## 2. Git Branching & PR Gate
 
 Every task must follow this workflow:
 1.  **Branch Out**: Before any code is changed, check out `main` and pull latest. Create a feature branch: `git checkout -b feature/[TASK_ID]-[description]`.
