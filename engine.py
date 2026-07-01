@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from statistics import mean
 from typing import Optional, List, Dict, Any
 
-from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel
+from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction
 from config import settings
 
 from detectors.breakout import FailedBreakoutDetector
@@ -31,6 +31,7 @@ class AresEngine:
         
         self.candle_buffer: deque = deque(maxlen=settings.candle_buffer_size)
         self.iv_buffer: deque = deque(maxlen=settings.iv_buffer_size)
+        self.iv_lookback: deque = deque(maxlen=20)
         
         self.last_signal_time: Optional[datetime] = None
 
@@ -66,6 +67,7 @@ class AresEngine:
         # 1. Update buffers
         self.candle_buffer.append(candle)
         self.iv_buffer.append(atm.ce.iv)
+        self.iv_lookback.append(atm.ce.iv)
 
         # 2. Cooldown check
         if self.last_signal_time:
@@ -115,9 +117,38 @@ class AresEngine:
             )
         )
 
-        # 6. Set cooldown if signal fired
+        # 6. Apply protective filters
+        if signal:
+            # Filter A: Speed Filter (suppress MEDIUM confidence in flat market)
+            is_market_too_slow = False
+            rolling_range = 0.0
+            if len(self.candle_buffer) >= 15:
+                recent = list(self.candle_buffer)[-15:]
+                highs = [c.high for c in recent]
+                lows = [c.low for c in recent]
+                rolling_range = max(highs) - min(lows)
+                is_market_too_slow = rolling_range < 15.0
+            
+            if signal.confidence == "MEDIUM" and is_market_too_slow:
+                print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: Sluggish market (15-min range: {rolling_range:.2f} pts).")
+                signal = None
+
+        if signal:
+            # Filter B: Anti-IV Crush Filter (suppress Call/Bullish entries in top 90% IV)
+            is_iv_high = False
+            current_iv = atm.ce.iv
+            if len(self.iv_lookback) >= 10:
+                lower_iv_count = sum(1 for x in self.iv_lookback if x < current_iv)
+                percentile = (lower_iv_count / len(self.iv_lookback)) * 100.0
+                is_iv_high = percentile >= 90.0
+                
+            if signal.direction == Direction.BULLISH and is_iv_high:
+                print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: Top 90th percentile IV ({current_iv:.2f}%) poses high risk of IV crush.")
+                signal = None
+
+        # 7. Set cooldown if signal fired
         if signal:
             self.last_signal_time = datetime.now()
 
-        # 7. Return the result
+        # 8. Return the result
         return signal

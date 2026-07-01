@@ -219,7 +219,7 @@ class OIFetcher:
             ce_oi = int(ce_data.get("oi", 0))
             # Dhan API uses 'last_price' in the oc dictionary
             ce_ltp = float(ce_data.get("last_price", 0.0))
-            ce_iv = float(ce_data.get("iv", 0.0))
+            ce_iv = float(ce_data.get("implied_volatility", 0.0))
             
             ce_greeks = ce_data.get("greeks", {})
             ce_gamma = float(ce_greeks.get("gamma", 0.0))
@@ -243,7 +243,7 @@ class OIFetcher:
             # ---------------------------
             pe_oi = int(pe_data.get("oi", 0))
             pe_ltp = float(pe_data.get("last_price", 0.0))
-            pe_iv = float(pe_data.get("iv", 0.0))
+            pe_iv = float(pe_data.get("implied_volatility", 0.0))
             
             pe_greeks = pe_data.get("greeks", {})
             pe_gamma = float(pe_greeks.get("gamma", 0.0))

@@ -10,6 +10,11 @@
 - [x] Implement dynamic mid-session credentials reloading on auth failure.
 - [x] Remove Dhan client ID and access token from local `.env` and deployment secrets.
 
+### 📐 Sizing Safety Gate Styling Enhancement [TODO]
+**Description:** Enhance `alerts.py` to clearly label trades as "Paper Sizing Only" when capital limits calculate suggested lots to 0, ensuring alerts remain visible and active.
+- [ ] Add a "Paper Sizing Only" visual indicator to Discord embed alerts.
+- [ ] Highlight paper-sizing signals differently in the local console UI.
+
 ---
 
 ## Completed Tasks

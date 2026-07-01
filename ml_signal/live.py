@@ -12,7 +12,7 @@ import asyncio
 import os
 from collections import deque
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from dhanhq import dhanhq
 from supabase import create_client, Client
@@ -109,6 +109,42 @@ class LiveRunner:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _insert)
 
+    def _parse_option_chain(self, oc_response: Optional[Dict[str, Any]], spot: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        atm_ce = {"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0}
+        atm_pe = {"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0}
+
+        if oc_response and "data" in oc_response:
+            resp_data = oc_response["data"]
+            oc_data = resp_data.get("oc", resp_data.get("data", {}).get("oc", {})) if isinstance(resp_data, dict) else {}
+
+            atm_strike = round(spot / 50) * 50
+            for strike_key, data in oc_data.items():
+                if abs(float(strike_key) - atm_strike) <= 25:
+                    ce = data.get("ce", {})
+                    pe = data.get("pe", {})
+                    
+                    ce_greeks = ce.get("greeks", {})
+                    pe_greeks = pe.get("greeks", {})
+                    
+                    atm_ce = {
+                        "iv": float(ce.get("implied_volatility", 0)),
+                        "oi": int(ce.get("oi", 0)),
+                        "oi_change_pct": 0,
+                        "gamma": float(ce_greeks.get("gamma", 0)),
+                        "theta": float(ce_greeks.get("theta", 0)),
+                        "vega": float(ce_greeks.get("vega", 0)),
+                    }
+                    atm_pe = {
+                        "iv": float(pe.get("implied_volatility", 0)),
+                        "oi": int(pe.get("oi", 0)),
+                        "oi_change_pct": 0,
+                        "gamma": float(pe_greeks.get("gamma", 0)),
+                        "theta": float(pe_greeks.get("theta", 0)),
+                        "vega": float(pe_greeks.get("vega", 0)),
+                    }
+                    break
+        return atm_ce, atm_pe
+
     async def run(
         self,
         dhan_client_id: str,
@@ -141,35 +177,7 @@ class LiveRunner:
                 self.volume_history.append(candle["volume"])
 
                 oc_response = await self.fetch_option_chain(security_id, exchange_segment, expiry)
-                atm_ce = {"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0}
-                atm_pe = {"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0}
-
-                if oc_response and "data" in oc_response:
-                    resp_data = oc_response["data"]
-                    oc_data = resp_data.get("oc", resp_data.get("data", {}).get("oc", {})) if isinstance(resp_data, dict) else {}
-
-                    atm_strike = round(spot / 50) * 50
-                    for strike_key, data in oc_data.items():
-                        if abs(float(strike_key) - atm_strike) <= 25:
-                            ce = data.get("ce", {})
-                            pe = data.get("pe", {})
-                            atm_ce = {
-                                "iv": float(ce.get("iv", 0)),
-                                "oi": int(ce.get("oi", 0)),
-                                "oi_change_pct": 0,
-                                "gamma": float(ce.get("gamma", 0)),
-                                "theta": float(ce.get("theta", 0)),
-                                "vega": float(ce.get("vega", 0)),
-                            }
-                            atm_pe = {
-                                "iv": float(pe.get("iv", 0)),
-                                "oi": int(pe.get("oi", 0)),
-                                "oi_change_pct": 0,
-                                "gamma": float(pe.get("gamma", 0)),
-                                "theta": float(pe.get("theta", 0)),
-                                "vega": float(pe.get("vega", 0)),
-                            }
-                            break
+                atm_ce, atm_pe = self._parse_option_chain(oc_response, spot)
 
                 self.iv_history.append(atm_ce["iv"])
 
