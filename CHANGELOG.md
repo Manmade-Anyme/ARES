@@ -31,6 +31,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Analytics Persistence**: Created a `trade_analytics` table and an `AnalyticsLogger` class to capture detailed trade histories, market context, and OI data for monthly performance analysis and ML training.
 
 ### Changed
+- **Workspace Rules Flow Consolidation**: Merged the separate **Commit & Push** and **Raise PR** steps in `AGENTS.md` into a single, unified flow to streamline the PR creation process.
 - **Fly.io Region Migration**: Migrated the primary Fly.io application deployment back to the Mumbai ('bom') region from the Singapore ('sin') region to resolve Discord signal/response latency issues, ensuring minimal latency to NSE servers.
 - **OI Wall Rejection Dynamic Structural Targets**: Upgraded the `OIWallDetector` to calculate profit targets (Target 1 and Target 2) dynamically based on structural support and resistance levels from `levels` (PDH/PDL and option chain walls), ensuring a minimum 20-point target proximity filter and deterministic proximity-based target sorting, aligning it with the breakout and exhaustion detectors.
 - **Decoupled Option Sizing Details**: Removed the duplicate `Option Sizing` info string from the runtime `reasons` list to clean up Discord and console formats, shifting the SQL/Supabase logger appending to the database persistence layer (`storage.py`).
