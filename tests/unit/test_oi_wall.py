@@ -15,6 +15,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -58,6 +59,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -101,6 +103,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -159,6 +162,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -204,6 +208,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -261,6 +266,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -298,6 +304,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -339,6 +346,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -402,6 +410,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -450,6 +459,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0
@@ -499,6 +509,7 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_approach_distance = 80.0
         mock_settings.oi_wall_test_distance = 20.0
         mock_settings.oi_wall_stop_buffer = 25.0
+        mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.target_1_pts = 35.0

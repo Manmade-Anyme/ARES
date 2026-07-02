@@ -3,10 +3,6 @@ from typing import Optional, List, Dict, Any, Tuple
 from models import OHLCVCandle, AresSignal, SetupType, Direction, ResistanceLevel
 from config import settings
 
-# Minimum fraction of the candle's range that must be a rejection wick
-# for a wall touch to count as a genuine rejection/bounce (candidate trigger).
-WICK_REJECTION_RATIO = 0.4
-
 
 class OIWallDetector:
     """
@@ -117,7 +113,7 @@ class OIWallDetector:
             tested_wall = candle.high >= (strike - settings.oi_wall_test_distance)
             rejected = candle.close < candle.open  # Bearish candle
             upper_wick = candle.high - max(candle.open, candle.close)
-            wick_rejection = candle_range > 0 and (upper_wick / candle_range) >= WICK_REJECTION_RATIO
+            wick_rejection = candle_range > 0 and (upper_wick / candle_range) >= settings.oi_wall_wick_rejection_ratio
             writers_holding = nearest_ce_wall["ce_oi"] >= nearest_ce_wall["ce_oi_prev"]
 
             if approaching and tested_wall and rejected and wick_rejection and writers_holding:
@@ -138,7 +134,7 @@ class OIWallDetector:
             tested_wall = candle.low <= (strike + settings.oi_wall_test_distance)
             bounced = candle.close > candle.open  # Bullish candle
             lower_wick = min(candle.open, candle.close) - candle.low
-            wick_rejection = candle_range > 0 and (lower_wick / candle_range) >= WICK_REJECTION_RATIO
+            wick_rejection = candle_range > 0 and (lower_wick / candle_range) >= settings.oi_wall_wick_rejection_ratio
             writers_holding = nearest_pe_wall["pe_oi"] >= nearest_pe_wall["pe_oi_prev"]
 
             if approaching and tested_wall and bounced and wick_rejection and writers_holding:
