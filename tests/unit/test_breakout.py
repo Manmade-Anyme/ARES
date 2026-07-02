@@ -76,7 +76,7 @@ def test_failed_breakout_confidence_high(breakout_detector, sample_levels):
     # Options writers CE OI increased from 100 to 110 (growth = 10% >= 3%) -> 1 point
     # IV change is -15.0 < -3.0 (IV crush) -> 1 point
     # Writers held (110 >= 100) -> 1 point
-    # Closed back -> 1 point (total score = 6)
+    # (closed_back is the gate, not scored) -> total score = 5 of 5
     candle2 = OHLCVCandle(
         timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24090.0, volume=40000
     )
@@ -84,8 +84,10 @@ def test_failed_breakout_confidence_high(breakout_detector, sample_levels):
     assert signal is not None
     assert signal.confidence == "HIGH"
 
-def test_failed_breakout_confidence_medium(breakout_detector, sample_levels):
-    # Upward breakout
+def test_failed_breakout_weak_failure_rejected(breakout_detector, sample_levels):
+    # TASK-172 (audit item 8): closed_back is a hard gate, not a scored point,
+    # and the min score is 3. A marginal close-back with only writers_holding
+    # (score 1 of 5) no longer produces a signal at all.
     candle1 = OHLCVCandle(
         timestamp=datetime.now(), open=24090.0, high=24120.0, low=24080.0, close=24110.0, volume=50000
     )
@@ -96,14 +98,12 @@ def test_failed_breakout_confidence_medium(breakout_detector, sample_levels):
     # Avg volume 10000 -> breakout volume (50000) not weak -> 0 points
     # IV change is 0.0 > -3.0 -> 0 points
     # Options writers CE OI change is 0% -> 0 points
-    # Writers held -> 1 point
-    # Closed back -> 1 point (total score = 2 < 4)
+    # Writers held -> 1 point (total score = 1 < 3, closed_back not counted)
     candle2 = OHLCVCandle(
         timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24099.0, volume=40000
     )
     signal = breakout_detector.update(candle2, 10000.0, 0.0, 100, 100, 100, 100, sample_levels)
-    assert signal is not None
-    assert signal.confidence == "MEDIUM"
+    assert signal is None
 
 def test_no_breakout_event(breakout_detector, sample_levels):
     # Candle close does not cross any level (spot is 24050, level is 24100, close is 24060)

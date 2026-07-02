@@ -71,12 +71,12 @@ New findings from data:
 
 
 ### P1 — tuning (validate against live Discord output)
-8. Raise `breakout_failure_min_score` 2→3; exclude `closed_back` from score.
+8. Raise `breakout_failure_min_score` 2→3; exclude `closed_back` from score. ✅ SHIPPED (TASK-172 — closed_back is the gate, not scored; min 3 of 5 conditions)
 9. Time-of-day gates: no entries before 09:30 / after 15:00 (config). [SKIP]
-10. IV-crush filter: exempt HIGH confidence, lengthen lookback (~60 samples), consider symmetric.
-11. Intrabar high/low exit checks in update_trades (avg 6.8 pts slippage/stop recovered).
-12. Speed-filter threshold into config_profiles; standardize confidence bars (~≥60% of matrix).
-13. Fix signal_id logging + timestamp timezone consistency; dedupe add_trade.
+10. IV-crush filter: exempt HIGH confidence, lengthen lookback (~60 samples), consider symmetric. ✅ SHIPPED (TASK-172 — HIGH exempt, 60-sample CE+PE lookbacks, symmetric; alert-only signals bypass)
+11. Intrabar high/low exit checks in update_trades (avg 6.8 pts slippage/stop recovered). ✅ SHIPPED (TASK-172 — candle high/low checks, fill-at-level exits, pessimistic same-candle resolution)
+12. Speed-filter threshold into config_profiles; standardize confidence bars (~≥60% of matrix). ✅ SHIPPED (TASK-172 — `speed_filter_*` config; shared HIGH bar ≥60%: breakout 3/5, wall/exhaustion 3/4)
+13. Fix signal_id logging + timestamp timezone consistency; dedupe add_trade. ✅ SHIPPED (TASK-172 — trade_analytics.signal_id ← ares_signals.id; entry timestamps IST→UTC; 1-pt dedupe guard)
 
 ### P2 — structural
 14. Track option premium at entry/exit (chain already fetched every cycle) → true P&L incl theta. [SKIP]
@@ -86,5 +86,6 @@ New findings from data:
 18. WebSocket ticks for exit monitoring instead of 60s polls.
 
 ## Status Log
+- 2026-07-03: TASK-172 shipped the P1 block (items 8, 10–13; 9 stays [SKIP]): breakout gate 3-of-5 with closed_back excluded, IV-crush v2 (HIGH exempt / symmetric / 60-sample), intrabar fill-at-level exits, config-driven speed filter + standardized ≥60% confidence bars, signal_id join fix, IST→UTC entry timestamps, add_trade dedupe. 181 tests green.
 - 2026-07-02: TASK-171 shipped the four P0 gates (R:R, time-stop, exhaustion observation mode, cooldown reset). Backtest on last 10 days: -162.8 → -36.7 pts under the 40/60 execution model.
 - 2026-07-02: Multi-day trade carry fixed (`_initialize_db` no longer wipes previous-day rows). 141 tests green. Backfill script created (dry-run default, `--apply` to write).

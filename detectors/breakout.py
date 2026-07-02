@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List, Tuple
 
-from models import OHLCVCandle, ResistanceLevel, AresSignal, SetupType, Direction
+from models import OHLCVCandle, ResistanceLevel, AresSignal, SetupType, Direction, confidence_from_score
 from config import settings
 
 
@@ -110,12 +110,14 @@ class FailedBreakoutDetector:
         weak_volume = self.active.breakout_candle.volume < (avg_volume * settings.breakout_weak_volume_ratio)
         iv_falling = iv_change_pct < settings.breakout_iv_falling_threshold
         writers_active = oi_change >= 3.0
-        
-        # Score is the sum of True conditions (scale of 0 to 6)
-        score = sum([closed_back, writers_holding, weak_volume, iv_falling, writers_active, deep_close])
+
+        # Score is the sum of True conditions (scale of 0 to 5).
+        # closed_back is deliberately NOT scored (TASK-172, audit item 8): it is
+        # the mandatory gate below, so counting it inflated every failure by a
+        # free point and let "closed back + one coin-flip" fire a signal.
+        score = sum([writers_holding, weak_volume, iv_falling, writers_active, deep_close])
 
         # If it closed back and meets the minimum failure score, trigger the signal
-        # Note: breakout_failure_min_score defaults to 2, which fits our 6-point scale too
         if closed_back and score >= settings.breakout_failure_min_score:
             signal = self._build_signal(
                 candle=candle,
@@ -157,8 +159,8 @@ class FailedBreakoutDetector:
         4. Deterministic sorting to ensure Target 1 (T1) is always the closer target,
            which is critical for the Position Manager's trailing stop logic.
         """
-        confidence = "HIGH" if score >= 4 else "MEDIUM"
-        
+        confidence = confidence_from_score(score, max_score=5)
+
         # Dynamically build reasons
         reasons = [f"Price closed back past level {level}"]
         if weak_vol:

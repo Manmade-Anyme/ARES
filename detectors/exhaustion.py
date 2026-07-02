@@ -2,7 +2,7 @@ from collections import deque
 from statistics import mean
 from typing import Optional, List
 
-from models import OHLCVCandle, AresSignal, SetupType, Direction, ResistanceLevel
+from models import OHLCVCandle, AresSignal, SetupType, Direction, ResistanceLevel, confidence_from_score
 from config import settings
 
 
@@ -121,7 +121,7 @@ class ExhaustionDetector:
                     break
                     
         score = sum([extreme_volume, extreme_doji, iv_panic, near_level])
-        confidence = "HIGH" if score >= 2 else "MEDIUM"
+        confidence = confidence_from_score(score, max_score=4)
         
         time_str = candle.timestamp.strftime("%I:%M%p").lower()
         # Remove leading zero from hour if present (e.g., 09:15am -> 9:15am)

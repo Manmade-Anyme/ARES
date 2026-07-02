@@ -4,6 +4,18 @@ from enum import Enum
 from typing import List, Tuple, Optional
 import random
 
+def confidence_from_score(score: int, max_score: int) -> str:
+    """
+    Standardized confidence banding shared by all detectors (TASK-172, audit
+    items 12/19): a setup is HIGH confidence when it scores at least 60% of its
+    detector's score matrix, MEDIUM otherwise. Previously each detector used
+    its own inconsistent bar (breakout 4/6, OI wall and exhaustion 2/4).
+    """
+    if max_score <= 0:
+        return "MEDIUM"
+    return "HIGH" if (score / max_score) >= 0.6 else "MEDIUM"
+
+
 class SetupType(Enum):
     """
     Defines the core setups detected by the ARES system.
@@ -116,6 +128,7 @@ class AresSignal:
     strike_to_trade: int
     option_type: str
     signal_id: str = field(default_factory=lambda: f"{random.randint(0, 9999):04d}")
+    db_id: Optional[int] = None  # ares_signals row id, set after log_signal; joins trade_analytics to ares_signals
     alert_only: bool = False  # Observation-only: alerted and logged, but never traded
     suggested_lots: Optional[int] = None
     option_sl: Optional[float] = None

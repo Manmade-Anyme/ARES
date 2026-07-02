@@ -31,8 +31,12 @@ class AresEngine:
         
         self.candle_buffer: deque = deque(maxlen=settings.candle_buffer_size)
         self.iv_buffer: deque = deque(maxlen=settings.iv_buffer_size)
-        self.iv_lookback: deque = deque(maxlen=20)
-        
+        # IV percentile lookbacks for the anti-IV-crush filter. Tracked per
+        # option side (bullish entries buy CEs, bearish entries buy PEs) so the
+        # filter can act symmetrically (TASK-172, audit item 10).
+        self.iv_lookback: deque = deque(maxlen=settings.iv_crush_lookback_size)
+        self.pe_iv_lookback: deque = deque(maxlen=settings.iv_crush_lookback_size)
+
         self.last_signal_time: Optional[datetime] = None
 
     def tick(
@@ -68,6 +72,7 @@ class AresEngine:
         self.candle_buffer.append(candle)
         self.iv_buffer.append(atm.ce.iv)
         self.iv_lookback.append(atm.ce.iv)
+        self.pe_iv_lookback.append(atm.pe.iv)
 
         # 2. Cooldown check
         if self.last_signal_time:
@@ -120,17 +125,19 @@ class AresEngine:
         # 6. Apply protective filters
         if signal:
             # Filter A: Speed Filter (suppress MEDIUM confidence in flat market)
+            # Window and threshold are profile-tunable (TASK-172, audit item 12).
+            window = settings.speed_filter_window_candles
             is_market_too_slow = False
             rolling_range = 0.0
-            if len(self.candle_buffer) >= 15:
-                recent = list(self.candle_buffer)[-15:]
+            if len(self.candle_buffer) >= window:
+                recent = list(self.candle_buffer)[-window:]
                 highs = [c.high for c in recent]
                 lows = [c.low for c in recent]
                 rolling_range = max(highs) - min(lows)
-                is_market_too_slow = rolling_range < 15.0
-            
+                is_market_too_slow = rolling_range < settings.speed_filter_min_range_pts
+
             if signal.confidence == "MEDIUM" and is_market_too_slow:
-                print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: Sluggish market (15-min range: {rolling_range:.2f} pts).")
+                print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: Sluggish market ({window}-min range: {rolling_range:.2f} pts).")
                 signal = None
 
         if signal:
@@ -149,18 +156,26 @@ class AresEngine:
                 signal.alert_only = True
                 signal.reasons.append("Observation only — exhaustion entries gated by config (exhaustion_alert_only)")
 
-        if signal:
-            # Filter B: Anti-IV Crush Filter (suppress Call/Bullish entries in top 90% IV)
-            is_iv_high = False
-            current_iv = atm.ce.iv
-            if len(self.iv_lookback) >= 10:
-                lower_iv_count = sum(1 for x in self.iv_lookback if x < current_iv)
-                percentile = (lower_iv_count / len(self.iv_lookback)) * 100.0
-                is_iv_high = percentile >= 90.0
-                
-            if signal.direction == Direction.BULLISH and is_iv_high:
-                print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: Top 90th percentile IV ({current_iv:.2f}%) poses high risk of IV crush.")
-                signal = None
+        if signal and signal.confidence == "MEDIUM" and not signal.alert_only:
+            # Filter B: Anti-IV Crush Filter (TASK-172, audit item 10).
+            # Suppress MEDIUM-confidence entries whose option side shows
+            # top-percentile IV — HIGH confidence setups are exempt (the old
+            # filter killed every bullish signal regardless of quality), and
+            # the check is symmetric: bullish entries buy CEs so they check CE
+            # IV, bearish entries buy PEs so they check PE IV. Observation-only
+            # signals pass through — they are never traded, and suppressing
+            # them would just lose exhaustion observation data.
+            if signal.direction == Direction.BULLISH:
+                lookback, current_iv, side = self.iv_lookback, atm.ce.iv, "CE"
+            else:
+                lookback, current_iv, side = self.pe_iv_lookback, atm.pe.iv, "PE"
+
+            if len(lookback) >= 10:
+                lower_iv_count = sum(1 for x in lookback if x < current_iv)
+                percentile = (lower_iv_count / len(lookback)) * 100.0
+                if percentile >= settings.iv_crush_percentile:
+                    print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: {side} IV {current_iv:.2f}% in top {100.0 - settings.iv_crush_percentile:.0f}% of lookback poses high risk of IV crush.")
+                    signal = None
 
         # 7. Set cooldown if signal fired.
         # Observation-only signals don't consume the cooldown — they must never

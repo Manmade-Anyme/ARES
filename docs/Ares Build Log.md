@@ -4,6 +4,29 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-03 01:25 · Audit P1 Tuning & Data-Quality Fixes (TASK-172)
+
+Implemented the P1 block from the 2026-07-02 trade-efficiency audit (items 8, 10–13; item 9 time-of-day gates remains `[SKIP]`). TDD flow: failing tests first (import error + assertion failures confirmed), then implementation. 181 tests green (40 new/updated since TASK-171's 151).
+
+**Decisions**
+- **Breakout gate (item 8)**: `closed_back` removed from the failure score — it is the mandatory trigger and counting it gave every failure a free point. `breakout_failure_min_score` default 2→3 on the new 5-condition matrix. Consequence: every emitted breakout is now HIGH by construction (3/5 = 60% bar); the old "MEDIUM" breakouts are rejected outright rather than merely suppressed in flat markets, which is stricter.
+- **Anti-IV-crush v2 (item 10)**: HIGH confidence exempt; symmetric via a new `pe_iv_lookback` (bullish→CE IV, bearish→PE IV); lookback 20→60 samples (~1 hour of polls), percentile + size configurable (`iv_crush_percentile`, `iv_crush_lookback_size`). Observation-only (alert_only) signals bypass the filter — they're never traded and suppressing them would lose exhaustion observation data.
+- **Intrabar exits (item 11)**: `update_trades(spot, candle_high, candle_low)` — SL/T1/T2 touch checks use candle extremes (falls back to spot when omitted). Two accounting rules: *fill-at-level* (exits logged and alerted at the touched stop/target price, not the detecting close — symmetric honesty: stops no longer bleed detection slippage, T2 exits no longer overstate profit) and *pessimistic same-candle resolution* (candle spanning both stop and target = stop-out). SL is checked first; with close-only fallback the checks are mutually exclusive, so legacy behavior is preserved.
+- **Confidence standardization (item 12/19)**: shared `models.confidence_from_score(score, max_score)` — HIGH at ≥60% of matrix. OI wall & exhaustion HIGH bar moves 2/4→3/4. Speed filter window/threshold now `speed_filter_window_candles`/`speed_filter_min_range_pts` in config profiles.
+- **signal_id join fix (item 13/17)**: `log_signal` captures the inserted `ares_signals.id` into `signal.db_id` (new `AresSignal` field); `log_entry` writes it to `trade_analytics.signal_id` (bigint FK-style column already in schema — no migration). NULL only if the signal insert itself failed.
+- **Timestamp tz fix (item 13/18)**: new `storage.to_utc_iso()` — naive timestamps are labeled IST (+05:30) then converted to UTC before write; aware timestamps convert without re-labeling. Applied to `ares_signals.timestamp` and `trade_analytics.entry_timestamp`; exits were already real UTC.
+- **add_trade dedupe (item 13 / finding 4)**: skip a new trade if a non-closed active trade has the same setup_type + direction and entry within 1.0 pt (covers both double-call and restart-retrigger scenarios; re-entry after a close is unaffected).
+
+**Status**: PR pending on branch `feature/TASK-172-audit-p1-tuning`. 181 tests green; coverage on touched modules: engine 99%, position_manager 99%, storage/models/config_profiles/breakout/exhaustion 100%, oi_wall 97% (pre-existing gaps).
+
+**TODOs**
+- [ ] Merge PR and perform cleanup.
+- [ ] Validate new gates against live Discord output over the next sessions (P1 header's original caveat).
+- [ ] Full threshold sweep against ml_collection dataset (audit item 17, remaining scope).
+- [ ] Untagged P0 items pending decision: distinct BREAKEVEN exit type, candle timestamp dedup.
+
+---
+
 ## 2026-07-02 19:40 · Audit P0 Efficiency Gates (TASK-171)
 
 Implemented the four `[TODO]`-tagged P0 items from the 2026-07-02 trade-efficiency audit. TDD flow: 10 failing tests written first, then minimal implementation.

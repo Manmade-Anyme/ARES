@@ -5,6 +5,17 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Breakout Gate Tightened (TASK-172)**: `closed_back` no longer counts toward the failed-breakout score — it is the mandatory trigger, not a scored condition — and `breakout_failure_min_score` raised 2→3. A signal now needs 3 of 5 real confirmations (writers holding, weak volume, IV falling, writers active, deep close) instead of "closed back + one coin-flip" (audit items 7/8).
+- **Anti-IV-Crush Filter v2 (TASK-172)**: HIGH-confidence signals are now exempt (the old filter killed every bullish entry regardless of quality); the check is symmetric — bullish entries check CE IV, bearish entries check PE IV via a new PE lookback; lookback lengthened 20→60 samples with both knobs in config (`iv_crush_lookback_size`, `iv_crush_percentile`). Observation-only signals pass through so exhaustion observation data keeps flowing (audit item 10).
+- **Intrabar Exit Detection (TASK-172)**: `PositionManager.update_trades` checks SL/T1/T2 against the candle's high/low instead of only the 60s poll close (close-only detection cost an average +6.8 pts slippage per stop, worst +34.5). Exits are recorded fill-at-level (the touched stop/target price, for both wins and losses), and a candle spanning both the stop and a target resolves pessimistically as a stop-out (audit item 11).
+- **Speed Filter in Config + Standardized Confidence Bars (TASK-172)**: the sluggish-market filter's window and threshold move into config profiles (`speed_filter_window_candles`, `speed_filter_min_range_pts`, previously hardcoded 15/15.0), and all detectors share one confidence rule via `models.confidence_from_score` — HIGH at ≥60% of the score matrix (breakout 3/5; OI wall and exhaustion 3/4, previously an inconsistent 2/4) (audit items 12/19).
+
+### Fixed
+- **signal_id Join (TASK-172)**: `Storage.log_signal` now captures the inserted `ares_signals.id` onto the signal, and `AnalyticsLogger.log_entry` writes it to `trade_analytics.signal_id` — previously NULL in every row, breaking the signals↔trades join (audit item 17).
+- **Entry/Exit Timestamp Timezone Mismatch (TASK-172)**: entry timestamps were naive IST wall-clock stored as if UTC while exits logged real UTC, making hold-time analysis impossible. All entry-side timestamps are now labeled IST and converted to UTC on write via `storage.to_utc_iso` (audit item 18).
+- **Duplicate add_trade Guard (TASK-172)**: a signal matching an already-open trade's setup, direction and entry (within 1 pt) is skipped — the 06-29 14:12 OI wall trade had been logged twice (audit finding 4).
+
+### Added
 - **Risk:Reward Gate (TASK-171)**: New engine filter rejects any signal whose risk (entry→SL) exceeds its reward (entry→T1), tunable via `min_rr_ratio` (1.0 in both profiles). Audit data showed OI-wall setups risking 40-46pts against a 35pt T1.
 - **Time-Stop Risk-Off (TASK-171)**: An OPEN trade that hasn't reached T1 within `time_stop_minutes` (45 non-expiry / 30 expiry) gets its stop tightened to entry. The trade stays alive for T1/T2, but no-progress drift now exits at breakeven (`TIME_STOP` exit type) instead of full stop-loss.
 - **Exhaustion Observation Mode (TASK-171)**: `exhaustion_alert_only=True` gates Exhaustion Reversal signals to alert+log only — no trade is created and the signal does not consume the engine cooldown. Live data: 7 of 8 closed exhaustion trades were full stop-outs (-211pts).

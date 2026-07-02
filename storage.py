@@ -20,11 +20,27 @@ CREATE TABLE ares_signals (
 """
 
 import asyncio
+from datetime import datetime, timezone, timedelta
 from typing import Any
 from supabase import create_client, Client
 
 from models import AresSignal
 from config import settings
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def to_utc_iso(ts: datetime) -> str:
+    """
+    Normalize a timestamp for Supabase timestamptz columns (TASK-172, audit
+    item 13/18). Candle timestamps arrive as naive IST wall-clock from the Dhan
+    feed; storing them unlabeled made Postgres read them as UTC, putting entry
+    timestamps 5h30m ahead of the real-UTC exit timestamps and breaking every
+    hold-time analysis. Naive values are labeled IST, then converted to UTC.
+    """
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=IST)
+    return ts.astimezone(timezone.utc).isoformat()
 
 
 class Storage:
@@ -74,10 +90,15 @@ class Storage:
                 "strike": signal.strike_to_trade,
                 "option_type": signal.option_type,
                 "reasons": reasons,  # Supabase handles list -> jsonb serialization
-                "timestamp": signal.timestamp.isoformat()
+                "timestamp": to_utc_iso(signal.timestamp)
             }
-            # Execute the insert
-            self.supabase.table("ares_signals").insert(data).execute()
+            # Execute the insert and capture the generated row id so trade
+            # analytics can join back to this signal (TASK-172, audit item 17:
+            # signal_id was NULL in every trade_analytics row).
+            response = self.supabase.table("ares_signals").insert(data).execute()
+            rows = getattr(response, "data", None)
+            if rows and isinstance(rows[0], dict) and rows[0].get("id") is not None:
+                signal.db_id = rows[0]["id"]
 
         try:
             # Run the synchronous Supabase insert in an executor to avoid blocking the event loop
@@ -162,9 +183,10 @@ class AnalyticsLogger:
 
         data = {
             "id": trade_id,
+            "signal_id": getattr(signal, "db_id", None),  # joins to ares_signals.id (NULL if signal logging failed)
             "setup_type": signal.setup_type.value,
             "direction": signal.direction.value,
-            "entry_timestamp": signal.timestamp.isoformat(),
+            "entry_timestamp": to_utc_iso(signal.timestamp),
             "entry_price": float(spot),
             "result_state": "OPEN",
             "market_context": market_context,
@@ -189,8 +211,6 @@ class AnalyticsLogger:
             exit_price: The spot price at exit.
             final_state: The final state of the trade (e.g., SL_HIT, T1_HIT).
         """
-        from datetime import datetime, timezone
-        
         def _update():
             # First, fetch the entry price to calculate P&L
             response = self.supabase.table("trade_analytics").select("entry_price", "direction").eq("id", trade_id).execute()

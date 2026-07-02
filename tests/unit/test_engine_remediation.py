@@ -95,8 +95,9 @@ class TestEngineRemediation(unittest.TestCase):
         for _ in range(18):
             self.engine.iv_lookback.append(10.0)
         
-        # 2. Mock a BULLISH signal (any confidence)
-        mock_signal = self._make_signal(confidence="HIGH", direction=Direction.BULLISH)
+        # 2. Mock a MEDIUM BULLISH signal (TASK-172: HIGH confidence is exempt
+        # from the anti-IV-crush filter, so only MEDIUM gets suppressed)
+        mock_signal = self._make_signal(confidence="MEDIUM", direction=Direction.BULLISH)
         self.engine.breakout_detector.update = MagicMock(return_value=mock_signal)
         
         # Fill candle buffer with trending prices so speed filter doesn't trigger
