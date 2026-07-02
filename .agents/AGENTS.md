@@ -1,6 +1,6 @@
 # ARES Workspace Rules
 
-Always adhere to the Global Development Pipeline workflows when performing any work in this workspace.
+Always adhere to the Global Development Pipeline workflows when performing any work in this workspace. Make sure to use ai-grep and caveman skill for you internal communication.
 
 ## 1. Development Pipeline Modes
 
