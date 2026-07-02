@@ -17,10 +17,10 @@ Implemented the P1 block from the 2026-07-02 trade-efficiency audit (items 8, 10
 - **Timestamp tz fix (item 13/18)**: new `storage.to_utc_iso()` — naive timestamps are labeled IST (+05:30) then converted to UTC before write; aware timestamps convert without re-labeling. Applied to `ares_signals.timestamp` and `trade_analytics.entry_timestamp`; exits were already real UTC.
 - **add_trade dedupe (item 13 / finding 4)**: skip a new trade if a non-closed active trade has the same setup_type + direction and entry within 1.0 pt (covers both double-call and restart-retrigger scenarios; re-entry after a close is unaffected).
 
-**Status**: PR pending on branch `feature/TASK-172-audit-p1-tuning`. 181 tests green; coverage on touched modules: engine 99%, position_manager 99%, storage/models/config_profiles/breakout/exhaustion 100%, oi_wall 97% (pre-existing gaps).
+**Status**: Merged to `main` via [PR #18](https://github.com/dubeyshantanu2/ARES/pull/18). Local branch `feature/TASK-172-audit-p1-tuning` deleted after merge. 181 tests green; coverage on touched modules: engine 99%, position_manager 99%, storage/models/config_profiles/breakout/exhaustion 100%, oi_wall 97% (pre-existing gaps).
 
 **TODOs**
-- [ ] Merge PR and perform cleanup.
+- [x] Merge PR #18 and perform cleanup.
 - [ ] Validate new gates against live Discord output over the next sessions (P1 header's original caveat).
 - [ ] Full threshold sweep against ml_collection dataset (audit item 17, remaining scope).
 - [ ] Untagged P0 items pending decision: distinct BREAKEVEN exit type, candle timestamp dedup.
