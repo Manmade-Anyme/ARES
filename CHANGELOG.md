@@ -45,6 +45,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Timezone Normalization**: Standardized all system timestamps across ARES to India Standard Time (IST) for consistent reporting.
 
 ### Fixed
+- **OI Wall Confirmation-Candle Requirement**: Fixed the `OIWallDetector` firing on a single shallow wall touch. It is now stateful (`update()` instead of `detect()`): a candle must show a genuine wick rejection (>=40% of range) to form a candidate, and the signal only fires if the following candle confirms by closing beyond the candidate candle's high/low. Unconfirmed candidates expire after one follow-up candle. Root-caused in [scratch/oi_wall_audit_20260702.md](file:///Users/manmadeanyme/Documents/Work/ARES/scratch/oi_wall_audit_20260702.md) after two weak/false signals (#2599, #0308) were traced to the single-candle, shallow-test decision rule in [OIWallDetector](file:///Users/manmadeanyme/Documents/Work/ARES/detectors/oi_wall.py).
 - **Fly.io Persistence**: Resolved issues with Docker volume mounts that were interfering with source code visibility. Optimized the structure for persistent trade logging.
 - **VWAP Reset Logic**: Fixed a bug where VWAP could persist across sessions; it now strictly resets at 09:15 IST daily.
 - **Supabase RLS Permissions**: Resolved "42501: new row violates row-level security policy" errors by documenting and implementing the necessary SQL commands to disable or configure RLS for the `active_trades` and `ares_signals` tables.

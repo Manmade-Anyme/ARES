@@ -3,101 +3,152 @@ from typing import Optional, List, Dict, Any, Tuple
 from models import OHLCVCandle, AresSignal, SetupType, Direction, ResistanceLevel
 from config import settings
 
+# Minimum fraction of the candle's range that must be a rejection wick
+# for a wall touch to count as a genuine rejection/bounce (candidate trigger).
+WICK_REJECTION_RATIO = 0.4
+
 
 class OIWallDetector:
     """
     OIWallDetector identifies "OI Wall Rejection" setups.
-    
+
     This occurs when the price approaches a strike with a massive accumulation
     of Open Interest (an "OI Wall") and is rejected or bounces off it.
-    
+
     - CE walls above spot act as resistance. A bearish rejection here signals a PE buy.
     - PE walls below spot act as support. A bullish bounce here signals a CE buy.
-    
-    This detector is stateless and evaluates the conditions on every cycle using
-    the current candle and the full option chain.
+
+    A candidate touch on one candle is not enough on its own: the detector is
+    stateful and requires the very next candle to confirm follow-through beyond
+    the candidate candle's extreme before emitting a signal. This prevents a
+    single shallow graze of the wall from triggering a trade.
     """
 
-    def detect(self, spot: float, full_chain: List[Dict[str, Any]], candle: OHLCVCandle, levels: List[ResistanceLevel]) -> Optional[AresSignal]:
+    def __init__(self):
         """
-        Scan the option chain for nearby OI walls and check if the current candle
-        shows a rejection or bounce confirming the wall's defense.
-        
+        Initialize with no pending candidate setup.
+        """
+        self.pending_setup: Optional[Dict[str, Any]] = None
+
+    def update(self, spot: float, full_chain: List[Dict[str, Any]], candle: OHLCVCandle, levels: List[ResistanceLevel]) -> Optional[AresSignal]:
+        """
+        Advance the detector by one candle.
+
+        If a candidate setup is pending from the previous candle, check whether
+        this candle confirms it (or let it expire). Otherwise, scan the option
+        chain for a new candidate touch on this candle.
+
         Args:
             spot: The current NIFTY spot price.
             full_chain: The full option chain from OIFetcher.
             candle: The latest closed 1-minute OHLCV candle.
             levels: Current key structural support and resistance levels.
-            
+
         Returns:
-            An AresSignal if a rejection/bounce is confirmed, otherwise None.
+            An AresSignal if a rejection/bounce is confirmed on this candle, otherwise None.
+        """
+        if self.pending_setup is not None:
+            setup = self.pending_setup
+            self.pending_setup = None  # Single follow-up candle window only
+
+            if setup["direction"] == Direction.BEARISH:
+                confirmed = candle.close < setup["candle1_low"]
+            else:
+                confirmed = candle.close > setup["candle1_high"]
+
+            if confirmed:
+                return self._build_signal(
+                    candle=candle,
+                    spot=spot,
+                    wall=setup["wall"],
+                    direction=setup["direction"],
+                    option_type=setup["option_type"],
+                    levels=levels
+                )
+            # Not confirmed within the single follow-up candle: setup expires.
+            return None
+
+        candidate = self._find_candidate(spot, full_chain, candle)
+        if candidate:
+            self.pending_setup = candidate
+
+        return None
+
+    def _find_candidate(self, spot: float, full_chain: List[Dict[str, Any]], candle: OHLCVCandle) -> Optional[Dict[str, Any]]:
+        """
+        Scan the option chain for a nearby OI wall and check if the current candle
+        shows a genuine wick-rejection touch (the candidate trigger candle).
         """
         nearest_ce_wall = None
         nearest_pe_wall = None
-        
+
         # 1 & 2: Find the nearest CE and PE walls
         for row in full_chain:
             strike = float(row["strike"])
-            
+
             # CE Walls (Resistance, above spot)
             if strike > spot:
                 ce_oi = row["ce_oi"]
                 ce_oi_change_pct = row["ce_oi_change_pct"]
-                
+
                 if ce_oi > settings.oi_wall_min_oi and ce_oi_change_pct > settings.oi_wall_min_oi_change_pct:
                     # If multiple exist above spot, find the closest one
                     if nearest_ce_wall is None or strike < nearest_ce_wall["strike"]:
                         nearest_ce_wall = row
-                        
+
             # PE Walls (Support, below spot)
             elif strike < spot:
                 pe_oi = row["pe_oi"]
                 pe_oi_change_pct = row["pe_oi_change_pct"]
-                
+
                 if pe_oi > settings.oi_wall_min_oi and pe_oi_change_pct > settings.oi_wall_min_oi_change_pct:
                     # If multiple exist below spot, find the closest one
                     if nearest_pe_wall is None or strike > nearest_pe_wall["strike"]:
                         nearest_pe_wall = row
 
-        # 3. CE wall rejection check (Bearish setup -> buy PE)
+        candle_range = candle.high - candle.low
+
+        # 3. CE wall rejection candidate (Bearish setup -> buy PE)
         if nearest_ce_wall:
             strike = float(nearest_ce_wall["strike"])
             distance = strike - spot
-            
+
             approaching = distance < settings.oi_wall_approach_distance
             tested_wall = candle.high >= (strike - settings.oi_wall_test_distance)
             rejected = candle.close < candle.open  # Bearish candle
+            upper_wick = candle.high - max(candle.open, candle.close)
+            wick_rejection = candle_range > 0 and (upper_wick / candle_range) >= WICK_REJECTION_RATIO
             writers_holding = nearest_ce_wall["ce_oi"] >= nearest_ce_wall["ce_oi_prev"]
-            
-            if approaching and tested_wall and rejected and writers_holding:
-                return self._build_signal(
-                    candle=candle,
-                    spot=spot,
-                    wall=nearest_ce_wall,
-                    direction=Direction.BEARISH,
-                    option_type="PE",
-                    levels=levels
-                )
 
-        # 4. PE wall bounce check (Bullish setup -> buy CE)
+            if approaching and tested_wall and rejected and wick_rejection and writers_holding:
+                return {
+                    "wall": nearest_ce_wall,
+                    "direction": Direction.BEARISH,
+                    "option_type": "PE",
+                    "candle1_high": candle.high,
+                    "candle1_low": candle.low,
+                }
+
+        # 4. PE wall bounce candidate (Bullish setup -> buy CE)
         if nearest_pe_wall:
             strike = float(nearest_pe_wall["strike"])
             distance = spot - strike
-            
+
             approaching = distance < settings.oi_wall_approach_distance
             tested_wall = candle.low <= (strike + settings.oi_wall_test_distance)
             bounced = candle.close > candle.open  # Bullish candle
+            lower_wick = min(candle.open, candle.close) - candle.low
+            wick_rejection = candle_range > 0 and (lower_wick / candle_range) >= WICK_REJECTION_RATIO
             writers_holding = nearest_pe_wall["pe_oi"] >= nearest_pe_wall["pe_oi_prev"]
-            
-            if approaching and tested_wall and bounced and writers_holding:
-                return self._build_signal(
-                    candle=candle,
-                    spot=spot,
-                    wall=nearest_pe_wall,
-                    direction=Direction.BULLISH,
-                    option_type="CE",
-                    levels=levels
-                )
+
+            if approaching and tested_wall and bounced and wick_rejection and writers_holding:
+                return {
+                    "wall": nearest_pe_wall,
+                    "direction": Direction.BULLISH,
+                    "option_type": "CE",
+                    "candle1_high": candle.high,
+                    "candle1_low": candle.low,
+                }
 
         return None
 
