@@ -95,20 +95,57 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(pm_fail.is_initialized)
 
     @patch('position_manager.settings')
-    def test_initialize_db_with_old_and_valid_records(self, mock_settings):
+    def test_initialize_db_loads_open_trades_from_any_date(self, mock_settings):
         today_str = datetime.now(timezone.utc).isoformat()
         yesterday_str = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-        
+        last_week_str = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
         self.mock_client.execute_mock.return_value.data = [
-            {"id": "trade-old", "created_at": yesterday_str, "state": "OPEN"},
-            {"id": "trade-valid", "created_at": today_str, "state": "OPEN"},
-            {"id": "trade-invalid-date", "created_at": "invalid-date", "state": "OPEN"}
+            {"id": "trade-yesterday-open", "created_at": yesterday_str, "state": "OPEN"},
+            {"id": "trade-today-open", "created_at": today_str, "state": "OPEN"},
+            {"id": "trade-old-t1", "created_at": last_week_str, "state": "T1_HIT",
+             "entry_price": 24000.0, "stop_loss": 24000.0},
+            {"id": "trade-old-closed", "created_at": last_week_str, "state": "CLOSED"},
+            {"id": "trade-old-stopped", "created_at": last_week_str, "state": "STOPPED_OUT"},
         ]
         pm = PositionManager()
         self.assertTrue(pm.is_initialized)
-        self.mock_client.delete_mock.assert_called_once()
+        # Multi-day carry: nothing is ever deleted at startup
+        self.mock_client.delete_mock.assert_not_called()
+        loaded_ids = {t["id"] for t in pm.active_trades}
+        self.assertEqual(
+            loaded_ids,
+            {"trade-yesterday-open", "trade-today-open", "trade-old-t1"}
+        )
+        # T1_HIT trade resumes with its trailed stop intact
+        t1_trade = next(t for t in pm.active_trades if t["id"] == "trade-old-t1")
+        self.assertEqual(t1_trade["stop_loss"], t1_trade["entry_price"])
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_previous_day_trade_continues_to_exit(self, mock_settings, mock_send_trade_update):
+        """A previous-day OPEN trade must keep being evaluated until T1/T2/SL."""
+        yesterday_str = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        self.mock_client.execute_mock.return_value.data = [{
+            "id": "trade-carryover",
+            "signal_id": "0001",
+            "setup_type": "OI_WALL_REJECTION",
+            "direction": "BULLISH",
+            "entry_price": 24000.0,
+            "stop_loss": 23975.0,
+            "target_1": 24035.0,
+            "target_2": 24070.0,
+            "state": "OPEN",
+            "created_at": yesterday_str,
+        }]
+        mock_send_trade_update.return_value = None
+        pm = PositionManager()
         self.assertEqual(len(pm.active_trades), 1)
-        self.assertEqual(pm.active_trades[0]["id"], "trade-valid")
+
+        with patch.object(pm.analytics, 'log_exit'):
+            await pm.update_trades(24071.0)  # gaps past T2 next morning
+
+        self.assertEqual(pm.active_trades[0]["state"], "CLOSED")
 
     @patch('position_manager.settings')
     async def test_add_trade_success_and_exception_safety(self, mock_settings):
