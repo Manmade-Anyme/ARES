@@ -16,9 +16,10 @@ Ran a full trade-efficiency audit (repo + Supabase live data, Jun 24 – Jul 2).
 - Replaced the old-date-wipe unit test with multi-day carry tests: cross-date loading, T1_HIT resume with trailed SL, closed-row exclusion, and a carryover trade gapping past T2 → CLOSED.
 - Full audit findings published to `docs/ARES Trade Efficiency Audit 2026-07-02.md` and mirrored to the Obsidian vault (`Projects/Ares/`). Headline: T1 reached in only 14% of trades; exhaustion detector is the main bleeder; no R:R gate; avg +6.8pts stop slippage from close-only 60s exit checks.
 
-**Status**: 141 tests green. PR pending.
+**Status**: Merged to `main` via [PR #16](https://github.com/dubeyshantanu2/ARES/pull/16). Local branch `feature/TASK-170-multi-day-trade-carry` deleted after merge. 141 tests green on `main`.
 
 **TODOs**
+- [x] Merge PR #16 and perform cleanup.
 - [ ] Run `scratch/restore_orphan_trades.py --apply` after human confirmation to resurrect the 12 orphaned trades.
 - [ ] Work the audit P0 backlog: R:R gate, time-stop/momentum target, exhaustion gating, BREAKEVEN exit type, candle dedup, cooldown reset after SL.
 
