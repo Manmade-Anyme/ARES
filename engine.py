@@ -102,7 +102,7 @@ class AresEngine:
                 levels=levels
             )
             or
-            self.oi_wall_detector.detect(
+            self.oi_wall_detector.update(
                 spot=atm.spot_price,
                 full_chain=full_chain,
                 candle=candle,

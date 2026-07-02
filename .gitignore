@@ -36,6 +36,9 @@ share/python-wheels/
 *.swo
 .DS_Store
 
+# Local scratch work (audits, debug scripts, throwaway notes) — never push
+scratch/
+
 # Logs
 *.log
 

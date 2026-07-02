@@ -40,6 +40,7 @@ class TuningConfig:
     oi_wall_approach_distance: float = 80.0
     oi_wall_test_distance: float = 20.0
     oi_wall_stop_buffer: float = 25.0
+    oi_wall_wick_rejection_ratio: float = 0.4
 
     # Exhaustion Detector
     exhaustion_volume_multiplier: float = 2.5
@@ -75,6 +76,7 @@ NON_EXPIRY_CONFIG = TuningConfig(
     oi_wall_approach_distance=80.0,
     oi_wall_test_distance=20.0,
     oi_wall_stop_buffer=25.0,
+    oi_wall_wick_rejection_ratio=0.4,
     exhaustion_volume_multiplier=2.5,
     exhaustion_body_ratio=0.35,
     exhaustion_iv_spike_threshold=3.0,
@@ -98,6 +100,7 @@ EXPIRY_CONFIG = TuningConfig(
     oi_wall_approach_distance=50.0,
     oi_wall_test_distance=10.0,
     oi_wall_stop_buffer=15.0,
+    oi_wall_wick_rejection_ratio=0.4,
 
     # Exhaustion — higher bar
     exhaustion_volume_multiplier=3.5,

@@ -38,7 +38,7 @@ ARES evaluates three distinct market phenomena in strict **short-circuit priorit
 
 ### 2. 🧱 OI Wall Rejection (High Priority)
 *   **Logic**: Identifies structural rejection at strikes with massive fresh Open Interest.
-*   **Confirmation**: Detects price "bounces" or "wick rejections" when the spot price tests a strike where the OI significantly exceeds a configured threshold.
+*   **Confirmation**: Stateful two-candle confirmation. A candle only becomes a candidate if it tests the wall with a genuine wick rejection ($\ge 40\%$ of candle range). The signal fires only once the following candle confirms by closing beyond the candidate candle's high/low; an unconfirmed candidate expires after one follow-up candle.
 *   **Dynamic Targets**: Profit targets (T1/T2) are calculated dynamically based on structural support/resistance levels from PDH/PDL and option chain walls, ensuring a minimum 20-point target proximity filter and deterministic proximity-based target sorting (T1 is guaranteed to be the closer target).
 *   **Dynamic Scoring (4-Point Matrix)**:
     *   `Wall Magnitude`: Size of the OI wall compared to thresholds.

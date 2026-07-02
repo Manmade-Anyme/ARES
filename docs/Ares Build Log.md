@@ -1,0 +1,141 @@
+# Ares Build Log
+
+A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
+
+---
+
+## 2026-07-02 14:10 · OI Wall Detector Confirmation-Candle Requirement (TASK-169)
+
+Audited two weak/false OI Wall Rejection alerts (#2599, #0308) and found the detector's core flaw: it fired on a single candle's shallow touch of the wall, with no follow-through requirement. Rewrote `OIWallDetector` to require a confirming second candle before emitting a signal, mirroring the stateful pattern already used in `ExhaustionDetector`.
+
+**Decisions**
+- Converted `OIWallDetector.detect()` (stateless) to `OIWallDetector.update()` (stateful), tracked via `self.pending_setup`.
+- A wall touch only becomes a candidate if it shows a genuine wick rejection ($\ge 40\%$ of candle range) — closes red/green alone no longer qualifies.
+- The signal only fires if the *next* candle confirms by closing beyond the candidate candle's high/low; unconfirmed candidates expire after exactly one follow-up candle (no indefinite pending state).
+- Updated `engine.py` call site from `.detect(...)` to `.update(...)`.
+- Rewrote `tests/unit/test_oi_wall.py` detect-flow tests into two-call confirmation flows; added coverage for confirmed/unconfirmed bearish and bullish setups, candidate expiry, and rejection of candles lacking a genuine wick.
+- Stop-buffer and confidence-bar tuning (also flagged in the audit) explicitly deferred to a future session.
+
+**TODOs**
+- [ ] Merge PR for `feature/TASK-169-oi-wall-confirmation-candle` and perform cleanup.
+- [ ] Revisit `oi_wall_stop_buffer` (currently 25pts NON_EXPIRY) and the confidence HIGH threshold (currently score >= 2) per the audit's remaining findings.
+
+---
+
+## 2026-07-02 00:35 · Option IV Ingestion Bug and Sluggish Market Filters
+
+Fixed a silent IV and Greek parsing bug in the option chain fetcher and ML live predictor. Integrated a 15-minute rolling range speed filter and an Anti-IV Crush filter in the core execution engine to prevent entries in sluggish market conditions where theta decay dominates.
+
+**Decisions**
+- Corrected option chain parsing in `OIFetcher` and `LiveRunner` to use Dhan API's native `"implied_volatility"` key.
+- Nested Greek metrics extraction inside the `"greeks"` sub-dictionary for the live XGBoost prediction runner.
+- Added a 15-minute Nifty Spot rolling range filter in `AresEngine` to suppress `MEDIUM` confidence setups when range is $< 15.0$ points.
+- Added an IV percentile lookback filter in `AresEngine` to suppress Call entries when current IV falls in the top 90% of its 20-candle lookback.
+- Added new unit test files `test_oi_fetcher.py`, `test_ml_live.py`, and `test_engine_remediation.py` to maintain 100% test coverage.
+
+**TODOs**
+- [x] Merge PR #14 and verify.
+- [ ] Implement the styling enhancement to visually flag "Paper Sizing Only" signals on Discord when suggested lots is 0.
+
+---
+
+## 2026-07-02 00:33 · Workspace Rules Git and PR Flow Consolidation
+
+Merged the separate **Commit & Push** and **Raise PR** steps in `.agents/AGENTS.md` into a single, unified step 3 to streamline the pipeline workflow for future agent sessions.
+
+**Decisions**
+- Combined the branch pushing and PR creation instructions into a single cohesive Step 3 under Section 2 of `AGENTS.md`.
+- Renumbered the **Merge Cleanup** step to Step 4.
+- Updated `CHANGELOG.md` to reflect this change.
+
+**TODOs**
+- [ ] Raise PR and verify.
+
+---
+
+## 2026-07-01 00:02 · Discord Alert Bold Markdown Formatting Fix
+
+Fixed a bug in `alerts.py` where bold (`**`) styling inside Discord alerts was displayed literally or incorrectly because the entire alert details were wrapped inside a ````diff` code block. Closed the code block after the header line to allow Discord to correctly parse and render bold markdown.
+
+**Decisions**
+- Closed ````diff` blocks immediately after the color-coded header line in `format_signal` and `send_trade_update`.
+- Kept raw unicode emojis for consistency and layout structure.
+- Re-run and verified the test suite.
+
+**TODOs**
+- [x] Merge PR #13 and verify.
+
+---
+
+## 2026-06-30 23:45 · Updated README with Option Sizing, Confidence Scoring, and Testing details
+
+Updated the main `README.md` documentation to reflect recent changes to ARES, including option sizing & delta-based strike selection, upgraded 6-point/4-point dynamic confidence scoring matrices for detectors, dynamic targets for the OI Wall Rejection detector, and instructions for running the newly achieved 100% test coverage unit test suite.
+
+**Decisions**
+- Documented `options_math.py` integration, explaining delta strike selection (target 0.45, range 0.45-0.55), capital-aware ingress, and risk-managed lot sizing formulas.
+- Updated the "Detection Strategies" section in `README.md` to detail the upgraded 6-point scoring for Failed Breakout and the 4-point dynamic scoring for OI Wall Rejection and Exhaustion Reversal.
+- Added pytest execution guidelines under a new "Running Unit Tests" subsection in the Setup and Deployment section.
+- Added `options_math.py` to the tree under the "Project Structure" directory layout.
+
+**TODOs**
+- [x] Merge PR #12 and verify.
+
+---
+
+## 2026-06-30 19:55 · Redeployed ARES to Mumbai (bom) & Updated PR Workflow Rules
+
+Redeployed the ARES application (`ares-xzy-gq`) back to the Fly.io Mumbai (`bom`) region from Singapore (`sin`) to resolve Discord signal/response latency issues. In addition, updated the repository's `.agents/AGENTS.md` guidelines to require detailed PR descriptions outlining the Problem, Solution, and Testing/Verification performed.
+
+**Decisions**
+- Redeployed ARES to the `bom` region via `fly deploy` using the existing `fly.toml` configuration.
+- Verified the machine version `61` in the `bom` region.
+- Appended the PR description workflow requirements under step 4 of Section 2 in `.agents/AGENTS.md`.
+- Merged the rule change to `main` and cleaned up the local feature branch `feature/TASK-165-redeploy-bom`.
+
+**TODOs**
+- [x] Merge PR #11 and verify deployment.
+- [x] Merge the rules updates to `main` and perform local branch cleanup.
+
+---
+
+## 2026-06-29 21:40 · Discord Alert Formatting Upgrades
+
+Refactored the Discord signal alert and trade update alert formatting in `alerts.py` to use textual emoji shortcodes (e.g. `:clock3:`, `:round_pushpin:`, `:white_check_mark:`, `:octagonal_sign:`, `:dart:`, `:zap:`, `:star:`, `:triangular_ruler:`, `:1234:`, and `:pencil:`) and bold tags around values for high visual contrast and modern appearance. Removed the horizontal divider trailing lines and indented Option Sizing Calculator fields.
+
+**Decisions**
+- Relayout signal template formatting with custom emoji shortcodes.
+- Apply bold tags to all entry, stop-loss, target, and status values.
+- Keep the ````diff```` wrapper to enable syntax coloring where needed, but align emojis and bolds to render gracefully.
+- Remove horizontal divider lines `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━` at the end of alerts to reduce alert vertical size.
+
+**TODOs**
+- [ ] Merge PR for feature branch `feature/TASK-164-discord-alert-formatting` and perform cleanup.
+
+---
+
+## 2026-06-29 18:02 · Dynamic Structural Targets for OI Wall Rejection
+
+Implemented dynamic structural target selection for the `OI_WALL_REJECTION` setup in `OIWallDetector` (aligning it with breakout and exhaustion detectors). The system now identifies the next significant support/resistance levels from the option chain and structural data to set realistic exit points instead of fixed offsets.
+
+**Decisions**
+- Upgraded the `OIWallDetector.detect` and `_build_signal` methods to accept the structural `levels` list.
+- Configured dynamic target selection with a minimum 20-point target proximity filter and proximity-based sorting.
+- Maintained a fallback to configured fixed target offsets (`settings.target_1_pts` / `settings.target_2_pts`) if structural levels are unavailable or too tight.
+- Updated `engine.py` to correctly forward the `levels` list during the engine tick evaluation.
+
+**TODOs**
+- [ ] Merge PR for feature branch `feature/TASK-163-oi-wall-dynamic-targets` and perform cleanup.
+
+---
+
+## 2026-06-29 14:25 · 100% Test Coverage & Workspace Rules
+
+Upgraded the project unit test suite to achieve 100% line coverage on all target logic and adapter files. Designed a pre-import reloading patch for the Supabase create_client connection to isolate DB persistence. Added project-scoped rules for automatically executing the Global Development Pipeline in the ARES workspace.
+
+**Decisions**
+- Isolate external integrations (Dhan API and Supabase) by reloading imports within mock decorators.
+- Enforce the Global Development Pipeline rules by creating a project-scoped AGENTS.md file in the workspace root.
+- Validate all retry patterns and exception paths (such as event loop runtime failures) within the testing suite.
+
+**TODOs**
+- [x] Merge PR #8 and perform local branch merge verification and cleanup.
