@@ -5,9 +5,11 @@
 ### 📊 Trade Efficiency Audit Backlog (see `docs/ARES Trade Efficiency Audit 2026-07-02.md`)
 **Shipped in TASK-171:** R:R gate, time-stop risk-off, exhaustion observation mode, cooldown reset after stop-out.
 **Shipped in TASK-172:** P1 block — breakout gate 3-of-5 (closed_back excluded), IV-crush v2 (HIGH exempt/symmetric/60-sample), intrabar fill-at-level exits, config speed filter + ≥60% confidence bars, signal_id join fix, IST→UTC entry timestamps, add_trade dedupe.
+**Shipped in TASK-173:** P2 items 16 & 18 — trend-regime filter (VWAP/PDH-PDL counter-trend gate, HIGH downgraded to observation-only / MEDIUM suppressed) and WebSocket tick feed augmenting the 60s REST poll for sub-60s SL/T1/T2 exit checks (best-effort, REST-only fallback). Items 14–15 stay `[SKIP]`.
 - [ ] Full threshold sweep against the ml_collection dataset (audit item 17, remaining scope).
 - [ ] Untagged P0 items pending decision: distinct BREAKEVEN exit type, candle timestamp dedup.
 - [ ] Validate TASK-172 P1 tuning against live Discord output over the next sessions.
+- [ ] Validate TASK-173 trend-regime filter and tick feed against live Discord output over the next sessions.
 - [x] Run `scratch/restore_orphan_trades.py --apply` — 10 orphans restored to `active_trades` on 2026-07-02 (1 duplicate + 1 unmatched post-market row skipped).
 
 ### 🔒 Dhan Token Automation (Programmatic Refresh) [COMPLETED]

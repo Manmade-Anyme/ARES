@@ -45,26 +45,32 @@ class AresEngine:
         full_chain: List[Dict[str, Any]],
         atm: ATMStrikes,
         iv_change_pct: float,
-        levels: List[ResistanceLevel]
+        levels: List[ResistanceLevel],
+        pdh: Optional[float] = None,
+        pdl: Optional[float] = None,
     ) -> Optional[AresSignal]:
         """
         Process a single tick of data through the detection pipeline.
-        
+
         Priority Order Rationale:
         1. Failed Breakout (Highest Precision, stateful tracking)
         2. OI Wall Rejection (High Precision, structural support/resistance)
         3. Exhaustion Reversal (Medium Precision, volume/price extreme)
-        
+
         Higher confidence setups are checked first. If a signal is found, the
         evaluation short-circuits and returns.
-        
+
         Args:
             candle: The latest closed OHLCV candle.
             full_chain: The complete NIFTY option chain from OIFetcher.
             atm: The ATM strikes context including spot price and ATM IV/OI.
             iv_change_pct: The percentage change in ATM Implied Volatility.
             levels: A list of ResistanceLevel objects (structural levels + OI walls) used for target calculation.
-            
+            pdh: Previous day high, used by the trend-regime filter. Optional
+                for backward compatibility — the filter no-ops without it.
+            pdl: Previous day low, used by the trend-regime filter. Optional
+                for backward compatibility — the filter no-ops without it.
+
         Returns:
             An AresSignal if a detector triggers and cooldown is clear, otherwise None.
         """
@@ -175,6 +181,29 @@ class AresEngine:
                 percentile = (lower_iv_count / len(lookback)) * 100.0
                 if percentile >= settings.iv_crush_percentile:
                     print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: {side} IV {current_iv:.2f}% in top {100.0 - settings.iv_crush_percentile:.0f}% of lookback poses high risk of IV crush.")
+                    signal = None
+
+        if signal and not signal.alert_only and settings.trend_filter_enabled and pdh is not None and pdl is not None:
+            # Filter E: Trend-Regime Filter (TASK-173 audit item 16). Uses
+            # VWAP + PDH/PDL position to flag counter-trend entries: bullish
+            # signals fighting a sub-VWAP/sub-PDH downtrend, or bearish
+            # signals fighting a supra-VWAP/supra-PDL uptrend. HIGH confidence
+            # counter-trend setups are downgraded to observation-only (same
+            # convention as exhaustion's alert_only); MEDIUM ones are
+            # suppressed outright, matching the speed/IV-crush filters.
+            is_uptrend = candle.close > candle.vwap and candle.close > pdl
+            is_downtrend = candle.close < candle.vwap and candle.close < pdh
+            counter_trend = (
+                (signal.direction == Direction.BULLISH and is_downtrend)
+                or (signal.direction == Direction.BEARISH and is_uptrend)
+            )
+            if counter_trend:
+                if signal.confidence == "HIGH":
+                    signal.alert_only = True
+                    signal.reasons.append("Counter-trend vs VWAP/PDH-PDL regime — observation only (trend_filter_enabled)")
+                    print(f"[-] AresEngine: Downgrading {signal.setup_type.value} ({signal.direction.value}) signal to observation-only. Reason: Counter-trend vs VWAP/PDH-PDL regime.")
+                else:
+                    print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: Counter-trend vs VWAP/PDH-PDL regime (MEDIUM confidence).")
                     signal = None
 
         # 7. Set cooldown if signal fired.

@@ -4,6 +4,24 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-03 02:11 · Audit P2 Structural: Trend-Regime Filter & WS Tick Exits (TASK-173)
+
+Implemented 2 of the 5 P2 "structural" items from the 2026-07-02 trade-efficiency audit (items 16 and 18; 14–15 stay `[SKIP]`, 17's full threshold sweep remains separate open scope). TDD flow: failing tests first (TypeError on the new `tick()` params, ModuleNotFoundError on the new `fetchers/tick_feed.py`, AttributeError on the new main.py helper), then implementation. 213 tests green (32 new since TASK-172's 181).
+
+**Decisions**
+- **Trend-regime filter (item 16)**: new engine Filter E derives regime from VWAP + PDH/PDL position — uptrend when close is above both VWAP and PDL, downtrend when close is below both VWAP and PDH, otherwise ambiguous (no action). Counter-trend HIGH confidence signals are downgraded to observation-only (`alert_only=True`, reusing the exact convention exhaustion's Filter D already established) rather than discarded; counter-trend MEDIUM signals are suppressed outright, matching the speed/IV-crush filters' existing MEDIUM-suppression convention. New `trend_filter_enabled` config flag (default `True`, both profiles). `AresEngine.tick()` gained optional `pdh`/`pdl` params (default `None`) so the filter no-ops — rather than raising — for any call site that omits them; all 3 pre-existing test files calling `tick()` with the old 5-arg signature needed no changes.
+- **WebSocket tick feed (item 18)**: new `fetchers/tick_feed.py` wraps dhanhq's bundled `MarketFeed` WS client (confirmed present in the installed SDK — no new dependency) in Ticker mode (lowest bandwidth, LTP only) subscribed to the existing `settings.security_id`/`IDX` instrument. Runs on dhanhq's own background thread; latest LTP cached behind a lock. Purely additive: `main.py`'s new `_sleep_with_tick_exits` helper replaces the flat 60s `asyncio.sleep` — when the feed is active it wakes every `tick_exit_check_interval_seconds` (default 2.0s) and calls the *existing* `PositionManager.update_trades(price)` (a tick is just a degenerate single-price candle, so no new exit-check method was needed — pure reuse of the TASK-172 intrabar logic). SL_HIT still clears the engine cooldown, same as the 60s path. If the feed fails to start or errors out, `main.py` logs a warning and the loop behaves exactly as it did pre-TASK-173 (REST-only). The feed is stopped at session end and restarted alongside the REST clients on the existing 401/auth credential-reload path, since it authenticates with the same token.
+- Deliberately did not touch `[SKIP]` items 14 (premium tracking) and 15 (per-detector cooldowns), and left item 17 (full ml_collection threshold sweep) as separate open scope per user direction this session.
+
+**Status**: 213 tests green (32 new). Coverage on touched modules: config_profiles 100%, `fetchers/tick_feed.py` 100%, engine 99% (one pre-existing unreachable branch, unrelated to this change). `main.py`'s new `_sleep_with_tick_exits` helper is fully unit-tested; the rest of `main.py`'s orchestrator loop remains integration-only, as it was before this task. PR pending.
+
+**TODOs**
+- [ ] Merge PR for `feature/TASK-173-p2-trend-regime-ws-exits` and perform cleanup.
+- [ ] Validate trend-regime filter and WS tick exits against live Discord output over the next sessions.
+- [ ] Full threshold sweep against ml_collection dataset (audit item 17, remaining scope).
+
+---
+
 ## 2026-07-03 01:25 · Audit P1 Tuning & Data-Quality Fixes (TASK-172)
 
 Implemented the P1 block from the 2026-07-02 trade-efficiency audit (items 8, 10–13; item 9 time-of-day gates remains `[SKIP]`). TDD flow: failing tests first (import error + assertion failures confirmed), then implementation. 181 tests green (40 new/updated since TASK-171's 151).

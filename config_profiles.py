@@ -68,6 +68,14 @@ class TuningConfig:
     iv_crush_lookback_size: int = 60
     iv_crush_percentile: float = 90.0
 
+    # P2 structural (TASK-173 audit item 16): counter-trend gate using
+    # VWAP + PDH/PDL position. HIGH confidence counter-trend signals are
+    # downgraded to observation-only; MEDIUM ones are suppressed outright.
+    trend_filter_enabled: bool = True
+    # P2 structural (TASK-173 audit item 18): cadence for tick-driven exit
+    # checks against the WebSocket feed between the 60s REST poll cycles.
+    tick_exit_check_interval_seconds: float = 2.0
+
     # Targets & Zones
     target_1_pts: float = 35.0
     target_2_pts: float = 70.0
