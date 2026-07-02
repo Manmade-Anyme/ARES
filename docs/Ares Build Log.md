@@ -15,10 +15,14 @@ Audited two weak/false OI Wall Rejection alerts (#2599, #0308) and found the det
 - Updated `engine.py` call site from `.detect(...)` to `.update(...)`.
 - Rewrote `tests/unit/test_oi_wall.py` detect-flow tests into two-call confirmation flows; added coverage for confirmed/unconfirmed bearish and bullish setups, candidate expiry, and rejection of candles lacking a genuine wick.
 - Stop-buffer and confidence-bar tuning (also flagged in the audit) explicitly deferred to a future session.
+- **Review follow-up**: moved the wick rejection ratio out of a hardcoded constant into `config_profiles.py` as `oi_wall_wick_rejection_ratio` (0.4 in both profiles), per reviewer request to keep it tunable. Also removed the committed `scratch/oi_wall_audit_20260702.md` audit file from the PR (scratch/ is local-only), added `scratch/` to `.gitignore`, and logged a `TODO.md` item to clean up any pre-existing tracked scratch files.
+
+**Status**: Merged to `main` via [PR #15](https://github.com/dubeyshantanu2/ARES/pull/15). Local branch `feature/TASK-169-oi-wall-confirmation-candle` deleted after merge.
 
 **TODOs**
-- [ ] Merge PR for `feature/TASK-169-oi-wall-confirmation-candle` and perform cleanup.
+- [x] Merge PR for `feature/TASK-169-oi-wall-confirmation-candle` and perform cleanup.
 - [ ] Revisit `oi_wall_stop_buffer` (currently 25pts NON_EXPIRY) and the confidence HIGH threshold (currently score >= 2) per the audit's remaining findings.
+- [ ] Audit `scratch/` for files still tracked in git from before the `.gitignore` change and remove them.
 
 ---
 
