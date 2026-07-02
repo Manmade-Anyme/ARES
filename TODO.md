@@ -7,7 +7,7 @@
 - [ ] Full threshold sweep against the ml_collection dataset (audit item 17, remaining scope).
 - [ ] Untagged P0 items pending decision: distinct BREAKEVEN exit type, candle timestamp dedup.
 - [ ] P1 tuning items pending decision (validate against live Discord output first).
-- [ ] Run `scratch/restore_orphan_trades.py --apply` after confirmation to resurrect the 12 orphaned trades (TASK-170 follow-up).
+- [x] Run `scratch/restore_orphan_trades.py --apply` — 10 orphans restored to `active_trades` on 2026-07-02 (1 duplicate + 1 unmatched post-market row skipped).
 
 ### 🔒 Dhan Token Automation (Programmatic Refresh) [COMPLETED]
 **Description:** Migrated to centralized `dhanrenew` microservice running on Fly.io which auto-renews tokens into Supabase. ARES fetches client ID and access token from Supabase dynamically on startup and auto-recovers mid-session.
