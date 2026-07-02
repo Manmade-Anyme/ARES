@@ -28,7 +28,10 @@ class TuningConfig:
 
     # Failed Breakout Detector
     breakout_confirmation_candles: int = 3
-    breakout_failure_min_score: int = 2
+    # Minimum scored conditions (of 5) required alongside the mandatory
+    # closed_back gate. TASK-172 raised 2→3 and removed closed_back from the
+    # score — the old 2 effectively meant "closed back + one coin-flip".
+    breakout_failure_min_score: int = 3
     breakout_weak_volume_ratio: float = 0.75
     breakout_iv_falling_threshold: float = -3.0
     breakout_stop_buffer: float = 25.0
@@ -53,6 +56,17 @@ class TuningConfig:
     min_rr_ratio: float = 1.0
     time_stop_minutes: int = 45
     exhaustion_alert_only: bool = True
+
+    # Engine protective filters (TASK-172 audit P1)
+    # Speed filter: suppress MEDIUM signals when the rolling N-candle range is
+    # below the threshold (flat market). Previously hardcoded 15 candles / 15 pts.
+    speed_filter_window_candles: int = 15
+    speed_filter_min_range_pts: float = 15.0
+    # Anti-IV-crush filter: suppress MEDIUM signals whose option side has IV at
+    # or above this percentile of the lookback. 60 samples ≈ one hour of polls
+    # (the old 20-sample window flagged "high IV" off 20 minutes of data).
+    iv_crush_lookback_size: int = 60
+    iv_crush_percentile: float = 90.0
 
     # Targets & Zones
     target_1_pts: float = 35.0

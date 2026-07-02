@@ -257,6 +257,88 @@ class TestStorage(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             load_dhan_credentials_from_supabase()
 
+class TestSignalIdAndTimezones(unittest.IsolatedAsyncioTestCase):
+    """TASK-172 audit P1 item 13: signal_id join fix and entry/exit timestamp
+    timezone consistency."""
+
+    def setUp(self):
+        self.mock_client = global_mock_client
+        self.mock_client.insert_mock.reset_mock()
+        self.mock_client.update_mock.reset_mock()
+        self.mock_client.insert_mock.side_effect = None
+        self.mock_client.execute_mock.side_effect = None
+        self.mock_client.execute_mock.return_value.data = []
+        self.mock_client.insert_mock.return_value.execute.return_value = MagicMock(data=[])
+
+        self.storage = Storage()
+        self.analytics = AnalyticsLogger()
+
+    def _make_signal(self, timestamp=None):
+        return AresSignal(
+            setup_type=SetupType.OI_WALL_REJECTION,
+            direction=Direction.BULLISH,
+            trigger_price=24000.0,
+            entry_zone=(23990.0, 24010.0),
+            stop_loss=23975.0,
+            target_1=24050.0,
+            target_2=24100.0,
+            confidence="HIGH",
+            reasons=["Reason 1"],
+            timestamp=timestamp or datetime.now(),
+            strike_to_trade=24000,
+            option_type="CE",
+        )
+
+    async def test_log_signal_converts_naive_ist_timestamp_to_utc(self):
+        """Candle timestamps are naive IST wall-clock; they must be stored as
+        the correct UTC instant (14:12 IST == 08:42 UTC), matching the real-UTC
+        exit timestamps."""
+        signal = self._make_signal(timestamp=datetime(2026, 7, 2, 14, 12, 0))
+        await self.storage.log_signal(signal, 24001.0)
+
+        inserted = self.mock_client.insert_mock.call_args[0][0]
+        self.assertEqual(inserted["timestamp"], "2026-07-02T08:42:00+00:00")
+
+    async def test_log_signal_captures_inserted_db_id(self):
+        self.mock_client.insert_mock.return_value.execute.return_value = MagicMock(
+            data=[{"id": 4242}]
+        )
+        signal = self._make_signal()
+        await self.storage.log_signal(signal, 24001.0)
+        self.assertEqual(signal.db_id, 4242)
+
+    async def test_log_entry_writes_signal_id_and_utc_entry_timestamp(self):
+        signal = self._make_signal(timestamp=datetime(2026, 7, 2, 14, 12, 0))
+        signal.db_id = 4242
+
+        self.analytics.log_entry("trade-join", signal, 24001.0, None)
+        await asyncio.sleep(0.05)
+
+        inserted = self.mock_client.insert_mock.call_args[0][0]
+        self.assertEqual(inserted["signal_id"], 4242)
+        self.assertEqual(inserted["entry_timestamp"], "2026-07-02T08:42:00+00:00")
+
+    async def test_log_entry_signal_id_null_when_signal_insert_failed(self):
+        """If ares_signals logging failed, analytics still logs with a NULL
+        signal_id instead of crashing."""
+        signal = self._make_signal()
+        self.analytics.log_entry("trade-nojoin", signal, 24001.0, None)
+        await asyncio.sleep(0.05)
+
+        inserted = self.mock_client.insert_mock.call_args[0][0]
+        self.assertIsNone(inserted["signal_id"])
+
+    async def test_aware_timestamps_pass_through_unchanged(self):
+        """Already-aware timestamps are only converted to UTC, never re-labeled."""
+        from datetime import timezone as tz
+        aware = datetime(2026, 7, 2, 8, 42, 0, tzinfo=tz.utc)
+        signal = self._make_signal(timestamp=aware)
+        await self.storage.log_signal(signal, 24001.0)
+
+        inserted = self.mock_client.insert_mock.call_args[0][0]
+        self.assertEqual(inserted["timestamp"], "2026-07-02T08:42:00+00:00")
+
+
 # Clean up patch after class execution
 def tearDownModule():
     mock_create_patch.stop()

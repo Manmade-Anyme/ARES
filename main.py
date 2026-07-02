@@ -223,9 +223,12 @@ async def run():
                 except Exception as alert_err:
                     print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
 
-            # Update active trades with new spot price
+            # Update active trades with new spot price. Candle high/low enable
+            # intrabar SL/target detection (TASK-172, audit item 11).
             try:
-                trade_events = await position_manager.update_trades(spot)
+                trade_events = await position_manager.update_trades(
+                    spot, candle_high=candle.high, candle_low=candle.low
+                )
                 # A stop-out frees the engine cooldown so the next setup can be
                 # taken immediately instead of waiting out the timer.
                 if any(ev_type == "SL_HIT" for _, ev_type in trade_events):

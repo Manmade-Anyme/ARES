@@ -172,18 +172,20 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pm.active_trades), 1)
         await asyncio.sleep(0.05)
         self.mock_client.insert_mock.assert_called_once()
-        
+
         # Test Exception safety (Supabase fails, AnalyticsLogger fails)
+        # (entries spread >1pt apart so the TASK-172 duplicate guard stays out
+        # of the way — dedupe has its own dedicated tests)
         self.mock_client.insert_mock.reset_mock()
         self.mock_client.insert_mock.side_effect = Exception("Supabase insert error")
         with patch.object(pm.analytics, 'log_entry', side_effect=Exception("Analytics logger error")):
-            pm.add_trade(signal, 24002.0, None)
+            pm.add_trade(signal, 24010.0, None)
             await asyncio.sleep(0.05)
             self.mock_client.insert_mock.assert_called_once()
 
         # Test line 96-97 get_running_loop error pathway
         with patch('asyncio.get_running_loop', side_effect=RuntimeError("No event loop")):
-            pm.add_trade(signal, 24003.0, None)
+            pm.add_trade(signal, 24020.0, None)
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -203,16 +205,17 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         pm.active_trades = [trade]
         
         # 1. Price reaches T1 -> state trails to T1_HIT, SL = entry
+        # (TASK-172 fill-at-level: events are reported at the touched level)
         await pm.update_trades(24060.0)
         self.assertEqual(trade["state"], "T1_HIT")
         self.assertEqual(trade["stop_loss"], 24000.0)
-        mock_send_trade_update.assert_called_with(trade, 24060.0, "T1_HIT")
+        mock_send_trade_update.assert_called_with(trade, 24050.0, "T1_HIT")
 
         # 2. Price hits SL -> CLOSED, update_type = T1_HIT
         mock_send_trade_update.reset_mock()
         await pm.update_trades(23999.0)
         self.assertEqual(trade["state"], "CLOSED")
-        mock_send_trade_update.assert_called_with(trade, 23999.0, "T1_HIT")
+        mock_send_trade_update.assert_called_with(trade, 24000.0, "T1_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -236,16 +239,17 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         pm.active_trades = [trade, closed_trade]
         
         # 1. Price reaches T1 -> state trails to T1_HIT, SL = entry
+        # (TASK-172 fill-at-level: events are reported at the touched level)
         await pm.update_trades(23940.0)
         self.assertEqual(trade["state"], "T1_HIT")
         self.assertEqual(trade["stop_loss"], 24000.0)
-        mock_send_trade_update.assert_called_with(trade, 23940.0, "T1_HIT")
+        mock_send_trade_update.assert_called_with(trade, 23950.0, "T1_HIT")
 
         # 2. Price hits trailed SL -> CLOSED, update_type = T1_HIT
         mock_send_trade_update.reset_mock()
         await pm.update_trades(24001.0)
         self.assertEqual(trade["state"], "CLOSED")
-        mock_send_trade_update.assert_called_with(trade, 24001.0, "T1_HIT")
+        mock_send_trade_update.assert_called_with(trade, 24000.0, "T1_HIT")
 
         # Reset for Bearish T2 Hit
         trade_t2 = {
@@ -262,7 +266,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         mock_send_trade_update.reset_mock()
         await pm.update_trades(23890.0)
         self.assertEqual(trade_t2["state"], "CLOSED")
-        mock_send_trade_update.assert_called_with(trade_t2, 23890.0, "T2_HIT")
+        mock_send_trade_update.assert_called_with(trade_t2, 23900.0, "T2_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -290,10 +294,11 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trade["state"], "OPEN")
 
         # Tightened breakeven hit -> exits as TIME_STOP, not a fake T1 win
+        # (fill-at-level: exit reported at the tightened stop, i.e. entry)
         events = await pm.update_trades(23999.0)
         self.assertEqual(trade["state"], "CLOSED")
         self.assertIn(("trade-stale", "TIME_STOP"), events)
-        mock_send_trade_update.assert_called_with(trade, 23999.0, "TIME_STOP")
+        mock_send_trade_update.assert_called_with(trade, 24000.0, "TIME_STOP")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -353,7 +358,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         
         await pm.update_trades(23970.0)
         self.assertEqual(trade["state"], "CLOSED")
-        mock_send_trade_update.assert_called_with(trade, 23970.0, "SL_HIT")
+        mock_send_trade_update.assert_called_with(trade, 23975.0, "SL_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -373,7 +378,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         
         await pm.update_trades(24030.0)
         self.assertEqual(trade["state"], "CLOSED")
-        mock_send_trade_update.assert_called_with(trade, 24030.0, "SL_HIT")
+        mock_send_trade_update.assert_called_with(trade, 24025.0, "SL_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -413,6 +418,187 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         pm.active_trades = [trade_loop_err]
         with patch('asyncio.get_running_loop', side_effect=RuntimeError("No event loop")):
             await pm.update_trades(24105.0)
+
+class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
+    """TASK-172 audit P1: intrabar high/low exit detection (item 11) and
+    duplicate add_trade guard (item 13)."""
+
+    def setUp(self):
+        self.mock_client = global_mock_client
+        self.mock_client.insert_mock.reset_mock()
+        self.mock_client.update_mock.reset_mock()
+        self.mock_client.insert_mock.side_effect = None
+        self.mock_client.update_mock.side_effect = None
+        self.mock_client.execute_mock.side_effect = None
+        self.mock_client.execute_mock.return_value.data = []
+
+    def _bullish_trade(self, **overrides):
+        trade = {
+            "id": "trade-intrabar",
+            "signal_id": "0042",
+            "setup_type": "OI_WALL_REJECTION",
+            "direction": "BULLISH",
+            "entry_price": 24000.0,
+            "stop_loss": 23975.0,
+            "target_1": 24050.0,
+            "target_2": 24100.0,
+            "state": "OPEN",
+        }
+        trade.update(overrides)
+        return trade
+
+    def _make_signal(self, setup_type=SetupType.OI_WALL_REJECTION):
+        return AresSignal(
+            setup_type=setup_type,
+            direction=Direction.BULLISH,
+            trigger_price=24000.0,
+            entry_zone=(23990.0, 24010.0),
+            stop_loss=23975.0,
+            target_1=24050.0,
+            target_2=24100.0,
+            confidence="HIGH",
+            reasons=["Reason 1"],
+            timestamp=datetime.now(),
+            strike_to_trade=24000,
+            option_type="CE",
+        )
+
+    # ── Item 11: intrabar exit detection ────────────────────────────────────
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_intrabar_low_triggers_sl_even_if_close_recovers(self, mock_settings, mock_alert):
+        """Candle wicks below SL but closes back above it: close-only polling
+        missed this stop (avg +6.8 pts slippage); intrabar detection catches it
+        and fills at the stop level."""
+        trade = self._bullish_trade()
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            events = await pm.update_trades(23990.0, candle_high=23995.0, candle_low=23970.0)
+
+        self.assertEqual(trade["state"], "CLOSED")
+        self.assertIn(("trade-intrabar", "SL_HIT"), events)
+        mock_alert.assert_called_with(trade, 23975.0, "SL_HIT")
+        mock_log_exit.assert_called_with("trade-intrabar", 23975.0, "SL_HIT")
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_intrabar_high_triggers_t1_even_if_close_below(self, mock_settings, mock_alert):
+        trade = self._bullish_trade()
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        await pm.update_trades(24040.0, candle_high=24052.0, candle_low=24035.0)
+
+        self.assertEqual(trade["state"], "T1_HIT")
+        self.assertEqual(trade["stop_loss"], 24000.0)
+        mock_alert.assert_called_with(trade, 24050.0, "T1_HIT")
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_intrabar_both_sl_and_target_resolves_pessimistically(self, mock_settings, mock_alert):
+        """A candle that spans both the stop and a target is resolved as a
+        stop-out — the honest assumption when intra-candle order is unknown."""
+        trade = self._bullish_trade()
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            events = await pm.update_trades(24080.0, candle_high=24105.0, candle_low=23970.0)
+
+        self.assertEqual(trade["state"], "CLOSED")
+        self.assertIn(("trade-intrabar", "SL_HIT"), events)
+        mock_log_exit.assert_called_with("trade-intrabar", 23975.0, "SL_HIT")
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_intrabar_t2_fills_at_level_not_close(self, mock_settings, mock_alert):
+        trade = self._bullish_trade(state="T1_HIT", stop_loss=24000.0)
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            await pm.update_trades(24120.0, candle_high=24125.0, candle_low=24095.0)
+
+        self.assertEqual(trade["state"], "CLOSED")
+        # Exit recorded at T2 (24100), not the poll close (24120)
+        mock_log_exit.assert_called_with("trade-intrabar", 24100.0, "T2_HIT")
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_intrabar_bearish_high_triggers_sl(self, mock_settings, mock_alert):
+        trade = self._bullish_trade(
+            direction="BEARISH", stop_loss=24025.0,
+            target_1=23950.0, target_2=23900.0,
+        )
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            events = await pm.update_trades(24010.0, candle_high=24030.0, candle_low=24005.0)
+
+        self.assertEqual(trade["state"], "CLOSED")
+        self.assertIn(("trade-intrabar", "SL_HIT"), events)
+        mock_log_exit.assert_called_with("trade-intrabar", 24025.0, "SL_HIT")
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_close_only_call_still_works_without_candle(self, mock_settings, mock_alert):
+        """Backward compatibility: omitting candle extremes falls back to the
+        spot price for every check."""
+        trade = self._bullish_trade()
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        await pm.update_trades(23990.0)  # above SL, below T1: nothing happens
+        self.assertEqual(trade["state"], "OPEN")
+
+        await pm.update_trades(23970.0)  # through SL
+        self.assertEqual(trade["state"], "CLOSED")
+        mock_alert.assert_called_with(trade, 23975.0, "SL_HIT")
+
+    # ── Item 13: duplicate add_trade guard ──────────────────────────────────
+
+    @patch('position_manager.settings')
+    async def test_add_trade_skips_duplicate_signal(self, mock_settings):
+        """The 06-29 14:12 OI wall trade was logged twice. A second add for the
+        same setup/direction at (nearly) the same entry is now skipped."""
+        pm = PositionManager()
+        pm.active_trades = []
+        signal = self._make_signal()
+
+        pm.add_trade(signal, 24001.0, None)
+        pm.add_trade(signal, 24001.4, None)  # same setup, entry within 1pt
+
+        self.assertEqual(len(pm.active_trades), 1)
+        await asyncio.sleep(0.05)
+        self.mock_client.insert_mock.assert_called_once()
+
+    @patch('position_manager.settings')
+    async def test_add_trade_allows_same_setup_at_different_level(self, mock_settings):
+        pm = PositionManager()
+        pm.active_trades = []
+        signal = self._make_signal()
+
+        pm.add_trade(signal, 24001.0, None)
+        pm.add_trade(signal, 24020.0, None)  # >1pt away: legitimate new trade
+
+        self.assertEqual(len(pm.active_trades), 2)
+
+    @patch('position_manager.settings')
+    async def test_add_trade_allows_reentry_after_close(self, mock_settings):
+        pm = PositionManager()
+        pm.active_trades = []
+        signal = self._make_signal()
+
+        pm.add_trade(signal, 24001.0, None)
+        pm.active_trades[0]["state"] = "CLOSED"
+        pm.add_trade(signal, 24001.0, None)  # prior trade closed: re-entry OK
+
+        self.assertEqual(len(pm.active_trades), 2)
+
 
 def tearDownModule():
     mock_create_patch.stop()

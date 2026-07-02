@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict, Any, Tuple
 
-from models import OHLCVCandle, AresSignal, SetupType, Direction, ResistanceLevel
+from models import OHLCVCandle, AresSignal, SetupType, Direction, ResistanceLevel, confidence_from_score
 from config import settings
 
 
@@ -202,7 +202,7 @@ class OIWallDetector:
                     wick_score = 1
                     
         score = mag_score + growth_score + pierce_score + wick_score
-        confidence = "HIGH" if score >= 2 else "MEDIUM"
+        confidence = confidence_from_score(score, max_score=4)
         return confidence, extra_reasons
 
     def _build_signal(
