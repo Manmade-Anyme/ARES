@@ -125,6 +125,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
     @patch('position_manager.settings')
     async def test_previous_day_trade_continues_to_exit(self, mock_settings, mock_send_trade_update):
         """A previous-day OPEN trade must keep being evaluated until T1/T2/SL."""
+        mock_settings.time_stop_minutes = 45
         yesterday_str = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         self.mock_client.execute_mock.return_value.data = [{
             "id": "trade-carryover",
@@ -262,6 +263,77 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         await pm.update_trades(23890.0)
         self.assertEqual(trade_t2["state"], "CLOSED")
         mock_send_trade_update.assert_called_with(trade_t2, 23890.0, "T2_HIT")
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_time_stop_tightens_open_trade_to_breakeven(self, mock_settings, mock_send_trade_update):
+        """TASK-171: OPEN trade with no T1 progress after time_stop_minutes gets SL moved to entry."""
+        mock_settings.time_stop_minutes = 45
+        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=46)).isoformat()
+        trade = {
+            "id": "trade-stale",
+            "setup_type": "OI_WALL_REJECTION",
+            "direction": "BULLISH",
+            "entry_price": 24000.0,
+            "stop_loss": 23975.0,
+            "target_1": 24050.0,
+            "target_2": 24100.0,
+            "state": "OPEN",
+            "created_at": stale_ts,
+        }
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        # Price drifting, no SL/T1 touch: time-stop should tighten SL to entry
+        events = await pm.update_trades(24010.0)
+        self.assertEqual(trade["stop_loss"], 24000.0)
+        self.assertEqual(trade["state"], "OPEN")
+
+        # Tightened breakeven hit -> exits as TIME_STOP, not a fake T1 win
+        events = await pm.update_trades(23999.0)
+        self.assertEqual(trade["state"], "CLOSED")
+        self.assertIn(("trade-stale", "TIME_STOP"), events)
+        mock_send_trade_update.assert_called_with(trade, 23999.0, "TIME_STOP")
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_time_stop_ignores_fresh_trades_and_bearish_tighten(self, mock_settings, mock_send_trade_update):
+        mock_settings.time_stop_minutes = 45
+        fresh_ts = datetime.now(timezone.utc).isoformat()
+        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
+        fresh = {
+            "id": "trade-fresh", "setup_type": "OI_WALL_REJECTION",
+            "direction": "BULLISH", "entry_price": 24000.0, "stop_loss": 23975.0,
+            "target_1": 24050.0, "target_2": 24100.0, "state": "OPEN",
+            "created_at": fresh_ts,
+        }
+        stale_bear = {
+            "id": "trade-stale-bear", "setup_type": "EXHAUSTION_REVERSAL",
+            "direction": "BEARISH", "entry_price": 24000.0, "stop_loss": 24025.0,
+            "target_1": 23950.0, "target_2": 23900.0, "state": "OPEN",
+            "created_at": stale_ts,
+        }
+        pm = PositionManager()
+        pm.active_trades = [fresh, stale_bear]
+
+        await pm.update_trades(24005.0)
+        self.assertEqual(fresh["stop_loss"], 23975.0)      # untouched
+        self.assertEqual(stale_bear["stop_loss"], 24000.0)  # tightened to entry
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_update_trades_returns_sl_hit_events(self, mock_settings, mock_send_trade_update):
+        """TASK-171: exit events are returned so main can clear the engine cooldown."""
+        trade = {
+            "id": "trade-sl-event", "setup_type": "OI_WALL_REJECTION",
+            "direction": "BULLISH", "entry_price": 24000.0, "stop_loss": 23975.0,
+            "target_1": 24050.0, "target_2": 24100.0, "state": "OPEN",
+        }
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        events = await pm.update_trades(23970.0)
+        self.assertIn(("trade-sl-event", "SL_HIT"), events)
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')

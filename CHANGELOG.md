@@ -4,6 +4,13 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Risk:Reward Gate (TASK-171)**: New engine filter rejects any signal whose risk (entry→SL) exceeds its reward (entry→T1), tunable via `min_rr_ratio` (1.0 in both profiles). Audit data showed OI-wall setups risking 40-46pts against a 35pt T1.
+- **Time-Stop Risk-Off (TASK-171)**: An OPEN trade that hasn't reached T1 within `time_stop_minutes` (45 non-expiry / 30 expiry) gets its stop tightened to entry. The trade stays alive for T1/T2, but no-progress drift now exits at breakeven (`TIME_STOP` exit type) instead of full stop-loss.
+- **Exhaustion Observation Mode (TASK-171)**: `exhaustion_alert_only=True` gates Exhaustion Reversal signals to alert+log only — no trade is created and the signal does not consume the engine cooldown. Live data: 7 of 8 closed exhaustion trades were full stop-outs (-211pts).
+- **Cooldown Reset After Stop-Out (TASK-171)**: `update_trades` now returns exit events; a `SL_HIT` clears the engine signal cooldown so the next setup can be taken immediately instead of waiting out the 15-20min timer.
+- **Backtest Validation**: Replaying the last 10 days of trades (ml_collection minute data, 40% T1-booking execution model): net P&L improves from -162.8pts to -36.7pts with the four gates active (13 of 22 trades gated).
+
 ### Fixed
 - **Multi-Day Trade Carry (TASK-170)**: `PositionManager._initialize_db` previously deleted all previous-date rows from `active_trades` at startup, silently orphaning open trades (12 of 29 `trade_analytics` rows were stuck in `OPEN` with no exit ever logged). Trades are now loaded regardless of date and continue to be tracked across sessions until they hit T1/T2/SL, matching the intended data-collection behavior. Closed rows remain in the table untouched. Added a local-only backfill script (`scratch/restore_orphan_trades.py`, dry-run by default) to resurrect the 12 orphaned trades by recovering T1/T2/SL from matched `ares_signals` rows.
 

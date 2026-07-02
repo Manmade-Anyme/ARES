@@ -116,6 +116,7 @@ class AresSignal:
     strike_to_trade: int
     option_type: str
     signal_id: str = field(default_factory=lambda: f"{random.randint(0, 9999):04d}")
+    alert_only: bool = False  # Observation-only: alerted and logged, but never traded
     suggested_lots: Optional[int] = None
     option_sl: Optional[float] = None
     option_target: Optional[float] = None

@@ -62,28 +62,29 @@ New findings from data:
 ## Recommended Improvements (prioritized)
 
 ### P0 — small, high impact
-1. **R:R gate**: reject signal if SL dist > T1 dist (config `min_rr_ratio ≥ 1.0`). Sim: ~+120 pts / 4 days. [TODO]
-2. **Time-stop / momentum target**: exit or tighten after N candles without progress — harvests orphan winners.
-3. **Gate/kill exhaustion entries** (trend filter or alert-only) — 7 full stops in 4 days.
-4. **Distinct BREAKEVEN exit type** in analytics — honest win rate.
-5. **Candle timestamp dedup** in main loop (also fixes VWAP double-count).
-6. **Cooldown reset (or halve) after SL_HIT** — missed re-entry is pure opportunity cost.
+1. **R:R gate**: reject signal if SL dist > T1 dist (config `min_rr_ratio ≥ 1.0`). Sim: ~+120 pts / 4 days. ✅ SHIPPED (TASK-171)
+2. **Time-stop / momentum target**: exit or tighten after N candles without progress — harvests orphan winners. ✅ SHIPPED (TASK-171 — SL tightens to entry after `time_stop_minutes`, exit type `TIME_STOP`)
+3. **Gate/kill exhaustion entries** (trend filter or alert-only) — 7 full stops in 4 days. ✅ SHIPPED (TASK-171 — `exhaustion_alert_only`, observation mode)
+4. **Distinct BREAKEVEN exit type** in analytics — honest win rate. 
+5. **Candle timestamp dedup** in main loop (also fixes VWAP double-count). 
+6. **Cooldown reset (or halve) after SL_HIT** — missed re-entry is pure opportunity cost. ✅ SHIPPED (TASK-171 — cooldown cleared on SL_HIT)
 
 
 ### P1 — tuning (validate against live Discord output)
 8. Raise `breakout_failure_min_score` 2→3; exclude `closed_back` from score.
-9. Time-of-day gates: no entries before 09:30 / after 15:00 (config).
+9. Time-of-day gates: no entries before 09:30 / after 15:00 (config). [SKIP]
 10. IV-crush filter: exempt HIGH confidence, lengthen lookback (~60 samples), consider symmetric.
 11. Intrabar high/low exit checks in update_trades (avg 6.8 pts slippage/stop recovered).
 12. Speed-filter threshold into config_profiles; standardize confidence bars (~≥60% of matrix).
 13. Fix signal_id logging + timestamp timezone consistency; dedupe add_trade.
 
 ### P2 — structural
-14. Track option premium at entry/exit (chain already fetched every cycle) → true P&L incl theta.
-15. Per-detector cooldowns; signal cache keyed (setup, direction, level) with TTL.
+14. Track option premium at entry/exit (chain already fetched every cycle) → true P&L incl theta. [SKIP]
+15. Per-detector cooldowns; signal cache keyed (setup, direction, level) with TTL. [SKIP]
 16. Trend-regime flag (VWAP/PDH-PDL position) → block or size-down counter-trend.
-17. Backtest thresholds against ml_collection (50+ features/min accumulating — unused asset).
+17. Backtest thresholds against ml_collection (50+ features/min accumulating — unused asset). [TODO] ◐ First pass done in TASK-171 (gate validation: -162.8 → -36.7 pts); full threshold sweep open.
 18. WebSocket ticks for exit monitoring instead of 60s polls.
 
 ## Status Log
+- 2026-07-02: TASK-171 shipped the four P0 gates (R:R, time-stop, exhaustion observation mode, cooldown reset). Backtest on last 10 days: -162.8 → -36.7 pts under the 40/60 execution model.
 - 2026-07-02: Multi-day trade carry fixed (`_initialize_db` no longer wipes previous-day rows). 141 tests green. Backfill script created (dry-run default, `--apply` to write).

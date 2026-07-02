@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from statistics import mean
 from typing import Optional, List, Dict, Any
 
-from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction
+from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction, SetupType
 from config import settings
 
 from detectors.breakout import FailedBreakoutDetector
@@ -134,6 +134,22 @@ class AresEngine:
                 signal = None
 
         if signal:
+            # Filter C: Risk:Reward Gate (reject setups whose risk to SL exceeds reward to T1)
+            risk = abs(signal.trigger_price - signal.stop_loss)
+            reward = abs(signal.target_1 - signal.trigger_price)
+            # Degenerate SL placement (zero/negative risk) is always rejected
+            if risk <= 0 or (reward / risk) < settings.min_rr_ratio:
+                rr = (reward / risk) if risk > 0 else 0.0
+                print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: R:R {rr:.2f} below minimum {settings.min_rr_ratio:.2f} (risk {risk:.1f} pts vs reward {reward:.1f} pts).")
+                signal = None
+
+        if signal:
+            # Filter D: Exhaustion observation mode — alert + log, but never trade
+            if signal.setup_type == SetupType.EXHAUSTION_REVERSAL and settings.exhaustion_alert_only:
+                signal.alert_only = True
+                signal.reasons.append("Observation only — exhaustion entries gated by config (exhaustion_alert_only)")
+
+        if signal:
             # Filter B: Anti-IV Crush Filter (suppress Call/Bullish entries in top 90% IV)
             is_iv_high = False
             current_iv = atm.ce.iv
@@ -146,9 +162,18 @@ class AresEngine:
                 print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: Top 90th percentile IV ({current_iv:.2f}%) poses high risk of IV crush.")
                 signal = None
 
-        # 7. Set cooldown if signal fired
-        if signal:
+        # 7. Set cooldown if signal fired.
+        # Observation-only signals don't consume the cooldown — they must never
+        # block a tradeable setup from another detector.
+        if signal and not signal.alert_only:
             self.last_signal_time = datetime.now()
 
         # 8. Return the result
         return signal
+
+    def clear_cooldown(self) -> None:
+        """
+        Reset the signal cooldown. Called after a trade stops out so a fresh
+        setup can be taken immediately instead of waiting out the timer.
+        """
+        self.last_signal_time = None
