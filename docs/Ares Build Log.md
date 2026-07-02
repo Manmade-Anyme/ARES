@@ -16,10 +16,10 @@ Implemented the four `[TODO]`-tagged P0 items from the 2026-07-02 trade-efficien
 - **Backtest validation** (audit item 17, first pass): replayed last 10 days of trades against ml_collection minute data under the trader's 40/60 execution model — net -162.8pts → -36.7pts with gates active (10 exhaustion gated, 3 R:R-gated, time-stop zeroes drift losses). Full parameter sweep vs ml_collection remains open.
 - `[SKIP]`-tagged audit items (time-of-day gates, option premium tracking, per-detector cooldowns) intentionally not implemented.
 
-**Status**: 151 tests green (10 new). Coverage on touched modules: engine 99%, position_manager 98%, config_profiles/models 100%. PR pending.
+**Status**: Merged to `main` via [PR #17](https://github.com/dubeyshantanu2/ARES/pull/17). Local branch `feature/TASK-171-audit-p0-efficiency-fixes` deleted after merge. 151 tests green (10 new). Coverage on touched modules: engine 99%, position_manager 98%, config_profiles/models 100%.
 
 **TODOs**
-- [ ] Merge PR for `feature/TASK-171-audit-p0-efficiency-fixes` and perform cleanup.
+- [x] Merge PR #17 and perform cleanup.
 - [ ] Full threshold sweep against ml_collection dataset (audit item 17, remaining scope).
 - [ ] Monitor TIME_STOP/observation-only behavior in the next live sessions; tune `time_stop_minutes` with fresh data.
 
