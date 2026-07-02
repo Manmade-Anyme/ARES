@@ -207,20 +207,30 @@ async def run():
                     await storage.log_signal(signal, spot)
                 except Exception as db_err:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
-                
-                try:
-                    position_manager.add_trade(signal, spot, atm=atm)
-                except Exception as pm_err:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
-                
+
+                # Observation-only signals (e.g. gated exhaustion) are alerted
+                # and logged but never become tracked trades.
+                if signal.alert_only:
+                    print(f"{Y}[{now.strftime('%H:%M:%S')}] 👁️ {signal.setup_type.value} signal is observation-only — no trade created.{RESET}")
+                else:
+                    try:
+                        position_manager.add_trade(signal, spot, atm=atm)
+                    except Exception as pm_err:
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
+
                 try:
                     await send_discord(signal, spot)
                 except Exception as alert_err:
                     print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
-            
+
             # Update active trades with new spot price
             try:
-                await position_manager.update_trades(spot)
+                trade_events = await position_manager.update_trades(spot)
+                # A stop-out frees the engine cooldown so the next setup can be
+                # taken immediately instead of waiting out the timer.
+                if any(ev_type == "SL_HIT" for _, ev_type in trade_events):
+                    engine.clear_cooldown()
+                    print(f"{Y}[{now.strftime('%H:%M:%S')}] 🔓 Cooldown cleared after stop-out — re-entry unlocked.{RESET}")
             except Exception as pm_update_err:
                 print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager update_trades failed: {pm_update_err}{RESET}")
             

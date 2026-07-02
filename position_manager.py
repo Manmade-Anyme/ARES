@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 from models import AresSignal, ATMStrikes
 from config import settings
@@ -91,24 +91,57 @@ class PositionManager:
         except Exception as e:
             print(f"Failed to log trade to Analytics: {e}")
 
-    async def update_trades(self, spot_price: float):
+    def _apply_time_stop(self, trade: Dict[str, Any]) -> None:
+        """
+        Time-stop (TASK-171): an OPEN trade that hasn't reached T1 within
+        `time_stop_minutes` gets its SL tightened to entry (risk-free). The
+        trade stays alive — if momentum resumes it can still run to T1/T2 —
+        but a no-progress drift now exits near breakeven instead of full SL.
+        Exits caused by this tightening are labeled TIME_STOP, not T1_HIT.
+        """
+        created_at_str = trade.get("created_at")
+        if not created_at_str or trade["state"] != "OPEN":
+            return
+        try:
+            created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+            age_minutes = (datetime.now(timezone.utc) - created_at).total_seconds() / 60.0
+        except Exception:
+            return
+        if age_minutes < settings.time_stop_minutes:
+            return
+
+        entry = trade["entry_price"]
+        if trade["direction"] == "BULLISH" and trade["stop_loss"] < entry:
+            trade["stop_loss"] = entry
+            trade["_time_stopped"] = True
+        elif trade["direction"] == "BEARISH" and trade["stop_loss"] > entry:
+            trade["stop_loss"] = entry
+            trade["_time_stopped"] = True
+
+    async def update_trades(self, spot_price: float) -> List[Tuple[str, str]]:
         """
         Loops through active trades and evaluates live price action against the active trailing stops.
         If state changes or SL is hit, updates the row in Supabase and triggers a Discord alert.
+
+        Returns a list of (trade_id, update_type) for every state change this
+        tick, so the caller can react (e.g. clear the engine cooldown on SL_HIT).
         """
+        events: List[Tuple[str, str]] = []
         if not self.is_initialized:
             self._initialize_db()
             if not self.is_initialized:
-                return  # Skip update if still not initialized
-                
+                return events  # Skip update if still not initialized
+
         for trade in self.active_trades:
             if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
                 continue
-                
+
+            self._apply_time_stop(trade)
+
             state_changed = False
             update_type = None
             direction = trade["direction"]
-            
+
             # Evaluate trailing stop logic
             if direction == "BULLISH":
                 # Check if T2 hit
@@ -120,13 +153,16 @@ class PositionManager:
                 elif trade["state"] == "OPEN" and spot_price >= trade["target_1"]:
                     trade["state"] = "T1_HIT"
                     trade["stop_loss"] = trade["entry_price"]
+                    trade.pop("_time_stopped", None)  # Real T1: no longer a time-stop exit
                     state_changed = True
                     update_type = "T1_HIT"
                 # Check if SL hit
                 elif spot_price <= trade["stop_loss"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
-                    if trade["stop_loss"] == trade["entry_price"]:
+                    if trade.get("_time_stopped"):
+                        update_type = "TIME_STOP"  # Breakeven exit forced by time-stop, not a T1 win
+                    elif trade["stop_loss"] == trade["entry_price"]:
                         update_type = "T1_HIT"  # Trailed SL hit, logged as a T1 win
                     else:
                         update_type = "SL_HIT"
@@ -140,18 +176,23 @@ class PositionManager:
                 elif trade["state"] == "OPEN" and spot_price <= trade["target_1"]:
                     trade["state"] = "T1_HIT"
                     trade["stop_loss"] = trade["entry_price"]
+                    trade.pop("_time_stopped", None)  # Real T1: no longer a time-stop exit
                     state_changed = True
                     update_type = "T1_HIT"
                 # Check if SL hit
                 elif spot_price >= trade["stop_loss"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
-                    if trade["stop_loss"] == trade["entry_price"]:
+                    if trade.get("_time_stopped"):
+                        update_type = "TIME_STOP"  # Breakeven exit forced by time-stop, not a T1 win
+                    elif trade["stop_loss"] == trade["entry_price"]:
                         update_type = "T1_HIT"  # Trailed SL hit, logged as a T1 win
                     else:
                         update_type = "SL_HIT"
                     
             if state_changed:
+                events.append((trade["id"], update_type))
+
                 # Prepare update payload
                 update_data = {
                     "state": trade["state"],
@@ -180,3 +221,5 @@ class PositionManager:
                     await send_trade_update(trade, spot_price, update_type)
                 except Exception as e:
                     print(f"Failed to send trade update alert: {e}")
+
+        return events

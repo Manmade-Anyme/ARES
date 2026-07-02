@@ -49,6 +49,11 @@ class TuningConfig:
     exhaustion_min_candles: int = 6
     exhaustion_stop_buffer: float = 20.0
 
+    # Trade quality gates (TASK-171 audit P0)
+    min_rr_ratio: float = 1.0
+    time_stop_minutes: int = 45
+    exhaustion_alert_only: bool = True
+
     # Targets & Zones
     target_1_pts: float = 35.0
     target_2_pts: float = 70.0
@@ -87,6 +92,11 @@ NON_EXPIRY_CONFIG = TuningConfig(
 
 EXPIRY_CONFIG = TuningConfig(
     signal_cooldown_minutes=20,
+
+    # Trade quality gates — faster time-stop on expiry (moves die quicker)
+    min_rr_ratio=1.0,
+    time_stop_minutes=30,
+    exhaustion_alert_only=True,
 
     # Breakout — faster confirmation, stricter filters, tighter stops
     breakout_confirmation_candles=2,

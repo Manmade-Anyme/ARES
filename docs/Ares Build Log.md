@@ -4,6 +4,27 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-02 19:40 · Audit P0 Efficiency Gates (TASK-171)
+
+Implemented the four `[TODO]`-tagged P0 items from the 2026-07-02 trade-efficiency audit. TDD flow: 10 failing tests written first, then minimal implementation.
+
+**Decisions**
+- **R:R gate** (engine Filter C): reject signal when `reward/risk < min_rr_ratio` (new config, 1.0 both profiles). Risk = |trigger−SL|, reward = |trigger−T1|. Degenerate SL placement (risk ≤ 0) always rejected.
+- **Exhaustion observation mode** (engine Filter D): `exhaustion_alert_only=True` tags exhaustion signals `alert_only` (new `AresSignal` field). `main.py` alerts + logs them but skips `add_trade`; alert-only signals do NOT consume the engine cooldown so they can never block a tradeable setup.
+- **Time-stop** (`PositionManager._apply_time_stop`): OPEN trade older than `time_stop_minutes` (45 non-expiry / 30 expiry) without T1 → SL tightened to entry. Trade stays alive (multi-day carry intact); exits caused by the tightened stop are labeled `TIME_STOP`, never `T1_HIT`. In-memory `_time_stopped` flag only — no schema change; flag cleared if T1 is genuinely hit.
+- **Cooldown reset after stop-out**: `update_trades` now returns `(trade_id, update_type)` events; `main.py` calls `engine.clear_cooldown()` on any `SL_HIT` so re-entry is unlocked immediately.
+- **Backtest validation** (audit item 17, first pass): replayed last 10 days of trades against ml_collection minute data under the trader's 40/60 execution model — net -162.8pts → -36.7pts with gates active (10 exhaustion gated, 3 R:R-gated, time-stop zeroes drift losses). Full parameter sweep vs ml_collection remains open.
+- `[SKIP]`-tagged audit items (time-of-day gates, option premium tracking, per-detector cooldowns) intentionally not implemented.
+
+**Status**: 151 tests green (10 new). Coverage on touched modules: engine 99%, position_manager 98%, config_profiles/models 100%. PR pending.
+
+**TODOs**
+- [ ] Merge PR for `feature/TASK-171-audit-p0-efficiency-fixes` and perform cleanup.
+- [ ] Full threshold sweep against ml_collection dataset (audit item 17, remaining scope).
+- [ ] Monitor TIME_STOP/observation-only behavior in the next live sessions; tune `time_stop_minutes` with fresh data.
+
+---
+
 ## 2026-07-02 18:30 · Multi-Day Trade Carry Fix + Trade Efficiency Audit (TASK-170)
 
 Ran a full trade-efficiency audit (repo + Supabase live data, Jun 24 – Jul 2). Discovered `PositionManager._initialize_db` wiped all previous-date `active_trades` rows at startup, contradicting the intended multi-day tracking (ride trades until T1/T2/SL for later analysis). Live impact: 12 of 29 `trade_analytics` rows permanently stuck in `OPEN` with no exit logged.
