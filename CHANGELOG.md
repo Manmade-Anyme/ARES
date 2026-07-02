@@ -4,7 +4,11 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Multi-Day Trade Carry (TASK-170)**: `PositionManager._initialize_db` previously deleted all previous-date rows from `active_trades` at startup, silently orphaning open trades (12 of 29 `trade_analytics` rows were stuck in `OPEN` with no exit ever logged). Trades are now loaded regardless of date and continue to be tracked across sessions until they hit T1/T2/SL, matching the intended data-collection behavior. Closed rows remain in the table untouched. Added a local-only backfill script (`scratch/restore_orphan_trades.py`, dry-run by default) to resurrect the 12 orphaned trades by recovering T1/T2/SL from matched `ares_signals` rows.
+
 ### Added
+- **Trade Efficiency Audit (2026-07-02)**: Full repo + live-data audit documented in `docs/ARES Trade Efficiency Audit 2026-07-02.md` (mirrored to Obsidian). Covers exit-management gaps, entry R:R asymmetry, data-quality issues, and a prioritized P0-P2 improvement backlog.
 - **Silent IV & Greek Ingestion Fix**: Refactored option chain parsing in [OIFetcher](file:///Users/manmadeanyme/Documents/Work/ARES/fetchers/oi_fetcher.py) and [LiveRunner](file:///Users/manmadeanyme/Documents/Work/ARES/ml_signal/live.py) to use the broker-native `"implied_volatility"` key instead of `"iv"`, and corrected Greek metrics extraction from the nested `"greeks"` sub-dictionary.
 - **Sluggish Market Speed Filter**: Integrated a 15-minute rolling range filter in [AresEngine](file:///Users/manmadeanyme/Documents/Work/ARES/engine.py) to suppress `MEDIUM` confidence signals when Nifty 50 trades in a range of $< 15.0$ points.
 - **Anti-IV Crush Filter**: Integrated an IV percentile overlay in [AresEngine](file:///Users/manmadeanyme/Documents/Work/ARES/engine.py) to suppress Call entries when ATM IV is in the top 90th percentile of its 20-candle lookback.

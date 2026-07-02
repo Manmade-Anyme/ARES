@@ -30,34 +30,23 @@ class PositionManager:
 
     def _initialize_db(self):
         """
-        Checks if the records in Supabase are from a previous date. 
-        If so, wipe the table clean. If from today, load them into an active memory list.
+        Loads all non-closed trades from Supabase into the active memory list,
+        regardless of the date they were opened. Trades ride across sessions
+        until they hit T1/T2/SL. Closed rows stay in the table untouched
+        (trade_analytics remains the permanent record).
         """
         try:
             response = self.supabase.table("active_trades").select("*").execute()
             records = response.data
-            
-            today = datetime.now(timezone.utc).date()
-            valid_trades = []
-            
-            for record in records:
-                created_at_str = record.get("created_at")
-                if created_at_str:
-                    try:
-                        # Parse ISO format from Supabase
-                        created_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00")).date()
-                        if created_date < today:
-                            # Wipe old records
-                            self.supabase.table("active_trades").delete().eq("id", record["id"]).execute()
-                        elif record.get("state") not in ["CLOSED", "STOPPED_OUT"]:
-                            valid_trades.append(record)
-                    except Exception as e:
-                        print(f"Error parsing date for trade {record['id']}: {e}")
-                        pass
-                        
+
+            valid_trades = [
+                record for record in records
+                if record.get("state") not in ["CLOSED", "STOPPED_OUT"]
+            ]
+
             self.active_trades = valid_trades
             self.is_initialized = True
-            print(f"PositionManager initialized. Loaded {len(self.active_trades)} active trades for today.")
+            print(f"PositionManager initialized. Loaded {len(self.active_trades)} active trades (multi-day carry enabled).")
         except Exception as e:
             self.is_initialized = False
             print(f"Failed to initialize PositionManager DB: {e}")

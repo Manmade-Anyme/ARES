@@ -4,6 +4,26 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-02 18:30 · Multi-Day Trade Carry Fix + Trade Efficiency Audit (TASK-170)
+
+Ran a full trade-efficiency audit (repo + Supabase live data, Jun 24 – Jul 2). Discovered `PositionManager._initialize_db` wiped all previous-date `active_trades` rows at startup, contradicting the intended multi-day tracking (ride trades until T1/T2/SL for later analysis). Live impact: 12 of 29 `trade_analytics` rows permanently stuck in `OPEN` with no exit logged.
+
+**Decisions**
+- Removed the previous-date deletion block from `_initialize_db`; all rows with state not in (`CLOSED`, `STOPPED_OUT`) now load into memory regardless of date. Closed rows remain in the table (`trade_analytics` stays the permanent record).
+- Overnight gaps are handled implicitly: the first poll next session closes gapped trades at the first tick.
+- EOD force-close (an earlier audit recommendation) explicitly withdrawn — multi-day carry is intended behavior.
+- Added `scratch/restore_orphan_trades.py` (local-only, dry-run default, `--apply` to write): rebuilds the 12 orphaned trades into `active_trades` by recovering T1/T2/SL from `ares_signals` via setup+direction+spot(±0.6)+timestamp(±10min) matching (29/29 match rate validated).
+- Replaced the old-date-wipe unit test with multi-day carry tests: cross-date loading, T1_HIT resume with trailed SL, closed-row exclusion, and a carryover trade gapping past T2 → CLOSED.
+- Full audit findings published to `docs/ARES Trade Efficiency Audit 2026-07-02.md` and mirrored to the Obsidian vault (`Projects/Ares/`). Headline: T1 reached in only 14% of trades; exhaustion detector is the main bleeder; no R:R gate; avg +6.8pts stop slippage from close-only 60s exit checks.
+
+**Status**: 141 tests green. PR pending.
+
+**TODOs**
+- [ ] Run `scratch/restore_orphan_trades.py --apply` after human confirmation to resurrect the 12 orphaned trades.
+- [ ] Work the audit P0 backlog: R:R gate, time-stop/momentum target, exhaustion gating, BREAKEVEN exit type, candle dedup, cooldown reset after SL.
+
+---
+
 ## 2026-07-02 14:10 · OI Wall Detector Confirmation-Candle Requirement (TASK-169)
 
 Audited two weak/false OI Wall Rejection alerts (#2599, #0308) and found the detector's core flaw: it fired on a single candle's shallow touch of the wall, with no follow-through requirement. Rewrote `OIWallDetector` to require a confirming second candle before emitting a signal, mirroring the stateful pattern already used in `ExhaustionDetector`.
