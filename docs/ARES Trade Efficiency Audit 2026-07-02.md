@@ -81,11 +81,12 @@ New findings from data:
 ### P2 — structural
 14. Track option premium at entry/exit (chain already fetched every cycle) → true P&L incl theta. [SKIP]
 15. Per-detector cooldowns; signal cache keyed (setup, direction, level) with TTL. [SKIP]
-16. Trend-regime flag (VWAP/PDH-PDL position) → block or size-down counter-trend.
+16. Trend-regime flag (VWAP/PDH-PDL position) → block or size-down counter-trend. ✅ SHIPPED (TASK-173 — HIGH counter-trend downgraded to observation-only, MEDIUM suppressed; `trend_filter_enabled`)
 17. Backtest thresholds against ml_collection (50+ features/min accumulating — unused asset). [TODO] ◐ First pass done in TASK-171 (gate validation: -162.8 → -36.7 pts); full threshold sweep open.
-18. WebSocket ticks for exit monitoring instead of 60s polls.
+18. WebSocket ticks for exit monitoring instead of 60s polls. ✅ SHIPPED (TASK-173 — dhanhq `MarketFeed` WS augments, not replaces, the 60s REST cycle; tick-driven `update_trades` checks every `tick_exit_check_interval_seconds`; best-effort with REST-only fallback)
 
 ## Status Log
+- 2026-07-03: TASK-173 shipped 2 of the 5 P2 items (16, 18; 14–15 stay [SKIP], 17 remains open — full threshold sweep is separate scope): trend-regime filter (VWAP/PDH-PDL counter-trend gate) and WebSocket tick feed for sub-60s exit monitoring. 213 tests green.
 - 2026-07-03: TASK-172 shipped the P1 block (items 8, 10–13; 9 stays [SKIP]): breakout gate 3-of-5 with closed_back excluded, IV-crush v2 (HIGH exempt / symmetric / 60-sample), intrabar fill-at-level exits, config-driven speed filter + standardized ≥60% confidence bars, signal_id join fix, IST→UTC entry timestamps, add_trade dedupe. 181 tests green.
 - 2026-07-02: TASK-171 shipped the four P0 gates (R:R, time-stop, exhaustion observation mode, cooldown reset). Backtest on last 10 days: -162.8 → -36.7 pts under the 40/60 execution model.
 - 2026-07-02: Multi-day trade carry fixed (`_initialize_db` no longer wipes previous-day rows). 141 tests green. Backfill script created (dry-run default, `--apply` to write).

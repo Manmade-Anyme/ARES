@@ -5,6 +5,7 @@ from engine import AresEngine
 from fetchers.price_fetcher import PriceFetcher
 from fetchers.oi_fetcher import OIFetcher
 from fetchers.level_fetcher import LevelFetcher
+from fetchers.tick_feed import TickFeed
 from storage import Storage, load_dhan_credentials_from_supabase
 from position_manager import PositionManager
 from config import settings
@@ -57,6 +58,35 @@ def format_signal_console(signal, spot):
         print(f"     {W}• {r}{RESET}")
     print(f"{color}{B}━" * 65 + RESET + "\n")
 
+async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine):
+    """
+    Sleeps for `total_seconds` (the REST poll interval), but when the
+    WebSocket TickFeed is active, wakes every `tick_exit_check_interval_seconds`
+    to run a tick-driven exit check against the feed's latest LTP — SL/T1/T2
+    hits are caught between candle closes instead of waiting up to 60s
+    (TASK-173, audit item 18). Falls back to a single plain sleep when the
+    feed isn't active, identical to the pre-TASK-173 loop.
+    """
+    if not tick_feed.is_active:
+        await asyncio.sleep(total_seconds)
+        return
+
+    interval = settings.tick_exit_check_interval_seconds
+    elapsed = 0.0
+    while elapsed < total_seconds:
+        step = min(interval, total_seconds - elapsed)
+        await asyncio.sleep(step)
+        elapsed += step
+
+        price = tick_feed.get_latest_price()
+        if price is not None and position_manager.active_trades:
+            try:
+                events = await position_manager.update_trades(price)
+                if any(ev_type == "SL_HIT" for _, ev_type in events):
+                    engine.clear_cooldown()
+            except Exception as e:
+                print(f"[-] Tick-driven exit check failed: {e}")
+
 async def run():
     """
     Main entry point for the ARES Trading System.
@@ -86,7 +116,8 @@ async def run():
     storage = Storage()
     position_manager = PositionManager()
     ml_collector = MLCollector(settings.supabase_url, settings.supabase_key)
-    
+    tick_feed = TickFeed()
+
     # Make this dynamic via Yahoo Finance Oracle 
     try:
         pdh, pdl = await price_fetcher.fetch_previous_day_ohlc()
@@ -105,6 +136,14 @@ async def run():
     else:
         print(f"{Y}[!] ML Data Collection Logger: table 'ml_collection' not found{RESET}")
         print(f"{Y}    Run ml_signal/schema.sql in Supabase SQL Editor to enable.{RESET}")
+
+    # WebSocket tick feed for exit monitoring (TASK-173, audit item 18).
+    # Best-effort: on failure the loop just falls back to REST-only 60s
+    # exit checks, exactly as before this feature existed.
+    if tick_feed.start():
+        print(f"{G}[+] Tick Feed       : {B}ACTIVE{RESET} (WebSocket exit checks every {settings.tick_exit_check_interval_seconds:.0f}s)")
+    else:
+        print(f"{Y}[!] Tick Feed       : unavailable — falling back to REST-only exit monitoring{RESET}")
 
     await send_startup_alert(pdh, pdl, profile_name, ml_active=ml_table_ok)
 
@@ -128,6 +167,7 @@ async def run():
         # Session gate: only run between 09:15 and 15:30
         if current_time >= time(15, 30):
             print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
+            tick_feed.stop()
             break
             
         if current_time < time(9, 15):
@@ -165,7 +205,7 @@ async def run():
             prev_iv = current_iv
             
             # Run the engine
-            signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels)
+            signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
 
             # ML Data Collection: log feature snapshot for every cycle
             ml_collector.snapshot(
@@ -257,6 +297,9 @@ async def run():
                     context = DhanContext(settings.dhan_client_id, settings.dhan_access_token)
                     price_fetcher.dhan = dhanhq(context)
                     oi_fetcher.dhan = dhanhq(context)
+                    # Restart the WS feed too — it authenticated with the now-stale token.
+                    tick_feed.stop()
+                    tick_feed.start()
                     print(f"{G}   [+] Credentials reloaded successfully.{RESET}")
                 except Exception as reload_err:
                     print(f"{R}   [!] Supabase credentials reload failed: {reload_err}{RESET}")
@@ -274,7 +317,7 @@ async def run():
                     await send_error_alert(f"Fetch cycle error - {e}")
                     last_error_msg = current_error
             
-        await asyncio.sleep(settings.poll_interval_seconds)
+        await _sleep_with_tick_exits(settings.poll_interval_seconds, tick_feed, position_manager, engine)
 
 if __name__ == "__main__":
     try:
