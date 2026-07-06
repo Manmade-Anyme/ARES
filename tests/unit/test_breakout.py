@@ -73,10 +73,10 @@ def test_failed_breakout_confidence_high(breakout_detector, sample_levels):
 
     # Reversal candle: volume average is 100000 (breakout weak volume ratio is 0.75 -> 50000 volume is weak) -> 1 point
     # Close back below 24100 by >= 5 points (close = 24090.0, level = 24100.0 -> diff 10.0 >= 5.0) -> 1 point
-    # Options writers CE OI increased from 100 to 110 (growth = 10% >= 3%) -> 1 point
+    # Options writers CE OI increased from 100 to 110 (growth = 10% >= 10% threshold) -> 1 point
     # IV change is -15.0 < -3.0 (IV crush) -> 1 point
-    # Writers held (110 >= 100) -> 1 point
-    # (closed_back is the gate, not scored) -> total score = 5 of 5
+    # (closed_back is the gate and writers_holding is unscored per TASK-174)
+    # -> total score = 4 of 4
     candle2 = OHLCVCandle(
         timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24090.0, volume=40000
     )
@@ -86,8 +86,8 @@ def test_failed_breakout_confidence_high(breakout_detector, sample_levels):
 
 def test_failed_breakout_weak_failure_rejected(breakout_detector, sample_levels):
     # TASK-172 (audit item 8): closed_back is a hard gate, not a scored point,
-    # and the min score is 3. A marginal close-back with only writers_holding
-    # (score 1 of 5) no longer produces a signal at all.
+    # and the min score is 3. A marginal close-back with no scored conditions
+    # produces no signal at all.
     candle1 = OHLCVCandle(
         timestamp=datetime.now(), open=24090.0, high=24120.0, low=24080.0, close=24110.0, volume=50000
     )
@@ -98,7 +98,7 @@ def test_failed_breakout_weak_failure_rejected(breakout_detector, sample_levels)
     # Avg volume 10000 -> breakout volume (50000) not weak -> 0 points
     # IV change is 0.0 > -3.0 -> 0 points
     # Options writers CE OI change is 0% -> 0 points
-    # Writers held -> 1 point (total score = 1 < 3, closed_back not counted)
+    # Writers held -> unscored (TASK-174); total score = 0 < 3, closed_back not counted
     candle2 = OHLCVCandle(
         timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24099.0, volume=40000
     )

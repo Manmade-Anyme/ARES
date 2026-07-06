@@ -26,14 +26,13 @@ ARES evaluates three distinct market phenomena in strict **short-circuit priorit
 ### 1. 🚨 Failed Breakout (Highest Priority)
 *   **Logic**: Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically from Dhan Historical API or massive OI wall) but fails to hold.
 *   **Dynamic Targets**: Automatically sets Profit Targets (T1/T2) at the next available structural support/resistance levels.
-*   **Dynamic Scoring (6-Point Matrix)**:
-    *   `Closed Back`: Price returned past the level (Required).
+*   **Dynamic Scoring (4-Point Matrix)**:
+    *   `Closed Back`: Price returned past the level (Required gate, not scored).
     *   `Weak Volume`: Breakout candle volume < Rolling Average.
     *   `IV Crush`: Dropping Implied Volatility during the cross.
-    *   `OI Defense`: Option writers held or increased their positions.
-    *   `Active OI Growth`: Strong open interest growth ($\ge 3.0\%$) confirming defense.
+    *   `Active OI Growth`: Decisive open interest build (`breakout_writers_active_min_pct`: $\ge 10\%$ normal / $\ge 15\%$ expiry) confirming writer defense. Writers merely holding is reported as context but not scored.
     *   `Deep Close-Back`: Index closes back inside the level by $\ge 5.0$ points.
-*   **Confidence Rating**: Sets confidence to `HIGH` if the score is $\ge 4$, otherwise `MEDIUM`.
+*   **Confidence Rating**: Shared 60% band — needs `breakout_failure_min_score` (3 of 4) to fire, which is `HIGH` by construction.
 *   **Direction**: Fully bidirectional (handles both Bullish and Bearish failures).
 
 ### 2. 🧱 OI Wall Rejection (High Priority)
@@ -173,9 +172,10 @@ IV_BUFFER_SIZE=10
 # Detector Configuration
 # ==========================================
 BREAKOUT_CONFIRMATION_CANDLES=3
-BREAKOUT_FAILURE_MIN_SCORE=2
-BREAKOUT_WEAK_VOLUME_RATIO=0.8
+BREAKOUT_FAILURE_MIN_SCORE=3
+BREAKOUT_WEAK_VOLUME_RATIO=0.75
 BREAKOUT_IV_FALLING_THRESHOLD=-3.0
+BREAKOUT_WRITERS_ACTIVE_MIN_PCT=10.0
 BREAKOUT_STOP_BUFFER=30.0
 BREAKOUT_RESISTANCE_PROXIMITY=20.0
 

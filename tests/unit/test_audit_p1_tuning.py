@@ -75,14 +75,16 @@ class TestBreakoutScoreExcludesClosedBack(unittest.TestCase):
         self.assertIsNone(signal)
 
     def test_three_real_conditions_fires_high(self):
-        """writers_holding + weak_volume + deep_close = 3/5 → fires, HIGH at 60%."""
+        """writers_active + weak_volume + deep_close = 3/4 → fires, HIGH at 60%.
+        (TASK-174: writers_holding unscored, so the third point comes from
+        genuine OI growth past the 10% threshold.)"""
         self._breakout_up()
-        # avg 100000 → breakout volume 50000 weak; IV flat; OI unchanged
+        # avg 100000 → breakout volume 50000 weak; IV flat; CE OI +12% (active)
         candle2 = OHLCVCandle(
             timestamp=datetime.now(), open=24110.0, high=24115.0,
             low=24080.0, close=24090.0, volume=40000
         )
-        signal = self.detector.update(candle2, 100000.0, 0.0, 100, 100, 100, 100, self.levels)
+        signal = self.detector.update(candle2, 100000.0, 0.0, 112, 100, 100, 100, self.levels)
         self.assertIsNotNone(signal)
         self.assertEqual(signal.confidence, "HIGH")
 
