@@ -24,10 +24,12 @@ class SetupType(Enum):
         FAILED_BREAKOUT: Triggered when price breaches a level but fails to sustain.
         OI_WALL_REJECTION: Triggered by rejection at strikes with massive fresh Open Interest.
         EXHAUSTION_REVERSAL: Triggered by volume climaxes and indecision at price extremes.
+        TREND_CONTINUATION: Triggered by a shallow pullback and resumption within a persistent regime.
     """
     FAILED_BREAKOUT = "FAILED_BREAKOUT"
     OI_WALL_REJECTION = "OI_WALL_REJECTION"
     EXHAUSTION_REVERSAL = "EXHAUSTION_REVERSAL"
+    TREND_CONTINUATION = "TREND_CONTINUATION"
 
 
 class Direction(Enum):

@@ -113,6 +113,18 @@ class TuningConfig:
     # checks against the WebSocket feed between the 60s REST poll cycles.
     tick_exit_check_interval_seconds: float = 2.0
 
+    # Trend Continuation Detector (TASK-177). The only trend-aligned setup in
+    # the suite — regime must persist, then a shallow pullback, then a
+    # resumption candle. Ships alert_only (observation) until validated;
+    # disabled outright on expiry until proven on non-expiry data.
+    continuation_enabled: bool = True
+    continuation_alert_only: bool = True
+    continuation_regime_min_candles: int = 15
+    continuation_pullback_vwap_pts: float = 10.0
+    continuation_pullback_max_candles: int = 10
+    continuation_resume_volume_ratio: float = 1.2
+    continuation_min_score: int = 2
+
     # Targets & Zones
     target_1_pts: float = 35.0
     target_2_pts: float = 70.0
@@ -183,4 +195,14 @@ EXPIRY_CONFIG = TuningConfig(
     target_1_pts=25.0,
     target_2_pts=50.0,
     level_scan_range=300.0,
+
+    # Trend Continuation — disabled outright on expiry until proven on
+    # non-expiry observation data (TASK-177); faster knobs held in reserve.
+    continuation_enabled=False,
+    continuation_alert_only=True,
+    continuation_regime_min_candles=10,
+    continuation_pullback_vwap_pts=8.0,
+    continuation_pullback_max_candles=6,
+    continuation_resume_volume_ratio=1.3,
+    continuation_min_score=3,
 )

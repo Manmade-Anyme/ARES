@@ -9,6 +9,7 @@ from config import settings
 from detectors.breakout import FailedBreakoutDetector
 from detectors.oi_wall import OIWallDetector
 from detectors.exhaustion import ExhaustionDetector
+from detectors.continuation import TrendContinuationDetector
 
 
 class AresEngine:
@@ -27,6 +28,7 @@ class AresEngine:
         """
         self.breakout_detector = FailedBreakoutDetector()
         self.oi_wall_detector = OIWallDetector()
+        self.continuation_detector = TrendContinuationDetector()
         self.exhaustion_detector = ExhaustionDetector()
         
         self.candle_buffer: deque = deque(maxlen=settings.candle_buffer_size)
@@ -55,7 +57,9 @@ class AresEngine:
         Priority Order Rationale:
         1. Failed Breakout (Highest Precision, stateful tracking)
         2. OI Wall Rejection (High Precision, structural support/resistance)
-        3. Exhaustion Reversal (Medium Precision, volume/price extreme)
+        3. Trend Continuation (trend-aligned, TASK-177 — outranks exhaustion
+           since exhaustion is observation-gated regardless)
+        4. Exhaustion Reversal (Medium Precision, volume/price extreme)
 
         Higher confidence setups are checked first. If a signal is found, the
         evaluation short-circuits and returns.
@@ -120,6 +124,17 @@ class AresEngine:
                 levels=levels
             )
             or
+            (
+                self.continuation_detector.update(
+                    candle=candle,
+                    avg_volume=avg_volume,
+                    levels=levels,
+                    pdh=pdh,
+                    pdl=pdl
+                )
+                if settings.continuation_enabled else None
+            )
+            or
             self.exhaustion_detector.update(
                 candle=candle,
                 iv_current=atm.ce.iv,
@@ -161,6 +176,14 @@ class AresEngine:
             if signal.setup_type == SetupType.EXHAUSTION_REVERSAL and settings.exhaustion_alert_only:
                 signal.alert_only = True
                 signal.reasons.append("Observation only — exhaustion entries gated by config (exhaustion_alert_only)")
+
+        if signal:
+            # Filter D2: Trend Continuation observation mode (TASK-177 phase 1)
+            # — alert + log, but never trade, until validated against enough
+            # live/replayed data (same convention as exhaustion's Filter D).
+            if signal.setup_type == SetupType.TREND_CONTINUATION and settings.continuation_alert_only:
+                signal.alert_only = True
+                signal.reasons.append("Observation only — continuation entries gated by config (continuation_alert_only)")
 
         if signal and signal.confidence == "MEDIUM" and not signal.alert_only:
             # Filter B: Anti-IV Crush Filter (TASK-172, audit item 10).
