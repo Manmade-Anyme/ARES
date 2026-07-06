@@ -32,7 +32,7 @@ class TestConfigFields(unittest.TestCase):
     def test_defaults_present(self):
         cfg = TuningConfig()
         self.assertTrue(cfg.continuation_enabled)
-        self.assertTrue(cfg.continuation_alert_only)
+        self.assertFalse(cfg.continuation_alert_only)  # live by default since TASK-180
         self.assertEqual(cfg.continuation_regime_min_candles, 15)
         self.assertEqual(cfg.continuation_pullback_vwap_pts, 10.0)
         self.assertEqual(cfg.continuation_pullback_max_candles, 10)

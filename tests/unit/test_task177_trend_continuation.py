@@ -1,10 +1,11 @@
 """
 Tests for TASK-177 engine wiring: TrendContinuationDetector takes the 3rd
 priority slot (behind breakout/oi_wall, ahead of exhaustion), is gated by
-continuation_enabled (master switch, off on expiry) and continuation_alert_only
-(phase-1 observation mode, same convention as exhaustion's Filter D), and its
-signals are trend-aligned by construction so the trend filter (Filter E)
-never touches them.
+continuation_enabled (a real off-switch, tested explicitly) and
+continuation_alert_only (an observation-mode gate, same convention as
+exhaustion's Filter D -- live by default on both profiles since TASK-180),
+and its signals are trend-aligned by construction so the trend filter
+(Filter E) never touches them.
 """
 import dataclasses
 import unittest
