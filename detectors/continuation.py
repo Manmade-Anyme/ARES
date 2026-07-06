@@ -18,6 +18,7 @@ class ContinuationState:
     in_pullback: bool = False
     pullback_candles: int = 0
     pullback_extreme: Optional[float] = None
+    resume_pending: bool = False
 
 
 class TrendContinuationDetector:
@@ -31,8 +32,15 @@ class TrendContinuationDetector:
     correctly blocks. This detector instead requires the regime (the same
     VWAP + PDH/PDL rule as engine Filter E) to hold for a minimum run of
     candles, waits for a shallow pullback toward VWAP or a structural level,
-    and enters on the first candle that resumes the trend — so its signals
-    are trend-aligned by construction and pass Filter E untouched.
+    and enters once the trend resumes — so its signals are trend-aligned by
+    construction and pass Filter E untouched.
+
+    Resumption requires 2 consecutive trend-aligned candles (TASK-179), not
+    just one: a single up-close (or down-close) inside an ongoing pullback
+    is easy to mistake for the pullback ending when it's really just noise
+    in an unfinished decline/rally — the entry then gets caught by the
+    reversal continuing right after. Requiring the next candle to confirm
+    filters that out at the cost of one candle's worth of entry price.
     """
 
     def __init__(self):
@@ -147,6 +155,16 @@ class TrendContinuationDetector:
             or (not bull and candle.close < candle.open and candle.close < candle.vwap)
         )
         if not resumed:
+            # A failed confirmation candle doesn't blow up the candidate --
+            # just clears the pending flag so a later genuine 2-candle
+            # confirm can still fire; the pullback itself keeps tracking.
+            state.resume_pending = False
+            return None
+
+        if not state.resume_pending:
+            # First trend-aligned candle only arms the confirmation gate
+            # (TASK-179) -- proves nothing on its own yet.
+            state.resume_pending = True
             return None
 
         signal = self._build_signal(candle=candle, state=state, avg_volume=avg_volume, levels=levels)
