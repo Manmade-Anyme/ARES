@@ -17,10 +17,10 @@ Follow-up to the Dhan-verified obs-signal analysis: 03→06-Jul was a 3-session 
 - **Expiry disabled outright** (`continuation_enabled=False` on `EXPIRY_CONFIG`) until proven on non-expiry data — expiry moves die too fast for untested pullback logic.
 - **Pre-merge Dhan replay** (`scratchpad/continuation_replay.py`, not committed): ran the real detector module against the 6 cached Dhan sessions (29-Jun→06-Jul) from the earlier obs-signal analysis — the only history available; a true 10-session replay would need more Dhan history than was fetched. Result: **15 signals, all bullish (matching the grind-up), all clearing the R:R gate (2.0–11.3), net +154.6 pts** under the user's trading model (40% at T1, SL→cost, runner to T2) — including one signal each on 03-Jul and 06-Jul, the exact two days that produced zero tradeable output live. This is a raw-detector number (bypasses the engine's speed/IV-crush filters, which would only remove weaker candidates), so treat it as an upper bound, but it's a strong signal the gap is real and fillable.
 
-**Status**: Branch `feature/TASK-177-trend-continuation`, not yet merged — awaiting PR review. 250 tests green.
+**Status**: Merged to `main` via [PR #23](https://github.com/dubeyshantanu2/ARES/pull/23). Local branch `feature/TASK-177-trend-continuation` deleted after merge. 250 tests green.
 
 **TODOs**
-- [ ] Open PR, user review, merge (no self-merge per workflow).
+- [x] Open PR, user review, merge.
 - [ ] Run detector_scores collector fix (separate open task) before relying on live near-miss data for tuning `continuation_*` defaults.
 - [ ] Accumulate ≥10 live/replayed observation signals, then a separate config-flip PR to set `continuation_alert_only=False` (phase 2).
 - [ ] Tune and enable expiry-day continuation (`continuation_enabled=True` on `EXPIRY_CONFIG` with expiry-appropriate `continuation_*` values) — deferred until the non-expiry observation phase produces enough data to derive faster-candle-appropriate settings; expiry stays off blind until then.

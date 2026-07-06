@@ -9,4 +9,4 @@
 | TASK-006 | 2026-05-06 | Target Sorting Logic | Approved |
 | TASK-007 | 2026-05-06 | Trade Analytics Persistence | Approved |
 | TASK-009 | 2026-06-25 | ML Data Collection Pipeline | Approved |
-| TASK-177 | 2026-07-06 | Trend-Continuation Detector | Implemented — awaiting PR review |
+| TASK-177 | 2026-07-06 | Trend-Continuation Detector | Approved |
