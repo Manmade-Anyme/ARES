@@ -11,6 +11,7 @@ Counter-trend HIGH confidence signals are downgraded to observation-only
 Counter-trend MEDIUM confidence signals are suppressed outright, matching
 the speed/IV-crush filters' MEDIUM-suppression convention.
 """
+import dataclasses
 import unittest
 from unittest.mock import MagicMock
 from datetime import datetime
@@ -22,8 +23,13 @@ from models import AresSignal, SetupType, Direction, ATMStrikes
 
 
 class TestTrendFilterConfigDefault(unittest.TestCase):
-    def test_trend_filter_enabled_defaults_true(self):
-        self.assertTrue(TuningConfig().trend_filter_enabled)
+    def test_trend_filter_enabled_defaults_false(self):
+        """TASK-181: user wants all signals live like before -- the
+        counter-trend downgrade/suppression mechanism stays available
+        (tested explicitly below via dataclasses.replace) but is off by
+        default now, same pattern as exhaustion_alert_only/
+        continuation_alert_only (TASK-180)."""
+        self.assertFalse(TuningConfig().trend_filter_enabled)
 
 
 class TestTrendRegimeFilter(unittest.TestCase):
@@ -86,7 +92,10 @@ class TestTrendRegimeFilter(unittest.TestCase):
 
     def test_high_confidence_bullish_downgraded_in_downtrend(self):
         """close(23980) < vwap(24010) and < pdh(24100) -> downtrend. A bullish
-        signal fighting it is downgraded to observation-only, not discarded."""
+        signal fighting it is downgraded to observation-only, not discarded.
+        TASK-181: trend_filter_enabled defaults False now, so force it on to
+        exercise the mechanism directly."""
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, trend_filter_enabled=True))
         signal = self._make_signal("HIGH", Direction.BULLISH)
         candle = self._make_candle(close=23980.0, vwap=24010.0)
         result = self._tick_with(signal, candle, pdh=24100.0, pdl=24000.0)
@@ -95,6 +104,7 @@ class TestTrendRegimeFilter(unittest.TestCase):
         self.assertIn("Counter-trend", result.reasons[-1])
 
     def test_medium_confidence_bullish_suppressed_in_downtrend(self):
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, trend_filter_enabled=True))
         signal = self._make_signal("MEDIUM", Direction.BULLISH)
         candle = self._make_candle(close=23980.0, vwap=24010.0)
         result = self._tick_with(signal, candle, pdh=24100.0, pdl=24000.0)
@@ -103,6 +113,7 @@ class TestTrendRegimeFilter(unittest.TestCase):
     def test_high_confidence_bearish_downgraded_in_uptrend(self):
         """close(24120) > vwap(24090) and > pdl(24000) -> uptrend. A bearish
         signal fighting it is downgraded to observation-only."""
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, trend_filter_enabled=True))
         signal = self._make_signal("HIGH", Direction.BEARISH)
         candle = self._make_candle(close=24120.0, vwap=24090.0)
         result = self._tick_with(signal, candle, pdh=24200.0, pdl=24000.0)
@@ -110,10 +121,30 @@ class TestTrendRegimeFilter(unittest.TestCase):
         self.assertTrue(result.alert_only)
 
     def test_medium_confidence_bearish_suppressed_in_uptrend(self):
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, trend_filter_enabled=True))
         signal = self._make_signal("MEDIUM", Direction.BEARISH)
         candle = self._make_candle(close=24120.0, vwap=24090.0)
         result = self._tick_with(signal, candle, pdh=24200.0, pdl=24000.0)
         self.assertIsNone(result)
+
+    def test_counter_trend_high_passes_live_by_default(self):
+        """TASK-181: trend_filter_enabled defaults False now -- a
+        counter-trend HIGH signal that used to be downgraded to
+        observation-only now goes through live, untouched."""
+        signal = self._make_signal("HIGH", Direction.BULLISH)
+        candle = self._make_candle(close=23980.0, vwap=24010.0)
+        result = self._tick_with(signal, candle, pdh=24100.0, pdl=24000.0)
+        self.assertIsNotNone(result)
+        self.assertFalse(result.alert_only)
+
+    def test_counter_trend_medium_passes_live_by_default(self):
+        """TASK-181: a counter-trend MEDIUM signal that used to be
+        suppressed outright now goes through live by default."""
+        signal = self._make_signal("MEDIUM", Direction.BULLISH)
+        candle = self._make_candle(close=23980.0, vwap=24010.0)
+        result = self._tick_with(signal, candle, pdh=24100.0, pdl=24000.0)
+        self.assertIsNotNone(result)
+        self.assertFalse(result.alert_only)
 
     # ── Aligned (with-trend) signals pass through untouched ─────────────────
 
@@ -175,7 +206,6 @@ class TestTrendRegimeFilter(unittest.TestCase):
         trend filter shouldn't need to re-evaluate an already-gated signal.
         exhaustion_alert_only defaults to False now (TASK-180), so force it
         on here to exercise Filter D upstream of Filter E."""
-        import dataclasses
         signal = self._make_signal("HIGH", Direction.BULLISH, setup_type=SetupType.EXHAUSTION_REVERSAL)
         settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, exhaustion_alert_only=True))
         candle = self._make_candle(close=23980.0, vwap=24010.0)

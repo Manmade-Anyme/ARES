@@ -112,7 +112,10 @@ class TuningConfig:
     # P2 structural (TASK-173 audit item 16): counter-trend gate using
     # VWAP + PDH/PDL position. HIGH confidence counter-trend signals are
     # downgraded to observation-only; MEDIUM ones are suppressed outright.
-    trend_filter_enabled: bool = True
+    # Off by default since TASK-181 (user call — all signals live, like
+    # before TASK-173); the mechanism itself is unchanged and still fully
+    # testable by explicitly setting this True.
+    trend_filter_enabled: bool = False
     # P2 structural (TASK-173 audit item 18): cadence for tick-driven exit
     # checks against the WebSocket feed between the 60s REST poll cycles.
     tick_exit_check_interval_seconds: float = 2.0

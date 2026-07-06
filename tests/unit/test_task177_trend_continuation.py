@@ -146,8 +146,10 @@ class TestEngineWiring(unittest.TestCase):
 
     def test_trend_filter_never_downgrades_aligned_continuation_signal(self):
         """Continuation signals are trend-aligned by construction (same
-        VWAP/PDH-PDL rule as Filter E), so they pass through live by
-        default (TASK-180) and Filter E must never touch them."""
+        VWAP/PDH-PDL rule as Filter E), so even with Filter E forced on
+        (trend_filter_enabled=True; TASK-181 defaults it off) it must never
+        touch them."""
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, trend_filter_enabled=True))
         self.engine.breakout_detector.update = MagicMock(return_value=None)
         self.engine.oi_wall_detector.update = MagicMock(return_value=None)
         self.engine.continuation_detector.update = MagicMock(return_value=make_continuation_signal())

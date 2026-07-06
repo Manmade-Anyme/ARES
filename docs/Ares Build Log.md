@@ -4,6 +4,26 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-06 18:05 · Trend-Regime Filter Off by Default — All Signals Live (TASK-181)
+
+Direct follow-up to TASK-180: once the exhaustion/continuation `alert_only` gates were live, the user saw Filter E (TASK-173's counter-trend downgrade/suppression) was still producing "OBSERVATION ONLY — NOT A TRADE" Discord cards for counter-trend HIGH-confidence signals from *any* detector (not just exhaustion), and suppressing counter-trend MEDIUM signals outright. User was unambiguous once this was explained: "we added a logic for observation trade logic which was coming in discord for last 2 days, i dont want that feature" — the whole observation-only mechanism, global scope, no per-detector carve-out. (Initially asked to confirm scope — global vs. exhaustion-only — since this removes the counter-trend protection for breakout/OI-wall too, not just exhaustion; user's clarification resolved that ambiguity in favor of the global option.)
+
+**Decisions**
+- **`config_profiles.py`**: `trend_filter_enabled` dataclass default flipped `True` → `False`. Single source of truth (same pattern as TASK-180's exhaustion/continuation consolidation, prompted by the earlier PR review comment) — no per-profile override needed since both profiles want the same value.
+- **Filter E mechanism itself is untouched** in `engine.py` — same counter-trend downgrade/suppression code, just off by default. Fully testable by explicitly setting `trend_filter_enabled=True` via `dataclasses.replace()`, which is exactly what the existing mechanism tests now do.
+- **Net effect**: with `exhaustion_alert_only=False`, `continuation_alert_only=False` (TASK-180) and now `trend_filter_enabled=False`, no signal from any of the 4 detectors can be tagged `alert_only` by any current mechanism — the observation-only Discord card (TASK-175/176/178) stops appearing entirely. The TASK-178 observation webhook routing code stays in place (harmless, unused unless something sets `alert_only` explicitly, e.g. future tests or a manually-triggered gate) — not removed, since the underlying capability may be wanted again later even if the auto-trigger is off.
+- **Real risk accepted, explicitly**: breakout and OI-wall signals can now also fire live while counter-trend (fighting the current VWAP/PDH-PDL regime), not just exhaustion — this reintroduces exactly the risk class TASK-173 was built to gate. User's call, made with the tradeoff stated plainly beforehand.
+- Tests updated: `test_trend_filter_enabled_defaults_false` (was `_true`), four counter-trend mechanism tests (`test_high_confidence_bullish_downgraded_in_downtrend`, `test_medium_confidence_bullish_suppressed_in_downtrend`, `test_high_confidence_bearish_downgraded_in_uptrend`, `test_medium_confidence_bearish_suppressed_in_uptrend`) now explicitly force `trend_filter_enabled=True` to keep exercising the mechanism; two new tests added for the live-by-default behavior (`test_counter_trend_high_passes_live_by_default`, `test_counter_trend_medium_passes_live_by_default`); `test_trend_filter_never_downgrades_aligned_continuation_signal` also forces the flag on so it still meaningfully proves continuation is exempt even when Filter E is active. 262 tests green (260 → 262).
+
+**Status**: Branch `feature/TASK-181-disable-trend-filter-by-default`, PR to be opened.
+
+**TODOs**
+- [ ] Open PR, user review, merge.
+- [ ] Deploy is the user's own action, as with prior tasks.
+- [ ] Watch live Discord output post-deploy: every detector's signals should now go live regardless of trend alignment — no more observation-only cards from any of the 4 detectors under any current gate.
+
+---
+
 ## 2026-07-06 17:15 · Exhaustion + Continuation Go Live (TASK-180)
 
 User explicit call: no more time for observation-only signals — with the observation Discord channel already separated out (TASK-178), the `alert_only` safety gates on exhaustion and continuation no longer earn their keep as a "prove it before it trades" step. Flipped both to live, on both profiles, including expiry continuation (accepting that its pullback/resumption logic has zero expiry-day validation history — explicit user choice after being asked directly).
