@@ -4,6 +4,30 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-06 15:10 · Trend Continuation Detector — 4th Setup, Observation-Only (TASK-177)
+
+Follow-up to the Dhan-verified obs-signal analysis: 03→06-Jul was a 3-session grind-up with zero tradeable output, because all three existing detectors (Failed Breakout, OI Wall, Exhaustion) fade the move and the trend filter correctly blocks the counter-trend candidates they produce in a trending market. Root cause is a missing capability, not mis-tuned gates (every gate-loosening candidate was checked against Dhan data and only re-admits historically losing flow). ADR + directive written first (`directives/adr/TASK-177_trend-continuation-detector.md`, `directives/TASK-177_trend-continuation-detector.md`), then TDD: `tests/unit/test_continuation.py` (12 tests, pure state-machine unit tests) and `tests/unit/test_task177_trend_continuation.py` (7 tests, engine wiring) written before `detectors/continuation.py`. 250 tests green (231 → 250).
+
+**Decisions**
+- **New detector** `detectors/continuation.py` (`TrendContinuationDetector`, `SetupType.TREND_CONTINUATION`): state machine regime-persistence → armed → pullback → resumption. Regime uses the exact VWAP+PDH/PDL rule as engine Filter E, so signals are trend-aligned by construction and pass Filter E untouched — proven in `test_trend_filter_never_downgrades_aligned_continuation_signal`.
+- **Design bug caught by TDD, fixed before merge**: the first draft used the strict Filter E formula to decide when a pullback "broke the regime." Since PDH/PDL normally bracket VWAP, that formula reduces to "any dip below VWAP is a regime break" — it would have aborted almost every real pullback immediately. Fixed by splitting the break condition: pre-arming uses the strict rule (an unproven candidate that flips isn't a real regime), but once armed, only a genuine PDL/PDH breach (a structural failure) aborts — a VWAP-side dip is the pullback itself. `test_hard_break_during_pullback_aborts` / `test_vwap_dip_during_pullback_does_not_abort` lock in the distinction.
+- **Scoring**: 4-condition matrix (shallow pullback held the trend side of VWAP, resumption volume ≥1.2x/1.3x average, regime persisted ≥2x the arming minimum, room to the next opposing structural level), shared `confidence_from_score` 60% HIGH bar, `continuation_min_score` gate (2 non-expiry / 3 expiry) — below it, no signal at all.
+- **SL/targets**: SL exactly at the pullback extreme, no buffer (TASK-175 convention); targets via the same shared structural target selection as breakout/exhaustion, with the standard T1-closer-than-T2 ordering fix.
+- **Engine wiring**: priority slot 3 of 4 (breakout → OI wall → continuation → exhaustion), gated by `continuation_enabled` (master switch) and a Filter D2 `continuation_alert_only` observation gate mirroring exhaustion's Filter D — phase 1 ships alert-only, same "prove it before it trades" path exhaustion is still on.
+- **Expiry disabled outright** (`continuation_enabled=False` on `EXPIRY_CONFIG`) until proven on non-expiry data — expiry moves die too fast for untested pullback logic.
+- **Pre-merge Dhan replay** (`scratchpad/continuation_replay.py`, not committed): ran the real detector module against the 6 cached Dhan sessions (29-Jun→06-Jul) from the earlier obs-signal analysis — the only history available; a true 10-session replay would need more Dhan history than was fetched. Result: **15 signals, all bullish (matching the grind-up), all clearing the R:R gate (2.0–11.3), net +154.6 pts** under the user's trading model (40% at T1, SL→cost, runner to T2) — including one signal each on 03-Jul and 06-Jul, the exact two days that produced zero tradeable output live. This is a raw-detector number (bypasses the engine's speed/IV-crush filters, which would only remove weaker candidates), so treat it as an upper bound, but it's a strong signal the gap is real and fillable.
+
+**Status**: Branch `feature/TASK-177-trend-continuation`, not yet merged — awaiting PR review. 250 tests green.
+
+**TODOs**
+- [ ] Open PR, user review, merge (no self-merge per workflow).
+- [ ] Run detector_scores collector fix (separate open task) before relying on live near-miss data for tuning `continuation_*` defaults.
+- [ ] Accumulate ≥10 live/replayed observation signals, then a separate config-flip PR to set `continuation_alert_only=False` (phase 2).
+- [ ] Tune and enable expiry-day continuation (`continuation_enabled=True` on `EXPIRY_CONFIG` with expiry-appropriate `continuation_*` values) — deferred until the non-expiry observation phase produces enough data to derive faster-candle-appropriate settings; expiry stays off blind until then.
+- [ ] HIGH-exhaustion re-enable question (carried from the 2026-07-06 obs-signal analysis) remains open and separate from this task.
+
+---
+
 ## 2026-07-06 10:41 · Observation Alert SL/Targets Restored (TASK-176)
 
 Immediate user follow-up to the TASK-175 observation-alert restyle: the fully stripped card went too far — user wants the spot-level SL and targets back for evaluating observations against structure, while keeping the loud header and still omitting anything option-tradeable. TDD flow: updated the TASK-175 observation test to the new spec first (failing), then implementation. 231 tests green (count unchanged — one test rewritten).
