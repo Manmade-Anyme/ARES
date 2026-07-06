@@ -17,16 +17,19 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     ist = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
     
-    # Observation-only signals (TASK-175): no trade card at all — entry/SL/
-    # targets/sizing are omitted so the alert cannot be mistaken for a
-    # tradeable signal (signal #2056 on 06-Jul was traded manually because
-    # the only marker was a reason line at the bottom).
+    # Observation-only signals (TASK-175/176): loud title with spot-level SL
+    # and targets kept for context, but no entry zone or option sizing so the
+    # alert cannot be mistaken for a tradeable signal (signal #2056 on 06-Jul
+    # was traded manually because the only marker was a reason line at the
+    # bottom).
     if getattr(signal, "alert_only", False):
         return f"""```diff
 {marker} 👁️ OBSERVATION ONLY — NOT A TRADE — #{getattr(signal, 'signal_id', '0000')} {signal.setup_type.value} ({signal.direction.value})
 ```
    🕒 Time  : {now_ist} IST
    📍 Spot  : {spot:.2f}
+   🛑 SL    : **{signal.stop_loss:.2f} **(Spot Ref)
+   🎯 Target: **T1={signal.target_1:.2f} | T2={signal.target_2:.2f}**
    ⭐ Confidence : {signal.confidence}
 
    📝 Reasons:
@@ -72,9 +75,9 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
     now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
 
     if is_observation:
-        # Observation-only restyle (TASK-175): loud title, neutral gray, and
-        # no trade card — entry/SL/targets/sizing omitted so the alert cannot
-        # be mistaken for a tradeable signal.
+        # Observation-only restyle (TASK-175/176): loud title, neutral gray,
+        # spot-level SL/targets kept for context, but no entry zone or option
+        # sizing so the alert cannot be mistaken for a tradeable signal.
         color = 9807270  # Discord gray
         title = (
             f"👁️ OBSERVATION ONLY — NOT A TRADE — "
@@ -85,6 +88,8 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
             {"name": "🕒 Time", "value": f"{now_ist} IST", "inline": False},
             {"name": "📍 Spot", "value": f"**{spot:.2f}**", "inline": True},
             {"name": "⭐ Confidence", "value": f"**{signal.confidence}**", "inline": True},
+            {"name": "🛑 SL", "value": f"**{signal.stop_loss:.2f}** (Spot Ref)", "inline": True},
+            {"name": "🎯 Target", "value": f"**T1={signal.target_1:.2f} | T2={signal.target_2:.2f}**", "inline": True},
         ]
     else:
         color = 3066993 if is_bullish else 15158332  # Green or Red
