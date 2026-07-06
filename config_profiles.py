@@ -34,6 +34,10 @@ class TuningConfig:
     breakout_failure_min_score: int = 3
     breakout_weak_volume_ratio: float = 0.75
     breakout_iv_falling_threshold: float = -3.0
+    # Minimum ATM OI growth (%) for the writers_active scored condition
+    # (TASK-174). Was hardcoded 3.0 — intraminute OI drift of 3-5% is common
+    # noise; a scored "active defense" needs a decisive build.
+    breakout_writers_active_min_pct: float = 10.0
     breakout_stop_buffer: float = 25.0
     breakout_resistance_proximity: float = 20.0
 
@@ -97,6 +101,7 @@ NON_EXPIRY_CONFIG = TuningConfig(
     breakout_confirmation_candles=3,
     breakout_weak_volume_ratio=0.75,
     breakout_iv_falling_threshold=-3.0,
+    breakout_writers_active_min_pct=10.0,
     breakout_stop_buffer=25.0,
     oi_wall_min_oi=4000000,
     oi_wall_min_oi_change_pct=5.0,
@@ -124,6 +129,7 @@ EXPIRY_CONFIG = TuningConfig(
     breakout_confirmation_candles=2,
     breakout_weak_volume_ratio=0.70,
     breakout_iv_falling_threshold=-5.0,
+    breakout_writers_active_min_pct=15.0,
     breakout_stop_buffer=15.0,
 
     # OI Wall — only massive walls matter, tighter proximity

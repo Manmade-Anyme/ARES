@@ -4,6 +4,9 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Breakout OI Scoring Fix (TASK-174)**: The failed-breakout score matrix shrinks from 5 to 4 conditions (weak volume, IV falling, writers active, deep close). `writers_holding` (OI >= previous, including zero change) is no longer scored — any growth past the active threshold implies holding, so scoring both awarded two points for a single OI reading; it survives as a reason string only. The `writers_active` OI-growth threshold moves from a hardcoded 3.0% into config (`breakout_writers_active_min_pct`: 10.0% non-expiry / 15.0% expiry) — intraminute ATM OI drift of 3-5% is common noise. `breakout_failure_min_score` stays 3 → a signal now needs 3 of 4 genuine confirmations. Motivated by the 06-Jul signal #2056 stop-out, where 2 of the 4 confidence points came from one noisy OI reading on a counter-trend trade.
+
 ### Added
 - **Trend-Regime Filter (TASK-173)**: New engine filter derives an uptrend/downtrend regime from VWAP + PDH/PDL position (uptrend: close above both VWAP and PDL; downtrend: close below both VWAP and PDH). Counter-trend HIGH confidence signals are downgraded to observation-only (alert_only, same convention as exhaustion); counter-trend MEDIUM signals are suppressed outright. Tunable via `trend_filter_enabled` (audit item 16).
 - **WebSocket Tick Feed for Exit Monitoring (TASK-173)**: New `fetchers/tick_feed.py` wraps dhanhq's `MarketFeed` WebSocket to stream live NIFTY spot LTP. The main loop now wakes every `tick_exit_check_interval_seconds` (default 2s) between the 60s REST poll cycles to run a tick-driven `PositionManager.update_trades` check, catching SL/T1/T2 hits sooner than the prior 60s-only cadence. Purely additive: best-effort connect with a REST-only fallback on failure, and the feed restarts alongside REST clients on credential reload (audit item 18).

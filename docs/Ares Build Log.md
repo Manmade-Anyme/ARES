@@ -4,6 +4,26 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-06 09:53 · Breakout OI Scoring Fix (TASK-174)
+
+Triggered by live signal #2056 (06-Jul 09:23, FAILED_BREAKOUT BEARISH at 24350, HIGH confidence, stopped out at 24375): 2 of its 4 confidence points came from a single OI reading (`writers_holding` at zero-change tolerance + `writers_active` at the hardcoded 3% bar), and the trend-regime filter had flagged it counter-trend (observation note only for HIGH). TDD flow: 8 failing tests first (`tests/unit/test_task174_oi_scoring.py`), then implementation. 221 tests green (213 → 221, one stale TASK-172 test updated to the new matrix).
+
+**Decisions**
+- **`writers_holding` unscored**: `atm_oi >= atm_oi_prev` is satisfied by zero change (noise), and any growth past the active threshold implies holding — scoring both double-counted one OI reading. It stays as a Discord reason string ("did not cover") for context. Deliberately *not* OR-merged with `writers_active`: since active ⊂ holding, an OR-merge would have made the growth threshold dead code.
+- **`writers_active` threshold → config**: hardcoded 3.0% becomes `breakout_writers_active_min_pct` = 10.0 non-expiry / 15.0 expiry (expiry matches the stricter `oi_wall_min_oi_change_pct` stance). History: the original system used 20% for OI-wall growth; 3% was introduced with TASK-013's 6-point matrix and never tuned. Intraminute ATM OI drift of 3-5% is common noise per user's live observation. Boundary is inclusive (`>=`). Discord reason string now renders the configured value instead of a stale "3%".
+- **Matrix 5 → 4 conditions** (weak volume, IV falling, writers active, deep close); `breakout_failure_min_score` stays 3, so a signal needs 3 of 4 genuine confirmations (was 3 of 5 where 2 could come from one OI reading). `confidence_from_score(max_score=4)` — every emitted breakout remains HIGH by construction (3/4 = 75% ≥ 60% band), same as post-TASK-172.
+- **Replay of signal #2056 under new rules**: weak volume (1) + deep close (1) + writers active only if OI growth ≥ 10% → likely score 2 → no signal at all.
+- Trend-filter escalation (blocking counter-trend HIGH instead of observation-only) explicitly deferred — separate task, needs more live data.
+
+**Status**: PR pending review. 221 tests green.
+
+**TODOs**
+- [ ] Merge PR and perform cleanup.
+- [ ] Watch live breakout signal frequency — 10% may need loosening if signals dry up entirely.
+- [ ] Decide on trend-filter escalation for counter-trend HIGH signals (deferred from this task).
+
+---
+
 ## 2026-07-03 02:11 · Audit P2 Structural: Trend-Regime Filter & WS Tick Exits (TASK-173)
 
 Implemented 2 of the 5 P2 "structural" items from the 2026-07-02 trade-efficiency audit (items 16 and 18; 14–15 stay `[SKIP]`, 17's full threshold sweep remains separate open scope). TDD flow: failing tests first (TypeError on the new `tick()` params, ModuleNotFoundError on the new `fetchers/tick_feed.py`, AttributeError on the new main.py helper), then implementation. 213 tests green (32 new since TASK-172's 181).

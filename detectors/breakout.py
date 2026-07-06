@@ -109,13 +109,17 @@ class FailedBreakoutDetector:
 
         weak_volume = self.active.breakout_candle.volume < (avg_volume * settings.breakout_weak_volume_ratio)
         iv_falling = iv_change_pct < settings.breakout_iv_falling_threshold
-        writers_active = oi_change >= 3.0
+        writers_active = oi_change >= settings.breakout_writers_active_min_pct
 
-        # Score is the sum of True conditions (scale of 0 to 5).
+        # Score is the sum of True conditions (scale of 0 to 4).
         # closed_back is deliberately NOT scored (TASK-172, audit item 8): it is
         # the mandatory gate below, so counting it inflated every failure by a
         # free point and let "closed back + one coin-flip" fire a signal.
-        score = sum([writers_holding, weak_volume, iv_falling, writers_active, deep_close])
+        # writers_holding is also NOT scored (TASK-174): OI merely holding
+        # (including zero change) is satisfied by noise, and growth past the
+        # writers_active threshold implies holding anyway — scoring both awarded
+        # two points for a single OI reading. It survives as a reason string.
+        score = sum([weak_volume, iv_falling, writers_active, deep_close])
 
         # If it closed back and meets the minimum failure score, trigger the signal
         if closed_back and score >= settings.breakout_failure_min_score:
@@ -159,7 +163,7 @@ class FailedBreakoutDetector:
         4. Deterministic sorting to ensure Target 1 (T1) is always the closer target,
            which is critical for the Position Manager's trailing stop logic.
         """
-        confidence = confidence_from_score(score, max_score=5)
+        confidence = confidence_from_score(score, max_score=4)
 
         # Dynamically build reasons
         reasons = [f"Price closed back past level {level}"]
@@ -170,7 +174,10 @@ class FailedBreakoutDetector:
         if writers_held:
             reasons.append("Option writers did not cover their positions")
         if writers_active:
-            reasons.append("Option writers actively defended and added positions (>=3% OI growth)")
+            reasons.append(
+                f"Option writers actively defended and added positions "
+                f"(>={settings.breakout_writers_active_min_pct}% OI growth)"
+            )
         if deep_close:
             reasons.append("Price closed back deeply past level (>=5.0 points)")
             
