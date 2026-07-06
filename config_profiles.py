@@ -89,7 +89,11 @@ class TuningConfig:
     # Trade quality gates (TASK-171 audit P0)
     min_rr_ratio: float = 1.0
     time_stop_minutes: int = 45
-    exhaustion_alert_only: bool = True
+    # Live on both profiles since TASK-180 — single source of truth here
+    # rather than repeated per-profile overrides (both profiles want the
+    # same value; the observation Discord channel from TASK-178 is the
+    # safety net now, not this gate).
+    exhaustion_alert_only: bool = False
 
     # Engine protective filters (TASK-172 audit P1)
     # Speed filter: suppress MEDIUM signals when the rolling N-candle range is
@@ -115,10 +119,10 @@ class TuningConfig:
 
     # Trend Continuation Detector (TASK-177). The only trend-aligned setup in
     # the suite — regime must persist, then a shallow pullback, then a
-    # resumption candle. Ships alert_only (observation) until validated;
-    # disabled outright on expiry until proven on non-expiry data.
+    # resumption candle. Live on both profiles since TASK-180 (single source
+    # of truth here, same reasoning as exhaustion_alert_only above).
     continuation_enabled: bool = True
-    continuation_alert_only: bool = True
+    continuation_alert_only: bool = False
     continuation_regime_min_candles: int = 15
     continuation_pullback_vwap_pts: float = 10.0
     continuation_pullback_max_candles: int = 10
@@ -171,7 +175,6 @@ EXPIRY_CONFIG = TuningConfig(
     # Trade quality gates — faster time-stop on expiry (moves die quicker)
     min_rr_ratio=1.0,
     time_stop_minutes=30,
-    exhaustion_alert_only=True,
 
     # Breakout — faster confirmation, stricter filters
     breakout_confirmation_candles=2,
@@ -196,10 +199,10 @@ EXPIRY_CONFIG = TuningConfig(
     target_2_pts=50.0,
     level_scan_range=300.0,
 
-    # Trend Continuation — disabled outright on expiry until proven on
-    # non-expiry observation data (TASK-177); faster knobs held in reserve.
-    continuation_enabled=False,
-    continuation_alert_only=True,
+    # Trend Continuation — now runs (and is live) on expiry too since
+    # TASK-180; continuation_enabled/continuation_alert_only both match the
+    # class defaults now, only the expiry-specific speed knobs below (tuned
+    # in reserve since TASK-177 for expiry's faster candles) need overriding.
     continuation_regime_min_candles=10,
     continuation_pullback_vwap_pts=8.0,
     continuation_pullback_max_candles=6,

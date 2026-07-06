@@ -4,6 +4,24 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-06 17:15 · Exhaustion + Continuation Go Live (TASK-180)
+
+User explicit call: no more time for observation-only signals — with the observation Discord channel already separated out (TASK-178), the `alert_only` safety gates on exhaustion and continuation no longer earn their keep as a "prove it before it trades" step. Flipped both to live, on both profiles, including expiry continuation (accepting that its pullback/resumption logic has zero expiry-day validation history — explicit user choice after being asked directly).
+
+**Decisions**
+- **`config_profiles.py`**: `exhaustion_alert_only=False` on both `NON_EXPIRY_CONFIG` and `EXPIRY_CONFIG`; `continuation_alert_only=False` on both; `continuation_enabled=True` on `EXPIRY_CONFIG` (previously `False` — TASK-177's expiry knobs, shorter regime/pullback windows and a higher score bar, were tuned in reserve and are now actually in effect). Dataclass field defaults on `TuningConfig` itself stay `True` — only the two profile instances changed — so any code path that constructs a bare `TuningConfig()` (existing tests, ad-hoc scripts) keeps the conservative default.
+- **Important interaction, not a bug**: exhaustion is a reversal/fade detector — its signals are almost always counter-trend by construction. With `exhaustion_alert_only` no longer forcing `alert_only=True` upstream, Filter E (the trend-regime filter, TASK-173) now actually evaluates exhaustion signals for the first time: counter-trend HIGH confidence gets downgraded to observation-only, counter-trend MEDIUM gets suppressed outright. This is the exact same mechanism that motivated TASK-177 in the first place (a persistent trend blocks every counter-trend fade). Net effect: exhaustion signals are only live when they happen to align with the current VWAP/PDH-PDL regime — most won't, especially in a strong trend. Continuation signals are unaffected by this (trend-aligned by construction, Filter E never touches them per `test_trend_filter_never_downgrades_aligned_continuation_signal`).
+- **Tests updated to stop depending on the flipped defaults for coverage of the underlying gate mechanisms** (which are unchanged) — `test_exhaustion_signal_is_tagged_alert_only_when_configured`, `test_continuation_alert_only_when_configured`, `test_already_alert_only_signal_skips_trend_check`, `test_observation_only_exhaustion_survives_iv_crush_filter` now explicitly force the relevant `_alert_only=True` override via `dataclasses.replace()` rather than relying on the profile default. New tests added for the now-default live behavior: `test_exhaustion_signal_is_live_by_default`, `test_continuation_consumes_cooldown_when_live_by_default`, `test_expiry_profile_runs_continuation_live`, `test_expiry_enables_live_continuation` (config test), plus `test_expiry_profile_disables_continuation_when_explicitly_off` to keep `continuation_enabled` covered as a real off-switch. 258 tests green (257 → 258, some renamed).
+
+**Status**: Branch `feature/TASK-180-continuation-exhaustion-go-live`, PR opened, awaiting user review/merge.
+
+**TODOs**
+- [ ] Open PR, user review, merge.
+- [ ] Watch live Discord output for a few sessions: expect exhaustion signals to still mostly land in the observation channel during trending days (Filter E), and only fire live when aligned with the regime — worth flagging back if this surprises the user in practice.
+- [ ] Expiry continuation now live with zero real validation history — worth an early check on the first live expiry session.
+
+---
+
 ## 2026-07-06 16:30 · Trend Continuation 2-Candle Resumption Confirmation (TASK-179)
 
 Follow-up to the post-merge Dhan P&L exploration of TASK-177: user manually traced a real false signal — 2026-07-06 13:57, a BULL continuation entry that got stopped out 2 candles later — and found the cause: price had been declining for ~19 minutes straight (24458.65 high at 13:38 down to 24412.55 by 13:56), but a single 3-point up-close candle at 13:57 was enough to satisfy the resumption trigger (`close > open and close > vwap`) and fire the entry, even though the "trend" was really an unfinished slide, not a resumed rally. Explored two alternative fixes in scratchpad first — a dual-EMA(9/15) trend gate, both with and without a slope-angle filter — both back-tested substantially worse (net P&L went negative) because they lag too far behind price and cut good trades along with bad ones. The 2-candle confirmation (require the very next candle to also close in the trend direction) was the one that worked: same false trade removed, signal count 62→41, net P&L 108.0→123.7 pts, win rate 42%→63%, in an unscored scratch replay of the 23-session Dhan backtest window. TDD: `tests/unit/test_continuation.py` — updated 5 existing tests to feed the confirmation candle, added 2 new regression tests (`test_single_resumption_candle_does_not_fire`, `test_failed_second_candle_resets_pending_not_state`) — written before the implementation change. 257 tests green (255 → 257).
@@ -14,11 +32,11 @@ Follow-up to the post-merge Dhan P&L exploration of TASK-177: user manually trac
 - **Cost accepted**: entry is one candle later than before, so fill price is typically a few points worse on every trade that still fires — outweighed by the loser-count drop seen in the scratch replay (36→15 losers, same 26 winners retained).
 - **Rejected alternatives** (scratchpad only, not implemented): dual-EMA(9/15) crossover as the resumption gate, with and without a slope>30°/-30° filter on both EMAs — both back-tested to a net loss (-60 to -66 pts vs the 1-candle baseline's +108) because the EMA relationship confirms too late, well after a lot of the real move has already happened.
 
-**Status**: Branch `feature/TASK-179-two-candle-resumption-confirmation`, PR opened, awaiting user review/merge (user merges PRs themselves — halting here per standing workflow).
+**Status**: Merged to `main` via [PR #25](https://github.com/dubeyshantanu2/ARES/pull/25). Local branch `feature/TASK-179-two-candle-resumption-confirmation` deleted after merge.
 
 **TODOs**
-- [ ] Open PR, user review, merge.
-- [ ] Once merged, the earlier arm-then-EMA(22)-trail exit exploration (still unimplemented, user said "I'll test it for some days") should be re-validated against this updated resumption logic before being considered for its own task.
+- [x] Open PR, user review, merge.
+- [ ] The earlier arm-then-EMA(22)-trail exit exploration (still unimplemented, user said "I'll test it for some days") should be re-validated against this updated resumption logic before being considered for its own task.
 
 ---
 

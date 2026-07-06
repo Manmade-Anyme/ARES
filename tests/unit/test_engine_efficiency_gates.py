@@ -4,10 +4,13 @@ Tests for TASK-171 audit P0 efficiency gates in AresEngine:
 - Exhaustion alert-only: exhaustion signals are tagged observation-only.
 - clear_cooldown(): allows immediate re-entry after a stop-out.
 """
+import dataclasses
 import unittest
 from unittest.mock import MagicMock
 from datetime import datetime, timedelta
 
+from config import settings
+from config_profiles import NON_EXPIRY_CONFIG
 from engine import AresEngine
 from models import ATMStrikes, AresSignal, SetupType, Direction
 
@@ -15,7 +18,11 @@ from models import ATMStrikes, AresSignal, SetupType, Direction
 class TestEngineEfficiencyGates(unittest.TestCase):
 
     def setUp(self):
+        settings.apply_profile(NON_EXPIRY_CONFIG)
         self.engine = AresEngine()
+
+    def tearDown(self):
+        settings.apply_profile(NON_EXPIRY_CONFIG)
 
     def _make_candle(self, close, volume=100000):
         candle = MagicMock()
@@ -97,7 +104,11 @@ class TestEngineEfficiencyGates(unittest.TestCase):
 
     # ── Exhaustion alert-only ───────────────────────────────────────────────
 
-    def test_exhaustion_signal_is_tagged_alert_only(self):
+    def test_exhaustion_signal_is_tagged_alert_only_when_configured(self):
+        """The exhaustion_alert_only gate mechanism (TASK-172) is unchanged
+        by TASK-180's default flip to live -- force it on to test the
+        mechanism directly rather than depend on the production default."""
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, exhaustion_alert_only=True))
         signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL,
                                    direction=Direction.BEARISH,
                                    stop_loss=24020.0, target_1=23965.0)
@@ -107,6 +118,16 @@ class TestEngineEfficiencyGates(unittest.TestCase):
 
     def test_non_exhaustion_signal_is_not_alert_only(self):
         signal = self._make_signal(stop_loss=23975.0, target_1=24035.0)
+        result = self._tick_with(signal)
+        self.assertIsNotNone(result)
+        self.assertFalse(result.alert_only)
+
+    def test_exhaustion_signal_is_live_by_default(self):
+        """TASK-180: exhaustion_alert_only defaults to False now (both
+        profiles) -- exhaustion signals are live/tradeable out of the box."""
+        signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL,
+                                   direction=Direction.BEARISH,
+                                   stop_loss=24020.0, target_1=23965.0)
         result = self._tick_with(signal)
         self.assertIsNotNone(result)
         self.assertFalse(result.alert_only)

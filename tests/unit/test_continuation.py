@@ -32,16 +32,19 @@ class TestConfigFields(unittest.TestCase):
     def test_defaults_present(self):
         cfg = TuningConfig()
         self.assertTrue(cfg.continuation_enabled)
-        self.assertTrue(cfg.continuation_alert_only)
+        self.assertFalse(cfg.continuation_alert_only)  # live by default since TASK-180
         self.assertEqual(cfg.continuation_regime_min_candles, 15)
         self.assertEqual(cfg.continuation_pullback_vwap_pts, 10.0)
         self.assertEqual(cfg.continuation_pullback_max_candles, 10)
         self.assertEqual(cfg.continuation_resume_volume_ratio, 1.2)
         self.assertEqual(cfg.continuation_min_score, 2)
 
-    def test_expiry_disables_continuation(self):
-        self.assertFalse(EXPIRY_CONFIG.continuation_enabled)
-        self.assertTrue(EXPIRY_CONFIG.continuation_alert_only)
+    def test_expiry_enables_live_continuation(self):
+        """TASK-180: continuation now runs live on expiry too, using the
+        faster expiry-specific knobs (shorter regime/pullback windows,
+        higher score bar) reserved since TASK-177."""
+        self.assertTrue(EXPIRY_CONFIG.continuation_enabled)
+        self.assertFalse(EXPIRY_CONFIG.continuation_alert_only)
 
 
 class TestContinuationStateMachine(unittest.TestCase):
