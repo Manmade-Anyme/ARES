@@ -4,6 +4,22 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-06 10:41 · Observation Alert SL/Targets Restored (TASK-176)
+
+Immediate user follow-up to the TASK-175 observation-alert restyle: the fully stripped card went too far — user wants the spot-level SL and targets back for evaluating observations against structure, while keeping the loud header and still omitting anything option-tradeable. TDD flow: updated the TASK-175 observation test to the new spec first (failing), then implementation. 231 tests green (count unchanged — one test rewritten).
+
+**Decisions**
+- **SL + T1/T2 restored** to `alert_only` alerts in both `send_discord` (embed fields) and `format_signal` (text fallback), same "(Spot Ref)" / "T1=… | T2=…" formatting as tradeable alerts.
+- **Entry zone stays out** (user asked only for SL/targets; an entry range on a "NOT A TRADE" card invites exactly the #2056 mistake), and the **option sizing card stays out** (lots, option entry/SL/target) per explicit user direction.
+- Header, gray color, and PositionManager non-tracking behavior unchanged from TASK-175.
+
+**Status**: PR open, awaiting merge. 231 tests green.
+
+**TODOs**
+- [ ] Merge PR and perform cleanup.
+
+---
+
 ## 2026-07-06 10:20 · SL Buffer Removal, Observation Alert Restyle, Config Audit (TASK-175)
 
 Follow-up to signal #2056: the user asked why the SL "hit" produced no Discord close — answer: the trend filter had made #2056 observation-only (`alert_only`), and such signals are never tracked by the PositionManager, but the alert still showed a full trade card, so it was traded manually. TDD flow: 10 failing tests first (`tests/unit/test_task175_sl_config_obs.py`), then implementation. 231 tests green (221 → 231).

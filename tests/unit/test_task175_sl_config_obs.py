@@ -11,7 +11,9 @@ Tests for TASK-175:
    tolerance, engine IV-crush minimum samples. The dead
    `breakout_resistance_proximity` field (defined but never read) is removed.
 3. Observation-only Discord alerts are restyled: OBSERVATION ONLY title,
-   no entry/SL/target or lot-sizing fields, so they cannot be mistaken for
+   spot-level SL/targets retained for context, but no entry zone or option
+   sizing fields (lots / option entry / option SL / option target), so they
+   cannot be mistaken for
    tradeable signals (motivated by signal #2056 being traded manually).
 """
 import asyncio
@@ -192,7 +194,8 @@ def _obs_signal(alert_only: bool) -> AresSignal:
 
 
 class TestObservationAlertRestyle(unittest.IsolatedAsyncioTestCase):
-    """alert_only signals must be visually unmistakable and carry no trade card."""
+    """alert_only signals must be visually unmistakable: loud title, spot-level
+    SL/targets kept for context, but no entry zone or option sizing card."""
 
     def _post_payload(self, mock_client):
         args, kwargs = mock_client.post.call_args
@@ -200,7 +203,7 @@ class TestObservationAlertRestyle(unittest.IsolatedAsyncioTestCase):
 
     @patch('alerts.settings')
     @patch('httpx.AsyncClient')
-    async def test_observation_alert_has_loud_title_and_no_trade_card(
+    async def test_observation_alert_has_loud_title_sl_targets_no_entry_or_sizing(
             self, mock_client_class, mock_settings):
         mock_settings.discord_webhook_url = "http://mock-webhook"
         mock_settings.nifty_lot_size = 65
@@ -214,7 +217,12 @@ class TestObservationAlertRestyle(unittest.IsolatedAsyncioTestCase):
         embed = payload["embeds"][0]
         self.assertIn("OBSERVATION ONLY", embed["title"])
         field_names = [f["name"] for f in embed["fields"]]
-        for banned in ("✅ Entry", "🛑 SL", "🎯 Target", "🔢 Lots"):
+        # Spot-level SL and targets stay in the alert for context
+        self.assertTrue(any("🛑 SL" in n for n in field_names))
+        self.assertTrue(any("🎯 Target" in n for n in field_names))
+        # ...but no entry zone or option sizing card
+        for banned in ("✅ Entry", "🔢 Lots", "Option Entry",
+                       "Option SL", "Option Target", "Sizing"):
             self.assertFalse(
                 any(banned in n for n in field_names),
                 f"observation alert must not contain {banned!r}"
