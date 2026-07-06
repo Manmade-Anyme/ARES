@@ -66,7 +66,7 @@ class PositionManager:
                 continue
             if (existing.get("setup_type") == signal.setup_type.value
                     and existing.get("direction") == signal.direction.value
-                    and abs(float(existing.get("entry_price", 0.0)) - float(spot)) <= 1.0):
+                    and abs(float(existing.get("entry_price", 0.0)) - float(spot)) <= settings.trade_dedupe_tolerance_pts):
                 print(f"[-] PositionManager: Duplicate {signal.setup_type.value} ({signal.direction.value}) trade at {spot:.2f} skipped — already tracking {existing['id']}.")
                 return
 

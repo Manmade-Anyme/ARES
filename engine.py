@@ -176,7 +176,7 @@ class AresEngine:
             else:
                 lookback, current_iv, side = self.pe_iv_lookback, atm.pe.iv, "PE"
 
-            if len(lookback) >= 10:
+            if len(lookback) >= settings.iv_crush_min_samples:
                 lower_iv_count = sum(1 for x in lookback if x < current_iv)
                 percentile = (lower_iv_count / len(lookback)) * 100.0
                 if percentile >= settings.iv_crush_percentile:

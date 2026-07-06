@@ -17,6 +17,21 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     ist = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
     
+    # Observation-only signals (TASK-175): no trade card at all — entry/SL/
+    # targets/sizing are omitted so the alert cannot be mistaken for a
+    # tradeable signal (signal #2056 on 06-Jul was traded manually because
+    # the only marker was a reason line at the bottom).
+    if getattr(signal, "alert_only", False):
+        return f"""```diff
+{marker} 👁️ OBSERVATION ONLY — NOT A TRADE — #{getattr(signal, 'signal_id', '0000')} {signal.setup_type.value} ({signal.direction.value})
+```
+   🕒 Time  : {now_ist} IST
+   📍 Spot  : {spot:.2f}
+   ⭐ Confidence : {signal.confidence}
+
+   📝 Reasons:
+{reasons_str}"""
+
     sizing_str = ""
     if getattr(signal, "suggested_lots", None) is not None:
         sizing_str = f"""
@@ -50,32 +65,51 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         return
         
     is_bullish = signal.direction.value == "BULLISH"
-    color = 3066993 if is_bullish else 15158332  # Green or Red
-    emoji = "🚨 🐂 🟢" if is_bullish else "🚨 🐻 🔴"
-    
+    is_observation = getattr(signal, "alert_only", False)
+
     # Get current IST time
     ist = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
-    
-    # Base fields
-    fields = [
-        {"name": "🕒 Time", "value": f"{now_ist} IST", "inline": False},
-        {"name": "📍 Spot", "value": f"**{spot:.2f}**", "inline": True},
-        {"name": "⚡ Trade", "value": f"**{signal.strike_to_trade} {signal.option_type}**", "inline": True},
-        {"name": "⭐ Confidence", "value": f"**{signal.confidence}**", "inline": True},
-        {"name": "✅ Entry", "value": f"**{signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}**", "inline": True},
-        {"name": "🛑 SL", "value": f"**{signal.stop_loss:.2f}** (Spot Ref)", "inline": True},
-        {"name": "🎯 Target", "value": f"**T1={signal.target_1:.2f} | T2={signal.target_2:.2f}**", "inline": True}
-    ]
-    
-    # Sizing fields
-    if getattr(signal, "suggested_lots", None) is not None:
-        fields.append({"name": f"📐 Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%)", "value": "Calculations based on current capital", "inline": False})
-        fields.append({"name": "🔢 Lots", "value": f"**{signal.suggested_lots}** (Nifty Lot Size: {settings.nifty_lot_size})", "inline": True})
-        fields.append({"name": "✅ Option Entry", "value": f"**₹ {signal.option_premium:.2f}** (Delta: {signal.option_delta:+.4f})", "inline": True})
-        fields.append({"name": "🛑 Option SL", "value": f"**₹ {signal.option_sl:.2f}**", "inline": True})
-        fields.append({"name": "🎯 Option Target", "value": f"**₹ {signal.option_target:.2f}**", "inline": True})
-        
+
+    if is_observation:
+        # Observation-only restyle (TASK-175): loud title, neutral gray, and
+        # no trade card — entry/SL/targets/sizing omitted so the alert cannot
+        # be mistaken for a tradeable signal.
+        color = 9807270  # Discord gray
+        title = (
+            f"👁️ OBSERVATION ONLY — NOT A TRADE — "
+            f"#{getattr(signal, 'signal_id', '0000')} "
+            f"{signal.setup_type.value} ({signal.direction.value})"
+        )
+        fields = [
+            {"name": "🕒 Time", "value": f"{now_ist} IST", "inline": False},
+            {"name": "📍 Spot", "value": f"**{spot:.2f}**", "inline": True},
+            {"name": "⭐ Confidence", "value": f"**{signal.confidence}**", "inline": True},
+        ]
+    else:
+        color = 3066993 if is_bullish else 15158332  # Green or Red
+        emoji = "🚨 🐂 🟢" if is_bullish else "🚨 🐻 🔴"
+        title = f"{emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})"
+
+        # Base fields
+        fields = [
+            {"name": "🕒 Time", "value": f"{now_ist} IST", "inline": False},
+            {"name": "📍 Spot", "value": f"**{spot:.2f}**", "inline": True},
+            {"name": "⚡ Trade", "value": f"**{signal.strike_to_trade} {signal.option_type}**", "inline": True},
+            {"name": "⭐ Confidence", "value": f"**{signal.confidence}**", "inline": True},
+            {"name": "✅ Entry", "value": f"**{signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}**", "inline": True},
+            {"name": "🛑 SL", "value": f"**{signal.stop_loss:.2f}** (Spot Ref)", "inline": True},
+            {"name": "🎯 Target", "value": f"**T1={signal.target_1:.2f} | T2={signal.target_2:.2f}**", "inline": True}
+        ]
+
+        # Sizing fields
+        if getattr(signal, "suggested_lots", None) is not None:
+            fields.append({"name": f"📐 Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%)", "value": "Calculations based on current capital", "inline": False})
+            fields.append({"name": "🔢 Lots", "value": f"**{signal.suggested_lots}** (Nifty Lot Size: {settings.nifty_lot_size})", "inline": True})
+            fields.append({"name": "✅ Option Entry", "value": f"**₹ {signal.option_premium:.2f}** (Delta: {signal.option_delta:+.4f})", "inline": True})
+            fields.append({"name": "🛑 Option SL", "value": f"**₹ {signal.option_sl:.2f}**", "inline": True})
+            fields.append({"name": "🎯 Option Target", "value": f"**₹ {signal.option_target:.2f}**", "inline": True})
+
     # Reasons
     reasons_str = "\n".join([f"• {r}" for r in signal.reasons])
     fields.append({"name": "📝 Reasons", "value": reasons_str, "inline": False})
@@ -83,7 +117,7 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
     payload = {
         "embeds": [
             {
-                "title": f"{emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})",
+                "title": title,
                 "color": color,
                 "fields": fields
             }

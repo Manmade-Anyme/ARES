@@ -162,16 +162,22 @@ class OIWallDetector:
         
         # 1. Wall Magnitude
         oi_val = wall["ce_oi"] if direction == Direction.BEARISH else wall["pe_oi"]
-        if oi_val >= 1.5 * settings.oi_wall_min_oi:
-            extra_reasons.append("Massive wall size confirms strong barrier (>1.5x min)")
+        if oi_val >= settings.oi_wall_conviction_multiplier * settings.oi_wall_min_oi:
+            extra_reasons.append(
+                f"Massive wall size confirms strong barrier "
+                f"(>{settings.oi_wall_conviction_multiplier}x min)"
+            )
             mag_score = 1
         else:
             mag_score = 0
             
         # 2. Active Defence (OI Growth)
         oi_change_pct = wall["ce_oi_change_pct"] if direction == Direction.BEARISH else wall["pe_oi_change_pct"]
-        if oi_change_pct >= 1.5 * settings.oi_wall_min_oi_change_pct:
-            extra_reasons.append("Aggressive active defending by option writers (>1.5x min change)")
+        if oi_change_pct >= settings.oi_wall_conviction_multiplier * settings.oi_wall_min_oi_change_pct:
+            extra_reasons.append(
+                f"Aggressive active defending by option writers "
+                f"(>{settings.oi_wall_conviction_multiplier}x min change)"
+            )
             growth_score = 1
         else:
             growth_score = 0
@@ -191,13 +197,13 @@ class OIWallDetector:
         # 4. Wick Rejection
         candle_range = candle.high - candle.low
         wick_score = 0
-        if candle_range > 2.0:
+        if candle_range > settings.oi_wall_wick_min_range_pts:
             if direction == Direction.BEARISH:
-                if (candle.high - max(candle.open, candle.close)) >= 0.4 * candle_range:
+                if (candle.high - max(candle.open, candle.close)) >= settings.oi_wall_wick_rejection_ratio * candle_range:
                     extra_reasons.append("Candle showed heavy overhead supply (long upper wick)")
                     wick_score = 1
             else:
-                if (min(candle.open, candle.close) - candle.low) >= 0.4 * candle_range:
+                if (min(candle.open, candle.close) - candle.low) >= settings.oi_wall_wick_rejection_ratio * candle_range:
                     extra_reasons.append("Candle showed strong absorption/buying tail (long lower wick)")
                     wick_score = 1
                     
@@ -240,12 +246,13 @@ class OIWallDetector:
         target_2 = None
 
         if direction == Direction.BEARISH:
-            stop_loss = strike + settings.oi_wall_stop_buffer  # Just beyond the wall
-            
+            # SL exactly at the wall strike — no buffer (TASK-175)
+            stop_loss = strike
+
             # Find supports below spot
             supports = sorted([lvl.price for lvl in levels if lvl.price < candle.close], reverse=True)
-            # Filter out levels within 20 points of entry
-            supports = [s for s in supports if abs(s - candle.close) >= 20]
+            # Filter out levels too close to entry
+            supports = [s for s in supports if abs(s - candle.close) >= settings.structural_target_min_distance_pts]
             
             if len(supports) >= 1:
                 target_1 = supports[0]
@@ -255,17 +262,18 @@ class OIWallDetector:
                 reasons.append(f"Target 2 set at structural support: {target_2:.2f}")
             
             # Fallback to fixed points if levels not found or too close
-            if not target_1 or abs(target_1 - candle.close) < 15:
+            if not target_1 or abs(target_1 - candle.close) < settings.target_1_fallback_min_pts:
                 target_1 = candle.close - settings.target_1_pts
-            if not target_2 or abs(target_2 - candle.close) < 30:
+            if not target_2 or abs(target_2 - candle.close) < settings.target_2_fallback_min_pts:
                 target_2 = candle.close - settings.target_2_pts
         else:
-            stop_loss = strike - settings.oi_wall_stop_buffer  # Just beyond the wall
-            
+            # SL exactly at the wall strike — no buffer (TASK-175)
+            stop_loss = strike
+
             # Find resistances above spot
             resistances = sorted([lvl.price for lvl in levels if lvl.price > candle.close])
-            # Filter out levels within 20 points of entry
-            resistances = [r for r in resistances if abs(r - candle.close) >= 20]
+            # Filter out levels too close to entry
+            resistances = [r for r in resistances if abs(r - candle.close) >= settings.structural_target_min_distance_pts]
             
             if len(resistances) >= 1:
                 target_1 = resistances[0]
@@ -274,9 +282,9 @@ class OIWallDetector:
                 target_2 = resistances[1]
                 reasons.append(f"Target 2 set at structural resistance: {target_2:.2f}")
                 
-            if not target_1 or abs(target_1 - candle.close) < 15:
+            if not target_1 or abs(target_1 - candle.close) < settings.target_1_fallback_min_pts:
                 target_1 = candle.close + settings.target_1_pts
-            if not target_2 or abs(target_2 - candle.close) < 30:
+            if not target_2 or abs(target_2 - candle.close) < settings.target_2_fallback_min_pts:
                 target_2 = candle.close + settings.target_2_pts
 
         # Ensure correct ordering (T1 is closer to entry than T2)

@@ -99,13 +99,13 @@ class FailedBreakoutDetector:
             writers_holding = atm_ce_oi >= atm_ce_oi_prev
             direction = Direction.BEARISH
             oi_change = ((atm_ce_oi - atm_ce_oi_prev) / atm_ce_oi_prev * 100.0) if atm_ce_oi_prev > 0 else 0.0
-            deep_close = (self.active.level - candle.close) >= 5.0
+            deep_close = (self.active.level - candle.close) >= settings.breakout_deep_close_pts
         else:
             closed_back = candle.close > self.active.level
             writers_holding = atm_pe_oi >= atm_pe_oi_prev
             direction = Direction.BULLISH
             oi_change = ((atm_pe_oi - atm_pe_oi_prev) / atm_pe_oi_prev * 100.0) if atm_pe_oi_prev > 0 else 0.0
-            deep_close = (candle.close - self.active.level) >= 5.0
+            deep_close = (candle.close - self.active.level) >= settings.breakout_deep_close_pts
 
         weak_volume = self.active.breakout_candle.volume < (avg_volume * settings.breakout_weak_volume_ratio)
         iv_falling = iv_change_pct < settings.breakout_iv_falling_threshold
@@ -179,7 +179,10 @@ class FailedBreakoutDetector:
                 f"(>={settings.breakout_writers_active_min_pct}% OI growth)"
             )
         if deep_close:
-            reasons.append("Price closed back deeply past level (>=5.0 points)")
+            reasons.append(
+                f"Price closed back deeply past level "
+                f"(>={settings.breakout_deep_close_pts} points)"
+            )
             
         # --- Dynamic Target Selection ---
         target_1 = None
@@ -187,12 +190,13 @@ class FailedBreakoutDetector:
         
         if direction == Direction.BEARISH:
             option_type = "PE"
-            stop_loss = level + settings.breakout_stop_buffer
-            
+            # SL exactly at the failed level — no buffer (TASK-175)
+            stop_loss = level
+
             # Find supports below spot
             supports = sorted([lvl.price for lvl in levels if lvl.price < candle.close], reverse=True)
             # Add minimum distance check
-            supports = [s for s in supports if abs(s - candle.close) >= 20]
+            supports = [s for s in supports if abs(s - candle.close) >= settings.structural_target_min_distance_pts]
             
             if len(supports) >= 1:
                 target_1 = supports[0]
@@ -202,18 +206,19 @@ class FailedBreakoutDetector:
                 reasons.append(f"Target 2 set at structural support: {target_2:.2f}")
             
             # Fallback to fixed points if levels not found or too close
-            if not target_1 or abs(target_1 - candle.close) < 15:
+            if not target_1 or abs(target_1 - candle.close) < settings.target_1_fallback_min_pts:
                 target_1 = candle.close - settings.target_1_pts
-            if not target_2 or abs(target_2 - candle.close) < 30:
+            if not target_2 or abs(target_2 - candle.close) < settings.target_2_fallback_min_pts:
                 target_2 = candle.close - settings.target_2_pts
         else:
             option_type = "CE"
-            stop_loss = level - settings.breakout_stop_buffer
-            
+            # SL exactly at the failed level — no buffer (TASK-175)
+            stop_loss = level
+
             # Find resistances above spot
             resistances = sorted([lvl.price for lvl in levels if lvl.price > candle.close])
             # Add minimum distance check
-            resistances = [r for r in resistances if abs(r - candle.close) >= 20]
+            resistances = [r for r in resistances if abs(r - candle.close) >= settings.structural_target_min_distance_pts]
             
             if len(resistances) >= 1:
                 target_1 = resistances[0]
@@ -222,9 +227,9 @@ class FailedBreakoutDetector:
                 target_2 = resistances[1]
                 reasons.append(f"Target 2 set at structural resistance: {target_2:.2f}")
                 
-            if not target_1 or abs(target_1 - candle.close) < 15:
+            if not target_1 or abs(target_1 - candle.close) < settings.target_1_fallback_min_pts:
                 target_1 = candle.close + settings.target_1_pts
-            if not target_2 or abs(target_2 - candle.close) < 30:
+            if not target_2 or abs(target_2 - candle.close) < settings.target_2_fallback_min_pts:
                 target_2 = candle.close + settings.target_2_pts
 
         # Ensure correct ordering (T1 is closer to entry than T2)

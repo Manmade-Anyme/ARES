@@ -150,6 +150,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
 
     @patch('position_manager.settings')
     async def test_add_trade_success_and_exception_safety(self, mock_settings):
+        mock_settings.trade_dedupe_tolerance_pts = 1.0
         pm = PositionManager()
         
         signal = AresSignal(
@@ -565,6 +566,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
     async def test_add_trade_skips_duplicate_signal(self, mock_settings):
         """The 06-29 14:12 OI wall trade was logged twice. A second add for the
         same setup/direction at (nearly) the same entry is now skipped."""
+        mock_settings.trade_dedupe_tolerance_pts = 1.0
         pm = PositionManager()
         pm.active_trades = []
         signal = self._make_signal()
@@ -578,6 +580,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
     @patch('position_manager.settings')
     async def test_add_trade_allows_same_setup_at_different_level(self, mock_settings):
+        mock_settings.trade_dedupe_tolerance_pts = 1.0
         pm = PositionManager()
         pm.active_trades = []
         signal = self._make_signal()
