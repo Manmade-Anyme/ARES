@@ -99,18 +99,70 @@ class TestContinuationStateMachine(unittest.TestCase):
         self.assertTrue(self.det.state.in_pullback)
         self.assertEqual(self.det.state.pullback_extreme, 24096.0)
 
-        # Resumption candle: bullish body, closes back above VWAP, strong volume
+        # First resumption candle only arms the confirmation gate (TASK-179:
+        # a single up-close inside an ongoing pullback isn't proof the
+        # decline has actually stalled) -- no signal yet.
+        first = candle(24110.0, 24100.0, open_=24098.0, volume=150000, minute=n + 1)
+        result = self.det.update(first, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+        self.assertIsNone(result)
+        self.assertTrue(self.det.state.resume_pending)
+
+        # Second consecutive resumption candle confirms -> signal fires here.
         levels = [ResistanceLevel(price=24300.0, source="OI_WALL", strength=2)]
-        resume = candle(24115.0, 24100.0, open_=24098.0, volume=150000, minute=n + 1)
+        resume = candle(24115.0, 24100.0, open_=24108.0, volume=150000, minute=n + 2)
         signal = self.det.update(resume, avg_volume=100000, levels=levels, pdh=self.pdh, pdl=self.pdl)
 
         self.assertIsNotNone(signal)
         self.assertEqual(signal.setup_type, SetupType.TREND_CONTINUATION)
         self.assertEqual(signal.direction, Direction.BULLISH)
         self.assertEqual(signal.option_type, "CE")
+        self.assertEqual(signal.trigger_price, 24115.0)  # entry is the 2nd confirming candle's close
         self.assertEqual(signal.stop_loss, 24096.0)  # exact pullback extreme, no buffer
         self.assertLess(signal.target_1, signal.target_2)
         self.assertIsNone(self.det.state)  # reset after resolving
+
+    def test_single_resumption_candle_does_not_fire(self):
+        """Regression guard for the exact failure this gate fixes: a lone
+        up-close candle inside a still-declining pullback (2026-07-06 13:57
+        NIFTY case) must not resolve into a signal on its own."""
+        n = settings.continuation_regime_min_candles
+        self._run_regime(n)
+        pullback = candle(24098.0, 24100.0, open_=24105.0, low=24096.0, minute=n)
+        self.det.update(pullback, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+
+        resume = candle(24115.0, 24100.0, open_=24098.0, volume=150000, minute=n + 1)
+        signal = self.det.update(resume, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+        self.assertIsNone(signal)
+        self.assertIsNotNone(self.det.state)
+        self.assertTrue(self.det.state.in_pullback)
+
+    def test_failed_second_candle_resets_pending_not_state(self):
+        """A confirming candle followed by a non-confirming one doesn't
+        blow up the whole candidate -- it just clears the pending flag and
+        keeps tracking the pullback, so a later genuine 2-candle confirm
+        can still fire."""
+        n = settings.continuation_regime_min_candles
+        self._run_regime(n)
+        pullback = candle(24098.0, 24100.0, open_=24105.0, low=24096.0, minute=n)
+        self.det.update(pullback, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+
+        first = candle(24110.0, 24100.0, open_=24098.0, volume=150000, minute=n + 1)
+        self.det.update(first, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+        self.assertTrue(self.det.state.resume_pending)
+
+        # Fails to confirm: closes back down, below its own open.
+        fails = candle(24097.0, 24100.0, open_=24109.0, low=24096.5, minute=n + 2)
+        result = self.det.update(fails, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+        self.assertIsNone(result)
+        self.assertFalse(self.det.state.resume_pending)
+        self.assertTrue(self.det.state.in_pullback)
+
+        first_again = candle(24112.0, 24100.0, open_=24099.0, volume=150000, minute=n + 3)
+        self.det.update(first_again, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+        self.assertTrue(self.det.state.resume_pending)
+        confirm = candle(24118.0, 24100.0, open_=24113.0, volume=150000, minute=n + 4)
+        signal = self.det.update(confirm, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+        self.assertIsNotNone(signal)
 
     def test_full_bearish_continuation_emits_signal(self):
         pdh, pdl = 24200.0, 23900.0
@@ -127,8 +179,13 @@ class TestContinuationStateMachine(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(self.det.state.pullback_extreme, 24060.0)
 
+        first = candle(24040.0, 24050.0, open_=24048.0, volume=150000, minute=n + 1)
+        result = self.det.update(first, avg_volume=100000, levels=[], pdh=pdh, pdl=pdl)
+        self.assertIsNone(result)
+        self.assertTrue(self.det.state.resume_pending)
+
         levels = [ResistanceLevel(price=23800.0, source="PDL", strength=2)]
-        resume = candle(24030.0, 24050.0, open_=24050.0, volume=150000, minute=n + 1)
+        resume = candle(24030.0, 24050.0, open_=24038.0, volume=150000, minute=n + 2)
         signal = self.det.update(resume, avg_volume=100000, levels=levels, pdh=pdh, pdl=pdl)
 
         self.assertIsNotNone(signal)
@@ -197,9 +254,12 @@ class TestContinuationStateMachine(unittest.TestCase):
         pullback = candle(24098.0, 24100.0, open_=24105.0, low=24096.0, minute=n)
         self.det.update(pullback, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
 
+        first = candle(24110.0, 24100.0, open_=24098.0, volume=50000, minute=n + 1)
+        self.det.update(first, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+
         # Nearby opposing resistance -> fails "room to run"; weak volume -> fails "resume volume"
         levels = [ResistanceLevel(price=24120.0, source="OI_WALL", strength=1)]
-        resume = candle(24115.0, 24100.0, open_=24098.0, volume=50000, minute=n + 1)
+        resume = candle(24115.0, 24100.0, open_=24108.0, volume=50000, minute=n + 2)
         signal = self.det.update(resume, avg_volume=100000, levels=levels, pdh=self.pdh, pdl=self.pdl)
         self.assertIsNone(signal)
         self.assertIsNone(self.det.state)  # still resets after resolving
@@ -215,8 +275,11 @@ class TestContinuationStateMachine(unittest.TestCase):
         pullback = candle(24098.0, 24100.0, open_=24105.0, low=24096.0, minute=2 * n)
         self.det.update(pullback, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
 
+        first = candle(24110.0, 24100.0, open_=24098.0, volume=200000, minute=2 * n + 1)
+        self.det.update(first, avg_volume=100000, levels=[], pdh=self.pdh, pdl=self.pdl)
+
         levels = [ResistanceLevel(price=24500.0, source="OI_WALL", strength=2)]
-        resume = candle(24115.0, 24100.0, open_=24098.0, volume=200000, minute=2 * n + 1)
+        resume = candle(24115.0, 24100.0, open_=24108.0, volume=200000, minute=2 * n + 2)
         signal = self.det.update(resume, avg_volume=100000, levels=levels, pdh=self.pdh, pdl=self.pdl)
         self.assertIsNotNone(signal)
         self.assertEqual(signal.confidence, "HIGH")

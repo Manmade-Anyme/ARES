@@ -22,6 +22,24 @@ User explicit call: no more time for observation-only signals — with the obser
 
 ---
 
+## 2026-07-06 16:30 · Trend Continuation 2-Candle Resumption Confirmation (TASK-179)
+
+Follow-up to the post-merge Dhan P&L exploration of TASK-177: user manually traced a real false signal — 2026-07-06 13:57, a BULL continuation entry that got stopped out 2 candles later — and found the cause: price had been declining for ~19 minutes straight (24458.65 high at 13:38 down to 24412.55 by 13:56), but a single 3-point up-close candle at 13:57 was enough to satisfy the resumption trigger (`close > open and close > vwap`) and fire the entry, even though the "trend" was really an unfinished slide, not a resumed rally. Explored two alternative fixes in scratchpad first — a dual-EMA(9/15) trend gate, both with and without a slope-angle filter — both back-tested substantially worse (net P&L went negative) because they lag too far behind price and cut good trades along with bad ones. The 2-candle confirmation (require the very next candle to also close in the trend direction) was the one that worked: same false trade removed, signal count 62→41, net P&L 108.0→123.7 pts, win rate 42%→63%, in an unscored scratch replay of the 23-session Dhan backtest window. TDD: `tests/unit/test_continuation.py` — updated 5 existing tests to feed the confirmation candle, added 2 new regression tests (`test_single_resumption_candle_does_not_fire`, `test_failed_second_candle_resets_pending_not_state`) — written before the implementation change. 257 tests green (255 → 257).
+
+**Decisions**
+- **New `ContinuationState.resume_pending` flag** (`detectors/continuation.py`): the first trend-aligned candle inside a pullback only arms the gate (`resume_pending = True`, no signal); the *next* candle must also close in the trend direction to fire — entry moves to that 2nd confirming candle's close/timestamp.
+- **A failed confirmation doesn't reset the whole candidate** — only `resume_pending` clears; the pullback keeps tracking (extreme, candle count, timeout) so a later genuine 2-candle confirm inside the same pullback can still fire. Locked in by `test_failed_second_candle_resets_pending_not_state`.
+- **Cost accepted**: entry is one candle later than before, so fill price is typically a few points worse on every trade that still fires — outweighed by the loser-count drop seen in the scratch replay (36→15 losers, same 26 winners retained).
+- **Rejected alternatives** (scratchpad only, not implemented): dual-EMA(9/15) crossover as the resumption gate, with and without a slope>30°/-30° filter on both EMAs — both back-tested to a net loss (-60 to -66 pts vs the 1-candle baseline's +108) because the EMA relationship confirms too late, well after a lot of the real move has already happened.
+
+**Status**: Merged to `main` via [PR #25](https://github.com/dubeyshantanu2/ARES/pull/25). Local branch `feature/TASK-179-two-candle-resumption-confirmation` deleted after merge.
+
+**TODOs**
+- [x] Open PR, user review, merge.
+- [ ] The earlier arm-then-EMA(22)-trail exit exploration (still unimplemented, user said "I'll test it for some days") should be re-validated against this updated resumption logic before being considered for its own task.
+
+---
+
 ## 2026-07-06 15:45 · Separate Discord Channel for Observation-Only Alerts (TASK-178)
 
 User's main channel is getting spammed by observation-only alerts (exhaustion MEDIUM signals, the trend-filter-downgraded HIGH signals) — several of these can fire in a single session while tradeable signals are rare by design. Small, contained fix: route `alert_only` signals to a second, optional Discord webhook instead of the main one. TDD: `tests/unit/test_task178_observation_discord_channel.py` (5 tests) written before the implementation. 255 tests green (250 → 255).
