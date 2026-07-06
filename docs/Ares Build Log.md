@@ -13,10 +13,10 @@ Immediate user follow-up to the TASK-175 observation-alert restyle: the fully st
 - **Entry zone stays out** (user asked only for SL/targets; an entry range on a "NOT A TRADE" card invites exactly the #2056 mistake), and the **option sizing card stays out** (lots, option entry/SL/target) per explicit user direction.
 - Header, gray color, and PositionManager non-tracking behavior unchanged from TASK-175.
 
-**Status**: PR open, awaiting merge. 231 tests green.
+**Status**: Merged to `main` via [PR #22](https://github.com/dubeyshantanu2/ARES/pull/22). Local branch `feature/TASK-176-obs-alert-sl-targets` deleted after merge. 231 tests green.
 
 **TODOs**
-- [ ] Merge PR and perform cleanup.
+- [x] Merge PR #22 and perform cleanup.
 
 ---
 
