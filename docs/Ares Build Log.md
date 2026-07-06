@@ -4,6 +4,26 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-06 10:20 · SL Buffer Removal, Observation Alert Restyle, Config Audit (TASK-175)
+
+Follow-up to signal #2056: the user asked why the SL "hit" produced no Discord close — answer: the trend filter had made #2056 observation-only (`alert_only`), and such signals are never tracked by the PositionManager, but the alert still showed a full trade card, so it was traded manually. TDD flow: 10 failing tests first (`tests/unit/test_task175_sl_config_obs.py`), then implementation. 231 tests green (221 → 231).
+
+**Decisions**
+- **SL buffers removed (user direction, all 3 detectors)**: stop sits exactly at the structural reference — breakout level (was level ± 25/15), OI wall strike (was ± 25/15), exhaustion candle extreme (was ± 20). Config fields deleted rather than zeroed. Consequence: #2056-style trades stop 25 pts sooner; tighter risk also lets more setups pass the `min_rr_ratio` gate.
+- **Observation-only alert restyle**: `alert_only` signals render with a gray "👁️ OBSERVATION ONLY — NOT A TRADE" title and no entry/SL/target/sizing fields (both the embed and the text formatter). Tradeable alerts unchanged.
+- **Hardcoded → config sweep**: `breakout_deep_close_pts` (5.0), shared target-selection distances (`structural_target_min_distance_pts` 20 / `target_1_fallback_min_pts` 15 / `target_2_fallback_min_pts` 30 — the same literals were duplicated in all 3 detectors), `oi_wall_conviction_multiplier` (1.5), `oi_wall_wick_min_range_pts` (2.0), `exhaustion_extreme_volume_factor` (1.5), `exhaustion_extreme_doji_factor` (0.5), `exhaustion_level_proximity_pts` (10.0), `exhaustion_volume_history_size` (20), `trade_dedupe_tolerance_pts` (1.0), `iv_crush_min_samples` (10). All same-value in both profiles — pure refactor, zero behavior change.
+- **Two latent bugs found by the sweep**: `breakout_resistance_proximity` was defined in config but never read (deleted); the OI wall wick-scoring block hardcoded 0.4 instead of using the existing `oi_wall_wick_rejection_ratio` setting (now honored — same default, so no behavior change until tuned).
+- Exhaustion's volume-history size is read at construction; `main.py` applies the profile before building the engine, so this is safe (documented in the detector docstring).
+
+**Status**: PR pending review. 231 tests green.
+
+**TODOs**
+- [ ] Merge PR and perform cleanup.
+- [ ] Watch stop-out rate with buffer-less SLs — wick-outs at the exact level may argue for a small buffer via config re-introduction.
+- [ ] Decide on trend-filter escalation for counter-trend HIGH signals (carried from TASK-174).
+
+---
+
 ## 2026-07-06 09:53 · Breakout OI Scoring Fix (TASK-174)
 
 Triggered by live signal #2056 (06-Jul 09:23, FAILED_BREAKOUT BEARISH at 24350, HIGH confidence, stopped out at 24375): 2 of its 4 confidence points came from a single OI reading (`writers_holding` at zero-change tolerance + `writers_active` at the hardcoded 3% bar), and the trend-regime filter had flagged it counter-trend (observation note only for HIGH). TDD flow: 8 failing tests first (`tests/unit/test_task174_oi_scoring.py`), then implementation. 221 tests green (213 → 221, one stale TASK-172 test updated to the new matrix).

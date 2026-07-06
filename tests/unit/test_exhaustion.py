@@ -185,9 +185,14 @@ def test_exhaustion_confidence_high_bullish_and_sorting_swap(exhaustion_detector
     with patch('detectors.exhaustion.settings') as mock_settings:
         mock_settings.exhaustion_min_candles = 20
         mock_settings.exhaustion_volume_multiplier = 2.5
+        mock_settings.exhaustion_extreme_volume_factor = 1.5
+        mock_settings.exhaustion_extreme_doji_factor = 0.5
+        mock_settings.exhaustion_level_proximity_pts = 10.0
+        mock_settings.structural_target_min_distance_pts = 20.0
+        mock_settings.target_1_fallback_min_pts = 15.0
+        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.exhaustion_body_ratio = 0.35
         mock_settings.exhaustion_iv_spike_threshold = 3.0
-        mock_settings.exhaustion_stop_buffer = 10.0
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.strike_interval = 50
         # Mock target points so Target 1 (100) > Target 2 (50)
@@ -216,9 +221,14 @@ def test_exhaustion_bearish_sorting_swap(exhaustion_detector):
     with patch('detectors.exhaustion.settings') as mock_settings:
         mock_settings.exhaustion_min_candles = 20
         mock_settings.exhaustion_volume_multiplier = 2.5
+        mock_settings.exhaustion_extreme_volume_factor = 1.5
+        mock_settings.exhaustion_extreme_doji_factor = 0.5
+        mock_settings.exhaustion_level_proximity_pts = 10.0
+        mock_settings.structural_target_min_distance_pts = 20.0
+        mock_settings.target_1_fallback_min_pts = 15.0
+        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.exhaustion_body_ratio = 0.35
         mock_settings.exhaustion_iv_spike_threshold = 3.0
-        mock_settings.exhaustion_stop_buffer = 10.0
         mock_settings.entry_zone_offset_pts = 5.0
         mock_settings.strike_interval = 50
         # Mock target points so Target 1 (100) > Target 2 (50) -> close - 100 < close - 50 -> triggers swap

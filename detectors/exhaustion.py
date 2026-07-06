@@ -19,10 +19,12 @@ class ExhaustionDetector:
 
     def __init__(self):
         """
-        Initialize the volume history deque. We keep the last 20 periods
-        to compute a moving average of volume.
+        Initialize the volume history deque (last N periods, from
+        exhaustion_volume_history_size) to compute a moving average of volume.
+        The size is read at construction, so detectors must be created after
+        the config profile is applied (main.py already does this).
         """
-        self.volume_history = deque(maxlen=20)
+        self.volume_history = deque(maxlen=settings.exhaustion_volume_history_size)
 
     def update(self, candle: OHLCVCandle, iv_current: float, iv_prev: float, levels: List[ResistanceLevel]) -> Optional[AresSignal]:
         """
@@ -97,26 +99,26 @@ class ExhaustionDetector:
         """
         vol_ratio = candle.volume / avg_vol if avg_vol > 0 else 0
         
-        # 1. Extreme Volume Climax (1.5x of threshold)
-        extreme_volume = candle.volume >= 1.5 * avg_vol * settings.exhaustion_volume_multiplier
-        
-        # 2. Extreme Doji Body Ratio (0.5x of threshold)
+        # 1. Extreme Volume Climax (factor over the base threshold)
+        extreme_volume = candle.volume >= settings.exhaustion_extreme_volume_factor * avg_vol * settings.exhaustion_volume_multiplier
+
+        # 2. Extreme Doji Body Ratio (factor under the base threshold)
         body = abs(candle.close - candle.open)
         candle_range = candle.high - candle.low
-        extreme_doji = candle_range > 0 and (body / candle_range) <= 0.5 * settings.exhaustion_body_ratio
+        extreme_doji = candle_range > 0 and (body / candle_range) <= settings.exhaustion_extreme_doji_factor * settings.exhaustion_body_ratio
         
         # 3. IV Climax
         iv_panic = iv_spiked
         
-        # 4. Structural Level Match (within 10 points)
+        # 4. Structural Level Match (within exhaustion_level_proximity_pts)
         near_level = False
         for lvl in levels:
             if direction == Direction.BEARISH:
-                if abs(lvl.price - candle.high) <= 10.0:
+                if abs(lvl.price - candle.high) <= settings.exhaustion_level_proximity_pts:
                     near_level = True
                     break
             else:
-                if abs(lvl.price - candle.low) <= 10.0:
+                if abs(lvl.price - candle.low) <= settings.exhaustion_level_proximity_pts:
                     near_level = True
                     break
                     
@@ -148,12 +150,13 @@ class ExhaustionDetector:
         
         if direction == Direction.BEARISH:
             option_type = "PE"
-            stop_loss = candle.high + settings.exhaustion_stop_buffer
-            
+            # SL exactly at the exhaustion candle's high — no buffer (TASK-175)
+            stop_loss = candle.high
+
             # Find supports below spot
             supports = sorted([lvl.price for lvl in levels if lvl.price < candle.close], reverse=True)
             # Add minimum distance check to avoid targets too close to entry
-            supports = [s for s in supports if abs(s - candle.close) >= 20]
+            supports = [s for s in supports if abs(s - candle.close) >= settings.structural_target_min_distance_pts]
             
             if len(supports) >= 1:
                 target_1 = supports[0]
@@ -163,18 +166,19 @@ class ExhaustionDetector:
                 reasons.append(f"Target 2 set at structural support: {target_2:.2f}")
             
             # Fallback to fixed points if levels not found or too close
-            if not target_1 or abs(target_1 - candle.close) < 15:
+            if not target_1 or abs(target_1 - candle.close) < settings.target_1_fallback_min_pts:
                 target_1 = candle.close - settings.target_1_pts
-            if not target_2 or abs(target_2 - candle.close) < 30:
+            if not target_2 or abs(target_2 - candle.close) < settings.target_2_fallback_min_pts:
                 target_2 = candle.close - settings.target_2_pts
         else:
             option_type = "CE"
-            stop_loss = candle.low - settings.exhaustion_stop_buffer
-            
+            # SL exactly at the exhaustion candle's low — no buffer (TASK-175)
+            stop_loss = candle.low
+
             # Find resistances above spot
             resistances = sorted([lvl.price for lvl in levels if lvl.price > candle.close])
             # Add minimum distance check to avoid targets too close to entry
-            resistances = [r for r in resistances if abs(r - candle.close) >= 20]
+            resistances = [r for r in resistances if abs(r - candle.close) >= settings.structural_target_min_distance_pts]
             
             if len(resistances) >= 1:
                 target_1 = resistances[0]
@@ -183,9 +187,9 @@ class ExhaustionDetector:
                 target_2 = resistances[1]
                 reasons.append(f"Target 2 set at structural resistance: {target_2:.2f}")
                 
-            if not target_1 or abs(target_1 - candle.close) < 15:
+            if not target_1 or abs(target_1 - candle.close) < settings.target_1_fallback_min_pts:
                 target_1 = candle.close + settings.target_1_pts
-            if not target_2 or abs(target_2 - candle.close) < 30:
+            if not target_2 or abs(target_2 - candle.close) < settings.target_2_fallback_min_pts:
                 target_2 = candle.close + settings.target_2_pts
  
         # Ensure correct ordering (T1 is closer to entry than T2)

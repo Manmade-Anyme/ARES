@@ -38,23 +38,53 @@ class TuningConfig:
     # (TASK-174). Was hardcoded 3.0 — intraminute OI drift of 3-5% is common
     # noise; a scored "active defense" needs a decisive build.
     breakout_writers_active_min_pct: float = 10.0
-    breakout_stop_buffer: float = 25.0
-    breakout_resistance_proximity: float = 20.0
+    # Points the close must travel back past the level for the deep_close
+    # scored condition (TASK-175; was hardcoded 5.0).
+    breakout_deep_close_pts: float = 5.0
+    # TASK-175: stop buffers removed — SL sits exactly at the structural
+    # reference (breakout level / wall strike / exhaustion candle extreme).
+    # The dead breakout_resistance_proximity field (never read) was dropped.
 
     # OI Wall Detector
     oi_wall_min_oi: int = 4000000
     oi_wall_min_oi_change_pct: float = 5.0
     oi_wall_approach_distance: float = 80.0
     oi_wall_test_distance: float = 20.0
-    oi_wall_stop_buffer: float = 25.0
     oi_wall_wick_rejection_ratio: float = 0.4
+    # Multiplier over the min OI / min OI-change bars that upgrades wall
+    # magnitude and writer defense to their "high conviction" scored variants
+    # (TASK-175; was hardcoded 1.5 in both places).
+    oi_wall_conviction_multiplier: float = 1.5
+    # Minimum candle range (pts) before the wick-rejection scored condition is
+    # evaluated — sub-range candles are all wick by noise (was hardcoded 2.0).
+    oi_wall_wick_min_range_pts: float = 2.0
 
     # Exhaustion Detector
     exhaustion_volume_multiplier: float = 2.5
     exhaustion_body_ratio: float = 0.35
     exhaustion_iv_spike_threshold: float = 3.0
     exhaustion_min_candles: int = 6
-    exhaustion_stop_buffer: float = 20.0
+    # Factor over the base volume-multiplier bar that upgrades a climax to the
+    # "extreme volume" scored condition (TASK-175; was hardcoded 1.5).
+    exhaustion_extreme_volume_factor: float = 1.5
+    # Factor under the base body-ratio bar that upgrades a doji to the
+    # "extreme doji" scored condition (TASK-175; was hardcoded 0.5).
+    exhaustion_extreme_doji_factor: float = 0.5
+    # Distance (pts) from a structural level for the level-test scored
+    # condition (was hardcoded 10.0).
+    exhaustion_level_proximity_pts: float = 10.0
+    # Rolling volume-history window used for the climax baseline (was a
+    # hardcoded deque maxlen of 20).
+    exhaustion_volume_history_size: int = 20
+
+    # Structural target selection — shared by all 3 detectors (TASK-175; the
+    # 20/15/30-pt literals were hardcoded in each detector's target block).
+    # Min distance from entry close for a level to qualify as a target:
+    structural_target_min_distance_pts: float = 20.0
+    # Below these distances a structural T1/T2 is discarded for the fixed
+    # target_1_pts/target_2_pts fallback:
+    target_1_fallback_min_pts: float = 15.0
+    target_2_fallback_min_pts: float = 30.0
 
     # Trade quality gates (TASK-171 audit P0)
     min_rr_ratio: float = 1.0
@@ -71,6 +101,9 @@ class TuningConfig:
     # (the old 20-sample window flagged "high IV" off 20 minutes of data).
     iv_crush_lookback_size: int = 60
     iv_crush_percentile: float = 90.0
+    # Minimum samples in the IV lookback before the crush filter activates
+    # (TASK-175; was hardcoded 10 in engine.py).
+    iv_crush_min_samples: int = 10
 
     # P2 structural (TASK-173 audit item 16): counter-trend gate using
     # VWAP + PDH/PDL position. HIGH confidence counter-trend signals are
@@ -92,6 +125,11 @@ class TuningConfig:
     nifty_lot_size: int = 65
     default_capital: float = 100000.0
 
+    # Position manager — a new signal matching an open trade's setup/direction
+    # with entry within this many points is treated as a duplicate (TASK-172
+    # guard; tolerance was hardcoded 1.0).
+    trade_dedupe_tolerance_pts: float = 1.0
+
 
 
 # ─── The two profiles ────────────────────────────────────────────────────────
@@ -102,12 +140,10 @@ NON_EXPIRY_CONFIG = TuningConfig(
     breakout_weak_volume_ratio=0.75,
     breakout_iv_falling_threshold=-3.0,
     breakout_writers_active_min_pct=10.0,
-    breakout_stop_buffer=25.0,
     oi_wall_min_oi=4000000,
     oi_wall_min_oi_change_pct=5.0,
     oi_wall_approach_distance=80.0,
     oi_wall_test_distance=20.0,
-    oi_wall_stop_buffer=25.0,
     oi_wall_wick_rejection_ratio=0.4,
     exhaustion_volume_multiplier=2.5,
     exhaustion_body_ratio=0.35,
@@ -125,19 +161,17 @@ EXPIRY_CONFIG = TuningConfig(
     time_stop_minutes=30,
     exhaustion_alert_only=True,
 
-    # Breakout — faster confirmation, stricter filters, tighter stops
+    # Breakout — faster confirmation, stricter filters
     breakout_confirmation_candles=2,
     breakout_weak_volume_ratio=0.70,
     breakout_iv_falling_threshold=-5.0,
     breakout_writers_active_min_pct=15.0,
-    breakout_stop_buffer=15.0,
 
     # OI Wall — only massive walls matter, tighter proximity
     oi_wall_min_oi=10000000,
     oi_wall_min_oi_change_pct=15.0,
     oi_wall_approach_distance=50.0,
     oi_wall_test_distance=10.0,
-    oi_wall_stop_buffer=15.0,
     oi_wall_wick_rejection_ratio=0.4,
 
     # Exhaustion — higher bar
