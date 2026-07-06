@@ -14,14 +14,14 @@ User's main channel is getting spammed by observation-only alerts (exhaustion ME
 - **Fallback is the safety net**: nothing changes for the current deployment until the user creates the Discord channel + webhook and sets the secret — no risk of silently dropping alerts if the new webhook is ever misconfigured or unreachable (same try/except-log pattern as the other alert senders).
 - `send_trade_update` untouched — it only ever fires for tracked (tradeable) trades, since `alert_only` signals are never picked up by `PositionManager`.
 
-**User action required (not something I can do for them)**: create a new text channel in the Discord server, add a webhook to it (Channel Settings → Integrations → Webhooks → New Webhook → Copy URL), then set `DISCORD_OBSERVATION_WEBHOOK_URL` in both the local `.env` and `fly secrets set DISCORD_OBSERVATION_WEBHOOK_URL=...` (the latter triggers a new release — hold until the current deploy backlog from TASK-177 is resolved, per the standing "hold off, try later" decision on Fly's stalled depot builder).
+**User action**: user created the Discord channel + webhook and added `DISCORD_OBSERVATION_WEBHOOK_URL` to the local `.env` (real webhook confirmed loading via `settings.discord_observation_webhook_url`). Fly secret + deploy (bundled with the still-pending TASK-177 deploy) is the user's own action, not run by the agent — Fly's depot builder was stalling on two prior attempts.
 
-**Status**: Branch `feature/TASK-178-observation-discord-channel`, not yet merged — awaiting PR review. 255 tests green.
+**Status**: Merged to `main` via [PR #24](https://github.com/dubeyshantanu2/ARES/pull/24). Local branch `feature/TASK-178-observation-discord-channel` deleted after merge. 255 tests green.
 
 **TODOs**
-- [ ] Open PR, user review, merge.
-- [ ] User creates the Discord channel + webhook and sets the secret (both `.env` and Fly).
-- [ ] Deploy (bundled with the still-pending TASK-177 deploy) once Fly's builder is healthy again.
+- [x] Open PR, user review, merge.
+- [x] User creates the Discord channel + webhook and sets the local `.env` secret.
+- [ ] User sets the Fly secret and deploys (bundled with TASK-177) — user-owned, not run by the agent.
 
 ---
 
