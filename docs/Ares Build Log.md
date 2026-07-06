@@ -23,6 +23,7 @@ Follow-up to the Dhan-verified obs-signal analysis: 03→06-Jul was a 3-session 
 - [ ] Open PR, user review, merge (no self-merge per workflow).
 - [ ] Run detector_scores collector fix (separate open task) before relying on live near-miss data for tuning `continuation_*` defaults.
 - [ ] Accumulate ≥10 live/replayed observation signals, then a separate config-flip PR to set `continuation_alert_only=False` (phase 2).
+- [ ] Tune and enable expiry-day continuation (`continuation_enabled=True` on `EXPIRY_CONFIG` with expiry-appropriate `continuation_*` values) — deferred until the non-expiry observation phase produces enough data to derive faster-candle-appropriate settings; expiry stays off blind until then.
 - [ ] HIGH-exhaustion re-enable question (carried from the 2026-07-06 obs-signal analysis) remains open and separate from this task.
 
 ---

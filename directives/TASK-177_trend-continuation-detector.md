@@ -27,6 +27,7 @@ Give ARES a trend-aligned setup so trending sessions produce tradeable flow. Shi
 - HIGH-exhaustion re-enable / trend-filter exemption (separate decision, separate task).
 - Phase-2 live enablement (separate config-flip PR after observation criteria met).
 - detector_scores collector fix (separate open task; should land first or alongside).
+- Expiry-day enablement (`continuation_enabled=True` on `EXPIRY_CONFIG`) — deferred to a follow-up TODO; expiry's faster candle cadence needs its own `continuation_*` tuning, which can't be derived without observation data first.
 
 ## Acceptance criteria
 
