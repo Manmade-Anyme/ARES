@@ -15,10 +15,10 @@ Direct follow-up to TASK-180: once the exhaustion/continuation `alert_only` gate
 - **Real risk accepted, explicitly**: breakout and OI-wall signals can now also fire live while counter-trend (fighting the current VWAP/PDH-PDL regime), not just exhaustion — this reintroduces exactly the risk class TASK-173 was built to gate. User's call, made with the tradeoff stated plainly beforehand.
 - Tests updated: `test_trend_filter_enabled_defaults_false` (was `_true`), four counter-trend mechanism tests (`test_high_confidence_bullish_downgraded_in_downtrend`, `test_medium_confidence_bullish_suppressed_in_downtrend`, `test_high_confidence_bearish_downgraded_in_uptrend`, `test_medium_confidence_bearish_suppressed_in_uptrend`) now explicitly force `trend_filter_enabled=True` to keep exercising the mechanism; two new tests added for the live-by-default behavior (`test_counter_trend_high_passes_live_by_default`, `test_counter_trend_medium_passes_live_by_default`); `test_trend_filter_never_downgrades_aligned_continuation_signal` also forces the flag on so it still meaningfully proves continuation is exempt even when Filter E is active. 262 tests green (260 → 262).
 
-**Status**: Branch `feature/TASK-181-disable-trend-filter-by-default`, PR to be opened.
+**Status**: Merged to `main` via [PR #27](https://github.com/dubeyshantanu2/ARES/pull/27). Local branch `feature/TASK-181-disable-trend-filter-by-default` deleted after merge.
 
 **TODOs**
-- [ ] Open PR, user review, merge.
+- [x] Open PR, user review, merge.
 - [ ] Deploy is the user's own action, as with prior tasks.
 - [ ] Watch live Discord output post-deploy: every detector's signals should now go live regardless of trend alignment — no more observation-only cards from any of the 4 detectors under any current gate.
 
