@@ -69,6 +69,14 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         
     is_bullish = signal.direction.value == "BULLISH"
     is_observation = getattr(signal, "alert_only", False)
+    # Observation-only signals route to their own channel when configured
+    # (TASK-178, keeps the main channel free of non-tradeable noise); falls
+    # back to the main webhook so single-channel setups are unaffected.
+    webhook_url = (
+        settings.discord_observation_webhook_url
+        if is_observation and settings.discord_observation_webhook_url
+        else settings.discord_webhook_url
+    )
 
     # Get current IST time
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -131,7 +139,7 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
 
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(settings.discord_webhook_url, json=payload)
+            response = await client.post(webhook_url, json=payload)
             response.raise_for_status()
         except Exception as e:
             print(f"[-] Discord signal alert failed: {type(e).__name__} - {e}")

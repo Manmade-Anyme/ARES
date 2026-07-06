@@ -12,6 +12,10 @@ class Secrets(BaseSettings):
 
     discord_webhook_url: str
     discord_health_webhook_url: str | None = None
+    # Separate channel for observation-only (alert_only) signals, so they
+    # don't spam the main trading channel. Falls back to discord_webhook_url
+    # when unset (TASK-178).
+    discord_observation_webhook_url: str | None = None
 
     supabase_url: str
     supabase_key: str

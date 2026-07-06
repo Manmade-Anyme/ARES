@@ -4,6 +4,27 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-06 15:45 · Separate Discord Channel for Observation-Only Alerts (TASK-178)
+
+User's main channel is getting spammed by observation-only alerts (exhaustion MEDIUM signals, the trend-filter-downgraded HIGH signals) — several of these can fire in a single session while tradeable signals are rare by design. Small, contained fix: route `alert_only` signals to a second, optional Discord webhook instead of the main one. TDD: `tests/unit/test_task178_observation_discord_channel.py` (5 tests) written before the implementation. 255 tests green (250 → 255).
+
+**Decisions**
+- **New optional secret** `discord_observation_webhook_url` (`config.py`), same convention as the existing `discord_health_webhook_url` — `None` default, `.env.example` documents it.
+- **Routing in `send_discord`** (`alerts.py`): if the signal is `alert_only` *and* the observation webhook is configured, post there; otherwise fall back to the main webhook. Tradeable signals always use the main webhook, unconditionally.
+- **Fallback is the safety net**: nothing changes for the current deployment until the user creates the Discord channel + webhook and sets the secret — no risk of silently dropping alerts if the new webhook is ever misconfigured or unreachable (same try/except-log pattern as the other alert senders).
+- `send_trade_update` untouched — it only ever fires for tracked (tradeable) trades, since `alert_only` signals are never picked up by `PositionManager`.
+
+**User action required (not something I can do for them)**: create a new text channel in the Discord server, add a webhook to it (Channel Settings → Integrations → Webhooks → New Webhook → Copy URL), then set `DISCORD_OBSERVATION_WEBHOOK_URL` in both the local `.env` and `fly secrets set DISCORD_OBSERVATION_WEBHOOK_URL=...` (the latter triggers a new release — hold until the current deploy backlog from TASK-177 is resolved, per the standing "hold off, try later" decision on Fly's stalled depot builder).
+
+**Status**: Branch `feature/TASK-178-observation-discord-channel`, not yet merged — awaiting PR review. 255 tests green.
+
+**TODOs**
+- [ ] Open PR, user review, merge.
+- [ ] User creates the Discord channel + webhook and sets the secret (both `.env` and Fly).
+- [ ] Deploy (bundled with the still-pending TASK-177 deploy) once Fly's builder is healthy again.
+
+---
+
 ## 2026-07-06 15:10 · Trend Continuation Detector — 4th Setup, Observation-Only (TASK-177)
 
 Follow-up to the Dhan-verified obs-signal analysis: 03→06-Jul was a 3-session grind-up with zero tradeable output, because all three existing detectors (Failed Breakout, OI Wall, Exhaustion) fade the move and the trend filter correctly blocks the counter-trend candidates they produce in a trending market. Root cause is a missing capability, not mis-tuned gates (every gate-loosening candidate was checked against Dhan data and only re-admits historically losing flow). ADR + directive written first (`directives/adr/TASK-177_trend-continuation-detector.md`, `directives/TASK-177_trend-continuation-detector.md`), then TDD: `tests/unit/test_continuation.py` (12 tests, pure state-machine unit tests) and `tests/unit/test_task177_trend_continuation.py` (7 tests, engine wiring) written before `detectors/continuation.py`. 250 tests green (231 → 250).
