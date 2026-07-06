@@ -172,9 +172,12 @@ class TestTrendRegimeFilter(unittest.TestCase):
 
     def test_already_alert_only_signal_skips_trend_check(self):
         """Exhaustion's alert_only is already set upstream (Filter D) — the
-        trend filter shouldn't need to re-evaluate an already-gated signal."""
+        trend filter shouldn't need to re-evaluate an already-gated signal.
+        exhaustion_alert_only defaults to False now (TASK-180), so force it
+        on here to exercise Filter D upstream of Filter E."""
+        import dataclasses
         signal = self._make_signal("HIGH", Direction.BULLISH, setup_type=SetupType.EXHAUSTION_REVERSAL)
-        settings.apply_profile(NON_EXPIRY_CONFIG)
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, exhaustion_alert_only=True))
         candle = self._make_candle(close=23980.0, vwap=24010.0)
         result = self._tick_with(signal, candle, pdh=24100.0, pdl=24000.0)
         self.assertIsNotNone(result)

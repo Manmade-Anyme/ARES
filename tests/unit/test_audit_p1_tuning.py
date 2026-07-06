@@ -7,6 +7,7 @@ Tests for TASK-172 audit P1 tuning:
 - Item 12: speed-filter window/threshold move into config_profiles; confidence
   bars standardized at >=60% of each detector's score matrix.
 """
+import dataclasses
 import unittest
 from unittest.mock import MagicMock, patch
 from datetime import datetime
@@ -237,7 +238,11 @@ class TestEngineP1Filters(unittest.TestCase):
         self.assertIsNotNone(result)
 
     def test_observation_only_exhaustion_survives_iv_crush_filter(self):
-        """Alert-only signals are never traded — keep them for observation data."""
+        """Alert-only signals are never traded — keep them for observation
+        data. The exhaustion_alert_only gate itself (TASK-172) is unchanged
+        by TASK-180's default flip to live; force it on here to test the
+        mechanism directly rather than depend on the production default."""
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, exhaustion_alert_only=True))
         for _ in range(18):
             self.engine.pe_iv_lookback.append(10.0)
         signal = self._make_signal(confidence="MEDIUM", direction=Direction.BEARISH,

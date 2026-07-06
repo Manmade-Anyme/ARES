@@ -39,9 +39,12 @@ class TestConfigFields(unittest.TestCase):
         self.assertEqual(cfg.continuation_resume_volume_ratio, 1.2)
         self.assertEqual(cfg.continuation_min_score, 2)
 
-    def test_expiry_disables_continuation(self):
-        self.assertFalse(EXPIRY_CONFIG.continuation_enabled)
-        self.assertTrue(EXPIRY_CONFIG.continuation_alert_only)
+    def test_expiry_enables_live_continuation(self):
+        """TASK-180: continuation now runs live on expiry too, using the
+        faster expiry-specific knobs (shorter regime/pullback windows,
+        higher score bar) reserved since TASK-177."""
+        self.assertTrue(EXPIRY_CONFIG.continuation_enabled)
+        self.assertFalse(EXPIRY_CONFIG.continuation_alert_only)
 
 
 class TestContinuationStateMachine(unittest.TestCase):

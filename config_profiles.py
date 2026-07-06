@@ -115,8 +115,7 @@ class TuningConfig:
 
     # Trend Continuation Detector (TASK-177). The only trend-aligned setup in
     # the suite — regime must persist, then a shallow pullback, then a
-    # resumption candle. Ships alert_only (observation) until validated;
-    # disabled outright on expiry until proven on non-expiry data.
+    # resumption candle.
     continuation_enabled: bool = True
     continuation_alert_only: bool = True
     continuation_regime_min_candles: int = 15
@@ -160,6 +159,12 @@ NON_EXPIRY_CONFIG = TuningConfig(
     exhaustion_volume_multiplier=2.5,
     exhaustion_body_ratio=0.35,
     exhaustion_iv_spike_threshold=3.0,
+    # TASK-180: exhaustion and continuation go fully live (user call — the
+    # separate observation Discord channel from TASK-178 already exists to
+    # absorb any weaker flow, so gating these behind alert_only is no longer
+    # needed as a safety net).
+    exhaustion_alert_only=False,
+    continuation_alert_only=False,
     target_1_pts=35.0,
     target_2_pts=70.0,
     level_scan_range=500.0,
@@ -171,7 +176,9 @@ EXPIRY_CONFIG = TuningConfig(
     # Trade quality gates — faster time-stop on expiry (moves die quicker)
     min_rr_ratio=1.0,
     time_stop_minutes=30,
-    exhaustion_alert_only=True,
+    # TASK-180: live everywhere, expiry included (user call, accepting that
+    # continuation's pullback logic has no expiry-day validation history).
+    exhaustion_alert_only=False,
 
     # Breakout — faster confirmation, stricter filters
     breakout_confirmation_candles=2,
@@ -196,10 +203,12 @@ EXPIRY_CONFIG = TuningConfig(
     target_2_pts=50.0,
     level_scan_range=300.0,
 
-    # Trend Continuation — disabled outright on expiry until proven on
-    # non-expiry observation data (TASK-177); faster knobs held in reserve.
-    continuation_enabled=False,
-    continuation_alert_only=True,
+    # Trend Continuation — now enabled and live on expiry too (TASK-180,
+    # user call); faster knobs (shorter regime/pullback windows, higher
+    # score bar) already tuned in reserve from TASK-177 for expiry's faster
+    # candles, now actually in effect.
+    continuation_enabled=True,
+    continuation_alert_only=False,
     continuation_regime_min_candles=10,
     continuation_pullback_vwap_pts=8.0,
     continuation_pullback_max_candles=6,

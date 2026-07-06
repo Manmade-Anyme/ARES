@@ -4,6 +4,24 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-06 17:15 · Exhaustion + Continuation Go Live (TASK-180)
+
+User explicit call: no more time for observation-only signals — with the observation Discord channel already separated out (TASK-178), the `alert_only` safety gates on exhaustion and continuation no longer earn their keep as a "prove it before it trades" step. Flipped both to live, on both profiles, including expiry continuation (accepting that its pullback/resumption logic has zero expiry-day validation history — explicit user choice after being asked directly).
+
+**Decisions**
+- **`config_profiles.py`**: `exhaustion_alert_only=False` on both `NON_EXPIRY_CONFIG` and `EXPIRY_CONFIG`; `continuation_alert_only=False` on both; `continuation_enabled=True` on `EXPIRY_CONFIG` (previously `False` — TASK-177's expiry knobs, shorter regime/pullback windows and a higher score bar, were tuned in reserve and are now actually in effect). Dataclass field defaults on `TuningConfig` itself stay `True` — only the two profile instances changed — so any code path that constructs a bare `TuningConfig()` (existing tests, ad-hoc scripts) keeps the conservative default.
+- **Important interaction, not a bug**: exhaustion is a reversal/fade detector — its signals are almost always counter-trend by construction. With `exhaustion_alert_only` no longer forcing `alert_only=True` upstream, Filter E (the trend-regime filter, TASK-173) now actually evaluates exhaustion signals for the first time: counter-trend HIGH confidence gets downgraded to observation-only, counter-trend MEDIUM gets suppressed outright. This is the exact same mechanism that motivated TASK-177 in the first place (a persistent trend blocks every counter-trend fade). Net effect: exhaustion signals are only live when they happen to align with the current VWAP/PDH-PDL regime — most won't, especially in a strong trend. Continuation signals are unaffected by this (trend-aligned by construction, Filter E never touches them per `test_trend_filter_never_downgrades_aligned_continuation_signal`).
+- **Tests updated to stop depending on the flipped defaults for coverage of the underlying gate mechanisms** (which are unchanged) — `test_exhaustion_signal_is_tagged_alert_only_when_configured`, `test_continuation_alert_only_when_configured`, `test_already_alert_only_signal_skips_trend_check`, `test_observation_only_exhaustion_survives_iv_crush_filter` now explicitly force the relevant `_alert_only=True` override via `dataclasses.replace()` rather than relying on the profile default. New tests added for the now-default live behavior: `test_exhaustion_signal_is_live_by_default`, `test_continuation_consumes_cooldown_when_live_by_default`, `test_expiry_profile_runs_continuation_live`, `test_expiry_enables_live_continuation` (config test), plus `test_expiry_profile_disables_continuation_when_explicitly_off` to keep `continuation_enabled` covered as a real off-switch. 258 tests green (257 → 258, some renamed).
+
+**Status**: Branch `feature/TASK-180-continuation-exhaustion-go-live`, PR opened, awaiting user review/merge.
+
+**TODOs**
+- [ ] Open PR, user review, merge.
+- [ ] Watch live Discord output for a few sessions: expect exhaustion signals to still mostly land in the observation channel during trending days (Filter E), and only fire live when aligned with the regime — worth flagging back if this surprises the user in practice.
+- [ ] Expiry continuation now live with zero real validation history — worth an early check on the first live expiry session.
+
+---
+
 ## 2026-07-06 15:45 · Separate Discord Channel for Observation-Only Alerts (TASK-178)
 
 User's main channel is getting spammed by observation-only alerts (exhaustion MEDIUM signals, the trend-filter-downgraded HIGH signals) — several of these can fire in a single session while tradeable signals are rare by design. Small, contained fix: route `alert_only` signals to a second, optional Discord webhook instead of the main one. TDD: `tests/unit/test_task178_observation_discord_channel.py` (5 tests) written before the implementation. 255 tests green (250 → 255).

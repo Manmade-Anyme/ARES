@@ -107,7 +107,11 @@ class TestEngineWiring(unittest.TestCase):
         self.assertIsNone(result)
         self.engine.continuation_detector.update.assert_not_called()
 
-    def test_continuation_signal_is_alert_only_by_default(self):
+    def test_continuation_alert_only_when_configured(self):
+        """The continuation_alert_only gate mechanism (Filter D2) is
+        unchanged by TASK-180's default flip to live -- force it on to test
+        the mechanism directly rather than depend on the production default."""
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, continuation_alert_only=True))
         self.engine.breakout_detector.update = MagicMock(return_value=None)
         self.engine.oi_wall_detector.update = MagicMock(return_value=None)
         self.engine.continuation_detector.update = MagicMock(return_value=make_continuation_signal())
@@ -119,6 +123,7 @@ class TestEngineWiring(unittest.TestCase):
         self.assertTrue(any("continuation_alert_only" in r for r in result.reasons))
 
     def test_continuation_does_not_consume_cooldown_while_observation_only(self):
+        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, continuation_alert_only=True))
         self.engine.breakout_detector.update = MagicMock(return_value=None)
         self.engine.oi_wall_detector.update = MagicMock(return_value=None)
         self.engine.continuation_detector.update = MagicMock(return_value=make_continuation_signal())
@@ -127,11 +132,21 @@ class TestEngineWiring(unittest.TestCase):
         self.engine.tick(make_candle(), [], make_atm(), 0.0, [], 24200.0, 24000.0)
         self.assertIsNone(self.engine.last_signal_time)
 
+    def test_continuation_consumes_cooldown_when_live_by_default(self):
+        """TASK-180: continuation_alert_only defaults to False now -- a live
+        continuation signal is a real trade and must set the cooldown."""
+        self.engine.breakout_detector.update = MagicMock(return_value=None)
+        self.engine.oi_wall_detector.update = MagicMock(return_value=None)
+        self.engine.continuation_detector.update = MagicMock(return_value=make_continuation_signal())
+        self.engine.exhaustion_detector.update = MagicMock(return_value=None)
+
+        self.engine.tick(make_candle(), [], make_atm(), 0.0, [], 24200.0, 24000.0)
+        self.assertIsNotNone(self.engine.last_signal_time)
+
     def test_trend_filter_never_downgrades_aligned_continuation_signal(self):
         """Continuation signals are trend-aligned by construction (same
-        VWAP/PDH-PDL rule as Filter E), so even with alert_only disabled
-        (simulating phase-2 live), Filter E must never touch them."""
-        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, continuation_alert_only=False))
+        VWAP/PDH-PDL rule as Filter E), so they pass through live by
+        default (TASK-180) and Filter E must never touch them."""
         self.engine.breakout_detector.update = MagicMock(return_value=None)
         self.engine.oi_wall_detector.update = MagicMock(return_value=None)
         self.engine.continuation_detector.update = MagicMock(return_value=make_continuation_signal())
@@ -145,9 +160,30 @@ class TestEngineWiring(unittest.TestCase):
         self.assertFalse(result.alert_only)
         self.assertFalse(any("trend_filter_enabled" in r for r in result.reasons))
 
-    def test_expiry_profile_disables_continuation(self):
+    def test_expiry_profile_runs_continuation_live(self):
+        """TASK-180: continuation now runs (and is live, not alert_only) on
+        expiry too, using its faster expiry-specific knobs."""
         from config_profiles import EXPIRY_CONFIG
         settings.apply_profile(EXPIRY_CONFIG)
+        engine = AresEngine()
+        engine.breakout_detector.update = MagicMock(return_value=None)
+        engine.oi_wall_detector.update = MagicMock(return_value=None)
+        engine.continuation_detector.update = MagicMock(return_value=make_continuation_signal())
+        engine.exhaustion_detector.update = MagicMock(return_value=None)
+
+        # close(24115) > vwap(24100) and > pdl(24000) -> uptrend; aligned,
+        # not counter-trend, so Filter E never touches it.
+        result = engine.tick(make_candle(close=24115.0, vwap=24100.0), [], make_atm(), 0.0, [],
+                              24200.0, 24000.0)
+        engine.continuation_detector.update.assert_called_once()
+        self.assertIsNotNone(result)
+        self.assertFalse(result.alert_only)
+
+    def test_expiry_profile_disables_continuation_when_explicitly_off(self):
+        """continuation_enabled remains a real off-switch, independent of the
+        expiry/non-expiry profile default."""
+        from config_profiles import EXPIRY_CONFIG
+        settings.apply_profile(dataclasses.replace(EXPIRY_CONFIG, continuation_enabled=False))
         engine = AresEngine()
         engine.breakout_detector.update = MagicMock(return_value=None)
         engine.oi_wall_detector.update = MagicMock(return_value=None)
