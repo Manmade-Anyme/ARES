@@ -15,10 +15,10 @@ Follow-up to signal #2056: the user asked why the SL "hit" produced no Discord c
 - **Two latent bugs found by the sweep**: `breakout_resistance_proximity` was defined in config but never read (deleted); the OI wall wick-scoring block hardcoded 0.4 instead of using the existing `oi_wall_wick_rejection_ratio` setting (now honored — same default, so no behavior change until tuned).
 - Exhaustion's volume-history size is read at construction; `main.py` applies the profile before building the engine, so this is safe (documented in the detector docstring).
 
-**Status**: PR pending review. 231 tests green.
+**Status**: Merged to `main` via [PR #21](https://github.com/dubeyshantanu2/ARES/pull/21). Local branch `feature/TASK-175-sl-buffer-obs-alerts-config` deleted after merge. 231 tests green.
 
 **TODOs**
-- [ ] Merge PR and perform cleanup.
+- [x] Merge PR #21 and perform cleanup.
 - [ ] Watch stop-out rate with buffer-less SLs — wick-outs at the exact level may argue for a small buffer via config re-introduction.
 - [ ] Decide on trend-filter escalation for counter-trend HIGH signals (carried from TASK-174).
 
