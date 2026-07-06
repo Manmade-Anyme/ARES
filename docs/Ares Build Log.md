@@ -15,10 +15,10 @@ Triggered by live signal #2056 (06-Jul 09:23, FAILED_BREAKOUT BEARISH at 24350, 
 - **Replay of signal #2056 under new rules**: weak volume (1) + deep close (1) + writers active only if OI growth ≥ 10% → likely score 2 → no signal at all.
 - Trend-filter escalation (blocking counter-trend HIGH instead of observation-only) explicitly deferred — separate task, needs more live data.
 
-**Status**: PR pending review. 221 tests green.
+**Status**: Merged to `main` via [PR #20](https://github.com/dubeyshantanu2/ARES/pull/20). Local branch `feature/TASK-174-breakout-oi-scoring` deleted after merge. 221 tests green.
 
 **TODOs**
-- [ ] Merge PR and perform cleanup.
+- [x] Merge PR #20 and perform cleanup.
 - [ ] Watch live breakout signal frequency — 10% may need loosening if signals dry up entirely.
 - [ ] Decide on trend-filter escalation for counter-trend HIGH signals (deferred from this task).
 
