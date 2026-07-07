@@ -152,6 +152,23 @@ class AresEngine:
                 print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: R:R {rr:.2f} below minimum {settings.min_rr_ratio:.2f} (risk {risk:.1f} pts vs reward {reward:.1f} pts).")
                 signal = None
 
+        # 6b. Flat-market annotation (TASK-182 follow-up). NOT a gate: if the
+        # rolling window range is below the threshold, append an informational
+        # reason so the alert flags a consolidating market — the signal still
+        # trades. This is the old speed filter's condition, reused as a warning
+        # instead of a suppressor.
+        if signal:
+            window = settings.speed_filter_window_candles
+            if len(self.candle_buffer) >= window:
+                recent = list(self.candle_buffer)[-window:]
+                rolling_range = max(c.high for c in recent) - min(c.low for c in recent)
+                if rolling_range < settings.speed_filter_min_range_pts:
+                    signal.reasons.append(
+                        f"Price is FLAT — market moving under "
+                        f"{int(settings.speed_filter_min_range_pts)} points "
+                        f"(last {window}-candle range: {rolling_range:.1f} pts)"
+                    )
+
         # 7. Set cooldown if a signal fired.
         if signal:
             self.last_signal_time = datetime.now()

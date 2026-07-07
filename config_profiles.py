@@ -99,6 +99,14 @@ class TuningConfig:
     # the 60s REST poll cycles (TASK-173 audit item 18).
     tick_exit_check_interval_seconds: float = 2.0
 
+    # Flat-market annotation (TASK-182 follow-up). The old speed filter used
+    # these to SUPPRESS MEDIUM signals when the rolling window range fell below
+    # the threshold; now they only drive an informational "Price is FLAT"
+    # reason appended to the alert — the signal still trades, it is just
+    # flagged so the user knows the market is consolidating.
+    speed_filter_window_candles: int = 15
+    speed_filter_min_range_pts: float = 15.0
+
     # Trend Continuation Detector (TASK-177). The only trend-aligned setup in
     # the suite — regime must persist, then a shallow pullback, then a
     # resumption candle. Runs on both profiles; continuation_enabled is a real

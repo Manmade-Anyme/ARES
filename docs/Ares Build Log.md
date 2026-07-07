@@ -19,6 +19,8 @@ The deferred follow-up flagged in TASK-180/181. Started from a live debug of "wh
 
 **Tests**: deleted `test_trend_regime_filter.py`, `test_task178_observation_discord_channel.py`, `test_engine_remediation.py` (all covered removed machinery). Reworked `test_audit_p1_tuning.py` (speed/IV-crush suppression → now-trades assertions), `test_engine_efficiency_gates.py` (exhaustion is tradeable, no `alert_only` attr), `test_task175_sl_config_obs.py` (observation-alert restyle → tradeable-alert), `test_task177_trend_continuation.py` and `test_continuation.py` (dropped `continuation_alert_only`/Filter-E cases, kept `continuation_enabled` off-switch coverage). **232 tests green.** End-to-end smoke: a MEDIUM exhaustion in a dead-flat, high-IV market now returns a live signal, sets the cooldown, and renders a normal "SIGNAL DETECTED" Discord card (no OBSERVATION).
 
+**Follow-up (same branch/PR, user request):** re-added the speed filter's *condition* as a non-gating annotation. `speed_filter_window_candles`/`speed_filter_min_range_pts` are back in config, but the engine now only appends a `Price is FLAT — market moving under 15 points (last 15-candle range: X.X pts)` reason when the rolling range is sub-threshold — the signal still trades, it is just flagged in the Discord Reasons section. 233 tests green (+1: flat-note carried, trending-market no-note).
+
 **Status**: On branch `feature/TASK-182-remove-observation-and-suppression-gates`. PR pending user review.
 
 **TODOs**

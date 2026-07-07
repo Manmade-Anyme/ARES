@@ -207,9 +207,10 @@ class TestSuppressionFiltersRemoved(unittest.TestCase):
         self.assertFalse(hasattr(self.engine, "iv_lookback"))
         self.assertFalse(hasattr(self.engine, "pe_iv_lookback"))
 
-    def test_medium_signal_in_dead_flat_market_now_trades(self):
-        """Speed filter removed: a MEDIUM signal with a 0-point rolling range
-        used to be suppressed — now it is a live trade."""
+    def test_medium_signal_in_dead_flat_market_now_trades_with_flat_note(self):
+        """Speed filter removed: a MEDIUM signal with a sub-threshold rolling
+        range used to be suppressed — now it is a live trade, and it carries an
+        informational 'Price is FLAT' reason instead (TASK-182 follow-up)."""
         for _ in range(15):
             self.engine.candle_buffer.append(self._make_candle(24000.0))  # flat
         self.engine.breakout_detector.update = MagicMock(
@@ -218,6 +219,14 @@ class TestSuppressionFiltersRemoved(unittest.TestCase):
         self.engine.exhaustion_detector.update = MagicMock(return_value=None)
         result = self.engine.tick(self._make_candle(24000.0), [], self._make_atm(), 0.0, [])
         self.assertIsNotNone(result)
+        self.assertTrue(any("FLAT" in r for r in result.reasons))
+
+    def test_trending_market_has_no_flat_note(self):
+        """A market above the range threshold gets no 'Price is FLAT' reason."""
+        signal = self._make_signal(confidence="MEDIUM", direction=Direction.BULLISH)
+        result = self._tick_with(signal, self._make_atm())  # _trending_buffer: 42-pt range
+        self.assertIsNotNone(result)
+        self.assertFalse(any("FLAT" in r for r in result.reasons))
 
     def test_medium_bullish_on_top_percentile_ce_iv_now_trades(self):
         """Anti-IV-crush filter removed: a MEDIUM bullish signal with high CE
