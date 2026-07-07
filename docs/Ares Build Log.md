@@ -21,10 +21,10 @@ The deferred follow-up flagged in TASK-180/181. Started from a live debug of "wh
 
 **Follow-up (same branch/PR, user request):** re-added the speed filter's *condition* as a non-gating annotation. `speed_filter_window_candles`/`speed_filter_min_range_pts` are back in config, but the engine now only appends a `Price is FLAT — market moving under 15 points (last 15-candle range: X.X pts)` reason when the rolling range is sub-threshold — the signal still trades, it is just flagged in the Discord Reasons section. 233 tests green (+1: flat-note carried, trending-market no-note).
 
-**Status**: On branch `feature/TASK-182-remove-observation-and-suppression-gates`. PR pending user review.
+**Status**: Merged to `main` via [PR #28](https://github.com/dubeyshantanu2/ARES/pull/28). Local branch `feature/TASK-182-remove-observation-and-suppression-gates` deleted after merge.
 
 **TODOs**
-- [ ] Open PR, user review, merge.
+- [x] Open PR, user review, merge.
 - [ ] Deploy is the user's own action (fly.io redeploy of `main` after merge).
 - [ ] Watch live Discord: every detector's signals go straight to live trades now; the only thing that can withhold one is a degenerate R:R.
 - [ ] Separate/unrelated: the 6 duplicate orphan OI_WALL `OPEN` rows at 10:10 on 07-06 (`signal_id=None`, never closed) point at a dedupe/logging defect in the position/analytics path — worth its own ticket.
