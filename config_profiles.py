@@ -86,46 +86,24 @@ class TuningConfig:
     target_1_fallback_min_pts: float = 15.0
     target_2_fallback_min_pts: float = 30.0
 
-    # Trade quality gates (TASK-171 audit P0)
+    # Trade quality gates (TASK-171 audit P0). The R:R gate is the only
+    # remaining protective filter — TASK-182 removed the observation-only gate
+    # (exhaustion/continuation alert-only modes), the trend-regime filter, the
+    # flat-market speed filter and the anti-IV-crush filter, which between them
+    # silenced the system in trending sessions by neutering tradeable setups
+    # into observation-only alerts or suppressing them outright.
     min_rr_ratio: float = 1.0
     time_stop_minutes: int = 45
-    # Live on both profiles since TASK-180 — single source of truth here
-    # rather than repeated per-profile overrides (both profiles want the
-    # same value; the observation Discord channel from TASK-178 is the
-    # safety net now, not this gate).
-    exhaustion_alert_only: bool = False
 
-    # Engine protective filters (TASK-172 audit P1)
-    # Speed filter: suppress MEDIUM signals when the rolling N-candle range is
-    # below the threshold (flat market). Previously hardcoded 15 candles / 15 pts.
-    speed_filter_window_candles: int = 15
-    speed_filter_min_range_pts: float = 15.0
-    # Anti-IV-crush filter: suppress MEDIUM signals whose option side has IV at
-    # or above this percentile of the lookback. 60 samples ≈ one hour of polls
-    # (the old 20-sample window flagged "high IV" off 20 minutes of data).
-    iv_crush_lookback_size: int = 60
-    iv_crush_percentile: float = 90.0
-    # Minimum samples in the IV lookback before the crush filter activates
-    # (TASK-175; was hardcoded 10 in engine.py).
-    iv_crush_min_samples: int = 10
-
-    # P2 structural (TASK-173 audit item 16): counter-trend gate using
-    # VWAP + PDH/PDL position. HIGH confidence counter-trend signals are
-    # downgraded to observation-only; MEDIUM ones are suppressed outright.
-    # Off by default since TASK-181 (user call — all signals live, like
-    # before TASK-173); the mechanism itself is unchanged and still fully
-    # testable by explicitly setting this True.
-    trend_filter_enabled: bool = False
-    # P2 structural (TASK-173 audit item 18): cadence for tick-driven exit
-    # checks against the WebSocket feed between the 60s REST poll cycles.
+    # Cadence for tick-driven exit checks against the WebSocket feed between
+    # the 60s REST poll cycles (TASK-173 audit item 18).
     tick_exit_check_interval_seconds: float = 2.0
 
     # Trend Continuation Detector (TASK-177). The only trend-aligned setup in
     # the suite — regime must persist, then a shallow pullback, then a
-    # resumption candle. Live on both profiles since TASK-180 (single source
-    # of truth here, same reasoning as exhaustion_alert_only above).
+    # resumption candle. Runs on both profiles; continuation_enabled is a real
+    # off-switch (independent of the removed observation gate, TASK-182).
     continuation_enabled: bool = True
-    continuation_alert_only: bool = False
     continuation_regime_min_candles: int = 15
     continuation_pullback_vwap_pts: float = 10.0
     continuation_pullback_max_candles: int = 10
@@ -202,10 +180,9 @@ EXPIRY_CONFIG = TuningConfig(
     target_2_pts=50.0,
     level_scan_range=300.0,
 
-    # Trend Continuation — now runs (and is live) on expiry too since
-    # TASK-180; continuation_enabled/continuation_alert_only both match the
-    # class defaults now, only the expiry-specific speed knobs below (tuned
-    # in reserve since TASK-177 for expiry's faster candles) need overriding.
+    # Trend Continuation — runs on expiry too, using the class-default
+    # continuation_enabled; only the expiry-specific speed knobs below (tuned
+    # for expiry's faster candles since TASK-177) need overriding.
     continuation_regime_min_candles=10,
     continuation_pullback_vwap_pts=8.0,
     continuation_pullback_max_candles=6,

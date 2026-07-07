@@ -10,11 +10,8 @@ Tests for TASK-175:
    factor / level proximity / volume history size, position-manager dedupe
    tolerance, engine IV-crush minimum samples. The dead
    `breakout_resistance_proximity` field (defined but never read) is removed.
-3. Observation-only Discord alerts are restyled: OBSERVATION ONLY title,
-   spot-level SL/targets retained for context, but no entry zone or option
-   sizing fields (lots / option entry / option SL / option target), so they
-   cannot be mistaken for
-   tradeable signals (motivated by signal #2056 being traded manually).
+3. (Observation-only Discord alerts were removed in TASK-182 — every signal
+   is tradeable now, so the alert always carries the full entry/SL/targets.)
 """
 import asyncio
 import dataclasses
@@ -58,7 +55,6 @@ class TestConfigFields(unittest.TestCase):
         self.assertEqual(NON_EXPIRY_CONFIG.exhaustion_level_proximity_pts, 10.0)
         self.assertEqual(NON_EXPIRY_CONFIG.exhaustion_volume_history_size, 20)
         self.assertEqual(NON_EXPIRY_CONFIG.trade_dedupe_tolerance_pts, 1.0)
-        self.assertEqual(NON_EXPIRY_CONFIG.iv_crush_min_samples, 10)
         # Expiry profile carries the same structural defaults
         self.assertEqual(EXPIRY_CONFIG.breakout_deep_close_pts, 5.0)
 
@@ -175,7 +171,7 @@ class TestExhaustionSLAtCandleExtreme(unittest.TestCase):
         self.assertEqual(detector.volume_history.maxlen, 7)
 
 
-def _obs_signal(alert_only: bool) -> AresSignal:
+def _tradeable_signal() -> AresSignal:
     return AresSignal(
         setup_type=SetupType.FAILED_BREAKOUT,
         direction=Direction.BEARISH,
@@ -185,17 +181,16 @@ def _obs_signal(alert_only: bool) -> AresSignal:
         target_1=24252.35,
         target_2=24250.0,
         confidence="HIGH",
-        reasons=["Counter-trend vs VWAP/PDH-PDL regime — observation only"],
+        reasons=["Price closed back past level 24350.0"],
         timestamp=datetime.now(),
         strike_to_trade=24350,
         option_type="PE",
-        alert_only=alert_only,
     )
 
 
-class TestObservationAlertRestyle(unittest.IsolatedAsyncioTestCase):
-    """alert_only signals must be visually unmistakable: loud title, spot-level
-    SL/targets kept for context, but no entry zone or option sizing card."""
+class TestTradeableAlert(unittest.IsolatedAsyncioTestCase):
+    """Every signal is tradeable now (TASK-182): the Discord alert always
+    carries the full entry zone + SL/targets and never an OBSERVATION title."""
 
     def _post_payload(self, mock_client):
         args, kwargs = mock_client.post.call_args
@@ -203,7 +198,7 @@ class TestObservationAlertRestyle(unittest.IsolatedAsyncioTestCase):
 
     @patch('alerts.settings')
     @patch('httpx.AsyncClient')
-    async def test_observation_alert_has_loud_title_sl_targets_no_entry_or_sizing(
+    async def test_alert_has_entry_sl_targets_and_no_observation_title(
             self, mock_client_class, mock_settings):
         mock_settings.discord_webhook_url = "http://mock-webhook"
         mock_settings.nifty_lot_size = 65
@@ -211,40 +206,16 @@ class TestObservationAlertRestyle(unittest.IsolatedAsyncioTestCase):
         mock_client.post.return_value = MagicMock(raise_for_status=MagicMock())
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
-        await send_discord(_obs_signal(alert_only=True), 24344.35)
-
-        payload = self._post_payload(mock_client)
-        embed = payload["embeds"][0]
-        self.assertIn("OBSERVATION ONLY", embed["title"])
-        field_names = [f["name"] for f in embed["fields"]]
-        # Spot-level SL and targets stay in the alert for context
-        self.assertTrue(any("🛑 SL" in n for n in field_names))
-        self.assertTrue(any("🎯 Target" in n for n in field_names))
-        # ...but no entry zone or option sizing card
-        for banned in ("✅ Entry", "🔢 Lots", "Option Entry",
-                       "Option SL", "Option Target", "Sizing"):
-            self.assertFalse(
-                any(banned in n for n in field_names),
-                f"observation alert must not contain {banned!r}"
-            )
-        self.assertTrue(any("Reasons" in n for n in field_names))
-
-    @patch('alerts.settings')
-    @patch('httpx.AsyncClient')
-    async def test_tradeable_alert_unchanged(self, mock_client_class, mock_settings):
-        mock_settings.discord_webhook_url = "http://mock-webhook"
-        mock_settings.nifty_lot_size = 65
-        mock_client = AsyncMock()
-        mock_client.post.return_value = MagicMock(raise_for_status=MagicMock())
-        mock_client_class.return_value.__aenter__.return_value = mock_client
-
-        await send_discord(_obs_signal(alert_only=False), 24344.35)
+        await send_discord(_tradeable_signal(), 24344.35)
 
         payload = self._post_payload(mock_client)
         embed = payload["embeds"][0]
         self.assertNotIn("OBSERVATION", embed["title"])
         field_names = [f["name"] for f in embed["fields"]]
+        self.assertTrue(any("✅ Entry" in n for n in field_names))
         self.assertTrue(any("🛑 SL" in n for n in field_names))
+        self.assertTrue(any("🎯 Target" in n for n in field_names))
+        self.assertTrue(any("Reasons" in n for n in field_names))
 
 
 if __name__ == "__main__":
