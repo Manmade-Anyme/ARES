@@ -248,15 +248,12 @@ async def run():
                 except Exception as db_err:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
 
-                # Observation-only signals (e.g. gated exhaustion) are alerted
-                # and logged but never become tracked trades.
-                if signal.alert_only:
-                    print(f"{Y}[{now.strftime('%H:%M:%S')}] 👁️ {signal.setup_type.value} signal is observation-only — no trade created.{RESET}")
-                else:
-                    try:
-                        position_manager.add_trade(signal, spot, atm=atm)
-                    except Exception as pm_err:
-                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
+                # Every fired signal is a live trade now (TASK-182 removed the
+                # observation-only gate).
+                try:
+                    position_manager.add_trade(signal, spot, atm=atm)
+                except Exception as pm_err:
+                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
 
                 try:
                     await send_discord(signal, spot)

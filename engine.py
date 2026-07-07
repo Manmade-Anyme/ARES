@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from statistics import mean
 from typing import Optional, List, Dict, Any
 
-from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction, SetupType
+from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel
 from config import settings
 
 from detectors.breakout import FailedBreakoutDetector
@@ -33,11 +33,6 @@ class AresEngine:
         
         self.candle_buffer: deque = deque(maxlen=settings.candle_buffer_size)
         self.iv_buffer: deque = deque(maxlen=settings.iv_buffer_size)
-        # IV percentile lookbacks for the anti-IV-crush filter. Tracked per
-        # option side (bullish entries buy CEs, bearish entries buy PEs) so the
-        # filter can act symmetrically (TASK-172, audit item 10).
-        self.iv_lookback: deque = deque(maxlen=settings.iv_crush_lookback_size)
-        self.pe_iv_lookback: deque = deque(maxlen=settings.iv_crush_lookback_size)
 
         self.last_signal_time: Optional[datetime] = None
 
@@ -57,8 +52,7 @@ class AresEngine:
         Priority Order Rationale:
         1. Failed Breakout (Highest Precision, stateful tracking)
         2. OI Wall Rejection (High Precision, structural support/resistance)
-        3. Trend Continuation (trend-aligned, TASK-177 — outranks exhaustion
-           since exhaustion is observation-gated regardless)
+        3. Trend Continuation (trend-aligned, TASK-177)
         4. Exhaustion Reversal (Medium Precision, volume/price extreme)
 
         Higher confidence setups are checked first. If a signal is found, the
@@ -70,10 +64,10 @@ class AresEngine:
             atm: The ATM strikes context including spot price and ATM IV/OI.
             iv_change_pct: The percentage change in ATM Implied Volatility.
             levels: A list of ResistanceLevel objects (structural levels + OI walls) used for target calculation.
-            pdh: Previous day high, used by the trend-regime filter. Optional
-                for backward compatibility — the filter no-ops without it.
-            pdl: Previous day low, used by the trend-regime filter. Optional
-                for backward compatibility — the filter no-ops without it.
+            pdh: Previous day high, used by the trend-continuation detector's
+                regime rule. Optional — the detector no-ops without it.
+            pdl: Previous day low, used by the trend-continuation detector's
+                regime rule. Optional — the detector no-ops without it.
 
         Returns:
             An AresSignal if a detector triggers and cooldown is clear, otherwise None.
@@ -81,8 +75,6 @@ class AresEngine:
         # 1. Update buffers
         self.candle_buffer.append(candle)
         self.iv_buffer.append(atm.ce.iv)
-        self.iv_lookback.append(atm.ce.iv)
-        self.pe_iv_lookback.append(atm.pe.iv)
 
         # 2. Cooldown check
         if self.last_signal_time:
@@ -143,26 +135,15 @@ class AresEngine:
             )
         )
 
-        # 6. Apply protective filters
+        # 6. Apply the risk:reward gate — the only remaining protective filter.
+        # The observation-only gate (exhaustion/continuation alert-only modes),
+        # the trend-regime filter, the flat-market speed filter and the
+        # anti-IV-crush filter were all removed (TASK-182): they silenced the
+        # system in trending sessions by turning tradeable setups into
+        # observation-only alerts or suppressing them outright. Every fired
+        # setup is now a live trade unless its risk:reward is degenerate.
         if signal:
-            # Filter A: Speed Filter (suppress MEDIUM confidence in flat market)
-            # Window and threshold are profile-tunable (TASK-172, audit item 12).
-            window = settings.speed_filter_window_candles
-            is_market_too_slow = False
-            rolling_range = 0.0
-            if len(self.candle_buffer) >= window:
-                recent = list(self.candle_buffer)[-window:]
-                highs = [c.high for c in recent]
-                lows = [c.low for c in recent]
-                rolling_range = max(highs) - min(lows)
-                is_market_too_slow = rolling_range < settings.speed_filter_min_range_pts
-
-            if signal.confidence == "MEDIUM" and is_market_too_slow:
-                print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: Sluggish market ({window}-min range: {rolling_range:.2f} pts).")
-                signal = None
-
-        if signal:
-            # Filter C: Risk:Reward Gate (reject setups whose risk to SL exceeds reward to T1)
+            # Risk:Reward Gate (reject setups whose risk to SL exceeds reward to T1)
             risk = abs(signal.trigger_price - signal.stop_loss)
             reward = abs(signal.target_1 - signal.trigger_price)
             # Degenerate SL placement (zero/negative risk) is always rejected
@@ -171,68 +152,25 @@ class AresEngine:
                 print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: R:R {rr:.2f} below minimum {settings.min_rr_ratio:.2f} (risk {risk:.1f} pts vs reward {reward:.1f} pts).")
                 signal = None
 
+        # 6b. Flat-market annotation (TASK-182 follow-up). NOT a gate: if the
+        # rolling window range is below the threshold, append an informational
+        # reason so the alert flags a consolidating market — the signal still
+        # trades. This is the old speed filter's condition, reused as a warning
+        # instead of a suppressor.
         if signal:
-            # Filter D: Exhaustion observation mode — alert + log, but never trade
-            if signal.setup_type == SetupType.EXHAUSTION_REVERSAL and settings.exhaustion_alert_only:
-                signal.alert_only = True
-                signal.reasons.append("Observation only — exhaustion entries gated by config (exhaustion_alert_only)")
+            window = settings.speed_filter_window_candles
+            if len(self.candle_buffer) >= window:
+                recent = list(self.candle_buffer)[-window:]
+                rolling_range = max(c.high for c in recent) - min(c.low for c in recent)
+                if rolling_range < settings.speed_filter_min_range_pts:
+                    signal.reasons.append(
+                        f"Price is FLAT — market moving under "
+                        f"{int(settings.speed_filter_min_range_pts)} points "
+                        f"(last {window}-candle range: {rolling_range:.1f} pts)"
+                    )
 
+        # 7. Set cooldown if a signal fired.
         if signal:
-            # Filter D2: Trend Continuation observation mode (TASK-177 phase 1)
-            # — alert + log, but never trade, until validated against enough
-            # live/replayed data (same convention as exhaustion's Filter D).
-            if signal.setup_type == SetupType.TREND_CONTINUATION and settings.continuation_alert_only:
-                signal.alert_only = True
-                signal.reasons.append("Observation only — continuation entries gated by config (continuation_alert_only)")
-
-        if signal and signal.confidence == "MEDIUM" and not signal.alert_only:
-            # Filter B: Anti-IV Crush Filter (TASK-172, audit item 10).
-            # Suppress MEDIUM-confidence entries whose option side shows
-            # top-percentile IV — HIGH confidence setups are exempt (the old
-            # filter killed every bullish signal regardless of quality), and
-            # the check is symmetric: bullish entries buy CEs so they check CE
-            # IV, bearish entries buy PEs so they check PE IV. Observation-only
-            # signals pass through — they are never traded, and suppressing
-            # them would just lose exhaustion observation data.
-            if signal.direction == Direction.BULLISH:
-                lookback, current_iv, side = self.iv_lookback, atm.ce.iv, "CE"
-            else:
-                lookback, current_iv, side = self.pe_iv_lookback, atm.pe.iv, "PE"
-
-            if len(lookback) >= settings.iv_crush_min_samples:
-                lower_iv_count = sum(1 for x in lookback if x < current_iv)
-                percentile = (lower_iv_count / len(lookback)) * 100.0
-                if percentile >= settings.iv_crush_percentile:
-                    print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: {side} IV {current_iv:.2f}% in top {100.0 - settings.iv_crush_percentile:.0f}% of lookback poses high risk of IV crush.")
-                    signal = None
-
-        if signal and not signal.alert_only and settings.trend_filter_enabled and pdh is not None and pdl is not None:
-            # Filter E: Trend-Regime Filter (TASK-173 audit item 16). Uses
-            # VWAP + PDH/PDL position to flag counter-trend entries: bullish
-            # signals fighting a sub-VWAP/sub-PDH downtrend, or bearish
-            # signals fighting a supra-VWAP/supra-PDL uptrend. HIGH confidence
-            # counter-trend setups are downgraded to observation-only (same
-            # convention as exhaustion's alert_only); MEDIUM ones are
-            # suppressed outright, matching the speed/IV-crush filters.
-            is_uptrend = candle.close > candle.vwap and candle.close > pdl
-            is_downtrend = candle.close < candle.vwap and candle.close < pdh
-            counter_trend = (
-                (signal.direction == Direction.BULLISH and is_downtrend)
-                or (signal.direction == Direction.BEARISH and is_uptrend)
-            )
-            if counter_trend:
-                if signal.confidence == "HIGH":
-                    signal.alert_only = True
-                    signal.reasons.append("Counter-trend vs VWAP/PDH-PDL regime — observation only (trend_filter_enabled)")
-                    print(f"[-] AresEngine: Downgrading {signal.setup_type.value} ({signal.direction.value}) signal to observation-only. Reason: Counter-trend vs VWAP/PDH-PDL regime.")
-                else:
-                    print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: Counter-trend vs VWAP/PDH-PDL regime (MEDIUM confidence).")
-                    signal = None
-
-        # 7. Set cooldown if signal fired.
-        # Observation-only signals don't consume the cooldown — they must never
-        # block a tradeable setup from another detector.
-        if signal and not signal.alert_only:
             self.last_signal_time = datetime.now()
 
         # 8. Return the result

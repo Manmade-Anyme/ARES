@@ -1,10 +1,11 @@
 """
-Tests for TASK-171 audit P0 efficiency gates in AresEngine:
+Tests for TASK-171 audit P0 efficiency gates in AresEngine (post-TASK-182):
 - R:R gate: reject signals whose risk (entry→SL) exceeds reward (entry→T1).
-- Exhaustion alert-only: exhaustion signals are tagged observation-only.
+  This is the only remaining protective filter.
+- Every fired signal (including exhaustion) is a live trade — the
+  observation-only gate was removed in TASK-182.
 - clear_cooldown(): allows immediate re-entry after a stop-out.
 """
-import dataclasses
 import unittest
 from unittest.mock import MagicMock
 from datetime import datetime, timedelta
@@ -62,7 +63,8 @@ class TestEngineEfficiencyGates(unittest.TestCase):
         )
 
     def _trending_buffer(self):
-        """Fill the candle buffer so the speed filter never interferes."""
+        """Fill the candle buffer (harmless now that the speed filter is gone,
+        kept so the harness matches real warmed-up engine state)."""
         for i in range(15):
             self.engine.candle_buffer.append(self._make_candle(24000.0 + i * 3))
 
@@ -102,35 +104,23 @@ class TestEngineEfficiencyGates(unittest.TestCase):
         result = self._tick_with(signal)
         self.assertIsNone(result)
 
-    # ── Exhaustion alert-only ───────────────────────────────────────────────
+    # ── Every fired signal is a live trade (TASK-182) ───────────────────────
 
-    def test_exhaustion_signal_is_tagged_alert_only_when_configured(self):
-        """The exhaustion_alert_only gate mechanism (TASK-172) is unchanged
-        by TASK-180's default flip to live -- force it on to test the
-        mechanism directly rather than depend on the production default."""
-        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, exhaustion_alert_only=True))
+    def test_exhaustion_signal_is_tradeable(self):
+        """The observation-only gate is gone — an exhaustion signal that
+        clears the R:R gate is a live trade, with no alert_only concept."""
         signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL,
                                    direction=Direction.BEARISH,
                                    stop_loss=24020.0, target_1=23965.0)
         result = self._tick_with(signal)
         self.assertIsNotNone(result)
-        self.assertTrue(result.alert_only)
+        self.assertFalse(hasattr(result, "alert_only"))
 
-    def test_non_exhaustion_signal_is_not_alert_only(self):
+    def test_signal_has_no_alert_only_attribute(self):
         signal = self._make_signal(stop_loss=23975.0, target_1=24035.0)
         result = self._tick_with(signal)
         self.assertIsNotNone(result)
-        self.assertFalse(result.alert_only)
-
-    def test_exhaustion_signal_is_live_by_default(self):
-        """TASK-180: exhaustion_alert_only defaults to False now (both
-        profiles) -- exhaustion signals are live/tradeable out of the box."""
-        signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL,
-                                   direction=Direction.BEARISH,
-                                   stop_loss=24020.0, target_1=23965.0)
-        result = self._tick_with(signal)
-        self.assertIsNotNone(result)
-        self.assertFalse(result.alert_only)
+        self.assertFalse(hasattr(result, "alert_only"))
 
     # ── Cooldown reset after stop-out ───────────────────────────────────────
 

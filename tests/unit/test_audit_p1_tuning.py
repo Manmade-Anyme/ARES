@@ -1,15 +1,15 @@
 """
-Tests for TASK-172 audit P1 tuning:
+Tests for TASK-172 audit P1 tuning (the parts that survive TASK-182):
 - Item 8: breakout_failure_min_score raised 2→3 and closed_back excluded from
   the failure score (it stays a hard requirement, not a scored condition).
-- Item 10: anti-IV-crush filter exempts HIGH confidence, applies symmetrically
-  (bullish→CE IV, bearish→PE IV) and uses a longer configurable lookback.
-- Item 12: speed-filter window/threshold move into config_profiles; confidence
-  bars standardized at >=60% of each detector's score matrix.
+- Item 12: confidence bars standardized at >=60% of each detector's score
+  matrix.
+
+The flat-market speed filter and the anti-IV-crush filter (items 10 & 12) were
+removed in TASK-182; the final class asserts they no longer suppress signals.
 """
-import dataclasses
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from datetime import datetime
 
 from config import settings
@@ -139,8 +139,9 @@ class TestStandardizedConfidenceBars(unittest.TestCase):
         self.assertEqual(signal.confidence, "MEDIUM")
 
 
-class TestEngineP1Filters(unittest.TestCase):
-    """Items 10 & 12: engine-level filter changes."""
+class TestSuppressionFiltersRemoved(unittest.TestCase):
+    """TASK-182: the flat-market speed filter and the anti-IV-crush filter are
+    gone — a MEDIUM signal that they used to suppress is a live trade now."""
 
     def setUp(self):
         settings.apply_profile(NON_EXPIRY_CONFIG)
@@ -201,84 +202,42 @@ class TestEngineP1Filters(unittest.TestCase):
         self.engine.exhaustion_detector.update = MagicMock(return_value=None)
         return self.engine.tick(self._make_candle(24045.0), [], atm, 0.0, [])
 
-    # ── Item 10: anti-IV-crush filter ────────────────────────────────────────
+    def test_engine_keeps_no_iv_lookback(self):
+        """The per-side IV lookbacks existed only for the anti-IV-crush filter."""
+        self.assertFalse(hasattr(self.engine, "iv_lookback"))
+        self.assertFalse(hasattr(self.engine, "pe_iv_lookback"))
 
-    def test_iv_lookback_size_comes_from_config(self):
-        self.assertEqual(self.engine.iv_lookback.maxlen, settings.iv_crush_lookback_size)
-        self.assertEqual(self.engine.pe_iv_lookback.maxlen, settings.iv_crush_lookback_size)
-        self.assertEqual(settings.iv_crush_lookback_size, 60)
-
-    def test_high_confidence_bullish_exempt_from_iv_crush(self):
-        for _ in range(18):
-            self.engine.iv_lookback.append(10.0)
-        signal = self._make_signal(confidence="HIGH", direction=Direction.BULLISH)
-        result = self._tick_with(signal, self._make_atm(ce_iv=15.0))
+    def test_medium_signal_in_dead_flat_market_now_trades_with_flat_note(self):
+        """Speed filter removed: a MEDIUM signal with a sub-threshold rolling
+        range used to be suppressed — now it is a live trade, and it carries an
+        informational 'Price is FLAT' reason instead (TASK-182 follow-up)."""
+        for _ in range(15):
+            self.engine.candle_buffer.append(self._make_candle(24000.0))  # flat
+        self.engine.breakout_detector.update = MagicMock(
+            return_value=self._make_signal(confidence="MEDIUM", direction=Direction.BULLISH))
+        self.engine.oi_wall_detector.update = MagicMock(return_value=None)
+        self.engine.exhaustion_detector.update = MagicMock(return_value=None)
+        result = self.engine.tick(self._make_candle(24000.0), [], self._make_atm(), 0.0, [])
         self.assertIsNotNone(result)
+        self.assertTrue(any("FLAT" in r for r in result.reasons))
 
-    def test_medium_confidence_bullish_suppressed_on_high_ce_iv(self):
-        for _ in range(18):
-            self.engine.iv_lookback.append(10.0)
+    def test_trending_market_has_no_flat_note(self):
+        """A market above the range threshold gets no 'Price is FLAT' reason."""
+        signal = self._make_signal(confidence="MEDIUM", direction=Direction.BULLISH)
+        result = self._tick_with(signal, self._make_atm())  # _trending_buffer: 42-pt range
+        self.assertIsNotNone(result)
+        self.assertFalse(any("FLAT" in r for r in result.reasons))
+
+    def test_medium_bullish_on_top_percentile_ce_iv_now_trades(self):
+        """Anti-IV-crush filter removed: a MEDIUM bullish signal with high CE
+        IV used to be suppressed — now it trades."""
         signal = self._make_signal(confidence="MEDIUM", direction=Direction.BULLISH)
         result = self._tick_with(signal, self._make_atm(ce_iv=15.0))
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
 
-    def test_medium_confidence_bearish_suppressed_on_high_pe_iv(self):
-        """Symmetric: bearish entries buy PEs, so top-percentile PE IV suppresses."""
-        for _ in range(18):
-            self.engine.pe_iv_lookback.append(10.0)
+    def test_medium_bearish_on_top_percentile_pe_iv_now_trades(self):
         signal = self._make_signal(confidence="MEDIUM", direction=Direction.BEARISH)
         result = self._tick_with(signal, self._make_atm(ce_iv=10.0, pe_iv=15.0))
-        self.assertIsNone(result)
-
-    def test_medium_confidence_bearish_passes_on_low_pe_iv(self):
-        for _ in range(18):
-            self.engine.pe_iv_lookback.append(12.0)
-        signal = self._make_signal(confidence="MEDIUM", direction=Direction.BEARISH)
-        result = self._tick_with(signal, self._make_atm(ce_iv=10.0, pe_iv=10.0))
-        self.assertIsNotNone(result)
-
-    def test_observation_only_exhaustion_survives_iv_crush_filter(self):
-        """Alert-only signals are never traded — keep them for observation
-        data. The exhaustion_alert_only gate itself (TASK-172) is unchanged
-        by TASK-180's default flip to live; force it on here to test the
-        mechanism directly rather than depend on the production default."""
-        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, exhaustion_alert_only=True))
-        for _ in range(18):
-            self.engine.pe_iv_lookback.append(10.0)
-        signal = self._make_signal(confidence="MEDIUM", direction=Direction.BEARISH,
-                                   setup_type=SetupType.EXHAUSTION_REVERSAL)
-        result = self._tick_with(signal, self._make_atm(ce_iv=10.0, pe_iv=15.0))
-        self.assertIsNotNone(result)
-        self.assertTrue(result.alert_only)
-
-    # ── Item 12: speed filter from config ────────────────────────────────────
-
-    def test_speed_filter_threshold_from_config(self):
-        """Range-2 flat market suppresses at the default 15.0 threshold but
-        passes when the profile lowers the threshold below the observed range."""
-        settings.apply_profile(TuningConfig(speed_filter_min_range_pts=1.0))
-        engine = AresEngine()
-        for i in range(15):
-            engine.candle_buffer.append(self._make_candle(24000.0 + (i % 2)))
-        signal = self._make_signal(confidence="MEDIUM", direction=Direction.BULLISH)
-        engine.breakout_detector.update = MagicMock(return_value=signal)
-        engine.oi_wall_detector.update = MagicMock(return_value=None)
-        engine.exhaustion_detector.update = MagicMock(return_value=None)
-        result = engine.tick(self._make_candle(24001.0), [], self._make_atm(), 0.0, [])
-        self.assertIsNotNone(result)
-
-    def test_speed_filter_window_from_config(self):
-        """With a 20-candle window configured and only 15 candles buffered,
-        the filter stays inactive (not enough history)."""
-        settings.apply_profile(TuningConfig(speed_filter_window_candles=20))
-        engine = AresEngine()
-        for i in range(15):
-            engine.candle_buffer.append(self._make_candle(24000.0 + (i % 2)))
-        signal = self._make_signal(confidence="MEDIUM", direction=Direction.BULLISH)
-        engine.breakout_detector.update = MagicMock(return_value=signal)
-        engine.oi_wall_detector.update = MagicMock(return_value=None)
-        engine.exhaustion_detector.update = MagicMock(return_value=None)
-        result = engine.tick(self._make_candle(24001.0), [], self._make_atm(), 0.0, [])
         self.assertIsNotNone(result)
 
 

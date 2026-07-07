@@ -4,6 +4,33 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-07 16:00 · Remove the Observation Gate + Speed/IV-Crush Filters — Every Signal Trades (TASK-182)
+
+The deferred follow-up flagged in TASK-180/181. Started from a live debug of "why only 1 trade today": pulled `ares_signals`/`trade_analytics`/`ml_collection` from Supabase and found the system had gone quiet not because detectors stopped firing but because the audit-era gates neutered them. Ground truth: 07-06 fired 8 signals, **all 8 forced observation-only** (1 breakout via Filter E's `trend_filter_enabled` counter-trend downgrade, 7 exhaustions via `exhaustion_alert_only`) — the runtime `reasons` strings named the exact gate on each. 07-07 was a clean trending session (regime held 43 candles) so only the trend-aligned continuation detector qualified, and it stopped out (−19 pts). The three fade detectors correctly found almost nothing to fade on a trending day. User's call: the paper P&L looked bad but they were profitable managing the trades by hand — the gates that "protect" by withholding trades were the regression. Remove the whole observation mechanism, and (scoping question answered explicitly: **Option 2**) the two other MEDIUM-suppressing filters too, keeping only the R:R sanity gate.
+
+**Decisions**
+- **`engine.py`**: deleted Filter A (flat-market speed filter), Filter B (anti-IV-crush), Filter D (`exhaustion_alert_only`), Filter D2 (`continuation_alert_only`) and Filter E (`trend_filter_enabled` counter-trend downgrade/suppression). The **R:R gate is the only remaining protective filter** — every fired setup is a live trade unless its risk:reward is degenerate. Dropped the `iv_lookback`/`pe_iv_lookback` buffers (existed only for Filter B) and the now-unused `Direction`/`SetupType` imports. Cooldown no longer has an `alert_only` carve-out.
+- **`models.py`**: removed the `AresSignal.alert_only` field entirely — the observation concept no longer exists in the model.
+- **`main.py`**: every fired signal now calls `position_manager.add_trade` unconditionally (dropped the `if signal.alert_only:` skip branch).
+- **`alerts.py`**: removed the OBSERVATION-ONLY message formatting and the separate-channel routing (TASK-178) — one tradeable alert path.
+- **`config_profiles.py` / `config.py` / `.env.example`**: deleted `exhaustion_alert_only`, `continuation_alert_only`, `trend_filter_enabled`, `speed_filter_window_candles`, `speed_filter_min_range_pts`, `iv_crush_lookback_size`, `iv_crush_percentile`, `iv_crush_min_samples`, and the `discord_observation_webhook_url` secret. **Kept** `continuation_enabled` (a real off-switch, unrelated to observation), the R:R gate, `time_stop_minutes`, cooldown and `tick_exit_check_interval_seconds`.
+- **Detector logic verified unchanged vs the pre-observation baseline** (parent of TASK-171, 2026-07-02): breakout = cross+close-back, exhaustion = volume-climax+doji, OI-wall = approach+test+reject are all the same shape. What the audit changed *besides* the gates — stricter scoring (breakout min-score 2→3, writers 3%→10%) and SL sitting exactly at the structural level with no buffer (TASK-175, the reason the 07-07 continuation stopped at −19) — was left in place; not part of this ask.
+- **Deploy note**: fly.io already runs latest `main`, so the flags were `False` in production before this; removing the machinery makes "trades always come through" structural rather than flag-dependent, so it can't silently regress again.
+
+**Tests**: deleted `test_trend_regime_filter.py`, `test_task178_observation_discord_channel.py`, `test_engine_remediation.py` (all covered removed machinery). Reworked `test_audit_p1_tuning.py` (speed/IV-crush suppression → now-trades assertions), `test_engine_efficiency_gates.py` (exhaustion is tradeable, no `alert_only` attr), `test_task175_sl_config_obs.py` (observation-alert restyle → tradeable-alert), `test_task177_trend_continuation.py` and `test_continuation.py` (dropped `continuation_alert_only`/Filter-E cases, kept `continuation_enabled` off-switch coverage). **232 tests green.** End-to-end smoke: a MEDIUM exhaustion in a dead-flat, high-IV market now returns a live signal, sets the cooldown, and renders a normal "SIGNAL DETECTED" Discord card (no OBSERVATION).
+
+**Follow-up (same branch/PR, user request):** re-added the speed filter's *condition* as a non-gating annotation. `speed_filter_window_candles`/`speed_filter_min_range_pts` are back in config, but the engine now only appends a `Price is FLAT — market moving under 15 points (last 15-candle range: X.X pts)` reason when the rolling range is sub-threshold — the signal still trades, it is just flagged in the Discord Reasons section. 233 tests green (+1: flat-note carried, trending-market no-note).
+
+**Status**: On branch `feature/TASK-182-remove-observation-and-suppression-gates`. PR pending user review.
+
+**TODOs**
+- [ ] Open PR, user review, merge.
+- [ ] Deploy is the user's own action (fly.io redeploy of `main` after merge).
+- [ ] Watch live Discord: every detector's signals go straight to live trades now; the only thing that can withhold one is a degenerate R:R.
+- [ ] Separate/unrelated: the 6 duplicate orphan OI_WALL `OPEN` rows at 10:10 on 07-06 (`signal_id=None`, never closed) point at a dedupe/logging defect in the position/analytics path — worth its own ticket.
+
+---
+
 ## 2026-07-06 18:05 · Trend-Regime Filter Off by Default — All Signals Live (TASK-181)
 
 Direct follow-up to TASK-180: once the exhaustion/continuation `alert_only` gates were live, the user saw Filter E (TASK-173's counter-trend downgrade/suppression) was still producing "OBSERVATION ONLY — NOT A TRADE" Discord cards for counter-trend HIGH-confidence signals from *any* detector (not just exhaustion), and suppressing counter-trend MEDIUM signals outright. User was unambiguous once this was explained: "we added a logic for observation trade logic which was coming in discord for last 2 days, i dont want that feature" — the whole observation-only mechanism, global scope, no per-detector carve-out. (Initially asked to confirm scope — global vs. exhaustion-only — since this removes the counter-trend protection for breakout/OI-wall too, not just exhaustion; user's clarification resolved that ambiguity in favor of the global option.)
