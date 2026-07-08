@@ -4,6 +4,30 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-08 11:30 · ML Offline Labeling & XGBoost Training Pipeline (TASK-183)
+
+Started from a live QA of the ML side: "is `ml_collection` recording as expected, and does the collected data add value?" Audit findings (all verified against Supabase): collection itself is **healthy** — 2,669 rows, ~350/trading day, all 7 feature groups + `raw_candle` + `raw_atm_oi` fully populated. **But the data was inert**: (1) `ml_collection.trade_outcome`/`trade_pnl`/`trade_id` are **0/2669 non-null** — nothing ever back-fills them despite the schema comment; (2) the trainer (`data.py`, `source="ares"`) reads a *different* table, `trade_analytics` (38 rows, sparse features), and **never `ml_collection`**; (3) XGBoost was **dormant** — empty `models/`, `ml_predictions=0`. Net: rich features collected every minute, but unlabeled, unread, untrained. User directive: fix it so the data adds value, create ADR + task, and **leave the live implementation untouched**.
+
+**Decisions** (full rationale in [ADR-183](../directives/ADR-183_ml-offline-labeling-training.md))
+- **Label strategy = self-labeled forward-return, not trade outcomes.** Waiting for realized trades is hopeless (~1 trade/day now → months). Instead label **every** `ml_collection` row from its own forward price path: a **bidirectional forward-points triple-barrier** — from each candle, a clean ±`tp_points` (35) move before the opposing `sl_points` (25) stop within `lookforward` (5) candles → `1` ("tradeable move imminent", either direction), opposing stop first → `0`, neither (chop) → `-1` dropped. **Day-bounded** so a window never spans the 15:30→09:15 overnight gap (the existing `label_candle_forward` ignored this). Turns all 2,688 rows (+350/day) into training data *today*.
+- **`ml_signal/dataset.py` (new)**: read-only `ml_collection` loader helpers — `flatten_features` (7 JSON groups → `group__key` numeric matrix, stable columns, missing→0.0, close from `raw_candle`), `label_forward_points`, `build_labeled_frame` (per-day labeling), `feature_columns`.
+- **`ml_signal/train_offline.py` (new)**: `chronological_split` (leak-free, small-data-safe — the existing `trainer.train_pipeline` walk-forward needs 6mo+1mo = 7+ months → 0 folds on 2 weeks), `run_training` (XGBoost fit/eval/importance **inlined** with the same `MLConfig` params — `trainer.py` hard-imports `optuna`, an unneeded heavy dep, so it was left untouched rather than imported), and a `main()` CLI (`python -m ml_signal.train_offline`) that pulls `ml_collection`, labels, trains, and writes a model + JSON metrics report. Small-data guard: warns + marks metrics provisional, never crashes.
+- **No DB writes, no schema changes, no new tables.** Pipeline reads `ml_collection` and writes only a model artifact (`ml_signal/models/`, gitignored) + `reports/ml/task183_offline_metrics.json`. Blast radius = disk only → zero risk to the live fly.io system.
+- **Live inference deliberately deferred** to a future task, gated on a model that clears an AUC bar. Trade-outcome label fusion is future work too, once `trade_analytics` is large.
+
+**Validation**: 13 new contract-level tests (`tests/unit/test_task183_ml_offline.py`) covering flatten, the forward-points labeler (win/loss/inconclusive/tail), day-boundary isolation, chronological split, and the small-data guard — fully synthetic, no live DB. **246 tests green** (233 existing untouched + 13 new). First live run on `ml_collection`: 2,688 rows → **168 labeled samples, pos-rate 0.393, AUC-ROC 0.547 (provisional)** — i.e. right at the 0.5 noise floor on ~2 weeks of mostly-flat data. Honest read: the machinery now works and XGBoost runs, but predictive value is **not proven yet**; rerun as trending/volatile days accumulate (a flat tape yields few conclusive labels — 2,520 of 2,688 rows were inconclusive chop). Top features by gain: volume-above-avg, dist-to-support, ATM total OI, OI bias, total vega.
+
+**Status**: Implemented on `feature/TASK-183-ml-offline-labeling-training`. PR pending user review — **not merged** (user merges).
+
+**TODOs**
+- [ ] Open PR, user review, merge.
+- [ ] Rerun `python -m ml_signal.train_offline` weekly; track whether AUC climbs above ~0.55 as data grows / trending days land.
+- [ ] Future task: if a model clears the bar, wire live inference (`ml_predictions` / a pre-filter score) — separate PR, since that *does* touch the live path.
+- [ ] Future: fuse realized trade outcomes (`trade_analytics`) as a second label signal once that table is large.
+- [ ] Consider (not done): the `tp=35/sl=25/lookforward=5` label bar is strict on flat days; a looser bar would yield more labels but noisier ones — a knob to revisit with more data.
+
+---
+
 ## 2026-07-07 16:00 · Remove the Observation Gate + Speed/IV-Crush Filters — Every Signal Trades (TASK-182)
 
 The deferred follow-up flagged in TASK-180/181. Started from a live debug of "why only 1 trade today": pulled `ares_signals`/`trade_analytics`/`ml_collection` from Supabase and found the system had gone quiet not because detectors stopped firing but because the audit-era gates neutered them. Ground truth: 07-06 fired 8 signals, **all 8 forced observation-only** (1 breakout via Filter E's `trend_filter_enabled` counter-trend downgrade, 7 exhaustions via `exhaustion_alert_only`) — the runtime `reasons` strings named the exact gate on each. 07-07 was a clean trending session (regime held 43 candles) so only the trend-aligned continuation detector qualified, and it stopped out (−19 pts). The three fade detectors correctly found almost nothing to fade on a trending day. User's call: the paper P&L looked bad but they were profitable managing the trades by hand — the gates that "protect" by withholding trades were the regression. Remove the whole observation mechanism, and (scoping question answered explicitly: **Option 2**) the two other MEDIUM-suppressing filters too, keeping only the R:R sanity gate.
