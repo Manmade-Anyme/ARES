@@ -1,0 +1,76 @@
+{
+  "auc_roc": 0.5466666666666666,
+  "precision": 0.2777777777777778,
+  "recall": 0.5555555555555556,
+  "f1": 0.37037037037037035,
+  "brier_score": 0.2698608636856079,
+  "accuracy": 0.5,
+  "precision_top20": 0.5,
+  "n_samples": 168,
+  "n_train": 134,
+  "n_test": 34,
+  "pos_rate": 0.39285714285714285,
+  "provisional": true,
+  "top_features": [
+    {
+      "feature": "volume_features__vol_above_avg",
+      "gain": 0.06331154704093933
+    },
+    {
+      "feature": "structure_features__dist_to_nearest_support",
+      "gain": 0.06144442781805992
+    },
+    {
+      "feature": "oi_features__atm_total_oi",
+      "gain": 0.05947762355208397
+    },
+    {
+      "feature": "oi_features__oi_bias",
+      "gain": 0.05920769274234772
+    },
+    {
+      "feature": "greek_features__total_vega",
+      "gain": 0.051331594586372375
+    },
+    {
+      "feature": "volume_features__vol_slope_5",
+      "gain": 0.049093492329120636
+    },
+    {
+      "feature": "meta_features__minutes_since_open",
+      "gain": 0.04656800627708435
+    },
+    {
+      "feature": "structure_features__dist_to_nearest_resistance",
+      "gain": 0.04604857414960861
+    },
+    {
+      "feature": "oi_features__atm_pe_oi_change_pct",
+      "gain": 0.04510529711842537
+    },
+    {
+      "feature": "greek_features__gamma_theta_ratio",
+      "gain": 0.0448545403778553
+    },
+    {
+      "feature": "structure_features__dist_to_pdl",
+      "gain": 0.04475029557943344
+    },
+    {
+      "feature": "candle_features__volume",
+      "gain": 0.04405194893479347
+    },
+    {
+      "feature": "structure_features__dist_to_pdh",
+      "gain": 0.04219166561961174
+    },
+    {
+      "feature": "candle_features__range_pct",
+      "gain": 0.04024242237210274
+    },
+    {
+      "feature": "volume_features__vol_ratio",
+      "gain": 0.039237480610609055
+    }
+  ]
+}
