@@ -160,3 +160,34 @@ Existing detector tests: unaffected (detectors unchanged). Existing engine R:R t
 6. Dual-sync findings to `docs/` + Obsidian; update memory `[[ares-sl-target-optimization]]`.
 
 **Approve as-is, or adjust any number / decision above.**
+
+---
+
+## UPDATE — full cleanup shipped (post-approval)
+
+The user chose per-type as the single source of truth and asked to remove the
+old structural implementation. Shipped changes beyond the original POC:
+
+- **Engine now owns all three levels.** `apply_per_type_levels(signal, settings, levels)`
+  sets SL and T1 (fixed per-type) and **T2 = nearest structural level in `levels`
+  beyond T1** in the favourable direction, else the per-type `target_2_fallback_pts`.
+  This makes the per-type T2 fallback genuinely apply (the earlier version was
+  masked by the detector's own 70pt fallback).
+- **Detectors no longer compute SL/T1/T2.** The structural stop, the
+  structural/fixed target selection, the T1/T2 ordering-swap and the
+  "Target set at structural …" reasons were removed from all 4 detectors; they
+  now emit `0.0` placeholders that the engine fills. Detectors keep detection,
+  direction, option_type, entry_zone, strike and their scoring reasons.
+- **Config knobs removed:** `target_1_pts`, `target_2_pts`,
+  `target_1_fallback_min_pts`, `target_2_fallback_min_pts` (class + both
+  profiles). `structural_target_min_distance_pts` stays (continuation scoring).
+  `per_type_levels` is now the only SL/T1/T2 knob.
+- **Tests:** removed/trimmed the obsolete detector target/SL-placement tests
+  (their behaviour moved to `test_per_type_levels.py`); updated `test_task175`
+  SL-placement tests to assert the detector leaves SL for the engine; updated
+  config tests to the new knobs.
+- **Known residue:** dead `mock_settings.target_*` fixture stubs remain in
+  `test_oi_wall.py` (harmless MagicMock attrs, no longer read).
+
+Net: editing the 12 numbers in `per_type_levels` is now the *only* way SL/T1/T2
+change — no structural fallback path remains.

@@ -13,9 +13,13 @@ from datetime import datetime
 
 import pytest
 
-from models import AresSignal, SetupType, Direction
+from models import AresSignal, SetupType, Direction, ResistanceLevel
 from config_profiles import TuningConfig, SetupLevels, _PER_TYPE_LEVELS_DEFAULT
 from engine import apply_per_type_levels
+
+
+def lvl(price):
+    return ResistanceLevel(price=price, source="test", strength=2)
 
 
 APPROVED = {
@@ -78,46 +82,51 @@ def test_bearish_sl_t1_replaced_with_fixed_distance(settings, setup_key):
     assert sig.target_1 == pytest.approx(entry - t1_pts)
 
 
-# ── T2: structural kept when beyond new T1, else per-type fallback ────────────
+# ── T2: nearest structural level beyond T1, else per-type fallback ────────────
 
-def test_bullish_t2_structural_kept_when_beyond_new_t1(settings):
-    entry = 25000.0  # EXHAUSTION new T1 = entry+24; structural T2 far above
-    sig = make_signal(
-        SetupType.EXHAUSTION_REVERSAL, Direction.BULLISH, entry,
-        stop_loss=entry - 3.0, target_1=entry + 10.0, target_2=entry + 160.0,
-    )
-    apply_per_type_levels(sig, settings)
-    assert sig.target_2 == pytest.approx(entry + 160.0)  # structural preserved
-
-
-def test_bullish_t2_fallback_when_structural_not_beyond_t1(settings):
-    entry = 25000.0  # new T1 = entry+24; structural T2 sits below that -> fallback 40
-    sig = make_signal(
-        SetupType.EXHAUSTION_REVERSAL, Direction.BULLISH, entry,
-        stop_loss=entry - 3.0, target_1=entry + 10.0, target_2=entry + 15.0,
-    )
-    apply_per_type_levels(sig, settings)
-    assert sig.target_2 == pytest.approx(entry + 40.0)  # per-type fallback
+def test_bullish_t2_is_nearest_structural_level_beyond_t1(settings):
+    entry = 25000.0  # EXHAUSTION new T1 = entry+24
+    # levels: one below T1 (ignored), two beyond T1 -> pick the nearer (entry+60)
+    levels = [lvl(entry + 10.0), lvl(entry + 60.0), lvl(entry + 160.0)]
+    sig = make_signal(SetupType.EXHAUSTION_REVERSAL, Direction.BULLISH, entry,
+                      stop_loss=entry - 3.0, target_1=entry + 10.0, target_2=entry + 5.0)
+    apply_per_type_levels(sig, settings, levels)
+    assert sig.target_2 == pytest.approx(entry + 60.0)
 
 
-def test_bearish_t2_fallback_when_structural_not_beyond_t1(settings):
-    entry = 25000.0  # new T1 = entry-24; structural T2 not far enough below -> fallback 40
-    sig = make_signal(
-        SetupType.EXHAUSTION_REVERSAL, Direction.BEARISH, entry,
-        stop_loss=entry + 3.0, target_1=entry - 10.0, target_2=entry - 15.0,
-    )
-    apply_per_type_levels(sig, settings)
-    assert sig.target_2 == pytest.approx(entry - 40.0)
+def test_bullish_t2_fallback_when_no_level_beyond_t1(settings):
+    entry = 25000.0  # new T1 = entry+24; only a level below it -> per-type fallback 40
+    levels = [lvl(entry + 15.0)]
+    sig = make_signal(SetupType.EXHAUSTION_REVERSAL, Direction.BULLISH, entry,
+                      stop_loss=entry - 3.0, target_1=entry + 10.0, target_2=entry + 5.0)
+    apply_per_type_levels(sig, settings, levels)
+    assert sig.target_2 == pytest.approx(entry + 40.0)
 
 
-def test_bearish_t2_structural_kept_when_beyond_new_t1(settings):
+def test_bullish_t2_fallback_when_no_levels_at_all(settings):
     entry = 25000.0
-    sig = make_signal(
-        SetupType.EXHAUSTION_REVERSAL, Direction.BEARISH, entry,
-        stop_loss=entry + 3.0, target_1=entry - 10.0, target_2=entry - 160.0,
-    )
-    apply_per_type_levels(sig, settings)
-    assert sig.target_2 == pytest.approx(entry - 160.0)
+    sig = make_signal(SetupType.EXHAUSTION_REVERSAL, Direction.BULLISH, entry,
+                      stop_loss=entry - 3.0, target_1=entry + 10.0, target_2=entry + 5.0)
+    apply_per_type_levels(sig, settings, levels=None)
+    assert sig.target_2 == pytest.approx(entry + 40.0)
+
+
+def test_bearish_t2_is_nearest_structural_level_beyond_t1(settings):
+    entry = 25000.0  # new T1 = entry-24; nearer level below T1 is entry-60
+    levels = [lvl(entry - 10.0), lvl(entry - 60.0), lvl(entry - 160.0)]
+    sig = make_signal(SetupType.EXHAUSTION_REVERSAL, Direction.BEARISH, entry,
+                      stop_loss=entry + 3.0, target_1=entry - 10.0, target_2=entry - 5.0)
+    apply_per_type_levels(sig, settings, levels)
+    assert sig.target_2 == pytest.approx(entry - 60.0)
+
+
+def test_bearish_t2_fallback_when_no_level_beyond_t1(settings):
+    entry = 25000.0
+    levels = [lvl(entry - 15.0)]
+    sig = make_signal(SetupType.EXHAUSTION_REVERSAL, Direction.BEARISH, entry,
+                      stop_loss=entry + 3.0, target_1=entry - 10.0, target_2=entry - 5.0)
+    apply_per_type_levels(sig, settings, levels)
+    assert sig.target_2 == pytest.approx(entry - 40.0)
 
 
 # ── R:R gate: every default config passes (nothing suppressed) ────────────────

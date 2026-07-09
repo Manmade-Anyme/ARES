@@ -35,10 +35,7 @@ def test_bearish_failed_breakout_dynamic_targets(breakout_detector, sample_level
     assert signal is not None
     assert signal.setup_type == SetupType.FAILED_BREAKOUT
     assert signal.direction == Direction.BEARISH
-    
-    # After sorting, T1 will be the closer target
-    assert signal.target_1 == 24090.0 - settings.target_2_pts  # 24020.0 is closer to 24090 than 24000
-    assert signal.target_2 == 24000.0
+    # SL/T1/T2 are set centrally by engine.apply_per_type_levels (TASK-185).
 
 def test_bullish_failed_breakout_dynamic_targets(breakout_detector, sample_levels):
     # Downward breakdown below 24100
@@ -59,10 +56,7 @@ def test_bullish_failed_breakout_dynamic_targets(breakout_detector, sample_level
     assert signal is not None
     assert signal.setup_type == SetupType.FAILED_BREAKOUT
     assert signal.direction == Direction.BULLISH
-    
-    # After sorting, T1 will be the closer target
-    assert signal.target_1 == 24115.0 + settings.target_2_pts # 24185.0 is closer to 24115 than 24200
-    assert signal.target_2 == 24200.0
+    # SL/T1/T2 are set centrally by engine.apply_per_type_levels (TASK-185).
 
 def test_failed_breakout_confidence_high(breakout_detector, sample_levels):
     # Upward breakout
@@ -136,88 +130,6 @@ def test_breakout_confirmed_real_breakout(breakout_detector, sample_levels):
             assert result is None
             assert breakout_detector.active is None
 
-def test_breakout_bearish_multiple_supports(breakout_detector):
-    # Two support levels below spot
-    levels = [
-        ResistanceLevel(price=24100.0, source="PDH", strength=3),
-        ResistanceLevel(price=24050.0, source="SUPPORT_1", strength=2),
-        ResistanceLevel(price=24000.0, source="SUPPORT_2", strength=2)
-    ]
-    # Breakout upward
-    candle1 = OHLCVCandle(
-        timestamp=datetime.now(), open=24090.0, high=24120.0, low=24080.0, close=24110.0, volume=50000
-    )
-    breakout_detector.update(candle1, 100000.0, 5.0, 100, 100, 100, 100, levels)
-
-    # Close back (bearish signal)
-    # T1 = 24050.0 (support_1), T2 = 24000.0 (support_2). Both >= 20 pts from close 24090.0
-    candle2 = OHLCVCandle(
-        timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24090.0, volume=40000
-    )
-    signal = breakout_detector.update(candle2, 100000.0, -15.0, 100, 100, 100, 100, levels)
-    assert signal is not None
-    assert signal.target_1 == 24050.0
-    assert signal.target_2 == 24000.0
-
-def test_breakout_bullish_multiple_resistances(breakout_detector):
-    # Two resistance levels above spot
-    levels = [
-        ResistanceLevel(price=24100.0, source="PDL", strength=3),
-        ResistanceLevel(price=24150.0, source="RES_1", strength=2),
-        ResistanceLevel(price=24200.0, source="RES_2", strength=2)
-    ]
-    # Breakdown downward
-    candle1 = OHLCVCandle(
-        timestamp=datetime.now(), open=24110.0, high=24120.0, low=24090.0, close=24080.0, volume=50000
-    )
-    breakout_detector.update(candle1, 100000.0, 5.0, 100, 100, 100, 100, levels)
-
-    # Close back (bullish signal)
-    # T1 = 24150.0 (res_1), T2 = 24200.0 (res_2). Both >= 20 pts from close 24105.0
-    candle2 = OHLCVCandle(
-        timestamp=datetime.now(), open=24080.0, high=24120.0, low=24075.0, close=24105.0, volume=40000
-    )
-    signal = breakout_detector.update(candle2, 100000.0, -15.0, 100, 100, 100, 100, levels)
-    assert signal is not None
-    assert signal.target_1 == 24150.0
-    assert signal.target_2 == 24200.0
-
-def test_breakout_fallback_too_close(breakout_detector):
-    # Bearish setup fallback
-    levels = [
-        ResistanceLevel(price=24100.0, source="PDH", strength=3),
-        ResistanceLevel(price=24095.0, source="CLOSE_SUPPORT", strength=2)
-    ]
-    candle1 = OHLCVCandle(
-        timestamp=datetime.now(), open=24090.0, high=24120.0, low=24080.0, close=24110.0, volume=50000
-    )
-    breakout_detector.update(candle1, 100000.0, 5.0, 100, 100, 100, 100, levels)
-
-    candle2 = OHLCVCandle(
-        timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24090.0, volume=40000
-    )
-    signal = breakout_detector.update(candle2, 100000.0, -15.0, 100, 100, 100, 100, levels)
-    assert signal is not None
-    assert signal.target_1 == 24090.0 - settings.target_1_pts
-    assert signal.target_2 == 24090.0 - settings.target_2_pts
-
-def test_breakout_fallback_too_close_bullish(breakout_detector):
-    # Bullish setup fallback
-    levels = [
-        ResistanceLevel(price=24100.0, source="PDL", strength=3),
-        ResistanceLevel(price=24105.0, source="CLOSE_RESISTANCE", strength=2)
-    ]
-    candle1 = OHLCVCandle(
-        timestamp=datetime.now(), open=24110.0, high=24120.0, low=24090.0, close=24080.0, volume=50000
-    )
-    breakout_detector.update(candle1, 100000.0, 5.0, 100, 100, 100, 100, levels)
-
-    candle2 = OHLCVCandle(
-        timestamp=datetime.now(), open=24080.0, high=24120.0, low=24075.0, close=24105.0, volume=40000
-    )
-    signal = breakout_detector.update(candle2, 100000.0, -15.0, 100, 100, 100, 100, levels)
-    assert signal is not None
-    assert signal.target_1 == 24105.0 + settings.target_1_pts
-    assert signal.target_2 == 24105.0 + settings.target_2_pts
-
-
+# NOTE (TASK-185): the breakout structural target-selection + fixed-points
+# fallback tests were removed. SL/T1/T2 are now set centrally by
+# engine.apply_per_type_levels (see tests/unit/test_per_type_levels.py).

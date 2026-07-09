@@ -47,8 +47,8 @@ class TestConfigFields(unittest.TestCase):
     def test_new_fields_present_with_defaults(self):
         self.assertEqual(NON_EXPIRY_CONFIG.breakout_deep_close_pts, 5.0)
         self.assertEqual(NON_EXPIRY_CONFIG.structural_target_min_distance_pts, 20.0)
-        self.assertEqual(NON_EXPIRY_CONFIG.target_1_fallback_min_pts, 15.0)
-        self.assertEqual(NON_EXPIRY_CONFIG.target_2_fallback_min_pts, 30.0)
+        # target_1_pts/target_2_pts + their fallback-min knobs were removed in
+        # TASK-185 (SL/T1/T2 now live in per_type_levels).
         self.assertEqual(NON_EXPIRY_CONFIG.oi_wall_conviction_multiplier, 1.5)
         self.assertEqual(NON_EXPIRY_CONFIG.oi_wall_wick_min_range_pts, 2.0)
         self.assertEqual(NON_EXPIRY_CONFIG.exhaustion_extreme_volume_factor, 1.5)
@@ -89,10 +89,13 @@ class BreakoutHarness(unittest.TestCase):
 
 
 class TestBreakoutSLAtLevel(BreakoutHarness):
-    def test_bearish_sl_is_exactly_the_level(self):
+    def test_bearish_signal_leaves_sl_for_engine(self):
+        # TASK-185 superseded TASK-175's structural SL: the detector no longer
+        # sets stop_loss (engine.apply_per_type_levels does). Placement is now
+        # covered by tests/unit/test_per_type_levels.py.
         signal = self._fire_bearish_signal()
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.stop_loss, 24100.0)  # no +25 buffer
+        self.assertEqual(signal.stop_loss, 0.0)
 
 
 class TestDeepCloseConfigurable(BreakoutHarness):
@@ -128,7 +131,9 @@ class TestOIWallSLAtStrike(unittest.TestCase):
     def tearDown(self):
         settings.apply_profile(NON_EXPIRY_CONFIG)
 
-    def test_bearish_sl_is_exactly_the_strike(self):
+    def test_bearish_signal_leaves_sl_for_engine(self):
+        # TASK-185: detector no longer sets SL (engine does). See
+        # tests/unit/test_per_type_levels.py.
         candle = OHLCVCandle(
             timestamp=datetime.now(), open=24095.0, high=24105.0,
             low=24090.0, close=24092.0, volume=1000
@@ -142,7 +147,7 @@ class TestOIWallSLAtStrike(unittest.TestCase):
             candle=candle, spot=24090.0, wall=wall,
             direction=Direction.BEARISH, option_type="PE", levels=[]
         )
-        self.assertEqual(signal.stop_loss, 24100.0)  # no +25 buffer
+        self.assertEqual(signal.stop_loss, 0.0)
 
 
 class TestExhaustionSLAtCandleExtreme(unittest.TestCase):
@@ -152,7 +157,9 @@ class TestExhaustionSLAtCandleExtreme(unittest.TestCase):
     def tearDown(self):
         settings.apply_profile(NON_EXPIRY_CONFIG)
 
-    def test_bearish_sl_is_exactly_the_candle_high(self):
+    def test_bearish_signal_leaves_sl_for_engine(self):
+        # TASK-185: detector no longer sets SL (engine does). See
+        # tests/unit/test_per_type_levels.py.
         detector = ExhaustionDetector()
         for _ in range(20):
             detector.volume_history.append(100000)
@@ -165,7 +172,7 @@ class TestExhaustionSLAtCandleExtreme(unittest.TestCase):
             levels=[ResistanceLevel(price=24000.0, source="PDL", strength=3)]
         )
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.stop_loss, 24160.0)  # no +20 buffer
+        self.assertEqual(signal.stop_loss, 0.0)
 
     def test_volume_history_size_from_config(self):
         settings.apply_profile(dataclasses.replace(

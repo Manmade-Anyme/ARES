@@ -7,13 +7,16 @@ from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Directi
 from config import settings
 
 
-def apply_per_type_levels(signal: AresSignal, settings) -> None:
-    """Apply the per-setup-type SL/T1/T2 policy in place (TASK-185).
+def apply_per_type_levels(signal: AresSignal, settings, levels=None) -> None:
+    """Set the per-setup-type SL/T1/T2 for a signal in place (TASK-185).
 
-    SL and T1 are REPLACED with fixed absolute distances from the trigger price,
-    looked up by setup type. T2 keeps the detector's structural value when it
-    lies beyond the new T1; otherwise it falls back to the per-type distance.
-    Unknown/unconfigured setup types are left untouched (structural behavior).
+    This is the single source of truth for a signal's trade levels — detectors
+    no longer compute them. Keyed by setup type from the active profile:
+      * SL and T1 are fixed absolute distances from the trigger price.
+      * T2 is the nearest structural support/resistance (from ``levels``) that
+        lies beyond T1 in the trade's favourable direction; when no such level
+        exists it falls back to the per-type distance.
+    Unknown/unconfigured setup types are left untouched (no per-type entry).
     """
     lv = settings.per_type_levels.get(signal.setup_type.value)
     if lv is None:
@@ -22,10 +25,16 @@ def apply_per_type_levels(signal: AresSignal, settings) -> None:
     sign = 1 if signal.direction == Direction.BULLISH else -1
     signal.stop_loss = entry - sign * lv.stop_pts
     signal.target_1 = entry + sign * lv.target_1_pts
-    # Keep a structural T2 only if it sits beyond the new T1 in the trade's
-    # favourable direction; else use the per-type fallback distance.
-    if (signal.target_2 - signal.target_1) * sign <= 0:
-        signal.target_2 = entry + sign * lv.target_2_fallback_pts
+    signal.target_2 = _resolve_target_2(entry, sign, signal.target_1, lv, levels)
+
+
+def _resolve_target_2(entry, sign, target_1, lv, levels):
+    """T2 = nearest structural level beyond T1 (favourable side), else per-type
+    fallback distance from entry."""
+    beyond = [lvl.price for lvl in (levels or []) if (lvl.price - target_1) * sign > 0]
+    if beyond:
+        return min(beyond, key=lambda p: (p - target_1) * sign)
+    return entry + sign * lv.target_2_fallback_pts
 
 from detectors.breakout import FailedBreakoutDetector
 from detectors.oi_wall import OIWallDetector
@@ -168,7 +177,7 @@ class AresEngine:
         # by setup type from the active profile. Runs BEFORE the R:R gate so the
         # gate evaluates the final, per-type levels.
         if signal:
-            apply_per_type_levels(signal, settings)
+            apply_per_type_levels(signal, settings, levels)
 
         if signal:
             # Risk:Reward Gate (reject setups whose risk to SL exceeds reward to T1)
