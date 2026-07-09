@@ -1,6 +1,6 @@
 import asyncio
 import math
-from typing import Dict, Any, Optional, Tuple
+from typing import Any, Optional, Tuple
 from models import AresSignal
 from config import settings
 

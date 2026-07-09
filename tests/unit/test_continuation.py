@@ -115,8 +115,7 @@ class TestContinuationStateMachine(unittest.TestCase):
         self.assertEqual(signal.direction, Direction.BULLISH)
         self.assertEqual(signal.option_type, "CE")
         self.assertEqual(signal.trigger_price, 24115.0)  # entry is the 2nd confirming candle's close
-        self.assertEqual(signal.stop_loss, 24096.0)  # exact pullback extreme, no buffer
-        self.assertLess(signal.target_1, signal.target_2)
+        self.assertEqual(signal.stop_loss, 0.0)  # SL set by engine per type (TASK-185)
         self.assertIsNone(self.det.state)  # reset after resolving
 
     def test_single_resumption_candle_does_not_fire(self):
@@ -189,8 +188,7 @@ class TestContinuationStateMachine(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal.direction, Direction.BEARISH)
         self.assertEqual(signal.option_type, "PE")
-        self.assertEqual(signal.stop_loss, 24060.0)
-        self.assertGreater(signal.target_1, signal.target_2)
+        self.assertEqual(signal.stop_loss, 0.0)  # SL set by engine per type (TASK-185)
 
     def test_pullback_timeout_resets_state(self):
         n = settings.continuation_regime_min_candles

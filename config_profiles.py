@@ -6,7 +6,37 @@ Selected automatically at startup based on whether today is an expiry day.
 Secrets (API keys, webhooks) are NOT here — they live in .env only.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class SetupLevels:
+    """
+    Per-setup-type SL / T1 / T2 in ABSOLUTE points from entry (TASK-185).
+
+    These are the single source of truth for a signal's trade levels; detectors
+    no longer compute SL/T1/T2. engine.apply_per_type_levels sets, per setup:
+      * stop_pts / target_1_pts — fixed distances from the trigger price.
+      * target_2_fallback_pts — T2 when no structural support/resistance level
+        sits beyond T1; otherwise T2 is that nearest structural level.
+
+    Re-tune monthly by editing the numbers in each profile below; no code change.
+    """
+    stop_pts: float
+    target_1_pts: float
+    target_2_fallback_pts: float
+
+
+# Validated defaults (TASK-185 SL/target study, replace-semantics). Only
+# EXHAUSTION_REVERSAL is well-supported (n=13); the other three (n=5/4/2) are
+# indicative and expected to be re-tuned after ~1 month of live data.
+#                          SL   T1   T2fb
+_PER_TYPE_LEVELS_DEFAULT = {
+    "EXHAUSTION_REVERSAL": SetupLevels(12.0, 24.0, 40.0),
+    "TREND_CONTINUATION":  SetupLevels(25.0, 40.0, 80.0),
+    "OI_WALL_REJECTION":   SetupLevels(12.0, 25.0, 40.0),
+    "FAILED_BREAKOUT":     SetupLevels(15.0, 30.0, 55.0),
+}
 
 
 @dataclass
@@ -89,14 +119,11 @@ class TuningConfig:
     # hardcoded deque maxlen of 20).
     exhaustion_volume_history_size: int = 20
 
-    # Structural target selection — shared by all 3 detectors (TASK-175; the
-    # 20/15/30-pt literals were hardcoded in each detector's target block).
-    # Min distance from entry close for a level to qualify as a target:
+    # Min distance from entry close for a structural level to qualify. Still
+    # used by the continuation detector's scoring (opposing-level distance);
+    # the per-detector target-selection use was removed with TASK-185, when
+    # SL/T1/T2 moved to per_type_levels + engine.apply_per_type_levels.
     structural_target_min_distance_pts: float = 20.0
-    # Below these distances a structural T1/T2 is discarded for the fixed
-    # target_1_pts/target_2_pts fallback:
-    target_1_fallback_min_pts: float = 15.0
-    target_2_fallback_min_pts: float = 30.0
 
     # Trade quality gates (TASK-171 audit P0). The R:R gate is the only
     # remaining protective filter — TASK-182 removed the observation-only gate
@@ -130,9 +157,14 @@ class TuningConfig:
     continuation_resume_volume_ratio: float = 1.2
     continuation_min_score: int = 2
 
-    # Targets & Zones
-    target_1_pts: float = 35.0
-    target_2_pts: float = 70.0
+    # Per-setup-type SL / T1 / T2 (TASK-185). Applied centrally in the engine,
+    # keyed by SetupType.value. See SetupLevels above. Same table in both
+    # profiles for now; expiry may diverge after a month of live re-tuning.
+    per_type_levels: dict = field(
+        default_factory=lambda: dict(_PER_TYPE_LEVELS_DEFAULT)
+    )
+
+    # Zones (T1/T2 distances now live per setup type in per_type_levels above)
     strike_interval: int = 50
     entry_zone_offset_pts: float = 5.0
     level_scan_range: float = 500.0
@@ -165,8 +197,7 @@ NON_EXPIRY_CONFIG = TuningConfig(
     exhaustion_volume_multiplier=2.5,
     exhaustion_body_ratio=0.35,
     exhaustion_iv_spike_threshold=3.0,
-    target_1_pts=35.0,
-    target_2_pts=70.0,
+    per_type_levels=dict(_PER_TYPE_LEVELS_DEFAULT),
     level_scan_range=500.0,
 )
 
@@ -195,9 +226,9 @@ EXPIRY_CONFIG = TuningConfig(
     exhaustion_body_ratio=0.30,
     exhaustion_iv_spike_threshold=6.0,
 
-    # Targets — smaller (faster moves on expiry)
-    target_1_pts=25.0,
-    target_2_pts=50.0,
+    # Per-type SL/T1/T2 — identical to NON_EXPIRY for now (TASK-185). Replace
+    # this line with an explicit dict to give expiry its own tuned levels.
+    per_type_levels=dict(_PER_TYPE_LEVELS_DEFAULT),
     level_scan_range=300.0,
 
     # Trend Continuation — runs on expiry too, using the class-default

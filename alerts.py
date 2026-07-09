@@ -1,6 +1,6 @@
 import httpx
 from datetime import datetime, timezone, timedelta
-from models import AresSignal, SetupType
+from models import AresSignal
 from config import settings
 
 def format_signal(signal: AresSignal, spot: float) -> str:

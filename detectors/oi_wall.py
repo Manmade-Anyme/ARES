@@ -241,60 +241,8 @@ class OIWallDetector:
         confidence, extra_reasons = self._evaluate_confidence(candle, wall, direction)
         reasons.extend(extra_reasons)
         
-        # --- Dynamic Target Selection ---
-        target_1 = None
-        target_2 = None
-
-        if direction == Direction.BEARISH:
-            # SL exactly at the wall strike — no buffer (TASK-175)
-            stop_loss = strike
-
-            # Find supports below spot
-            supports = sorted([lvl.price for lvl in levels if lvl.price < candle.close], reverse=True)
-            # Filter out levels too close to entry
-            supports = [s for s in supports if abs(s - candle.close) >= settings.structural_target_min_distance_pts]
-            
-            if len(supports) >= 1:
-                target_1 = supports[0]
-                reasons.append(f"Target 1 set at structural support: {target_1:.2f}")
-            if len(supports) >= 2:
-                target_2 = supports[1]
-                reasons.append(f"Target 2 set at structural support: {target_2:.2f}")
-            
-            # Fallback to fixed points if levels not found or too close
-            if not target_1 or abs(target_1 - candle.close) < settings.target_1_fallback_min_pts:
-                target_1 = candle.close - settings.target_1_pts
-            if not target_2 or abs(target_2 - candle.close) < settings.target_2_fallback_min_pts:
-                target_2 = candle.close - settings.target_2_pts
-        else:
-            # SL exactly at the wall strike — no buffer (TASK-175)
-            stop_loss = strike
-
-            # Find resistances above spot
-            resistances = sorted([lvl.price for lvl in levels if lvl.price > candle.close])
-            # Filter out levels too close to entry
-            resistances = [r for r in resistances if abs(r - candle.close) >= settings.structural_target_min_distance_pts]
-            
-            if len(resistances) >= 1:
-                target_1 = resistances[0]
-                reasons.append(f"Target 1 set at structural resistance: {target_1:.2f}")
-            if len(resistances) >= 2:
-                target_2 = resistances[1]
-                reasons.append(f"Target 2 set at structural resistance: {target_2:.2f}")
-                
-            if not target_1 or abs(target_1 - candle.close) < settings.target_1_fallback_min_pts:
-                target_1 = candle.close + settings.target_1_pts
-            if not target_2 or abs(target_2 - candle.close) < settings.target_2_fallback_min_pts:
-                target_2 = candle.close + settings.target_2_pts
-
-        # Ensure correct ordering (T1 is closer to entry than T2)
-        if direction == Direction.BEARISH and target_1 < target_2:
-            target_1, target_2 = target_2, target_1
-            reasons = [r.replace("Target 1", "TEMP").replace("Target 2", "Target 1").replace("TEMP", "Target 2") for r in reasons]
-        elif direction == Direction.BULLISH and target_1 > target_2:
-            target_1, target_2 = target_2, target_1
-            reasons = [r.replace("Target 1", "TEMP").replace("Target 2", "Target 1").replace("TEMP", "Target 2") for r in reasons]
-
+        # SL / T1 / T2 are assigned centrally by the engine per setup type
+        # (TASK-185, apply_per_type_levels). Detectors only classify direction.
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)
         strike_to_trade = int(round(spot / settings.strike_interval) * settings.strike_interval)
 
@@ -303,9 +251,9 @@ class OIWallDetector:
             direction=direction,
             trigger_price=candle.close,
             entry_zone=entry_zone,
-            stop_loss=stop_loss,
-            target_1=target_1,
-            target_2=target_2,
+            stop_loss=0.0,      # set by engine.apply_per_type_levels (TASK-185)
+            target_1=0.0,       # set by engine.apply_per_type_levels
+            target_2=0.0,       # set by engine.apply_per_type_levels
             confidence=confidence,
             reasons=reasons,
             timestamp=candle.timestamp,

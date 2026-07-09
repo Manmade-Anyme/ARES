@@ -3,8 +3,38 @@ from datetime import datetime, timedelta
 from statistics import mean
 from typing import Optional, List, Dict, Any
 
-from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel
+from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction
 from config import settings
+
+
+def apply_per_type_levels(signal: AresSignal, settings, levels=None) -> None:
+    """Set the per-setup-type SL/T1/T2 for a signal in place (TASK-185).
+
+    This is the single source of truth for a signal's trade levels — detectors
+    no longer compute them. Keyed by setup type from the active profile:
+      * SL and T1 are fixed absolute distances from the trigger price.
+      * T2 is the nearest structural support/resistance (from ``levels``) that
+        lies beyond T1 in the trade's favourable direction; when no such level
+        exists it falls back to the per-type distance.
+    Unknown/unconfigured setup types are left untouched (no per-type entry).
+    """
+    lv = settings.per_type_levels.get(signal.setup_type.value)
+    if lv is None:
+        return
+    entry = signal.trigger_price
+    sign = 1 if signal.direction == Direction.BULLISH else -1
+    signal.stop_loss = entry - sign * lv.stop_pts
+    signal.target_1 = entry + sign * lv.target_1_pts
+    signal.target_2 = _resolve_target_2(entry, sign, signal.target_1, lv, levels)
+
+
+def _resolve_target_2(entry, sign, target_1, lv, levels):
+    """T2 = nearest structural level beyond T1 (favourable side), else per-type
+    fallback distance from entry."""
+    beyond = [lvl.price for lvl in (levels or []) if (lvl.price - target_1) * sign > 0]
+    if beyond:
+        return min(beyond, key=lambda p: (p - target_1) * sign)
+    return entry + sign * lv.target_2_fallback_pts
 
 from detectors.breakout import FailedBreakoutDetector
 from detectors.oi_wall import OIWallDetector
@@ -142,6 +172,13 @@ class AresEngine:
         # system in trending sessions by turning tradeable setups into
         # observation-only alerts or suppressing them outright. Every fired
         # setup is now a live trade unless its risk:reward is degenerate.
+        # 5b. Per-setup-type SL/T1/T2 policy (TASK-185). Replaces structural SL
+        # and T1 with fixed per-type distances and sets the T2 fallback, keyed
+        # by setup type from the active profile. Runs BEFORE the R:R gate so the
+        # gate evaluates the final, per-type levels.
+        if signal:
+            apply_per_type_levels(signal, settings, levels)
+
         if signal:
             # Risk:Reward Gate (reject setups whose risk to SL exceeds reward to T1)
             risk = abs(signal.trigger_price - signal.stop_loss)

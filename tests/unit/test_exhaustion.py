@@ -1,8 +1,6 @@
 import pytest
-from unittest.mock import patch
 from datetime import datetime
-from models import OHLCVCandle, SetupType, Direction, ResistanceLevel
-from config import settings
+from models import OHLCVCandle, ResistanceLevel
 from detectors.exhaustion import ExhaustionDetector
 
 @pytest.fixture
@@ -17,80 +15,11 @@ def sample_levels():
 def exhaustion_detector():
     return ExhaustionDetector()
 
-def test_bearish_exhaustion_dynamic_targets(exhaustion_detector, sample_levels):
-    # Bullish push up, ending in a green doji at the top (close > open)
-    candle = OHLCVCandle(
-        timestamp=datetime.now(),
-        open=24150.0,
-        high=24160.0,
-        low=24140.0,
-        close=24155.0,
-        volume=1000000
-    )
-    
-    # Fill volume history with low volume to ensure climax
-    for _ in range(20):
-        exhaustion_detector.volume_history.append(100000)
-        
-    signal = exhaustion_detector.update(candle=candle, iv_current=20.0, iv_prev=15.0, levels=sample_levels)
-    
-    assert signal is not None
-    assert signal.setup_type == SetupType.EXHAUSTION_REVERSAL
-    assert signal.direction == Direction.BEARISH
-    
-    # Target 1 should be the nearest support below spot (24155.0) -> 24100.0
-    assert signal.target_1 == 24100.0
-    # Target 2 should be the next support -> 24000.0
-    assert signal.target_2 == 24000.0
-
-def test_bullish_exhaustion_dynamic_targets(exhaustion_detector, sample_levels):
-    # Bearish push down, ending in a red doji at the bottom (close < open)
-    candle = OHLCVCandle(
-        timestamp=datetime.now(),
-        open=24050.0,
-        high=24060.0,
-        low=24040.0,
-        close=24045.0,
-        volume=1000000
-    )
-    
-    # Fill volume history with low volume to ensure climax
-    for _ in range(20):
-        exhaustion_detector.volume_history.append(100000)
-        
-    signal = exhaustion_detector.update(candle=candle, iv_current=20.0, iv_prev=15.0, levels=sample_levels)
-    
-    assert signal is not None
-    assert signal.setup_type == SetupType.EXHAUSTION_REVERSAL
-    assert signal.direction == Direction.BULLISH
-    
-    # Target 1 should be nearest resistance above spot (24045.0) -> 24100.0
-    assert signal.target_1 == 24100.0
-    # Target 2 should be next resistance -> 24200.0
-    assert signal.target_2 == 24200.0
-
-def test_target_fallback_mechanism(exhaustion_detector):
-    # Level too close (< 15 pts) -> Should use fixed offset
-    levels = [ResistanceLevel(price=24150.0, source="PDH", strength=3)]
-    
-    candle = OHLCVCandle(
-        timestamp=datetime.now(),
-        open=24142.0,
-        high=24155.0,
-        low=24125.0,
-        close=24138.0, # Target 1 (24150) is only 12 pts away, fallback expected
-        volume=1000000
-    )
-    
-    # Bullish Exhaustion (Red Doji)
-    for _ in range(20):
-        exhaustion_detector.volume_history.append(100000)
-        
-    signal = exhaustion_detector.update(candle=candle, iv_current=20.0, iv_prev=15.0, levels=levels)
-    
-    assert signal is not None
-    assert signal.target_1 == candle.close + settings.target_1_pts
-    assert signal.target_2 == candle.close + settings.target_2_pts
+# NOTE (TASK-185): the per-detector "dynamic target selection", the fixed
+# target_1_pts/target_2_pts fallback, and the T1/T2 ordering-swap were removed
+# from the detectors — SL/T1/T2 are now set centrally by
+# engine.apply_per_type_levels and covered by tests/unit/test_per_type_levels.py.
+# The old target/fallback/sorting-swap tests were deleted accordingly.
 
 def test_exhaustion_confidence_high(exhaustion_detector, sample_levels):
     # Climax volume: 1000000 (avg 100000, mult 2.5, extreme 1.5 * 2.5 * 100000 = 375000) -> 1 point
@@ -167,78 +96,6 @@ def test_exhaustion_no_signal_conditions(exhaustion_detector):
         exhaustion_detector.volume_history.append(100000)
     signal = exhaustion_detector.update(candle=candle, iv_current=20.0, iv_prev=15.0, levels=[])
     assert signal is None
-
-def test_exhaustion_confidence_high_bullish_and_sorting_swap(exhaustion_detector):
-    # Bullish setup fallback swap: close + target_1_pts (100) > close + target_2_pts (50) -> triggers swap
-    levels = []
-    candle = OHLCVCandle(
-        timestamp=datetime.now(),
-        open=24050.0,
-        high=24090.0,
-        low=24005.0,
-        close=24049.0,
-        volume=1000000
-    )
-    for _ in range(20):
-        exhaustion_detector.volume_history.append(100000)
-    
-    with patch('detectors.exhaustion.settings') as mock_settings:
-        mock_settings.exhaustion_min_candles = 20
-        mock_settings.exhaustion_volume_multiplier = 2.5
-        mock_settings.exhaustion_extreme_volume_factor = 1.5
-        mock_settings.exhaustion_extreme_doji_factor = 0.5
-        mock_settings.exhaustion_level_proximity_pts = 10.0
-        mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
-        mock_settings.exhaustion_body_ratio = 0.35
-        mock_settings.exhaustion_iv_spike_threshold = 3.0
-        mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.strike_interval = 50
-        # Mock target points so Target 1 (100) > Target 2 (50)
-        mock_settings.target_1_pts = 100.0
-        mock_settings.target_2_pts = 50.0
-        
-        signal = exhaustion_detector.update(candle=candle, iv_current=25.0, iv_prev=15.0, levels=levels)
-        assert signal is not None
-        assert signal.target_1 == 24049.0 + 50.0
-        assert signal.target_2 == 24049.0 + 100.0
-
-def test_exhaustion_bearish_sorting_swap(exhaustion_detector):
-    # Bearish setup fallback swap: close - target_1_pts (100) < close - target_2_pts (50) -> triggers swap
-    levels = []
-    candle = OHLCVCandle(
-        timestamp=datetime.now(),
-        open=24100.0,
-        high=24140.0,
-        low=24060.0,
-        close=24101.0,
-        volume=1000000
-    )
-    for _ in range(20):
-        exhaustion_detector.volume_history.append(100000)
-
-    with patch('detectors.exhaustion.settings') as mock_settings:
-        mock_settings.exhaustion_min_candles = 20
-        mock_settings.exhaustion_volume_multiplier = 2.5
-        mock_settings.exhaustion_extreme_volume_factor = 1.5
-        mock_settings.exhaustion_extreme_doji_factor = 0.5
-        mock_settings.exhaustion_level_proximity_pts = 10.0
-        mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
-        mock_settings.exhaustion_body_ratio = 0.35
-        mock_settings.exhaustion_iv_spike_threshold = 3.0
-        mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.strike_interval = 50
-        # Mock target points so Target 1 (100) > Target 2 (50) -> close - 100 < close - 50 -> triggers swap
-        mock_settings.target_1_pts = 100.0
-        mock_settings.target_2_pts = 50.0
-        
-        signal = exhaustion_detector.update(candle=candle, iv_current=20.0, iv_prev=15.0, levels=levels)
-        assert signal is not None
-        assert signal.target_1 == 24101.0 - 50.0
-        assert signal.target_2 == 24101.0 - 100.0
 
 def test_exhaustion_bullish_near_level(exhaustion_detector):
     # Bullish setup (Red Doji, close < open) where candle low is within 10 pts of a level
