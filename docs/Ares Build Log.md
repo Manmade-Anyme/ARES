@@ -4,6 +4,31 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-09 · Silent-Detector Audit + Restore MEDIUM Breakouts (TASK-184)
+
+Started from a live QA: "FailedBreakout / OIWall / Exhaustion feel silent — only TrendContinuation fires. By how much config margin did we miss?" Audited `ml_collection` (3,134 cycles, 06-29→07-09) plus a live Dhan chain pull.
+
+**Findings**
+- **Temporal flip on 07-07**: 06-29→07-06 the three faders fired 32× and continuation 0×; 07-07→07-09 the faders went to **0** and only continuation fired (matches the user's lived experience). Market data healthy both windows.
+- **Breakout — config too tight (the fix target).** On 07-07 there were **10 genuine closed-back failed breakouts; 3 hit exactly score 2** and were all filtered by `breakout_failure_min_score = 3`. The missing 3rd point is usually `weak_volume`, which is anti-correlated with a real breakout. The `9ddb0cf` "working" baseline used `min_score = 2`.
+- **OI-Wall — pre-existing design limit (not changed here).** `oi_wall_min_oi_change_pct = 5.0` is *per 60s cycle* and unchanged since the baseline; standing walls (live: 102-lakh PE @24000, 64-lakh CE @24100, both <80pt from spot) build only 0.3-1%/cycle → never re-qualify. Tracked for a future task.
+- **Exhaustion — genuine regime.** Firing logic byte-for-byte unchanged since baseline; needs vol-climax ∧ doji simultaneously (anti-correlated), so trend days legitimately yield ~none (07-07→09 had 1 raw setup).
+
+**Decision (TASK-184)** — full rationale in [directives/TASK-184](../directives/TASK-184_restore-medium-breakout.md). Lower `breakout_failure_min_score` **3→2** (both profiles) to restore the **MEDIUM-confidence** breakout tier. ARES is a **manual-trading confirmation aid**, not only an autotrader: a MEDIUM signal in the trader's direction is confidence, against it is a prompt to reconsider, and a silent detector gives neither. The `confidence` field already labels MEDIUM/HIGH. `closed_back` stays a hard gate; score 0-1 still never fires; R:R gate unchanged. **Intentional — not a bug; do not re-raise to 3.**
+
+**Validation**: TDD — added `tests/unit/test_task184_medium_breakout.py` (4 tests, red→green). Rewrote the score-mechanic assertions in `test_task174_oi_scoring.py` / `test_task175_sl_config_obs.py` / `test_audit_p1_tuning.py` to check confidence + reason strings instead of fire-vs-None (they had encoded min_score=3). **250 tests green.** End-to-end replay: the real `FailedBreakoutDetector` with the new config fires **4 MEDIUM breakouts on 07-07** (min_score=3 baseline: 0).
+
+**Honest caveat**: a forward P&L sim of the recovered 07-07 signals was net negative (~-47 pts, counter-trend fades in a down-drift); the live continuation trades that window also lost. Restoring MEDIUM raises signal *count*, not guaranteed profit — accepted by design (value = manual-management confirmation). Future task: trend-alignment guard so faders fire only into levels that hold.
+
+**Status**: Implemented on `feature/TASK-184-restore-medium-breakout`. PR pending user review — **not merged** (user merges).
+
+**TODOs**
+- [ ] Open PR, user review, merge.
+- [ ] Future task: fix OI-wall standing-wall blindness (absolute-magnitude or day-open baseline instead of per-cycle 5% build); it also revives the structural-level system feeding all detectors.
+- [ ] Future task: trend-alignment guard for the faders (fade only into a level that holds) to lift fader P&L.
+
+---
+
 ## 2026-07-08 11:30 · ML Offline Labeling & XGBoost Training Pipeline (TASK-183)
 
 Started from a live QA of the ML side: "is `ml_collection` recording as expected, and does the collected data add value?" Audit findings (all verified against Supabase): collection itself is **healthy** — 2,669 rows, ~350/trading day, all 7 feature groups + `raw_candle` + `raw_atm_oi` fully populated. **But the data was inert**: (1) `ml_collection.trade_outcome`/`trade_pnl`/`trade_id` are **0/2669 non-null** — nothing ever back-fills them despite the schema comment; (2) the trainer (`data.py`, `source="ares"`) reads a *different* table, `trade_analytics` (38 rows, sparse features), and **never `ml_collection`**; (3) XGBoost was **dormant** — empty `models/`, `ml_predictions=0`. Net: rich features collected every minute, but unlabeled, unread, untrained. User directive: fix it so the data adds value, create ADR + task, and **leave the live implementation untouched**.

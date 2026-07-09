@@ -11,8 +11,9 @@ Tests for TASK-174 breakout OI scoring fix:
   a reason string for signal context only.
 - The score matrix shrinks from 5 to 4 conditions:
   weak_volume, iv_falling, writers_active, deep_close.
-  breakout_failure_min_score stays 3 → a signal now needs 3 of 4 real
-  conditions instead of 3 of 5 (where 2 could come from one OI reading).
+  (TASK-184 later lowered breakout_failure_min_score 3→2 to restore the
+  MEDIUM tier; these tests therefore assert the *scoring* — which conditions
+  earn a point — via confidence/reason strings rather than fire-vs-None.)
 """
 import unittest
 from datetime import datetime
@@ -72,19 +73,26 @@ class BreakoutScoringHarness(unittest.TestCase):
 class TestWritersHoldingNotScored(BreakoutScoringHarness):
     """OI merely holding (or tiny growth) no longer contributes a point."""
 
-    def test_flat_oi_with_two_conditions_does_not_fire(self):
-        """weak_volume + deep_close + flat OI (holding only) = 2 < 3 → rejected.
-        Pre-TASK-174 this fired: holding gave a free 3rd point."""
+    def test_flat_oi_holding_earns_no_point_fires_medium(self):
+        """weak_volume + deep_close + flat OI (holding only) = 2/4. Holding is
+        unscored (TASK-174) so it adds no point: post-TASK-184 the setup fires
+        but as MEDIUM, with no writers-active reason. Pre-TASK-174 holding gave
+        a free 3rd point (HIGH)."""
         self._breakout_up()
         signal = self._fail_back(ce_oi=100, ce_oi_prev=100)
-        self.assertIsNone(signal)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertFalse(any("actively defended" in r for r in signal.reasons))
 
-    def test_five_percent_growth_below_threshold_does_not_fire(self):
-        """5% OI growth < 10% threshold → not active → 2 < 3 → rejected.
-        Pre-TASK-174 the 3% hardcoded bar made this fire with score 4."""
+    def test_five_percent_growth_below_threshold_earns_no_point(self):
+        """5% OI growth < 10% threshold → writers_active False → score stays
+        2/4 (weak_volume + deep_close). Fires MEDIUM (TASK-184) with no
+        writers-active reason; pre-TASK-174 the 3% bar made this score 4/HIGH."""
         self._breakout_up()
         signal = self._fail_back(ce_oi=105, ce_oi_prev=100)
-        self.assertIsNone(signal)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertFalse(any("actively defended" in r for r in signal.reasons))
 
 
 class TestWritersActiveScored(BreakoutScoringHarness):

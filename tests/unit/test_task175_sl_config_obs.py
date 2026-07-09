@@ -97,8 +97,10 @@ class TestBreakoutSLAtLevel(BreakoutHarness):
 
 class TestDeepCloseConfigurable(BreakoutHarness):
     def test_raised_deep_close_threshold_drops_the_point(self):
-        """With deep-close needing 50pts, a 10pt close-back scores only
-        weak_volume + writers_active = 2 < 3 → no signal (IV flat)."""
+        """With deep-close needing 50pts, a 10pt close-back no longer earns the
+        deep_close point: score = weak_volume + writers_active = 2/4 (IV flat).
+        Post-TASK-184 that still fires, but as MEDIUM and without the deep-close
+        reason — proving the raised threshold dropped the point."""
         settings.apply_profile(dataclasses.replace(
             NON_EXPIRY_CONFIG, breakout_deep_close_pts=50.0
         ))
@@ -114,7 +116,9 @@ class TestDeepCloseConfigurable(BreakoutHarness):
         signal = self.detector.update(
             candle2, 100000.0, 0.0, 112, 100, 100, 100, self.levels
         )
-        self.assertIsNone(signal)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertFalse(any("closed back deeply" in r for r in signal.reasons))
 
 
 class TestOIWallSLAtStrike(unittest.TestCase):

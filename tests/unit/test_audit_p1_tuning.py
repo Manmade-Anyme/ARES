@@ -1,7 +1,9 @@
 """
-Tests for TASK-172 audit P1 tuning (the parts that survive TASK-182):
-- Item 8: breakout_failure_min_score raised 2→3 and closed_back excluded from
-  the failure score (it stays a hard requirement, not a scored condition).
+Tests for TASK-172 audit P1 tuning (the parts that survive TASK-182 / TASK-184):
+- Item 8: closed_back is excluded from the failure score (it stays a hard
+  requirement, not a scored condition). NOTE: TASK-172 also raised
+  breakout_failure_min_score 2→3, but TASK-184 reverted that to 2 to restore
+  MEDIUM-confidence breakout signals — so these tests assert min_score == 2.
 - Item 12: confidence bars standardized at >=60% of each detector's score
   matrix.
 
@@ -60,12 +62,18 @@ class TestBreakoutScoreExcludesClosedBack(unittest.TestCase):
         self.detector.update(candle1, 100000.0, 5.0, 100, 100, 100, 100, self.levels)
         self.assertIsNotNone(self.detector.active)
 
-    def test_min_score_default_raised_to_three(self):
-        self.assertEqual(settings.breakout_failure_min_score, 3)
+    def test_min_score_default_is_two_task184(self):
+        # TASK-184 reverted TASK-172's 2→3 bump: MEDIUM-confidence breakouts fire
+        # again (the tool is a manual-trading confirmation aid, a silent detector
+        # is useless). closed_back stays a hard gate; see
+        # tests/unit/test_task184_medium_breakout.py and CHANGELOG TASK-184.
+        self.assertEqual(settings.breakout_failure_min_score, 2)
 
-    def test_closed_back_plus_two_conditions_no_longer_fires(self):
-        """Old scoring: closed_back(1) + writers_holding(1) + deep_close(1) = 3 → fired.
-        New scoring: writers_holding(1) + deep_close(1) = 2 < 3 → rejected."""
+    def test_closed_back_plus_writers_holding_does_not_fire(self):
+        """closed_back is a gate (not scored) and writers_holding is unscored
+        (TASK-174), so this candle scores only deep_close(1) = 1 < 2 → rejected.
+        Confirms merely closing back with OI 'holding' is not enough even after
+        TASK-184 lowered the bar to 2."""
         self._breakout_up()
         # avg volume low → breakout volume NOT weak; IV flat; OI unchanged (holding, not active)
         candle2 = OHLCVCandle(
@@ -90,7 +98,7 @@ class TestBreakoutScoreExcludesClosedBack(unittest.TestCase):
         self.assertEqual(signal.confidence, "HIGH")
 
     def test_shallow_close_back_with_weak_conditions_rejected(self):
-        """closed_back alone (score 0-2) can never fire under the new gate."""
+        """closed_back alone (score 0) can never fire — below the min of 2."""
         self._breakout_up()
         candle2 = OHLCVCandle(
             timestamp=datetime.now(), open=24110.0, high=24115.0,
