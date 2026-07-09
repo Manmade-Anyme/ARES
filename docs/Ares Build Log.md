@@ -4,6 +4,39 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-09 · Per-Setup-Type SL/T1/T2 Config — Single Source of Truth (TASK-185)
+
+Turned the TASK-185 SL/target study into a shipped feature: each detector setup now carries its own **SL / T1 / T2**, editable from config, applied centrally by the engine. Replaces the old flat, purely-structural stops that had *opposite* problems per setup (exhaustion too tight ~0.6–4pt; oi_wall/breakout too wide ~30–48pt) — no single global knob could fix both.
+
+**Design (decided via /grill-me before coding)**
+- **Semantics**: SL and T1 are fixed absolute per-type distances from entry (replace structural). T2 = nearest structural level from `levels` beyond T1, else a per-type fallback distance.
+- **Placement**: one engine step, `apply_per_type_levels(signal, settings, levels)`, runs in `tick()` right after the detector returns and **before the R:R gate** (so the gate sees final levels). Config-driven, keyed by `SetupType.value`.
+- **Config shape**: `SetupLevels` dataclass + `per_type_levels` on `TuningConfig`, set in both profiles (identical for now; expiry may diverge after a month of live re-tuning).
+
+**Shipped values** (validated, replace-semantics): EXHAUSTION 12/24/40 · CONTINUATION 25/40/80 · OI_WALL 12/25/40 · FAILED_BREAKOUT 15/30/55. R:R for all four ≥ 1.0 → nothing suppressed. Only EXHAUSTION (n=13) is well-supported; the other three (n=5/4/2) are indicative → **user re-tunes the 12 numbers after ~1 month**.
+
+**Full cleanup (single source of truth)** — user asked to remove the old implementation:
+- Detectors (all 4) no longer compute SL/T1/T2: removed the structural stop, structural/fixed target selection, T1/T2 ordering-swap and "Target set at structural…" reasons. They emit `0.0` placeholders; the engine fills them. Detection, direction, `option_type`, `entry_zone`, `strike` unchanged.
+- Removed now-dead config knobs: `target_1_pts`, `target_2_pts`, `target_1_fallback_min_pts`, `target_2_fallback_min_pts` (kept `structural_target_min_distance_pts` — continuation scoring still uses it).
+- Removed dead imports (breakout `Tuple`, options_math `Dict`, alerts `SetupType`) + 32 dead `mock_settings.target_*` fixture lines.
+
+**Interaction surfaced honestly**: for the 4 configured types the R:R gate is now largely inert (per-type R:R ≥ 1 by construction) but still guards unconfigured/misconfigured entries — added a test proving it catches a misconfigured per-type entry (reward < risk).
+
+**Validation**: TDD — new `tests/unit/test_per_type_levels.py` (20 tests: SL/T1 replace both directions, T2 nearest-level vs fallback, R:R passes, unknown-type safety, config pinned). Updated the detector / task175 / config tests to the new reality. **263 tests green**; 7 pre-existing failures unchanged (scratch async infra, test_analytics_qa, test_alerts). Net **+554 / −697** lines.
+
+**Decisions**
+- `per_type_levels` is the ONLY knob for trade levels; no structural fallback path remains.
+- T2 stays structural-first (nearest level beyond T1); fixed per-type T2 applies only when no such level exists.
+- Detectors detect; the engine owns trade levels — clean separation.
+
+**Status**: **Merged (PR #32)**. POC/design record: [directives/TASK-185_pertype-config-POC.md](../directives/TASK-185_pertype-config-POC.md).
+
+**TODOs**
+- [ ] After ~1 month (≈2026-08) re-analyse live trades and adjust the per-type numbers.
+- [ ] (Optional) sweep pre-existing unused imports in unrelated test files.
+
+---
+
 ## 2026-07-09 · Silent-Detector Audit + Restore MEDIUM Breakouts (TASK-184)
 
 Started from a live QA: "FailedBreakout / OIWall / Exhaustion feel silent — only TrendContinuation fires. By how much config margin did we miss?" Audited `ml_collection` (3,134 cycles, 06-29→07-09) plus a live Dhan chain pull.
