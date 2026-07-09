@@ -28,10 +28,22 @@ class TuningConfig:
 
     # Failed Breakout Detector
     breakout_confirmation_candles: int = 3
-    # Minimum scored conditions (of 5) required alongside the mandatory
-    # closed_back gate. TASK-172 raised 2→3 and removed closed_back from the
-    # score — the old 2 effectively meant "closed back + one coin-flip".
-    breakout_failure_min_score: int = 3
+    # Minimum scored conditions (of 4) required alongside the mandatory
+    # closed_back gate.
+    #
+    # TASK-184 — INTENTIONAL, NOT A BUG. Set back to 2 (from the 3 that TASK-172
+    # introduced). At 3 the engine fired only HIGH-confidence breakouts (score
+    # >= 60% of the matrix) and silenced every MEDIUM one (score 2/4 == 50%).
+    # ARES is used as a manual-trading confirmation aid, not only an autotrader:
+    # a MEDIUM breakout that agrees with an open position is useful confidence,
+    # one that disagrees is a useful prompt to reconsider, and a silent detector
+    # gives neither. The AresSignal already carries a `confidence` field so the
+    # trader can weight MEDIUM vs HIGH themselves — the engine must not
+    # pre-suppress the MEDIUM tier. closed_back remains a hard gate and the
+    # score still filters pure noise (score 0-1 never fires). Do NOT raise this
+    # back to 3 to "tighten precision"; see CHANGELOG TASK-184 and
+    # tests/unit/test_task184_medium_breakout.py.
+    breakout_failure_min_score: int = 2
     breakout_weak_volume_ratio: float = 0.75
     breakout_iv_falling_threshold: float = -3.0
     # Minimum ATM OI growth (%) for the writers_active scored condition

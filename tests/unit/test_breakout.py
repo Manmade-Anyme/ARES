@@ -85,9 +85,9 @@ def test_failed_breakout_confidence_high(breakout_detector, sample_levels):
     assert signal.confidence == "HIGH"
 
 def test_failed_breakout_weak_failure_rejected(breakout_detector, sample_levels):
-    # TASK-172 (audit item 8): closed_back is a hard gate, not a scored point,
-    # and the min score is 3. A marginal close-back with no scored conditions
-    # produces no signal at all.
+    # closed_back is a hard gate, not a scored point (TASK-172 audit item 8);
+    # the min score is 2 (TASK-184 restored the MEDIUM tier). A marginal
+    # close-back with no scored conditions (score 0) still produces no signal.
     candle1 = OHLCVCandle(
         timestamp=datetime.now(), open=24090.0, high=24120.0, low=24080.0, close=24110.0, volume=50000
     )
@@ -98,7 +98,7 @@ def test_failed_breakout_weak_failure_rejected(breakout_detector, sample_levels)
     # Avg volume 10000 -> breakout volume (50000) not weak -> 0 points
     # IV change is 0.0 > -3.0 -> 0 points
     # Options writers CE OI change is 0% -> 0 points
-    # Writers held -> unscored (TASK-174); total score = 0 < 3, closed_back not counted
+    # Writers held -> unscored (TASK-174); total score = 0 < 2, closed_back not counted
     candle2 = OHLCVCandle(
         timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24099.0, volume=40000
     )
