@@ -1,8 +1,6 @@
 import pytest
-from unittest.mock import patch
 from datetime import datetime
-from models import OHLCVCandle, SetupType, Direction, ResistanceLevel
-from config import settings
+from models import OHLCVCandle, ResistanceLevel
 from detectors.exhaustion import ExhaustionDetector
 
 @pytest.fixture

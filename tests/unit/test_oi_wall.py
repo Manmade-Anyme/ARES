@@ -1,6 +1,6 @@
 import unittest
-from unittest.mock import MagicMock, patch
-from models import OHLCVCandle, SetupType, Direction, ResistanceLevel
+from unittest.mock import patch
+from models import OHLCVCandle, Direction
 from datetime import datetime
 from detectors.oi_wall import OIWallDetector
 
@@ -17,13 +17,9 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_conviction_multiplier = 1.5
         mock_settings.oi_wall_wick_min_range_pts = 2.0
         mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.target_1_pts = 35.0
-        mock_settings.target_2_pts = 70.0
 
         candle = OHLCVCandle(
             timestamp=datetime.now(),
@@ -65,13 +61,9 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_conviction_multiplier = 1.5
         mock_settings.oi_wall_wick_min_range_pts = 2.0
         mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.target_1_pts = 35.0
-        mock_settings.target_2_pts = 70.0
 
         candle = OHLCVCandle(
             timestamp=datetime.now(),
@@ -113,13 +105,9 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_conviction_multiplier = 1.5
         mock_settings.oi_wall_wick_min_range_pts = 2.0
         mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.target_1_pts = 35.0
-        mock_settings.target_2_pts = 70.0
 
         # Candle 1: candidate touch with a genuine upper-wick rejection
         candle1 = OHLCVCandle(
@@ -176,13 +164,9 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_conviction_multiplier = 1.5
         mock_settings.oi_wall_wick_min_range_pts = 2.0
         mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.target_1_pts = 35.0
-        mock_settings.target_2_pts = 70.0
 
         candle1 = OHLCVCandle(
             timestamp=datetime.now(), open=24090.0, high=24105.0, low=24080.0, close=24085.0, volume=1000
@@ -226,13 +210,9 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_conviction_multiplier = 1.5
         mock_settings.oi_wall_wick_min_range_pts = 2.0
         mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.target_1_pts = 35.0
-        mock_settings.target_2_pts = 70.0
 
         # Candle 1: candidate touch with a genuine lower-wick rejection (bounce)
         candle1 = OHLCVCandle(
@@ -288,13 +268,9 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_conviction_multiplier = 1.5
         mock_settings.oi_wall_wick_min_range_pts = 2.0
         mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.target_1_pts = 35.0
-        mock_settings.target_2_pts = 70.0
 
         candle1 = OHLCVCandle(
             timestamp=datetime.now(), open=24010.0, high=24025.0, low=23995.0, close=24015.0, volume=1000
@@ -330,13 +306,9 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_conviction_multiplier = 1.5
         mock_settings.oi_wall_wick_min_range_pts = 2.0
         mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.target_1_pts = 35.0
-        mock_settings.target_2_pts = 70.0
 
         full_chain = [
             {
@@ -376,13 +348,9 @@ class TestOIWallDetector(unittest.TestCase):
         mock_settings.oi_wall_conviction_multiplier = 1.5
         mock_settings.oi_wall_wick_min_range_pts = 2.0
         mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.target_1_fallback_min_pts = 15.0
-        mock_settings.target_2_fallback_min_pts = 30.0
         mock_settings.oi_wall_wick_rejection_ratio = 0.4
         mock_settings.strike_interval = 50
         mock_settings.entry_zone_offset_pts = 5.0
-        mock_settings.target_1_pts = 35.0
-        mock_settings.target_2_pts = 70.0
 
         candle = OHLCVCandle(
             timestamp=datetime.now(), open=24090.0, high=24105.0, low=24080.0, close=24085.0, volume=1000

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
 from models import OHLCVCandle, ResistanceLevel, AresSignal, SetupType, Direction, confidence_from_score
 from config import settings
