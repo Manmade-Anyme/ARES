@@ -81,9 +81,11 @@ class TestEngineWiring(unittest.TestCase):
         breakout_signal = MagicMock()
         breakout_signal.confidence = "HIGH"
         breakout_signal.setup_type = SetupType.FAILED_BREAKOUT
+        breakout_signal.direction = Direction.BULLISH
         breakout_signal.trigger_price = 24000.0
         breakout_signal.stop_loss = 23950.0
         breakout_signal.target_1 = 24100.0
+        breakout_signal.target_2 = 24200.0
         breakout_signal.reasons = []
 
         self.engine.breakout_detector.update = MagicMock(return_value=breakout_signal)

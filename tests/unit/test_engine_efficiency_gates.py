@@ -7,11 +7,12 @@ Tests for TASK-171 audit P0 efficiency gates in AresEngine (post-TASK-182):
 - clear_cooldown(): allows immediate re-entry after a stop-out.
 """
 import unittest
+import dataclasses
 from unittest.mock import MagicMock
 from datetime import datetime, timedelta
 
 from config import settings
-from config_profiles import NON_EXPIRY_CONFIG
+from config_profiles import NON_EXPIRY_CONFIG, SetupLevels
 from engine import AresEngine
 from models import ATMStrikes, AresSignal, SetupType, Direction
 
@@ -78,21 +79,38 @@ class TestEngineEfficiencyGates(unittest.TestCase):
         return self.engine.tick(self._make_candle(24045.0), [], self._make_atm(), 0.0, [])
 
     # ── R:R gate ────────────────────────────────────────────────────────────
+    #
+    # TASK-185: the per-type SL/T1 policy runs BEFORE this gate and, for a
+    # CONFIGURED setup type, always yields R:R >= 1.0 by construction — so the
+    # gate can no longer fire on crafted STRUCTURAL values for those types. The
+    # gate still protects two live paths: an UNCONFIGURED setup type (structural
+    # levels reach the gate untouched) and a MISCONFIGURED per-type entry whose
+    # own reward < risk. The structural-rejection cases below therefore run with
+    # per_type_levels emptied (the unconfigured-type path); a dedicated test
+    # covers the misconfigured-per-type path.
+
+    def _disable_per_type(self):
+        settings.apply_profile(
+            dataclasses.replace(NON_EXPIRY_CONFIG, per_type_levels={})
+        )
 
     def test_rr_gate_rejects_risk_greater_than_reward(self):
         # Risk 50 pts (SL 23950), reward 35 pts (T1 24035) → R:R 0.7 → reject
+        self._disable_per_type()
         signal = self._make_signal(stop_loss=23950.0, target_1=24035.0)
         result = self._tick_with(signal)
         self.assertIsNone(result)
 
     def test_rr_gate_allows_reward_at_least_equal_to_risk(self):
         # Risk 25 pts, reward 35 pts → R:R 1.4 → pass
+        self._disable_per_type()
         signal = self._make_signal(stop_loss=23975.0, target_1=24035.0)
         result = self._tick_with(signal)
         self.assertIsNotNone(result)
 
     def test_rr_gate_rejects_bearish_inverted_rr(self):
         # Bearish: entry 24000, SL 24046 (risk 46), T1 23965 (reward 35) → reject
+        self._disable_per_type()
         signal = self._make_signal(direction=Direction.BEARISH,
                                    stop_loss=24046.0, target_1=23965.0)
         result = self._tick_with(signal)
@@ -100,7 +118,19 @@ class TestEngineEfficiencyGates(unittest.TestCase):
 
     def test_rr_gate_rejects_zero_or_negative_risk(self):
         # SL on the wrong side of entry (degenerate) → reject, never divide by zero
+        self._disable_per_type()
         signal = self._make_signal(stop_loss=24000.0, target_1=24035.0)
+        result = self._tick_with(signal)
+        self.assertIsNone(result)
+
+    def test_rr_gate_rejects_misconfigured_per_type_entry(self):
+        # A per-type config whose reward < risk (SL 50 / T1 35 → R:R 0.7) must
+        # still be caught by the gate even though it is a configured setup type.
+        settings.apply_profile(dataclasses.replace(
+            NON_EXPIRY_CONFIG,
+            per_type_levels={"OI_WALL_REJECTION": SetupLevels(50.0, 35.0, 70.0)},
+        ))
+        signal = self._make_signal(setup_type=SetupType.OI_WALL_REJECTION)
         result = self._tick_with(signal)
         self.assertIsNone(result)
 
