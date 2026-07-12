@@ -14,8 +14,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from model.kronos import KronosPredictor, calc_time_stamps
-from model.module import sample_from_logits
+from model.kronos import KronosPredictor, calc_time_stamps, sample_from_logits
 
 
 def _autoregressive_paths(tokenizer, model, x, x_stamp, y_stamp, max_context,
