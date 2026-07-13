@@ -23,7 +23,7 @@ Because ARES is a background algorithmic engine (it polls an API and sends webho
 The project contains two critical deployment files at the root:
 
 ### `Dockerfile`
-A lightweight, optimized Python 3.10-slim image. It installs the dependencies from `requirements.txt` and executes `python main.py` directly without a web server wrapper (like Gunicorn or Uvicorn).
+A lightweight, optimized Python 3.10-slim image. It installs the dependencies from `requirements.txt` and executes `python main.py` directly. Inside `main.py`, the core trading engine, REST poll loop, WebSocket tick feed, and the decoupled Kronos ML probability consumer (TASK-186) run concurrently within a single Python process.
 
 ### `fly.toml`
 The Fly configuration file. 
