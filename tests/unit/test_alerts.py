@@ -253,6 +253,26 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         await send_trade_update(trade_regular_sl, spot=23975.0, update_type="SL_HIT")
         mock_client.post.assert_called_once()
 
+        # TIME_STOP: SL trailed to entry by the time-stop, then hit
+        # (regression — this update_type had no branch, so the Discord
+        # message rendered an empty Action and no exit reason)
+        mock_client.reset_mock()
+        trade_time_stop = {
+            "signal_id": "8877",
+            "setup_type": "TREND_CONTINUATION",
+            "direction": "BULLISH",
+            "entry_price": 24225.0,
+            "stop_loss": 24225.0,
+            "state": "CLOSED"
+        }
+        await send_trade_update(trade_time_stop, spot=24225.0, update_type="TIME_STOP")
+        mock_client.post.assert_called_once()
+        payload = mock_client.post.call_args.kwargs["json"]
+        description = payload["embeds"][0]["description"]
+        self.assertIn("Time-Stop", description)
+        self.assertIn("Trade Closed", description)
+        self.assertNotIn("Action**  : ****", description)
+
     @patch('alerts.settings')
     @patch('httpx.AsyncClient')
     async def test_send_trade_update_exception_safety(self, mock_client_class, mock_settings):

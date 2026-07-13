@@ -187,6 +187,8 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
             action_text = "Trailing Stop Loss Hit at Entry. Trade Closed."
         else:
             action_text = "Stop Loss Hit. Trade Closed."
+    elif update_type == "TIME_STOP":
+        action_text = "Time-Stop: SL Trailed to Entry Hit. Trade Closed."
 
     # Get current IST time
     ist = timezone(timedelta(hours=5, minutes=30))
