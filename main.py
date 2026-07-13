@@ -90,6 +90,26 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
             except Exception as e:
                 print(f"[-] Tick-driven exit check failed: {e}")
 
+async def _start_in_process_kronos_consumer():
+    """
+    Launches the decoupled Kronos ML live probability consumer as an
+    in-process background task within main.py (TASK-186).
+    """
+    try:
+        from ml_signal.kronos_consumer import KronosConsumer, DEFAULT_CONFIG
+        config = DEFAULT_CONFIG
+        if hasattr(settings, "discord_webhook_url") and settings.discord_webhook_url:
+            config.discord_webhook_url = settings.discord_webhook_url
+
+        consumer = KronosConsumer(config)
+        await consumer.run(
+            supabase_url=settings.supabase_url,
+            supabase_key=settings.supabase_key,
+        )
+    except Exception as kronos_err:
+        print(f"{Y}[!] In-process Kronos consumer task exited: {kronos_err}{RESET}")
+
+
 async def run():
     """
     Main entry point for the ARES Trading System.
@@ -120,6 +140,9 @@ async def run():
     position_manager = PositionManager()
     ml_collector = MLCollector(settings.supabase_url, settings.supabase_key)
     tick_feed = TickFeed()
+
+    # Start in-process Kronos ML consumer background task (TASK-186)
+    kronos_task = asyncio.create_task(_start_in_process_kronos_consumer())
 
     # Make this dynamic via Yahoo Finance Oracle 
     try:

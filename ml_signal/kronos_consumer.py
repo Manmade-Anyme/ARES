@@ -180,9 +180,27 @@ class KronosConsumer:
 
         print(f"[Kronos Consumer] Starting (model={KRONOS_MODEL}, poll={self.config.signal_poll_interval_seconds}s)")
 
+        is_first_run = True
         while True:
             try:
                 signals = await self.fetch_new_signals()
+
+                if is_first_run:
+                    now_ts = datetime.now()
+                    for signal in signals:
+                        signal_id = str(signal.get("id", ""))
+                        sig_ts = signal.get("created_at") or signal.get("timestamp")
+                        is_recent = False
+                        if sig_ts:
+                            try:
+                                dt = pd.to_datetime(sig_ts)
+                                if (now_ts - dt.tz_localize(None)).total_seconds() < 180:
+                                    is_recent = True
+                            except Exception:
+                                pass
+                        if not is_recent:
+                            self._processed_ids.add(signal_id)
+                    is_first_run = False
 
                 for signal in signals:
                     signal_id = str(signal.get("id", ""))
