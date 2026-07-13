@@ -31,7 +31,9 @@ from supabase import create_client, Client
 from .config import MLConfig, DEFAULT_CONFIG
 from .data import load_intraday_candles_from_dhan
 from .discord import send_discord, ist_now
-from .live import load_dhan_credentials_from_supabase
+# Deliberately NOT importing from .live — its chain (live -> predictor ->
+# joblib/xgboost) requires the offline-ML deps, which are absent from the
+# production image and would kill this consumer at import time.
 
 _VENDOR_DIR = os.path.join(os.path.dirname(__file__), "kronos_vendor")
 if _VENDOR_DIR not in sys.path:
@@ -181,9 +183,18 @@ class KronosConsumer:
 
         return barrier_hit_fraction(paths, entry, target, stop, bullish)
 
+    def _load_dhan_credentials(self) -> tuple:
+        # Same query as storage.py / ml_signal.live, inlined to avoid their
+        # heavy import chains; reuses the already-initialized client.
+        response = self._supabase.table("api_keys").select("client_id, access_token").eq("provider", "DHAN").execute()
+        if not response.data:
+            raise ValueError("No DHAN credentials found in Supabase api_keys table")
+        data = response.data[0]
+        return data["client_id"], data["access_token"]
+
     def _init_all(self, supabase_url: str, supabase_key: str):
         self._init_supabase(supabase_url, supabase_key)
-        dhan_client_id, dhan_access_token = load_dhan_credentials_from_supabase(supabase_url, supabase_key)
+        dhan_client_id, dhan_access_token = self._load_dhan_credentials()
         self._init_dhan(dhan_client_id, dhan_access_token)
         self._load_model()
 
