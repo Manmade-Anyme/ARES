@@ -24,7 +24,7 @@ B = "\033[1m"   # Bold
 W = "\033[97m"  # White
 RESET = "\033[0m"
 
-def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT"):
+def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT", ml_active: bool = False):
     """Prints the ARES startup banner with configuration details."""
     print(f"{C}{'=' * 65}{RESET}")
     print(f"{C}{B}  ARES (Adaptive Reversal & Entry Signal) - Initialization{RESET}")
@@ -36,6 +36,9 @@ def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT"):
     print(f"{G}[+] Session      : {W}09:15 to 15:30 IST{RESET}")
     print(f"{G}[+] Cooldown     : {W}{settings.signal_cooldown_minutes} minutes between signals{RESET}")
     print(f"{G}[+] PDH / PDL    : {W}{pdh:.2f} / {pdl:.2f}{RESET}")
+    ml_status = f"{G}ACTIVE (recording 50+ features per cycle)" if ml_active else f"{Y}inactive"
+    print(f"{G}[+] ML Data Collection : {W}{ml_status}{RESET}")
+    print(f"{G}[+] Kronos ML Engine   : {W}ACTIVE (NeoQuasar/Kronos-mini decoupled){RESET}")
     print(f"{C}{'=' * 65}{RESET}")
 
 def format_signal_console(signal, spot):
@@ -127,10 +130,11 @@ async def run():
         
     level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
     
-    print_banner(pdh, pdl, profile_name)
-
     # Initialize ML Data Collection Logger
     ml_table_ok = ml_collector.check_table_exists()
+    
+    print_banner(pdh, pdl, profile_name, ml_active=ml_table_ok)
+
     if ml_table_ok:
         print(f"{G}[+] ML Data Collection Logger: {B}ACTIVE{RESET} (recording 50+ features per cycle)")
     else:
