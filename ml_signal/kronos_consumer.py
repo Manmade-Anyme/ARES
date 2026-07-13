@@ -172,11 +172,17 @@ class KronosConsumer:
 
         return barrier_hit_fraction(paths, entry, target, stop, bullish)
 
-    async def run(self, supabase_url: str, supabase_key: str):
+    def _init_all(self, supabase_url: str, supabase_key: str):
         self._init_supabase(supabase_url, supabase_key)
         dhan_client_id, dhan_access_token = load_dhan_credentials_from_supabase(supabase_url, supabase_key)
         self._init_dhan(dhan_client_id, dhan_access_token)
         self._load_model()
+
+    async def run(self, supabase_url: str, supabase_key: str):
+        # Yield to event loop immediately so main.py startup isn't blocked
+        await asyncio.sleep(0)
+        # Offload synchronous credential loading and heavy model initialization to a worker thread
+        await asyncio.to_thread(self._init_all, supabase_url, supabase_key)
 
         print(f"[Kronos Consumer] Starting (model={KRONOS_MODEL}, poll={self.config.signal_poll_interval_seconds}s)")
 
@@ -186,16 +192,17 @@ class KronosConsumer:
                 signals = await self.fetch_new_signals()
 
                 if is_first_run:
-                    now_ts = datetime.now()
+                    now_utc = pd.Timestamp.now(tz="UTC")
                     for signal in signals:
                         signal_id = str(signal.get("id", ""))
                         sig_ts = signal.get("created_at") or signal.get("timestamp")
                         is_recent = False
                         if sig_ts:
                             try:
-                                dt = pd.to_datetime(sig_ts)
-                                if (now_ts - dt.tz_localize(None)).total_seconds() < 180:
-                                    is_recent = True
+                                dt = pd.to_datetime(sig_ts, utc=True)
+                                if not pd.isna(dt):
+                                    if (now_utc - dt).total_seconds() < 180:
+                                        is_recent = True
                             except Exception:
                                 pass
                         if not is_recent:
