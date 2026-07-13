@@ -92,13 +92,16 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
 
 async def _start_in_process_kronos_consumer():
     """
-    Launches the decoupled Kronos ML live probability consumer as an
-    in-process background task within main.py (TASK-186).
+    Launches the Kronos ML live probability consumer as an in-process
+    background task within main.py (TASK-186).
     """
     try:
-        from ml_signal.kronos_consumer import KronosConsumer, DEFAULT_CONFIG
-        config = DEFAULT_CONFIG
-        if hasattr(settings, "discord_webhook_url") and settings.discord_webhook_url:
+        from ml_signal.config import MLConfig
+        from ml_signal.kronos_consumer import KronosConsumer
+        # Fresh config — mutating the shared DEFAULT_CONFIG singleton would
+        # leak the webhook into every other MLConfig consumer.
+        config = MLConfig()
+        if getattr(settings, "discord_webhook_url", ""):
             config.discord_webhook_url = settings.discord_webhook_url
 
         consumer = KronosConsumer(config)

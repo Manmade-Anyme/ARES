@@ -68,11 +68,73 @@ class TestTask186InProcessKronos(unittest.TestCase):
             with self.assertRaises(asyncio.CancelledError):
                 asyncio.run(consumer.run("http://url", "key"))
 
-        # old_1 should be seeded in _processed_ids, recent_1 should NOT be in _processed_ids before iteration
-        # and mock_send_discord should be called for recent_1
+        # old_1 was seeded as historical (no alert); recent_1 was processed
+        # normally — exactly one Discord post, and it references recent_1.
         self.assertIn("old_1", consumer._processed_ids)
         self.assertIn("recent_1", consumer._processed_ids)
         mock_send_discord.assert_called_once()
+        self.assertIn("recent_1", mock_send_discord.call_args.args[1])
+
+    @patch("ml_signal.kronos_consumer.load_intraday_candles_from_dhan")
+    def test_forecast_probability_handles_utc_signal_vs_naive_ist_candles(self, mock_load_candles):
+        """Regression: signal timestamps are tz-aware UTC, Dhan candles are
+        tz-naive IST — the no-look-ahead slice must not raise TypeError and
+        must slice at the IST-equivalent time (TASK-186 live silence bug)."""
+        import pandas as pd
+        consumer = KronosConsumer(DEFAULT_CONFIG)
+
+        # 09:15–10:30 IST naive candles; signal at 04:31 UTC == 10:01 IST
+        ts_index = pd.date_range("2026-07-13 09:15", periods=76, freq="1min")
+        candles = pd.DataFrame({
+            "timestamp": ts_index,
+            "open": 24100.0, "high": 24110.0, "low": 24090.0, "close": 24100.0,
+            "volume": 0,
+        })
+        mock_load_candles.return_value = candles
+
+        fake_path = pd.DataFrame({"close": [24100, 24120, 24130]})
+        fake_paths_mod = MagicMock()
+        fake_paths_mod.predict_paths.return_value = [fake_path]
+
+        signal = {
+            "timestamp": "2026-07-13T04:31:00+00:00",
+            "trigger_price": 24100.0, "target_1": 24125.0,
+            "stop_loss": 24080.0, "direction": "BULLISH",
+        }
+        with patch.dict("sys.modules", {"paths": fake_paths_mod}):
+            prob = consumer._forecast_probability(signal)
+
+        self.assertEqual(prob, 1.0)
+        # context passed to Kronos must end at 10:01 IST, not 04:31
+        passed_df = fake_paths_mod.predict_paths.call_args.kwargs["x_timestamp"]
+        self.assertEqual(passed_df.iloc[-1], pd.Timestamp("2026-07-13 10:01"))
+
+    @patch("ml_signal.kronos_consumer.load_intraday_candles_from_dhan")
+    def test_failed_inference_is_retried_not_dropped(self, mock_load_candles):
+        """Regression: a transient error must not permanently mark the signal
+        processed — it stays retryable until MAX_SIGNAL_ATTEMPTS."""
+        from ml_signal.kronos_consumer import MAX_SIGNAL_ATTEMPTS
+        import pandas as pd
+
+        consumer = KronosConsumer(DEFAULT_CONFIG)
+        signal = {"id": "99", "created_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                  "timestamp": pd.Timestamp.now(tz="UTC").isoformat()}
+
+        mock_supabase = MagicMock()
+        mock_supabase.table.return_value.select.return_value.gte.return_value.order.return_value.execute.return_value.data = [signal]
+        consumer._supabase = mock_supabase
+
+        boom = MagicMock(side_effect=RuntimeError("dhan hiccup"))
+        # +1 None for run()'s initial asyncio.sleep(0) yield
+        sleeps = [None] * MAX_SIGNAL_ATTEMPTS + [asyncio.CancelledError]
+        with patch.object(consumer, "_init_all"), \
+             patch.object(consumer, "_forecast_probability", boom), \
+             patch("asyncio.sleep", side_effect=sleeps):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(consumer.run("http://url", "key"))
+
+        self.assertEqual(boom.call_count, MAX_SIGNAL_ATTEMPTS)
+        self.assertIn("99", consumer._processed_ids)  # gave up after max attempts
 
     @patch("main.settings")
     def test_start_in_process_kronos_consumer_helper(self, mock_settings):
