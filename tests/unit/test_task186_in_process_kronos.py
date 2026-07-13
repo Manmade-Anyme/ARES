@@ -9,7 +9,7 @@ from ml_signal.config import MLConfig
 
 class TestTask186InProcessKronos(unittest.TestCase):
 
-    @patch("ml_signal.kronos_consumer.load_dhan_credentials_from_supabase")
+    @patch("ml_signal.kronos_consumer.KronosConsumer._load_dhan_credentials")
     @patch("ml_signal.kronos_consumer.create_client")
     def test_kronos_consumer_initialization(self, mock_create_client, mock_load_dhan):
         mock_load_dhan.return_value = ("client123", "token123")
@@ -19,7 +19,7 @@ class TestTask186InProcessKronos(unittest.TestCase):
         self.assertEqual(len(consumer._processed_ids), 0)
 
     @patch("ml_signal.kronos_consumer.send_discord", new_callable=AsyncMock)
-    @patch("ml_signal.kronos_consumer.load_dhan_credentials_from_supabase")
+    @patch("ml_signal.kronos_consumer.KronosConsumer._load_dhan_credentials")
     @patch("ml_signal.kronos_consumer.create_client")
     def test_kronos_consumer_seeds_past_signals_on_startup(self, mock_create_client, mock_load_dhan, mock_send_discord):
         mock_load_dhan.return_value = ("client123", "token123")
@@ -41,7 +41,7 @@ class TestTask186InProcessKronos(unittest.TestCase):
         self.assertEqual(signals[0]["id"], "7767")
 
     @patch("ml_signal.kronos_consumer.send_discord", new_callable=AsyncMock)
-    @patch("ml_signal.kronos_consumer.load_dhan_credentials_from_supabase")
+    @patch("ml_signal.kronos_consumer.KronosConsumer._load_dhan_credentials")
     @patch("ml_signal.kronos_consumer.create_client")
     def test_kronos_consumer_utc_timezone_recent_signal_detection(self, mock_create_client, mock_load_dhan, mock_send_discord):
         import pandas as pd
@@ -135,6 +135,23 @@ class TestTask186InProcessKronos(unittest.TestCase):
 
         self.assertEqual(boom.call_count, MAX_SIGNAL_ATTEMPTS)
         self.assertIn("99", consumer._processed_ids)  # gave up after max attempts
+
+    def test_import_does_not_require_offline_ml_deps(self):
+        """Regression: the production image ships only root requirements.txt
+        (no joblib/xgboost/sklearn). Importing kronos_consumer via a chain
+        that needs them (e.g. ml_signal.live -> predictor -> joblib) killed
+        the consumer at startup in prod (TASK-186 live silence, round 2)."""
+        import subprocess, sys, textwrap
+        code = textwrap.dedent("""
+            import sys
+            for mod in ("joblib", "xgboost", "sklearn", "optuna", "shap"):
+                sys.modules[mod] = None  # None => ImportError on import
+            import ml_signal.kronos_consumer
+            print("OK")
+        """)
+        result = subprocess.run([sys.executable, "-c", code],
+                                capture_output=True, text=True)
+        self.assertIn("OK", result.stdout, msg=result.stderr)
 
     @patch("main.settings")
     def test_start_in_process_kronos_consumer_helper(self, mock_settings):
