@@ -1,12 +1,14 @@
 """
 Kronos live probability consumer.
 
-Decoupled from main.py and from the existing XGBoost pipeline (ml_signal/
-predictor.py, signal_consumer.py) — same architecture pattern as
-signal_consumer.py: polls the ares_signals table for new rows, runs its own
-independent inference, posts its own follow-up Discord message. A slow or
-crashing Kronos call can never affect the live trading loop or the existing
-ML consumer.
+Runs in-process inside main.py as a background asyncio task (TASK-186 —
+the original TASK-184 design ran it as a separate process, but nothing in
+the Fly deployment ever launched that process, so it never ran live).
+Model init and per-signal inference are offloaded via asyncio.to_thread so
+the trading loop's event loop is never blocked; the trade-off vs. a separate
+process is that a hard crash (OOM, native segfault) now shares the process
+with the trading loop. Polls the ares_signals table for new rows, runs its
+own inference, posts its own follow-up Discord message.
 
 Adds exactly one number per fired signal: the fraction of Kronos-sampled
 forward price paths that clear the signal's own target before its own stop,
@@ -40,6 +42,7 @@ KRONOS_MODEL = "NeoQuasar/Kronos-mini"
 KRONOS_TOKENIZER = "NeoQuasar/Kronos-Tokenizer-2k"
 KRONOS_MAX_CONTEXT = 2048
 KRONOS_SAMPLE_COUNT = 20
+MAX_SIGNAL_ATTEMPTS = 3
 
 
 def barrier_hit_fraction(paths, entry: float, target: float, stop: float, bullish: bool) -> float:
@@ -96,6 +99,7 @@ class KronosConsumer:
         self._dhan = None
         self._predictor = None
         self._processed_ids: Set[str] = set()
+        self._failed_attempts: dict = {}
 
     def _init_supabase(self, url: str, key: str):
         self._supabase = create_client(url, key)
@@ -137,8 +141,13 @@ class KronosConsumer:
         """Blocking Kronos inference for one signal — run via to_thread."""
         from paths import predict_paths
 
-        ts = signal.get("timestamp")
-        ts = pd.to_datetime(ts) if not isinstance(ts, pd.Timestamp) else ts
+        # Signal timestamps are stored tz-aware UTC; Dhan candles come back
+        # tz-naive IST (data.py builds them with datetime.fromtimestamp).
+        # Convert to naive IST so the no-look-ahead slice below compares like
+        # with like — a tz-aware vs naive comparison raises TypeError.
+        ts = pd.to_datetime(signal.get("timestamp"))
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert("Asia/Kolkata").tz_localize(None)
         date_str = ts.strftime("%Y-%m-%d")
 
         candles = load_intraday_candles_from_dhan(
@@ -172,25 +181,64 @@ class KronosConsumer:
 
         return barrier_hit_fraction(paths, entry, target, stop, bullish)
 
-    async def run(self, supabase_url: str, supabase_key: str):
+    def _init_all(self, supabase_url: str, supabase_key: str):
         self._init_supabase(supabase_url, supabase_key)
         dhan_client_id, dhan_access_token = load_dhan_credentials_from_supabase(supabase_url, supabase_key)
         self._init_dhan(dhan_client_id, dhan_access_token)
         self._load_model()
 
+    async def run(self, supabase_url: str, supabase_key: str):
+        # Yield to event loop immediately so main.py startup isn't blocked
+        await asyncio.sleep(0)
+        # Offload synchronous credential loading and heavy model initialization to a worker thread
+        await asyncio.to_thread(self._init_all, supabase_url, supabase_key)
+
         print(f"[Kronos Consumer] Starting (model={KRONOS_MODEL}, poll={self.config.signal_poll_interval_seconds}s)")
 
+        is_first_run = True
         while True:
             try:
                 signals = await self.fetch_new_signals()
+
+                if is_first_run:
+                    now_utc = pd.Timestamp.now(tz="UTC")
+                    for signal in signals:
+                        signal_id = str(signal.get("id", ""))
+                        sig_ts = signal.get("created_at") or signal.get("timestamp")
+                        is_recent = False
+                        if sig_ts:
+                            try:
+                                dt = pd.to_datetime(sig_ts, utc=True)
+                                if not pd.isna(dt):
+                                    if (now_utc - dt).total_seconds() < 180:
+                                        is_recent = True
+                            except Exception:
+                                pass
+                        if not is_recent:
+                            self._processed_ids.add(signal_id)
+                    is_first_run = False
 
                 for signal in signals:
                     signal_id = str(signal.get("id", ""))
                     if signal_id in self._processed_ids:
                         continue
-                    self._processed_ids.add(signal_id)
 
-                    probability = await asyncio.to_thread(self._forecast_probability, signal)
+                    # Mark processed only after success — a transient Dhan/
+                    # Supabase error must not permanently eat the alert.
+                    # Bounded retries so a persistently bad row can't spam
+                    # the log every poll forever.
+                    try:
+                        probability = await asyncio.to_thread(self._forecast_probability, signal)
+                    except Exception as e:
+                        attempts = self._failed_attempts.get(signal_id, 0) + 1
+                        self._failed_attempts[signal_id] = attempts
+                        print(f"[Kronos Consumer] Signal #{signal_id} inference failed "
+                              f"(attempt {attempts}/{MAX_SIGNAL_ATTEMPTS}): {e}")
+                        if attempts >= MAX_SIGNAL_ATTEMPTS:
+                            self._processed_ids.add(signal_id)
+                        continue
+
+                    self._processed_ids.add(signal_id)
                     if probability is None:
                         continue
 
