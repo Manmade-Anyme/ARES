@@ -153,7 +153,11 @@ class KronosConsumer:
         date_str = ts.strftime("%Y-%m-%d")
 
         candles = load_intraday_candles_from_dhan(
-            self._dhan, self.config.security_id, self.config.exchange_segment, date_str,
+            self._dhan,
+            self.config.security_id,
+            self.config.exchange_segment,
+            self.config.instrument_type,
+            date_str,
         )
         candles = candles[candles["timestamp"] <= ts]
         if candles.empty:

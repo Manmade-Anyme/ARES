@@ -61,17 +61,16 @@ def load_intraday_candles_from_dhan(
     dhan_client,
     security_id: str,
     exchange_segment: str,
+    instrument_type: str,
     date: str,
-    interval_minutes: int = 1,
 ) -> pd.DataFrame:
-    if interval_minutes == 1:
-        response = dhan_client.intraday_minute_data(
-            security_id, exchange_segment, security_id, date, date
-        )
-    else:
-        response = dhan_client.intraday_daily_data(
-            security_id, exchange_segment, security_id, date, date
-        )
+    response = dhan_client.intraday_minute_data(
+        security_id=security_id,
+        exchange_segment=exchange_segment,
+        instrument_type=instrument_type,
+        from_date=date,
+        to_date=date,
+    )
 
     if not response or response.get("status") != "success":
         raise ValueError(f"Failed to fetch intraday data: {response}")
