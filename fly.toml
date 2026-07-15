@@ -13,12 +13,6 @@ primary_region = 'bom'
   TZ = 'Asia/Kolkata'
 
 [[vm]]
-  memory = '512mb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 512
-
-[[vm]]
   memory = '768mb'
   cpu_kind = 'shared'
   cpus = 1
