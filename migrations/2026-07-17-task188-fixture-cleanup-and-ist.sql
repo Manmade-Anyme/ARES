@@ -136,11 +136,35 @@ COMMIT;
 -- 3. Render timestamps as IST on read.
 --    All timestamp columns are timestamptz, which stores an absolute UTC
 --    instant — the offset on input is used to compute it and then discarded.
---    So this changes *display*, not stored data, and does not conflict with
---    storage.to_utc_iso(). Takes effect on NEW connections only.
+--    So this changes *display* only; stored data is untouched and this does
+--    not conflict with storage.to_utc_iso().
 --    Cannot run inside a transaction block; run it on its own.
+--
+--    SCOPE — this matters. This Supabase project is SHARED: Gamma Blaster
+--    (gb_*), Kronos, Phantom, Sniper, Order Flow and ARES all live in the same
+--    `postgres` database. A database-wide `ALTER DATABASE postgres SET timezone`
+--    would change what PostgREST renders for EVERY one of those apps. ARES and
+--    Kronos are verified safe (both parse with datetime.fromisoformat, which
+--    handles any offset, and render via ist_now()), but the others are separate
+--    codebases — anything doing strptime(..., "…+00:00") or string-slicing the
+--    offset would break or shift by 5h30m.
+--
+--    So scope it to the role you query as. This makes the SQL Editor and any
+--    direct psql session show IST, and leaves every app's API connection
+--    (PostgREST authenticates as `authenticator` → service_role/anon) exactly
+--    as it is today.
 -- ---------------------------------------------------------------------
-ALTER DATABASE postgres SET timezone TO 'Asia/Kolkata';
+ALTER ROLE postgres SET timezone TO 'Asia/Kolkata';
+
+-- Reconnect (or open a new SQL Editor tab) for this to take effect —
+-- role settings apply at connection time, not to the live session.
+-- Confirm with:  SHOW timezone;   -->  Asia/Kolkata
+--
+-- If you ever DO want it database-wide, the statement is below. Only run it
+-- after checking how Gamma Blaster / Phantom / Sniper / Order Flow parse
+-- timestamps — it changes their reads too:
+--
+--   ALTER DATABASE postgres SET timezone TO 'Asia/Kolkata';
 
 
 -- ---------------------------------------------------------------------

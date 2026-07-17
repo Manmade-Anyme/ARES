@@ -4,7 +4,13 @@
 -- Render timestamps as IST on read (TASK-189). Every timestamp column below is
 -- timestamptz, which stores an absolute UTC instant regardless — this only
 -- affects how sessions display them, and takes effect on new connections.
-ALTER DATABASE postgres SET timezone TO 'Asia/Kolkata';
+--
+-- Scoped to the role deliberately, NOT `ALTER DATABASE`: the live Supabase
+-- project is shared with Gamma Blaster (gb_*), Kronos, Phantom, Sniper and
+-- Order Flow. A database-wide setting would change what PostgREST renders for
+-- all of them. This affects SQL Editor / psql sessions only; app connections
+-- (PostgREST authenticates as `authenticator`) are untouched.
+ALTER ROLE postgres SET timezone TO 'Asia/Kolkata';
 
 CREATE TABLE ares_signals (
   id bigserial primary key,
