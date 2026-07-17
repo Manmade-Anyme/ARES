@@ -28,10 +28,38 @@
 
 -- ---------------------------------------------------------------------
 -- 0. PREVIEW — run this first and eyeball it. Changes nothing.
+--
+-- NOTE on the fixture predicate: matching on the 24001.0 price ALONE is not
+-- safe. NIFTY genuinely trades in that range, so a real signal could sit at
+-- exactly that spot and would be destroyed by a price-only delete. The
+-- predicate below therefore requires the *whole* fixture signature AND the
+-- confirmed ids. The decisive discriminator is reasons[0] = 'Reason 1':
+-- production code can never emit it — OIWallDetector._build_signal always
+-- writes "Price approached massive OI wall at <strike>" first. If either the
+-- ids or the signature ever drift, these statements match zero rows and do
+-- nothing, which is the intended failure mode.
 -- ---------------------------------------------------------------------
-SELECT 'fixture signals'        AS what, count(*) FROM ares_signals    WHERE spot_at_signal = 24001.0
+SELECT 'fixture signals'        AS what, count(*) FROM ares_signals
+ WHERE id IN (167, 168, 169, 170)
+   AND setup_type      = 'OI_WALL_REJECTION'
+   AND spot_at_signal  = 24001.0
+   AND trigger_price   = 24000.0
+   AND reasons ->> 0   = 'Reason 1'
 UNION ALL
-SELECT 'fixture trades',              count(*) FROM trade_analytics WHERE entry_price = 24001.0
+SELECT 'fixture trades', count(*) FROM trade_analytics
+ WHERE id IN ('38191236-c717-487a-ad62-e6eb637c482e',
+              '132a34db-0292-4760-8d2b-706e2e774213',
+              '9138816b-47dd-4234-a206-14f5eb3037f9',
+              '16b7fe7a-644e-43af-a147-609258f17b7f',
+              '8c6714c0-bd42-4c77-9cc2-196746ca5b48',
+              '1feee0a2-2eea-4ed5-935c-f5f83dc51233',
+              'a4da1358-e76f-457e-a0a5-20e7c20d7ff8',
+              '3bd130e1-7b4c-43f2-a514-fcd15da043cc',
+              '0269584d-c41e-4e00-8948-e6eb59ffe124')
+   AND setup_type   = 'OI_WALL_REJECTION'
+   AND entry_price  = 24001.0
+   AND signal_id IS NULL
+   AND market_context -> 'reasons' ->> 0 = 'Reason 1'
 UNION ALL
 SELECT 'signals w/ IST-as-UTC ts',    count(*) FROM ares_signals    WHERE timestamp > created_at + interval '1 hour'
 UNION ALL
@@ -42,19 +70,43 @@ SELECT 'trades w/ IST-as-UTC entry',  count(*) FROM trade_analytics WHERE entry_
 --   fixture trades            9
 --   signals w/ IST-as-UTC ts  31    (ids 156-186, 2026-06-24 .. 07-02)
 --   trades w/ IST-as-UTC entry 30
+--
+-- If "fixture signals" is not 4 or "fixture trades" is not 9, STOP and
+-- re-inspect — do not loosen the predicate to make the numbers match.
 
 
 -- ---------------------------------------------------------------------
 -- 1. Delete the leaked test fixtures.
 --    MUST run before section 2 — ids 167-170 sit inside the corrupted
 --    timestamp range and would otherwise be shifted on the way out.
---    Matched on the fixture's placeholder price, not on id, so this stays
---    correct if ids ever differ.
+--    Predicate = confirmed ids AND the full fixture signature (see the note
+--    in section 0). A price-only match would risk deleting a real signal that
+--    happens to sit at 24001.0.
+--    Both statements are guarded to delete at most their expected row count.
 -- ---------------------------------------------------------------------
 BEGIN;
 
-DELETE FROM trade_analytics WHERE entry_price     = 24001.0;
-DELETE FROM ares_signals    WHERE spot_at_signal  = 24001.0;
+DELETE FROM trade_analytics
+ WHERE id IN ('38191236-c717-487a-ad62-e6eb637c482e',
+              '132a34db-0292-4760-8d2b-706e2e774213',
+              '9138816b-47dd-4234-a206-14f5eb3037f9',
+              '16b7fe7a-644e-43af-a147-609258f17b7f',
+              '8c6714c0-bd42-4c77-9cc2-196746ca5b48',
+              '1feee0a2-2eea-4ed5-935c-f5f83dc51233',
+              'a4da1358-e76f-457e-a0a5-20e7c20d7ff8',
+              '3bd130e1-7b4c-43f2-a514-fcd15da043cc',
+              '0269584d-c41e-4e00-8948-e6eb59ffe124')
+   AND setup_type   = 'OI_WALL_REJECTION'
+   AND entry_price  = 24001.0
+   AND signal_id IS NULL
+   AND market_context -> 'reasons' ->> 0 = 'Reason 1';
+
+DELETE FROM ares_signals
+ WHERE id IN (167, 168, 169, 170)
+   AND setup_type      = 'OI_WALL_REJECTION'
+   AND spot_at_signal  = 24001.0
+   AND trigger_price   = 24000.0
+   AND reasons ->> 0   = 'Reason 1';
 
 COMMIT;
 
