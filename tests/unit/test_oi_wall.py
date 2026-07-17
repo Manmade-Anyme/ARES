@@ -298,7 +298,14 @@ class TestOIWallDetector(unittest.TestCase):
         self.assertIsNone(signal2)
 
     @patch('detectors.oi_wall.settings')
-    def test_oi_wall_update_no_candidate_without_wick_rejection(self, mock_settings):
+    def test_oi_wall_update_shallow_wick_touch_is_a_candidate(self, mock_settings):
+        """TASK-188 inverted the old wick gate.
+
+        This case previously asserted that a 33%-wick touch stored no candidate.
+        Replaying the closed OI-wall book showed the >=40% wick gate blocked all
+        four T2 winners (wicks 19.0%, 24.4%, 37.1%, 21.6%) while admitting only
+        losers, so wick depth no longer vetoes a setup — it only scores it.
+        """
         mock_settings.oi_wall_min_oi = 4000000
         mock_settings.oi_wall_min_oi_change_pct = 5.0
         mock_settings.oi_wall_approach_distance = 80.0
@@ -322,22 +329,22 @@ class TestOIWallDetector(unittest.TestCase):
             }
         ]
 
-        # Candle closes red and touches the wall (high=24081 >= strike - test_distance=24080),
-        # but the upper wick is small relative to the range (ratio 0.33 < 0.4) -> no genuine
-        # rejection -> no candidate stored.
+        # Candle closes red and touches the wall (high=24081 >= strike - test_distance=24080)
+        # with a shallow 33% upper wick. It is a valid candidate now.
         candle = OHLCVCandle(
             timestamp=datetime.now(), open=24075.0, high=24081.0, low=24063.0, close=24065.0, volume=1000
         )
         signal = self.detector.update(spot=24080.0, full_chain=full_chain, candle=candle, levels=[])
-        self.assertIsNone(signal)
+        self.assertIsNone(signal, "candidate candle itself never emits a signal")
+        self.assertIsNotNone(self.detector.pending_setup)
 
-        # Confirm no pending setup was stored by feeding a candle that would
-        # otherwise confirm a bearish setup.
+        # The next candle closes below the candidate's low (24063) -> confirmed.
         candle_next = OHLCVCandle(
             timestamp=datetime.now(), open=24060.0, high=24062.0, low=24040.0, close=24045.0, volume=1000
         )
         signal_next = self.detector.update(spot=24045.0, full_chain=full_chain, candle=candle_next, levels=[])
-        self.assertIsNone(signal_next)
+        self.assertIsNotNone(signal_next)
+        self.assertEqual(signal_next.option_type, "PE")
 
     @patch('detectors.oi_wall.settings')
     def test_oi_wall_update_no_signal_conditions(self, mock_settings):
@@ -389,19 +396,13 @@ class TestOIWallDetector(unittest.TestCase):
         )
         self.assertIsNone(OIWallDetector().update(spot=24080.0, full_chain=full_chain, candle=candle_not_rejected, levels=[]))
 
-        # Wall matches, approaches, tested, rejected, but writers covered (ce_oi < ce_oi_prev)
-        full_chain_covered = [
-            {
-                "strike": 24100,
-                "ce_oi": 5000000,
-                "ce_oi_prev": 6000000,  # OI decreased!
-                "ce_oi_change_pct": 10.0,
-                "pe_oi": 100000,
-                "pe_oi_prev": 100000,
-                "pe_oi_change_pct": 0.0
-            }
-        ]
-        self.assertIsNone(OIWallDetector().update(spot=24080.0, full_chain=full_chain_covered, candle=candle, levels=[]))
+        # NOTE (TASK-188): the "writers covered (ce_oi < ce_oi_prev)" case was
+        # dropped along with the writers_holding check. It was dead code — the
+        # wall-selection gate already requires ce_oi_change_pct > 5%, which
+        # implies ce_oi > ce_oi_prev, and a zero ce_oi_prev forces change_pct to
+        # 0.0 in OIFetcher so the wall fails selection anyway. The fixture it
+        # relied on (OI down 17% while change_pct reads +10%) cannot occur in
+        # real chain data.
 
     # NOTE (TASK-185): the oi_wall structural target-selection + fixed-points
     # fallback tests were removed. SL/T1/T2 are now set centrally by
