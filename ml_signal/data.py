@@ -62,14 +62,22 @@ def load_intraday_candles_from_dhan(
     security_id: str,
     exchange_segment: str,
     instrument_type: str,
-    date: str,
+    from_date: str,
+    to_date: str,
 ) -> pd.DataFrame:
+    """
+    1-minute candles for the inclusive [from_date, to_date] window.
+
+    The window spans days on purpose: callers that need a model context deep
+    enough to be meaningful cannot get it from the signal's own day alone
+    (a 09:20 signal has ~6 candles). Dhan returns the whole range in one call.
+    """
     response = dhan_client.intraday_minute_data(
         security_id=security_id,
         exchange_segment=exchange_segment,
         instrument_type=instrument_type,
-        from_date=date,
-        to_date=date,
+        from_date=from_date,
+        to_date=to_date,
     )
 
     if not response or response.get("status") != "success":

@@ -46,6 +46,35 @@ KRONOS_MAX_CONTEXT = 2048
 KRONOS_SAMPLE_COUNT = 20
 MAX_SIGNAL_ATTEMPTS = 3
 
+# Default forecast horizon, overridden per-profile via MLConfig.kronos_horizon_candles
+# (main.py threads in settings.time_stop_minutes: 45 non-expiry / 30 expiry). The
+# barrier is walked exactly to the time stop — that is where an unresolved trade's
+# SL trails to entry, so scoring beyond it against the original SL would count hits
+# the live strategy closes at breakeven. The old code reused
+# MLConfig.lookforward_candles (=5), the offline *training-label* window — five
+# minutes cannot resolve a 30pt target, so paths ended unresolved and counted as misses.
+KRONOS_HORIZON_CANDLES = 45
+
+# Calendar days of candles fetched for context. Deliberately generous: it only
+# has to guarantee >= a couple of trading days survive weekends and holidays.
+# The real bound is KRONOS_CONTEXT_CANDLES below.
+KRONOS_CONTEXT_LOOKBACK_DAYS = 10
+
+# Candles actually fed to the model. Kronos normalizes its context window, so a
+# starved window (a 09:20 signal's ~6 near-identical bars) collapses the price
+# scale and every sampled path comes out flat — no path can reach the target and
+# the probability is a structural 0%, not a forecast. ~1000 bars is ~2.5 trading
+# days of real intraday range.
+# ponytail: 1000 is a memory ceiling, not a tuned optimum — Kronos runs
+# in-process at 768mb and hangs silently if it runs out. Drop to 500 if the
+# silent-hang signature returns; raise toward KRONOS_MAX_CONTEXT if headroom grows.
+KRONOS_CONTEXT_CANDLES = 1000
+
+# Below this the context is too thin for the forecast to mean anything. We still
+# publish the number (it is informational, and suppressing it would hide the
+# fault the way the silent 0% did) but the log has to say so out loud.
+KRONOS_MIN_CONTEXT_CANDLES = 375
+
 
 def barrier_hit_fraction(paths, entry: float, target: float, stop: float, bullish: bool) -> float:
     """
@@ -150,24 +179,35 @@ class KronosConsumer:
         ts = pd.to_datetime(signal.get("timestamp"))
         if ts.tzinfo is not None:
             ts = ts.tz_convert("Asia/Kolkata").tz_localize(None)
-        date_str = ts.strftime("%Y-%m-%d")
+
+        # Span prior days — the signal's own day alone starves the context.
+        from_date = (ts - timedelta(days=KRONOS_CONTEXT_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        to_date = ts.strftime("%Y-%m-%d")
 
         candles = load_intraday_candles_from_dhan(
             self._dhan,
             self.config.security_id,
             self.config.exchange_segment,
             self.config.instrument_type,
-            date_str,
+            from_date=from_date,
+            to_date=to_date,
         )
         candles = candles[candles["timestamp"] <= ts]
         if candles.empty:
             return None
-        candles = candles.tail(KRONOS_MAX_CONTEXT)
+        candles = candles.tail(KRONOS_CONTEXT_CANDLES)
+
+        if len(candles) < KRONOS_MIN_CONTEXT_CANDLES:
+            print(f"[Kronos Consumer] WARNING: thin context ({len(candles)} candles < "
+                  f"{KRONOS_MIN_CONTEXT_CANDLES}) for signal #{signal.get('id', '?')} — "
+                  f"probability may be unreliable")
+
+        horizon = self.config.kronos_horizon_candles
 
         x_timestamp = candles["timestamp"].reset_index(drop=True)
         last_ts = x_timestamp.iloc[-1]
         y_timestamp = pd.Series(
-            [last_ts + timedelta(minutes=i + 1) for i in range(self.config.lookforward_candles)]
+            [last_ts + timedelta(minutes=i + 1) for i in range(horizon)]
         )
 
         paths = predict_paths(
@@ -175,7 +215,7 @@ class KronosConsumer:
             df=candles[["open", "high", "low", "close"]],
             x_timestamp=x_timestamp,
             y_timestamp=y_timestamp,
-            pred_len=self.config.lookforward_candles,
+            pred_len=horizon,
             sample_count=KRONOS_SAMPLE_COUNT,
             verbose=False,
         )

@@ -103,6 +103,10 @@ async def _start_in_process_kronos_consumer():
         config = MLConfig()
         if getattr(settings, "discord_webhook_url", ""):
             config.discord_webhook_url = settings.discord_webhook_url
+        # Profile is already applied by now, so this picks up the expiry-day 30
+        # as well as the non-expiry 45 — the forecast must stop where the live
+        # time stop trails the SL to entry, not 15 minutes past it.
+        config.kronos_horizon_candles = settings.time_stop_minutes
 
         consumer = KronosConsumer(config)
         await consumer.run(

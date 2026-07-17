@@ -35,23 +35,37 @@ class TestLoadIntradayCandlesFromDhan(unittest.TestCase):
             security_id="13",
             exchange_segment="IDX_I",
             instrument_type="INDEX",
-            date="2026-07-15",
+            from_date="2026-07-15",
+            to_date="2026-07-15",
         )
 
         kwargs = dhan.intraday_minute_data.call_args.kwargs
         self.assertEqual(kwargs["instrument_type"], "INDEX")
         self.assertEqual(kwargs["security_id"], "13")
         self.assertEqual(kwargs["exchange_segment"], "IDX_I")
-        # single-day window: Dhan wants both bounds set to the same date
         self.assertEqual(kwargs["from_date"], "2026-07-15")
         self.assertEqual(kwargs["to_date"], "2026-07-15")
+
+    def test_passes_multiday_window_through(self):
+        """TASK-187: callers need a multi-day window for a usable model context;
+        the loader must forward both bounds rather than collapse them to one day."""
+        dhan = MagicMock()
+        dhan.intraday_minute_data.return_value = _ok_response()
+
+        load_intraday_candles_from_dhan(
+            dhan, "13", "IDX_I", "INDEX", "2026-07-07", "2026-07-17",
+        )
+
+        kwargs = dhan.intraday_minute_data.call_args.kwargs
+        self.assertEqual(kwargs["from_date"], "2026-07-07")
+        self.assertEqual(kwargs["to_date"], "2026-07-17")
 
     def test_returns_ohlcv_frame(self):
         dhan = MagicMock()
         dhan.intraday_minute_data.return_value = _ok_response()
 
         df = load_intraday_candles_from_dhan(
-            dhan, "13", "IDX_I", "INDEX", "2026-07-15",
+            dhan, "13", "IDX_I", "INDEX", "2026-07-15", "2026-07-15",
         )
 
         self.assertEqual(list(df.columns), ["timestamp", "open", "high", "low", "close", "volume"])
@@ -66,7 +80,7 @@ class TestLoadIntradayCandlesFromDhan(unittest.TestCase):
         }
 
         with self.assertRaises(ValueError):
-            load_intraday_candles_from_dhan(dhan, "13", "IDX_I", "INDEX", "2026-07-15")
+            load_intraday_candles_from_dhan(dhan, "13", "IDX_I", "INDEX", "2026-07-15", "2026-07-15")
 
 
 if __name__ == "__main__":
