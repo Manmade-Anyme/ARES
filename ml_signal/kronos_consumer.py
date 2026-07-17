@@ -46,11 +46,13 @@ KRONOS_MAX_CONTEXT = 2048
 KRONOS_SAMPLE_COUNT = 20
 MAX_SIGNAL_ATTEMPTS = 3
 
-# Forecast horizon. Trades live ~time_stop_minutes (45 non-expiry / 30 expiry)
-# before the SL trails to entry, so the barrier has to be walked over that
-# window. The old code reused MLConfig.lookforward_candles (=5), which is the
-# offline *training-label* window — five minutes cannot resolve a 30pt target,
-# so most paths ended unresolved and were counted as misses.
+# Default forecast horizon, overridden per-profile via MLConfig.kronos_horizon_candles
+# (main.py threads in settings.time_stop_minutes: 45 non-expiry / 30 expiry). The
+# barrier is walked exactly to the time stop — that is where an unresolved trade's
+# SL trails to entry, so scoring beyond it against the original SL would count hits
+# the live strategy closes at breakeven. The old code reused
+# MLConfig.lookforward_candles (=5), the offline *training-label* window — five
+# minutes cannot resolve a 30pt target, so paths ended unresolved and counted as misses.
 KRONOS_HORIZON_CANDLES = 45
 
 # Calendar days of candles fetched for context. Deliberately generous: it only
@@ -200,10 +202,12 @@ class KronosConsumer:
                   f"{KRONOS_MIN_CONTEXT_CANDLES}) for signal #{signal.get('id', '?')} — "
                   f"probability may be unreliable")
 
+        horizon = self.config.kronos_horizon_candles
+
         x_timestamp = candles["timestamp"].reset_index(drop=True)
         last_ts = x_timestamp.iloc[-1]
         y_timestamp = pd.Series(
-            [last_ts + timedelta(minutes=i + 1) for i in range(KRONOS_HORIZON_CANDLES)]
+            [last_ts + timedelta(minutes=i + 1) for i in range(horizon)]
         )
 
         paths = predict_paths(
@@ -211,7 +215,7 @@ class KronosConsumer:
             df=candles[["open", "high", "low", "close"]],
             x_timestamp=x_timestamp,
             y_timestamp=y_timestamp,
-            pred_len=KRONOS_HORIZON_CANDLES,
+            pred_len=horizon,
             sample_count=KRONOS_SAMPLE_COUNT,
             verbose=False,
         )

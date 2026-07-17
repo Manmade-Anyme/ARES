@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
+from ml_signal.config import MLConfig
 from ml_signal.kronos_consumer import (
     KRONOS_CONTEXT_CANDLES,
     KRONOS_CONTEXT_LOOKBACK_DAYS,
@@ -88,6 +89,46 @@ class TestTask187ContextAndHorizon(unittest.TestCase):
         self.assertEqual(kwargs["pred_len"], KRONOS_HORIZON_CANDLES)
         self.assertEqual(len(kwargs["y_timestamp"]), KRONOS_HORIZON_CANDLES)
         self.assertGreater(KRONOS_HORIZON_CANDLES, 5, "5 candles cannot span a ~45min trade")
+
+    @patch("ml_signal.kronos_consumer.load_intraday_candles_from_dhan")
+    def test_horizon_follows_profile_not_hardcoded_45(self, mock_load):
+        """Expiry runs a 30-min time stop. Walking the barrier to 45 would score
+        15 minutes against the original SL after the live SL has trailed to
+        entry — counting hits the strategy closes at breakeven."""
+        mock_load.return_value = _candles("2026-07-17 09:15", 500)
+        consumer = KronosConsumer(MLConfig(kronos_horizon_candles=30))
+
+        fake_paths = MagicMock()
+        fake_paths.predict_paths.return_value = [pd.DataFrame({"close": [24200.0]})]
+        with patch.dict("sys.modules", {"paths": fake_paths}):
+            consumer._forecast_probability(_signal("2026-07-17T06:00:00+00:00"))
+
+        kwargs = fake_paths.predict_paths.call_args.kwargs
+        self.assertEqual(kwargs["pred_len"], 30)
+        self.assertEqual(len(kwargs["y_timestamp"]), 30)
+
+    @patch("main.settings")
+    def test_main_threads_profile_time_stop_into_kronos(self, mock_settings):
+        """The horizon must come from the applied profile. main.py applies the
+        expiry/non-expiry profile before starting the consumer, so
+        settings.time_stop_minutes is authoritative by then."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        mock_settings.discord_webhook_url = "https://discord.com/test"
+        mock_settings.supabase_url = "https://mock.supabase.co"
+        mock_settings.supabase_key = "mock_key"
+        mock_settings.time_stop_minutes = 30  # expiry profile
+
+        from main import _start_in_process_kronos_consumer
+
+        captured = {}
+        async def _capture(self, **kwargs):
+            captured["horizon"] = self.config.kronos_horizon_candles
+
+        with patch("ml_signal.kronos_consumer.KronosConsumer.run", _capture):
+            asyncio.run(_start_in_process_kronos_consumer())
+
+        self.assertEqual(captured["horizon"], 30)
 
     @patch("ml_signal.kronos_consumer.load_intraday_candles_from_dhan")
     def test_context_is_tail_capped_for_memory(self, mock_load):

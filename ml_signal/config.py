@@ -50,6 +50,13 @@ class MLConfig:
     # Signal consumer
     signal_poll_interval_seconds: int = 5
 
+    # Kronos forecast horizon, in 1-min candles. Must track the active trading
+    # profile's time_stop_minutes (45 non-expiry / 30 expiry) — at the time stop
+    # an unresolved trade's SL trails to entry, so scoring past it against the
+    # original SL counts hits the live strategy would have closed at breakeven.
+    # main.py threads settings.time_stop_minutes in; this is the standalone default.
+    kronos_horizon_candles: int = 45
+
     # Discord
     discord_webhook_url: str = ""
     discord_summary_interval_minutes: int = 15
