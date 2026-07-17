@@ -1,6 +1,11 @@
 -- ARES Supabase Schema
 -- Run this in the Supabase SQL Editor
 
+-- Render timestamps as IST on read (TASK-189). Every timestamp column below is
+-- timestamptz, which stores an absolute UTC instant regardless — this only
+-- affects how sessions display them, and takes effect on new connections.
+ALTER DATABASE postgres SET timezone TO 'Asia/Kolkata';
+
 CREATE TABLE ares_signals (
   id bigserial primary key,
   setup_type text,
