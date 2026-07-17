@@ -106,11 +106,13 @@ class AresEngine:
         self.candle_buffer.append(candle)
         self.iv_buffer.append(atm.ce.iv)
 
-        # 2. Cooldown check
-        if self.last_signal_time:
-            elapsed = datetime.now() - self.last_signal_time
-            if elapsed < timedelta(minutes=settings.signal_cooldown_minutes):
-                return None
+        # 2. Cooldown state. Evaluated here but applied *after* the stateful
+        # detectors have advanced (TASK-188) — see step 5a.
+        in_cooldown = bool(
+            self.last_signal_time
+            and (datetime.now() - self.last_signal_time)
+            < timedelta(minutes=settings.signal_cooldown_minutes)
+        )
 
         # 3. Calculate average volume
         if len(self.candle_buffer) > 0:
@@ -123,6 +125,22 @@ class AresEngine:
             iv_prev = self.iv_buffer[-2]
         else:
             iv_prev = self.iv_buffer[-1]
+
+        # 5a. Advance the stateful OI wall detector on EVERY candle (TASK-188).
+        # It pairs a candidate candle with the *next* candle's confirmation, so
+        # any skipped candle silently breaks that pairing — and worse, leaves a
+        # stale candidate to be confirmed against a much later candle. Neither
+        # the cooldown nor a higher-priority detector may skip it, so it runs
+        # before both. Only signal *emission* is gated, just below.
+        oi_wall_signal = self.oi_wall_detector.update(
+            spot=atm.spot_price,
+            full_chain=full_chain,
+            candle=candle,
+            levels=levels
+        )
+
+        if in_cooldown:
+            return None
 
         # 5. Run detectors in priority order
         # We use 'or' to short-circuit: if a higher-priority detector returns a signal,
@@ -139,12 +157,7 @@ class AresEngine:
                 levels=levels
             )
             or
-            self.oi_wall_detector.update(
-                spot=atm.spot_price,
-                full_chain=full_chain,
-                candle=candle,
-                levels=levels
-            )
+            oi_wall_signal
             or
             (
                 self.continuation_detector.update(

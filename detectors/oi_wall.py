@@ -18,6 +18,16 @@ class OIWallDetector:
     stateful and requires the very next candle to confirm follow-through beyond
     the candidate candle's extreme before emitting a signal. This prevents a
     single shallow graze of the wall from triggering a trade.
+
+    The candidate rule deliberately does NOT require a deep rejection wick.
+    TASK-169 added a >=40% wick gate; replaying the closed OI-wall book against
+    real candles showed all four T2 winners had wicks of 19.0%, 24.4%, 37.1%
+    and 21.6% — the gate blocked every winner and admitted only losers. Wick
+    depth still contributes to the confidence score, but it cannot veto a
+    setup (TASK-188).
+
+    The detector is stateful, so callers MUST advance it on every candle —
+    skipping one silently breaks the candidate/confirmation pairing.
     """
 
     def __init__(self):
@@ -72,8 +82,8 @@ class OIWallDetector:
 
     def _find_candidate(self, spot: float, full_chain: List[Dict[str, Any]], candle: OHLCVCandle) -> Optional[Dict[str, Any]]:
         """
-        Scan the option chain for a nearby OI wall and check if the current candle
-        shows a genuine wick-rejection touch (the candidate trigger candle).
+        Scan the option chain for a nearby OI wall and check whether the current
+        candle tests it and turns away (the candidate trigger candle).
         """
         nearest_ce_wall = None
         nearest_pe_wall = None
@@ -112,11 +122,8 @@ class OIWallDetector:
             approaching = distance < settings.oi_wall_approach_distance
             tested_wall = candle.high >= (strike - settings.oi_wall_test_distance)
             rejected = candle.close < candle.open  # Bearish candle
-            upper_wick = candle.high - max(candle.open, candle.close)
-            wick_rejection = candle_range > 0 and (upper_wick / candle_range) >= settings.oi_wall_wick_rejection_ratio
-            writers_holding = nearest_ce_wall["ce_oi"] >= nearest_ce_wall["ce_oi_prev"]
 
-            if approaching and tested_wall and rejected and wick_rejection and writers_holding:
+            if approaching and tested_wall and rejected:
                 return {
                     "wall": nearest_ce_wall,
                     "direction": Direction.BEARISH,
@@ -133,11 +140,8 @@ class OIWallDetector:
             approaching = distance < settings.oi_wall_approach_distance
             tested_wall = candle.low <= (strike + settings.oi_wall_test_distance)
             bounced = candle.close > candle.open  # Bullish candle
-            lower_wick = min(candle.open, candle.close) - candle.low
-            wick_rejection = candle_range > 0 and (lower_wick / candle_range) >= settings.oi_wall_wick_rejection_ratio
-            writers_holding = nearest_pe_wall["pe_oi"] >= nearest_pe_wall["pe_oi_prev"]
 
-            if approaching and tested_wall and bounced and wick_rejection and writers_holding:
+            if approaching and tested_wall and bounced:
                 return {
                     "wall": nearest_pe_wall,
                     "direction": Direction.BULLISH,
@@ -235,7 +239,7 @@ class OIWallDetector:
             f"Price approached massive OI wall at {strike}",
             f"Wall size: {oi_lakhs:.1f}L contracts (+{oi_change_pct:.1f}% change)",
             "Candle showed clear rejection/bounce",
-            "Option writers defended the level (OI did not drop)"
+            "Follow-through candle confirmed the reversal"
         ]
         
         confidence, extra_reasons = self._evaluate_confidence(candle, wall, direction)
