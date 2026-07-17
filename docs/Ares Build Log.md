@@ -4,6 +4,49 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-17 · OI Wall Never Fired — The Wick Gate Blocked Every Winner (TASK-188)
+
+User reported OI wall rejection signals had stopped for days. Audit of the live system found **zero `OI_WALL_REJECTION` signals from 2026-07-02 through 07-17** — 11 trading days — while the other detectors fired 60× over the same span. Merged via [PR #41](https://github.com/dubeyshantanu2/ARES/pull/41).
+
+**Root cause: TASK-169's wick gate, shipped 2026-07-02 — the exact date of the last signal.**
+
+TASK-169 added two conjunctive gates to the candidate rule: a `>=40%` wick rejection and a next-candle confirmation. Replaying the closed OI-wall book against real Dhan 1-min candles showed they pull in opposite directions:
+
+```
+no gates                  : 8 trades, +30.05 pts, avg  +3.76
+wick gate only            : 2 trades, -57.35 pts, avg -28.68   <- both losers
+wick + confirm (prod)     : 1 trade,   -9.60 pts
+confirmation only         : 4 trades, +79.35 pts, avg +19.84
+```
+
+All three real T2 winners had wicks of **19.0%, 24.4%, 21.6%** — every one under the 0.4 threshold. The gate blocks **3 of 3 winners** and admits only losers; the biggest loser (−47.75) had the *deepest* wick in the book at 57.9%. The audit that motivated TASK-169 (`scratch/oi_wall_audit_20260702.md`) states it could not fetch live data, and generalised "the trade likely failed" from the two losers that happened that same afternoon. On the real book, the shallow touches it wanted to filter out **were** the winners.
+
+**Supersedes TASK-184's conclusion.** TASK-184 attributed OI-wall silence to the `oi_wall_min_oi_change_pct=5.0` per-60s gate. That gate is real (live probe 07-17: 29 walls passed the size gate, **0** passed the 5% gate) but its delta distribution is **unchanged since June** (median 0.63%/min, p99 ~10%, across 5,172 `ml_collection` rows). It makes signals *rare* (~2.4/day) — it is not why they stopped. The OI baseline was deliberately left untouched.
+
+**Changes**
+- **Dropped the wick gate** from `_find_candidate`. Wick depth still feeds the confidence score; it can no longer veto a setup.
+- **Kept the next-candle confirmation** unchanged — the replay supports it.
+- **Removed `writers_holding`** (dead code): wall selection already requires `oi_wall_min_oi_change_pct > 5%`, which implies `ce_oi > ce_oi_prev`; a zero `ce_oi_prev` forces `change_pct = 0.0` in `OIFetcher` so the wall fails selection anyway. It could never evaluate `False`. Its unchecked *"Option writers defended the level (OI did not drop)"* alert line was replaced with one the code verifies.
+- **Fixed detector starvation** in `engine.tick()`: the cooldown `return`ed before any detector ran, and the `or` short-circuit skipped OI wall when breakout fired. Since TASK-169 made the detector **stateful**, a pending candidate could survive a 15-min cooldown and be confirmed against a much later candle — a missed signal *and* a wrong signal. It now advances every candle; only *emission* is gated.
+
+**Test fixtures were leaking into production** — this corrupted the measurement itself. `tests/conftest.py` fetched live Dhan credentials at session start, importing `storage` unmocked before `test_storage.py` could patch `supabase.create_client`. When that import-order-dependent patch lost the race, `Storage()` bound a **real** client and `test_storage.py`'s `log_signal()` fixtures were written to production: `ares_signals` ids **167–170** (`spot=24001.0`, reason literally `"Reason 1"`, `Capital: ₹10,000.00`) plus **9** `trade_analytics` rows — including a fabricated **+99.0 T2_HIT** that inflated the OI-wall average from **+3.76 → +14.34**. All contaminated rows were `OI_WALL_REJECTION`, so only that setup's numbers were wrong. `conftest.py` now points Supabase and Dhan at unroutable dummies; no unit test needed live credentials.
+
+**Validation**: TDD — `test_task188_oi_wall_wick_gate.py`, `test_task188_oi_wall_starvation.py`, `test_task188_test_db_isolation.py`. **297 tests green** (283 → 297).
+
+**Honest caveats**
+- **n=8.** The per-gate P&L splits are directional, not proven. The load-bearing fact is deterministic geometry: the wick gate blocks 3/3 winners.
+- **OI wall is a marginal setup** at +3.76 avg — below `EXHAUSTION_REVERSAL` (+10.08) and `FAILED_BREAKOUT` (+28.15). This restores a modest edge, not a star.
+- The replay **cannot perfectly reproduce** historical fires: historical option-chain OI isn't stored anywhere (only ATM reaches `ml_collection`), so the wall is synthesised and candle alignment is ambiguous. Patched fired 3/8 in replay vs 1/8 for prod — indicative, not measured.
+
+**Open / follow-ups**
+- `migrations/2026-07-17-task188-fixture-cleanup-and-ist.sql` — fixture purge + IST render setting. **User-run, still pending.** Deletes are constrained to the confirmed ids AND the full fixture signature (`reasons[0] = 'Reason 1'`, which production code cannot emit) after a Codex P1 flagged that a price-only match would destroy a real signal sitting at 24001.0.
+- `breakout_detector` and `continuation_detector` are **also stateful and also starved** by the same cooldown/short-circuit. Left alone deliberately — FAILED_BREAKOUT is the best performer and there's no evidence its current rate is wrong.
+- **Deploy pending.**
+
+**Lesson**: never accept a detector-tuning audit that didn't measure outcomes. TASK-169's audit reasoned from plausibility ("a real rejection should have a deep wick") on a day it couldn't fetch data, and silently zeroed a working detector for 11 trading days while the test suite stayed green — because the fixtures hand-feed `ce_oi_change_pct: 11.1`, a value the live 60s window basically never produces.
+
+---
+
 ## 2026-07-09 · Per-Setup-Type SL/T1/T2 Config — Single Source of Truth (TASK-185)
 
 Turned the TASK-185 SL/target study into a shipped feature: each detector setup now carries its own **SL / T1 / T2**, editable from config, applied centrally by the engine. Replaces the old flat, purely-structural stops that had *opposite* problems per setup (exhaustion too tight ~0.6–4pt; oi_wall/breakout too wide ~30–48pt) — no single global knob could fix both.
