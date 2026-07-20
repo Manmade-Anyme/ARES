@@ -11,6 +11,12 @@ concurrency:
 
 jobs:
   deploy:
+    # The push trigger is main-only, but workflow_dispatch accepts any ref
+    # (branch picker in the UI, `gh workflow run --ref`). Without this guard
+    # checkout takes that ref and deploys it to the app named in fly.toml —
+    # i.e. unmerged branch code straight to production. Non-main dispatches
+    # show as a skipped job.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
