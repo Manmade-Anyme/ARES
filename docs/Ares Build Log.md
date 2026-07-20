@@ -64,8 +64,12 @@ Inference costs **~160 MB per sampled path plus ~175 MB fixed**. Usable memory o
 - `import main` succeeds with `torch` absent from `sys.modules`.
 
 **TODOs**
-- [ ] Merge [PR #42](https://github.com/dubeyshantanu2/ARES/pull/42); deploy **after 15:30 IST** (a restart zeroes VWAP + buffers mid-session).
-- [ ] Consider pruning the remaining zero-caller functions in `ml_signal/data.py`.
+- [x] Merged via [PR #42](https://github.com/dubeyshantanu2/ARES/pull/42) (`27ce5c3`, 2026-07-20). 273 tests green on `main`.
+- [ ] **Deploy — not yet done.** Merge ≠ deploy; Fly still runs the pre-removal image. Deploy **after 15:30 IST** (a restart zeroes VWAP + buffers mid-session).
+- [ ] Fix the Discord startup alert's `Session : 09:15 to 23:30 IST` line — `alerts.py` hardcodes 23:30 while `main.py` gates on `time(15, 30)`. Cosmetic, long-standing, unrelated to Kronos.
+- [ ] Consider pruning the remaining zero-caller functions in `ml_signal/data.py` (`get_supabase_client`, `load_ares_trade_analytics`, `load_historical_candles_from_dhan`, `build_training_dataset`).
+
+**Codex review note.** The bot flagged `alerts.py`'s hardcoded `Kronos ML Engine : ACTIVE` line — a correct catch against commit `92359ca`, which it reviewed. It never saw `12a2f48`, where the removal fixed the same line independently. Codex reviews only the commit that triggered it, so on multi-commit PRs expect findings already resolved by later commits.
 
 ---
 
