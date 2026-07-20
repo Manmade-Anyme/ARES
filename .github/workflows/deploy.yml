@@ -1,0 +1,53 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a deploy mid-flight
+
+jobs:
+  deploy:
+    # The push trigger is main-only, but workflow_dispatch accepts any ref
+    # (branch picker in the UI, `gh workflow run --ref`). Without this guard
+    # checkout takes that ref and deploys it to the app named in fly.toml —
+    # i.e. unmerged branch code straight to production. Non-main dispatches
+    # show as a skipped job.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        if: hashFiles('tests/**/test_*.py') != ''
+        with:
+          python-version: '3.10'   # matches Dockerfile base image
+          cache: pip
+
+      - name: Test
+        if: hashFiles('tests/**/test_*.py') != ''
+        env:
+          # config.py builds Settings() at import and these have no defaults,
+          # so tests/conftest.py's `from config import settings` needs them set.
+          # Unroutable by design — same intent as conftest's dummy values.
+          DISCORD_WEBHOOK_URL: http://discord.invalid
+          SUPABASE_URL: http://supabase.invalid
+          SUPABASE_KEY: test-key-never-a-real-credential
+        run: |
+          pip install -r requirements-dev.txt
+          # `python -m pytest`, not bare `pytest`: the console script does not
+          # put the repo root on sys.path, and tests/ has no __init__.py, so
+          # tests/conftest.py's `from config import settings` would raise
+          # ModuleNotFoundError before collection.
+          #
+          # tests/ only — scratch/ is gitignored so it won't be in a CI
+          # checkout, but scoping also keeps stray root-level test_*.py out.
+          python -m pytest tests/ -q
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -1,0 +1,20 @@
+# Test-only dependencies.
+#
+# The runtime image installs requirements.txt alone. main.py imports just
+# ml_signal.collector, so none of the ML training stack below ships to Fly.
+# The test suite does reach it, though, so a clean checkout needs these to
+# collect at all.
+
+-r requirements.txt
+
+pytest
+pytest-asyncio   # tests/unit/test_config_profiles.py uses bare @pytest.mark.asyncio
+pytest-cov       # for the coverage command in README section 5
+
+# Pulled in transitively by tests/unit/test_task183_ml_offline.py and
+# tests/unit/test_ml_live.py, via ml_signal.train_offline / .predictor.
+# Deliberately NOT optuna — ml_signal/train_offline.py:30-32 avoids it on
+# purpose, and nothing under tests/ imports ml_signal.trainer.
+joblib
+xgboost
+scikit-learn

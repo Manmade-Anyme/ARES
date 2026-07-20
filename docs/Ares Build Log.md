@@ -490,7 +490,7 @@ Audited two weak/false OI Wall Rejection alerts (#2599, #0308) and found the det
 **TODOs**
 - [x] Merge PR for `feature/TASK-169-oi-wall-confirmation-candle` and perform cleanup.
 - [ ] Revisit `oi_wall_stop_buffer` (currently 25pts NON_EXPIRY) and the confidence HIGH threshold (currently score >= 2) per the audit's remaining findings.
-- [ ] Audit `scratch/` for files still tracked in git from before the `.gitignore` change and remove them.
+- [x] Audit `scratch/` for files still tracked in git from before the `.gitignore` change and remove them. Done 2026-07-20 — surfaced while wiring up CI, since a bare `pytest` collected them and failed 8 tests.
 
 ---
 
