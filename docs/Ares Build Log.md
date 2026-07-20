@@ -4,6 +4,71 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-20 · Kronos Inference Needs 3.6GB on a 768mb VM — Removed Entirely (TASK-190)
+
+User reported the ARES startup alert arriving in Discord repeatedly. The alert code was not at fault: the Fly machine was OOM-killed and restarted six times in three minutes, and `send_startup_alert()` fires once per boot.
+
+**Timeline, 2026-07-20 (UTC)**
+
+| Time | Event |
+|---|---|
+| 06:10:54 | Signal **#231** (TREND_CONTINUATION) written to `ares_signals` |
+| 06:11:28 | Kronos consumer starts, sees #231 aged 34s (< 180s) → runs inference |
+| 06:11:34 | `Out of memory: Killed process ... anon-rss:627072kB` |
+| 06:11:44 | Machine reboots → Discord startup alert #1 |
+| … | Cycle repeats at 06:12:38, 06:13:10, 06:13:46 |
+| 06:14:15 | #231 aged past 180s → marked processed, no inference → loop ends |
+
+The loop is **self-limiting but recurring**: it ends when the signal ages out of the 180-second recency window in `KronosConsumer.run`, and starts again on the next signal.
+
+**Root cause.** `_autoregressive_paths` (`ml_signal/kronos_vendor/paths.py`) expands the context to `batch = sample_count` via `x.unsqueeze(1).repeat(...)`, then decodes autoregressively **without a KV cache** — re-running `model.decode_s1` over the whole window for each of the 45 prediction steps. Measured peak RSS (`ru_maxrss`, horizon 45, synthetic OHLC — memory depends on tensor shape, not price values):
+
+```
+context 1000 x 20 paths -> 3613 MB      <- shipped configuration
+context  500 x 20 paths -> 2126 MB
+context 1000 x  5 paths -> 1314 MB
+context 1000 x  2 paths ->  820 MB
+```
+
+Inference costs **~160 MB per sampled path plus ~175 MB fixed**. Usable memory on the 768mb VM is ~710 MB and the live trading baseline is 340 MB (measured on the running machine via `/proc/<pid>/status`), leaving ~370 MB — which buys **exactly one path**, a probability that can only read 0% or 100%.
+
+**The `anon-rss:627072kB` in the OOM log is misleading** and cost time during diagnosis: it is the RSS the kernel sampled at kill time, not the demand. It reads like a marginal 627-vs-768 overshoot; the process was climbing toward 3.6 GB.
+
+**Superseded guesses.** The `ponytail:` comment at `kronos_consumer.py:68` prescribed dropping `KRONOS_CONTEXT_CANDLES` to 500 for exactly this signature. That was an unmeasured guess and is wrong by ~3× — 500 still peaks at 2.1 GB. The comment now carries the measured figures.
+
+**Real cost of the loop.** The Discord spam is cosmetic; each restart zeroes VWAP and the candle buffers (`Buffers=1/30`), so ARES cannot score any setup for the following 30 minutes. Every signal cost ~33 minutes of blind time.
+
+**Resolution: removed, not resized.** Kronos never posted a single probability in production across four tasks (TASK-184 built it, 186 inlined it, 187 fixed its context, 190 measured it). Rather than pay for a bigger machine to keep an unproven informational number alive, the whole subsystem is deleted.
+
+**Deleted**
+- `ml_signal/kronos_consumer.py`
+- `ml_signal/kronos_vendor/` — the vendored transformer package and `paths.py`
+- `ml_signal/data.py::load_intraday_candles_from_dhan` — Kronos was its only caller
+- `tests/unit/`: `test_kronos_consumer.py`, `test_task186_in_process_kronos.py`, `test_task187_kronos_context_horizon.py`, `test_task190_kronos_not_in_process.py`, `test_ml_signal_data.py`
+
+**Changed**
+- `main.py`: `_start_in_process_kronos_consumer` and its `create_task` removed; banner line gone.
+- `alerts.py`: the Discord **startup alert** hardcoded `[+] Kronos ML Engine : ACTIVE (NeoQuasar/Kronos-mini decoupled)` — this was in the very message that was spamming the channel, and it was unconditional, so it would have kept asserting ACTIVE. Removed.
+- `ml_signal/config.py`: `kronos_horizon_candles` removed.
+- **`torch`, `einops`, `huggingface_hub`, `safetensors` dropped** from both `requirements.txt` files, and the CPU-torch wheel install dropped from the `Dockerfile`. Nothing outside `kronos_vendor/` imported any of them — verified by grep before deleting. This is the bulk of the container image.
+
+**Decisions**
+- Kronos was informational only — it never touched signal generation, entries, or SL/T1/T2 — so the trading loop is unaffected by its removal.
+- Rejected scaling the VM to 4 GB. It works and needs no code change, but pays continuously for a feature with no production track record.
+- `load_intraday_candles_from_dhan` went with it as zero-caller code. Note the other four functions in `ml_signal/data.py` (`get_supabase_client`, `load_ares_trade_analytics`, `load_historical_candles_from_dhan`, `build_training_dataset`) **also have zero callers** — that file is now almost entirely dead and is a candidate for a follow-up prune, deferred here to keep this change scoped to Kronos.
+- The offline XGBoost pipeline (`dataset.py`, `train_offline.py`, `trainer.py`, `predictor.py`, `models/v1.joblib`) is untouched — it never depended on Kronos.
+- Three `Kronos` mentions remain in `schema.sql` and the TASK-188 migration. Those refer to a **different app** sharing the Supabase project (alongside Gamma Blaster, Phantom, Sniper, Order Flow) and must not be touched.
+
+**Verification**
+- 273 tests green (was 298; 25 removed with the deleted modules — no failures).
+- `import main` succeeds with `torch` absent from `sys.modules`.
+
+**TODOs**
+- [ ] Merge [PR #42](https://github.com/dubeyshantanu2/ARES/pull/42); deploy **after 15:30 IST** (a restart zeroes VWAP + buffers mid-session).
+- [ ] Consider pruning the remaining zero-caller functions in `ml_signal/data.py`.
+
+---
+
 ## 2026-07-17 · OI Wall Never Fired — The Wick Gate Blocked Every Winner (TASK-188)
 
 User reported OI wall rejection signals had stopped for days. Audit of the live system found **zero `OI_WALL_REJECTION` signals from 2026-07-02 through 07-17** — 11 trading days — while the other detectors fired 60× over the same span. Merged via [PR #41](https://github.com/dubeyshantanu2/ARES/pull/41).

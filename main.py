@@ -38,7 +38,6 @@ def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT", ml_activ
     print(f"{G}[+] PDH / PDL    : {W}{pdh:.2f} / {pdl:.2f}{RESET}")
     ml_status = f"{G}ACTIVE (recording 50+ features per cycle)" if ml_active else f"{Y}inactive"
     print(f"{G}[+] ML Data Collection : {W}{ml_status}{RESET}")
-    print(f"{G}[+] Kronos ML Engine   : {W}ACTIVE (NeoQuasar/Kronos-mini decoupled){RESET}")
     print(f"{C}{'=' * 65}{RESET}")
 
 def format_signal_console(signal, spot):
@@ -90,33 +89,6 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
             except Exception as e:
                 print(f"[-] Tick-driven exit check failed: {e}")
 
-async def _start_in_process_kronos_consumer():
-    """
-    Launches the Kronos ML live probability consumer as an in-process
-    background task within main.py (TASK-186).
-    """
-    try:
-        from ml_signal.config import MLConfig
-        from ml_signal.kronos_consumer import KronosConsumer
-        # Fresh config — mutating the shared DEFAULT_CONFIG singleton would
-        # leak the webhook into every other MLConfig consumer.
-        config = MLConfig()
-        if getattr(settings, "discord_webhook_url", ""):
-            config.discord_webhook_url = settings.discord_webhook_url
-        # Profile is already applied by now, so this picks up the expiry-day 30
-        # as well as the non-expiry 45 — the forecast must stop where the live
-        # time stop trails the SL to entry, not 15 minutes past it.
-        config.kronos_horizon_candles = settings.time_stop_minutes
-
-        consumer = KronosConsumer(config)
-        await consumer.run(
-            supabase_url=settings.supabase_url,
-            supabase_key=settings.supabase_key,
-        )
-    except Exception as kronos_err:
-        print(f"{Y}[!] In-process Kronos consumer task exited: {kronos_err}{RESET}")
-
-
 async def run():
     """
     Main entry point for the ARES Trading System.
@@ -147,9 +119,6 @@ async def run():
     position_manager = PositionManager()
     ml_collector = MLCollector(settings.supabase_url, settings.supabase_key)
     tick_feed = TickFeed()
-
-    # Start in-process Kronos ML consumer background task (TASK-186)
-    kronos_task = asyncio.create_task(_start_in_process_kronos_consumer())
 
     # Make this dynamic via Yahoo Finance Oracle 
     try:

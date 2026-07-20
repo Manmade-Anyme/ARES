@@ -9,9 +9,3 @@ supabase
 pydantic-settings
 python-dateutil
 joblib
-
-# Kronos live module only (ml_signal/kronos_consumer.py, ml_signal/kronos_vendor/)
-torch>=2.0.0
-einops==0.8.1
-huggingface_hub==0.33.1
-safetensors==0.6.2
