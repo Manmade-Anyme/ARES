@@ -27,7 +27,7 @@
 
 ### 🧹 Scratch File Cleanup [TODO]
 **Description:** `scratch/` is for local-only work (audits, debug scripts, throwaway notes) and must never be pushed. `scratch/` was added to `.gitignore` in TASK-169, but files already committed before that point remain tracked.
-- [ ] Audit `scratch/` for any files still tracked in git and remove them from the repo (`git rm --cached`).
+- [x] Audit `scratch/` for any files still tracked in git and remove them from the repo (`git rm --cached`). Done 2026-07-20: 15 tracked files untracked; local copies and the already-untracked `restore_orphan_trades.py` unaffected.
 - [ ] If a new scratch file is ever accidentally pushed in a PR, remove it from that PR before merge.
 
 ---

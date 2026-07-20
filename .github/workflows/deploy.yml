@@ -32,9 +32,9 @@ jobs:
           SUPABASE_KEY: test-key-never-a-real-credential
         run: |
           pip install -r requirements.txt pytest
-          # tests/ only. scratch/ is tracked but holds throwaway scripts that
-          # build live clients and mutate the global settings singleton, which
-          # leaks into the real suite.
+          # tests/ only, not a bare `pytest`. scratch/ is gitignored so it
+          # won't be in a CI checkout, but scoping here also keeps any stray
+          # root-level test_*.py out of the gate.
           pytest tests/ -q
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
