@@ -296,31 +296,43 @@ To run tests with a coverage report:
 pytest --cov=. tests/
 ```
 
-### 6. Fly.io Deployment
-ARES is fully dockerized and configured for Fly.io.
+### 6. Fly.io Deployment (one-time setup)
+ARES is fully dockerized and configured for Fly.io. This section is the initial
+bootstrap — after it, deploys are automatic (see section 7).
 
 1. Install `flyctl` and login.
 2. Run `fly launch` (do not override the existing `fly.toml` unless needed).
-3. Set your secrets in Fly:
+3. Set your secrets in Fly. These live on the Fly app and persist across every
+   future deploy — CI never sees them:
 ```bash
 fly secrets set SUPABASE_URL="your_url" SUPABASE_KEY="your_key" DISCORD_WEBHOOK_URL="your_webhook"
 ```
-4. Deploy the application:
+4. Deploy once by hand to confirm the image builds and the app boots:
 ```bash
 fly deploy
 ```
 
-### 7. Automated Start/Stop Schedule (GitHub Actions)
-ARES is configured to automatically scale up at 09:15 IST and down at 15:30 IST to save Fly.io compute costs.
+### 7. Automatic Deploy on Merge (GitHub Actions)
+Once the app exists on Fly, every push to `main` runs the test suite and then
+deploys — no manual `fly deploy` needed.
 
-1. Generate a Fly Deploy Token:
+1. Generate a deploy-scoped token and store it as a repo secret:
 ```bash
-fly tokens create deploy
+fly tokens create deploy -a ares-xzy-gq -x 8760h | gh secret set FLY_API_TOKEN
 ```
-2. In your GitHub Repository, go to **Settings** -> **Secrets and variables** -> **Actions**.
-3. Click **New repository secret**.
-4. Name it `FLY_API_TOKEN` and paste your generated token.
-5. The `.github/workflows/fly-schedule.yml` file will now automatically manage scaling every weekday. You can also manually trigger `start` and `stop` from the Actions tab.
+   (Or add it by hand under **Settings** → **Secrets and variables** → **Actions**,
+   named `FLY_API_TOKEN`.)
+2. [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) does the rest:
+   `pytest tests/` must pass, then `flyctl deploy --remote-only`. A red suite
+   blocks the deploy. You can also trigger it manually from the Actions tab, or
+   with `gh workflow run deploy`.
+
+Note that a deploy restarts the machine, which resets VWAP and the candle
+buffers — merging during market hours costs the rest of that session's warmup.
+
+**Start/stop scheduling is not handled here.** The machine is started at 09:10
+IST and stops itself at 15:30 via `main.py`'s session gate, driven by external
+cron-job.com jobs — see [DEPLOYMENT.md](DEPLOYMENT.md) for that setup.
 
 ---
 

@@ -1,0 +1,43 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a deploy mid-flight
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        if: hashFiles('tests/**/test_*.py') != ''
+        with:
+          python-version: '3.10'   # matches Dockerfile base image
+          cache: pip
+
+      - name: Test
+        if: hashFiles('tests/**/test_*.py') != ''
+        env:
+          # config.py builds Settings() at import and these have no defaults,
+          # so tests/conftest.py's `from config import settings` needs them set.
+          # Unroutable by design — same intent as conftest's dummy values.
+          DISCORD_WEBHOOK_URL: http://discord.invalid
+          SUPABASE_URL: http://supabase.invalid
+          SUPABASE_KEY: test-key-never-a-real-credential
+        run: |
+          pip install -r requirements.txt pytest
+          # tests/ only. scratch/ is tracked but holds throwaway scripts that
+          # build live clients and mutate the global settings singleton, which
+          # leaks into the real suite.
+          pytest tests/ -q
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
