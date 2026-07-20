@@ -38,7 +38,7 @@ def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT", ml_activ
     print(f"{G}[+] PDH / PDL    : {W}{pdh:.2f} / {pdl:.2f}{RESET}")
     ml_status = f"{G}ACTIVE (recording 50+ features per cycle)" if ml_active else f"{Y}inactive"
     print(f"{G}[+] ML Data Collection : {W}{ml_status}{RESET}")
-    print(f"{G}[+] Kronos ML Engine   : {W}ACTIVE (NeoQuasar/Kronos-mini decoupled){RESET}")
+    print(f"{Y}[!] Kronos ML Engine   : {W}DISABLED (needs ~3.6GB, VM is 768mb — TASK-190){RESET}")
     print(f"{C}{'=' * 65}{RESET}")
 
 def format_signal_console(signal, spot):
@@ -148,8 +148,21 @@ async def run():
     ml_collector = MLCollector(settings.supabase_url, settings.supabase_key)
     tick_feed = TickFeed()
 
-    # Start in-process Kronos ML consumer background task (TASK-186)
-    kronos_task = asyncio.create_task(_start_in_process_kronos_consumer())
+    # Kronos consumer deliberately NOT started (TASK-190). Measured peak RSS for one
+    # forecast (context=1000, 20 sampled paths, horizon=45) is 3.6GB against ~710MB
+    # usable on the 768mb VM. It OOM-killed the whole process — including the trading
+    # loop — on every signal, and each kill cost a restart that zeroed VWAP and the
+    # candle buffers, blinding ARES for the following 30 minutes.
+    #
+    # Shrinking does not rescue it: context 500 still peaks at 2.1GB, and 5 sampled
+    # paths at 1.3GB. Inference costs ~160MB per path plus ~175MB fixed, so the ~370MB
+    # of headroom left by the 340MB baseline buys exactly one path — a probability that
+    # can only read 0% or 100%.
+    #
+    # The number was informational only (it never touched signal generation, entries,
+    # or SL/T1/T2), so the trading loop keeps running without it. To restore it, give
+    # Kronos its own machine and run `python -m ml_signal.kronos_consumer` there — do
+    # not re-enable _start_in_process_kronos_consumer() on a shared 768mb VM.
 
     # Make this dynamic via Yahoo Finance Oracle 
     try:

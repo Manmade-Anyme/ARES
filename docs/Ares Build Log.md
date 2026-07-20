@@ -4,6 +4,57 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-20 · Kronos Inference Needs 3.6GB on a 768mb VM — Disabled In-Process (TASK-190)
+
+User reported the ARES startup alert arriving in Discord repeatedly. The alert code was not at fault: the Fly machine was OOM-killed and restarted six times in three minutes, and `send_startup_alert()` fires once per boot.
+
+**Timeline, 2026-07-20 (UTC)**
+
+| Time | Event |
+|---|---|
+| 06:10:54 | Signal **#231** (TREND_CONTINUATION) written to `ares_signals` |
+| 06:11:28 | Kronos consumer starts, sees #231 aged 34s (< 180s) → runs inference |
+| 06:11:34 | `Out of memory: Killed process ... anon-rss:627072kB` |
+| 06:11:44 | Machine reboots → Discord startup alert #1 |
+| … | Cycle repeats at 06:12:38, 06:13:10, 06:13:46 |
+| 06:14:15 | #231 aged past 180s → marked processed, no inference → loop ends |
+
+The loop is **self-limiting but recurring**: it ends when the signal ages out of the 180-second recency window in `KronosConsumer.run`, and starts again on the next signal.
+
+**Root cause.** `_autoregressive_paths` (`ml_signal/kronos_vendor/paths.py`) expands the context to `batch = sample_count` via `x.unsqueeze(1).repeat(...)`, then decodes autoregressively **without a KV cache** — re-running `model.decode_s1` over the whole window for each of the 45 prediction steps. Measured peak RSS (`ru_maxrss`, horizon 45, synthetic OHLC — memory depends on tensor shape, not price values):
+
+```
+context 1000 x 20 paths -> 3613 MB      <- shipped configuration
+context  500 x 20 paths -> 2126 MB
+context 1000 x  5 paths -> 1314 MB
+context 1000 x  2 paths ->  820 MB
+```
+
+Inference costs **~160 MB per sampled path plus ~175 MB fixed**. Usable memory on the 768mb VM is ~710 MB and the live trading baseline is 340 MB (measured on the running machine via `/proc/<pid>/status`), leaving ~370 MB — which buys **exactly one path**, a probability that can only read 0% or 100%.
+
+**The `anon-rss:627072kB` in the OOM log is misleading** and cost time during diagnosis: it is the RSS the kernel sampled at kill time, not the demand. It reads like a marginal 627-vs-768 overshoot; the process was climbing toward 3.6 GB.
+
+**Superseded guesses.** The `ponytail:` comment at `kronos_consumer.py:68` prescribed dropping `KRONOS_CONTEXT_CANDLES` to 500 for exactly this signature. That was an unmeasured guess and is wrong by ~3× — 500 still peaks at 2.1 GB. The comment now carries the measured figures.
+
+**Real cost of the loop.** The Discord spam is cosmetic; each restart zeroes VWAP and the candle buffers (`Buffers=1/30`), so ARES cannot score any setup for the following 30 minutes. Every signal cost ~33 minutes of blind time.
+
+**Changes**
+- **Kronos consumer no longer started** by `run()`. The `create_task` call is replaced with a comment carrying the measured numbers and the rehoming instruction.
+- **`_start_in_process_kronos_consumer` kept** — TASK-186/187 still cover it and it is the reference for rehoming. It is simply never scheduled.
+- **Startup banner corrected**: it advertised `Kronos ML Engine : ACTIVE` and would otherwise have kept claiming that.
+- **New guard** `tests/unit/test_task190_kronos_not_in_process.py` asserts `run()` does not schedule the consumer — verified to fail against the pre-fix `main.py`. The failure is invisible until a real signal fires in production, so it needed pinning.
+
+**Decisions**
+- Kronos was informational only — it never touched signal generation, entries, or SL/T1/T2 — so the trading loop keeps running without it. Losing the number costs less than losing the loop.
+- Rejected scaling the VM to 4 GB. It works and needs no code change, but pays continuously to keep a feature that has never yet posted a probability in production.
+- To restore Kronos, give it **its own machine** and run `python -m ml_signal.kronos_consumer` there — the TASK-184 design. TASK-186 inlined it only because nothing in the Fly deploy launched that process; the fix for that was deployment wiring, not co-tenancy.
+
+**TODOs**
+- [ ] Merge PR for `fix/TASK-190-kronos-inference-oom`; deploy **after 15:30 IST** (a restart zeroes VWAP + buffers mid-session).
+- [ ] Rehome Kronos onto its own machine if the forward probability is still wanted.
+
+---
+
 ## 2026-07-17 · OI Wall Never Fired — The Wick Gate Blocked Every Winner (TASK-188)
 
 User reported OI wall rejection signals had stopped for days. Audit of the live system found **zero `OI_WALL_REJECTION` signals from 2026-07-02 through 07-17** — 11 trading days — while the other detectors fired 60× over the same span. Merged via [PR #41](https://github.com/dubeyshantanu2/ARES/pull/41).

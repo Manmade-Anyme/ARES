@@ -65,9 +65,19 @@ KRONOS_CONTEXT_LOOKBACK_DAYS = 10
 # scale and every sampled path comes out flat — no path can reach the target and
 # the probability is a structural 0%, not a forecast. ~1000 bars is ~2.5 trading
 # days of real intraday range.
-# ponytail: 1000 is a memory ceiling, not a tuned optimum — Kronos runs
-# in-process at 768mb and hangs silently if it runs out. Drop to 500 if the
-# silent-hang signature returns; raise toward KRONOS_MAX_CONTEXT if headroom grows.
+# Memory (TASK-190, measured via ru_maxrss at horizon 45 — peak RSS for ONE forecast):
+#
+#     context 1000 x 20 paths -> 3613 MB
+#     context  500 x 20 paths -> 2126 MB
+#     context 1000 x  5 paths -> 1314 MB
+#     context 1000 x  2 paths ->  820 MB
+#
+# ~160 MB per sampled path plus ~175 MB fixed, driven by _autoregressive_paths
+# expanding context to batch = sample_count and decoding without a KV cache.
+# This does NOT fit alongside the trading loop on the 768mb VM at any setting that
+# yields more than one path, which is why main.py no longer starts this consumer
+# in-process. Run it on its own machine (`python -m ml_signal.kronos_consumer`)
+# and size that machine from the table above before changing either constant.
 KRONOS_CONTEXT_CANDLES = 1000
 
 # Below this the context is too thin for the forecast to mean anything. We still
