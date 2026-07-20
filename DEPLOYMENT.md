@@ -72,7 +72,7 @@ fly deploy
 > **This is the last manual deploy you need.** After this, every push to `main`
 > runs the test suite and deploys automatically via
 > [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — see README
-> section 7. A failed deploy posts to `DISCORD_HEALTH_WEBHOOK_URL`.
+> section 7.
 >
 > Note there is **no market-hours guard**: merging to `main` between 09:15 and
 > 15:30 IST restarts the machine mid-session, which resets VWAP and the candle
@@ -80,6 +80,37 @@ fly deploy
 >
 > The pipeline only ever runs `flyctl deploy`. It never creates the app and
 > never touches the secrets set in Step 2 — those live on the Fly app.
+
+### Step 3b: GitHub repository secrets (required for CI)
+
+The Fly secrets from Step 2 are read by the **running app**. The CI pipeline
+reads its own, separate set from **GitHub Actions secrets** — setting one does
+not set the other, and they are stored in different places entirely:
+
+| Secret | Store | Read by |
+| :--- | :--- | :--- |
+| `DISCORD_HEALTH_WEBHOOK_URL` | Fly app secret (Step 2) | `alerts.py` at runtime — heartbeats, error alerts |
+| `DISCORD_HEALTH_WEBHOOK_URL` | **GitHub repo secret** | the `notify` job, on a failed `main` deploy |
+| `FLY_API_TOKEN` | **GitHub repo secret** | the `deploy` job, to authenticate `flyctl` |
+
+Set both repo secrets:
+
+```bash
+# deploy-scoped token, so a leak here cannot reach your other Fly apps
+fly tokens create deploy -a ares-xzy-gq -x 8760h \
+  | gh secret set FLY_API_TOKEN -R <owner>/ARES
+
+# same webhook value as the Fly secret, piped so it never lands in shell history
+grep '^DISCORD_HEALTH_WEBHOOK_URL=' .env | cut -d= -f2- \
+  | gh secret set DISCORD_HEALTH_WEBHOOK_URL -R <owner>/ARES
+```
+
+Verify with `gh secret list -R <owner>/ARES` — both must appear.
+
+> **If `DISCORD_HEALTH_WEBHOOK_URL` is missing from the repo secrets, failed
+> deploys alert nobody.** The `notify` job skips with only a `::warning::`
+> annotation in the run log rather than failing, so the absence is easy to miss
+> — the alert you were relying on simply never arrives.
 
 ### Step 4: Monitor Logs
 
