@@ -60,13 +60,26 @@ fly secrets set \
   NIFTY_EXCHANGE="IDX_I"
 ```
 
-### Step 3: Deploy
+### Step 3: Deploy (bootstrap only)
 
-With the app created and secrets loaded, build and deploy the container:
+With the app created and secrets loaded, build and deploy the container once by
+hand to confirm the image builds and the app boots:
 
 ```bash
 fly deploy
 ```
+
+> **This is the last manual deploy you need.** After this, every push to `main`
+> runs the test suite and deploys automatically via
+> [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — see README
+> section 7. A failed deploy posts to `DISCORD_HEALTH_WEBHOOK_URL`.
+>
+> Note there is **no market-hours guard**: merging to `main` between 09:15 and
+> 15:30 IST restarts the machine mid-session, which resets VWAP and the candle
+> buffers for the rest of the day. Merge after the close.
+>
+> The pipeline only ever runs `flyctl deploy`. It never creates the app and
+> never touches the secrets set in Step 2 — those live on the Fly app.
 
 ### Step 4: Monitor Logs
 
