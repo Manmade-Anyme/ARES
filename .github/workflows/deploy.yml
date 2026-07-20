@@ -31,11 +31,15 @@ jobs:
           SUPABASE_URL: http://supabase.invalid
           SUPABASE_KEY: test-key-never-a-real-credential
         run: |
-          pip install -r requirements.txt pytest
-          # tests/ only, not a bare `pytest`. scratch/ is gitignored so it
-          # won't be in a CI checkout, but scoping here also keeps any stray
-          # root-level test_*.py out of the gate.
-          pytest tests/ -q
+          pip install -r requirements-dev.txt
+          # `python -m pytest`, not bare `pytest`: the console script does not
+          # put the repo root on sys.path, and tests/ has no __init__.py, so
+          # tests/conftest.py's `from config import settings` would raise
+          # ModuleNotFoundError before collection.
+          #
+          # tests/ only — scratch/ is gitignored so it won't be in a CI
+          # checkout, but scoping also keeps stray root-level test_*.py out.
+          python -m pytest tests/ -q
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: flyctl deploy --remote-only

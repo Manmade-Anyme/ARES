@@ -287,14 +287,26 @@ python main.py
 ### 5. Running Unit Tests
 ARES features a 100% test coverage suite that isolates API and database dependencies using pytest and mock configurations.
 
+Install the test dependencies first. `requirements.txt` covers only what the
+deployed app imports; the suite also reaches the offline ML training modules,
+which need `joblib` / `xgboost` / `scikit-learn`:
+```bash
+pip install -r requirements-dev.txt
+```
+
 To run the unit tests:
 ```bash
-pytest tests/
+python -m pytest tests/
 ```
 To run tests with a coverage report:
 ```bash
-pytest --cov=. tests/
+python -m pytest --cov=. tests/
 ```
+
+Use `python -m pytest`, not a bare `pytest`. The console script does not put
+the repo root on `sys.path`, and `tests/` has no `__init__.py`, so
+`tests/conftest.py`'s `from config import settings` fails with
+`ModuleNotFoundError` on a clean checkout.
 
 ### 6. Fly.io Deployment (one-time setup)
 ARES is fully dockerized and configured for Fly.io. This section is the initial
