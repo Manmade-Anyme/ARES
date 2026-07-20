@@ -109,8 +109,7 @@ async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAUL
         return
 
     ml_line = "+ [+] ML Data Collection : ACTIVE (recording 50+ features per cycle)" if ml_active else "+ [+] ML Data Collection : inactive (table not found)"
-    kronos_line = "+ [+] Kronos ML Engine   : ACTIVE (NeoQuasar/Kronos-mini decoupled)"
-        
+
     msg = f"""```diff
 + =================================================================
 + 🤖 ARES (Adaptive Reversal & Entry Signal) - Initialization
@@ -122,7 +121,6 @@ async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAUL
 + [+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals
 + [+] PDH / PDL    : {pdh:.2f} / {pdl:.2f}
 + {ml_line}
-+ {kronos_line}
 + =================================================================
 ```"""
 

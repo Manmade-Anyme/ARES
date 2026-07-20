@@ -4,7 +4,7 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
-## 2026-07-20 · Kronos Inference Needs 3.6GB on a 768mb VM — Disabled In-Process (TASK-190)
+## 2026-07-20 · Kronos Inference Needs 3.6GB on a 768mb VM — Removed Entirely (TASK-190)
 
 User reported the ARES startup alert arriving in Discord repeatedly. The alert code was not at fault: the Fly machine was OOM-killed and restarted six times in three minutes, and `send_startup_alert()` fires once per boot.
 
@@ -38,20 +38,34 @@ Inference costs **~160 MB per sampled path plus ~175 MB fixed**. Usable memory o
 
 **Real cost of the loop.** The Discord spam is cosmetic; each restart zeroes VWAP and the candle buffers (`Buffers=1/30`), so ARES cannot score any setup for the following 30 minutes. Every signal cost ~33 minutes of blind time.
 
-**Changes**
-- **Kronos consumer no longer started** by `run()`. The `create_task` call is replaced with a comment carrying the measured numbers and the rehoming instruction.
-- **`_start_in_process_kronos_consumer` kept** — TASK-186/187 still cover it and it is the reference for rehoming. It is simply never scheduled.
-- **Startup banner corrected**: it advertised `Kronos ML Engine : ACTIVE` and would otherwise have kept claiming that.
-- **New guard** `tests/unit/test_task190_kronos_not_in_process.py` asserts `run()` does not schedule the consumer — verified to fail against the pre-fix `main.py`. The failure is invisible until a real signal fires in production, so it needed pinning.
+**Resolution: removed, not resized.** Kronos never posted a single probability in production across four tasks (TASK-184 built it, 186 inlined it, 187 fixed its context, 190 measured it). Rather than pay for a bigger machine to keep an unproven informational number alive, the whole subsystem is deleted.
+
+**Deleted**
+- `ml_signal/kronos_consumer.py`
+- `ml_signal/kronos_vendor/` — the vendored transformer package and `paths.py`
+- `ml_signal/data.py::load_intraday_candles_from_dhan` — Kronos was its only caller
+- `tests/unit/`: `test_kronos_consumer.py`, `test_task186_in_process_kronos.py`, `test_task187_kronos_context_horizon.py`, `test_task190_kronos_not_in_process.py`, `test_ml_signal_data.py`
+
+**Changed**
+- `main.py`: `_start_in_process_kronos_consumer` and its `create_task` removed; banner line gone.
+- `alerts.py`: the Discord **startup alert** hardcoded `[+] Kronos ML Engine : ACTIVE (NeoQuasar/Kronos-mini decoupled)` — this was in the very message that was spamming the channel, and it was unconditional, so it would have kept asserting ACTIVE. Removed.
+- `ml_signal/config.py`: `kronos_horizon_candles` removed.
+- **`torch`, `einops`, `huggingface_hub`, `safetensors` dropped** from both `requirements.txt` files, and the CPU-torch wheel install dropped from the `Dockerfile`. Nothing outside `kronos_vendor/` imported any of them — verified by grep before deleting. This is the bulk of the container image.
 
 **Decisions**
-- Kronos was informational only — it never touched signal generation, entries, or SL/T1/T2 — so the trading loop keeps running without it. Losing the number costs less than losing the loop.
-- Rejected scaling the VM to 4 GB. It works and needs no code change, but pays continuously to keep a feature that has never yet posted a probability in production.
-- To restore Kronos, give it **its own machine** and run `python -m ml_signal.kronos_consumer` there — the TASK-184 design. TASK-186 inlined it only because nothing in the Fly deploy launched that process; the fix for that was deployment wiring, not co-tenancy.
+- Kronos was informational only — it never touched signal generation, entries, or SL/T1/T2 — so the trading loop is unaffected by its removal.
+- Rejected scaling the VM to 4 GB. It works and needs no code change, but pays continuously for a feature with no production track record.
+- `load_intraday_candles_from_dhan` went with it as zero-caller code. Note the other four functions in `ml_signal/data.py` (`get_supabase_client`, `load_ares_trade_analytics`, `load_historical_candles_from_dhan`, `build_training_dataset`) **also have zero callers** — that file is now almost entirely dead and is a candidate for a follow-up prune, deferred here to keep this change scoped to Kronos.
+- The offline XGBoost pipeline (`dataset.py`, `train_offline.py`, `trainer.py`, `predictor.py`, `models/v1.joblib`) is untouched — it never depended on Kronos.
+- Three `Kronos` mentions remain in `schema.sql` and the TASK-188 migration. Those refer to a **different app** sharing the Supabase project (alongside Gamma Blaster, Phantom, Sniper, Order Flow) and must not be touched.
+
+**Verification**
+- 273 tests green (was 298; 25 removed with the deleted modules — no failures).
+- `import main` succeeds with `torch` absent from `sys.modules`.
 
 **TODOs**
-- [ ] Merge PR for `fix/TASK-190-kronos-inference-oom`; deploy **after 15:30 IST** (a restart zeroes VWAP + buffers mid-session).
-- [ ] Rehome Kronos onto its own machine if the forward probability is still wanted.
+- [ ] Merge [PR #42](https://github.com/dubeyshantanu2/ARES/pull/42); deploy **after 15:30 IST** (a restart zeroes VWAP + buffers mid-session).
+- [ ] Consider pruning the remaining zero-caller functions in `ml_signal/data.py`.
 
 ---
 
