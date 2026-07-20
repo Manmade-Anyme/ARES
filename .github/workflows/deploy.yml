@@ -3,20 +3,16 @@ name: deploy
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 concurrency:
   group: deploy-${{ github.ref }}
-  cancel-in-progress: false   # never cancel a deploy mid-flight
+  # Cancel superseded PR runs, never cancel a deploy mid-flight.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  deploy:
-    # The push trigger is main-only, but workflow_dispatch accepts any ref
-    # (branch picker in the UI, `gh workflow run --ref`). Without this guard
-    # checkout takes that ref and deploys it to the app named in fly.toml —
-    # i.e. unmerged branch code straight to production. Non-main dispatches
-    # show as a skipped job.
-    if: github.ref == 'refs/heads/main'
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +43,47 @@ jobs:
           # checkout, but scoping also keeps stray root-level test_*.py out.
           python -m pytest tests/ -q
 
+  deploy:
+    needs: test
+    # The push trigger is main-only, but workflow_dispatch accepts any ref
+    # (branch picker in the UI, `gh workflow run --ref`). Without this guard
+    # checkout takes that ref and deploys it to the app named in fly.toml —
+    # i.e. unmerged branch code straight to production. Also keeps PRs out:
+    # pull_request events get refs/pull/<n>/merge, never refs/heads/main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  notify:
+    needs: [test, deploy]
+    # Only for main. PR failures are already visible on the PR itself, and
+    # pinging Discord for them would just be noise.
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post failure to Discord
+        env:
+          # Context values go through env, never interpolated into the script —
+          # a commit message containing quotes would otherwise break out.
+          WEBHOOK: ${{ secrets.DISCORD_HEALTH_WEBHOOK_URL }}
+          TEST_RESULT: ${{ needs.test.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::DISCORD_HEALTH_WEBHOOK_URL not set — skipping alert"
+            exit 0
+          fi
+          jq -n \
+            --arg t "$TEST_RESULT" --arg d "$DEPLOY_RESULT" \
+            --arg u "$RUN_URL" --arg s "${SHA:0:7}" \
+            --arg m "$(printf '%s' "$COMMIT_MSG" | head -1)" \
+            '{content: "🚨 **ARES deploy failed**\ntests: \($t) | deploy: \($d)\n`\($s)` \($m)\n\($u)"}' \
+            | curl -sS --fail-with-body -X POST -H 'Content-Type: application/json' -d @- "$WEBHOOK"
