@@ -89,9 +89,11 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
             {"price": 23900.0}
         ]
 
-        # Test line 68-78 compute totals from chain with filled values
+        # Flat keys — the shape OIFetcher.fetch_chain actually emits. This fixture
+        # previously used a nested {"ce": {"oi": ...}} shape that the fetcher never
+        # produces, which is why the zeroed-totals bug shipped green.
         full_chain = [
-            {"ce": {"oi": 50000}, "pe": {"oi": 60000}}
+            {"strike": 24100, "ce_oi": 50000, "pe_oi": 60000}
         ]
 
         collector.snapshot(
