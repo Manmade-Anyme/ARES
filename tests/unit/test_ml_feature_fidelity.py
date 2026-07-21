@@ -114,5 +114,45 @@ class TestIVHistoryOrdering(unittest.TestCase):
         self.assertEqual(feats["iv_percentile"], 100.0)
 
 
+class TestHistoryContractHoldsForEveryCaller(unittest.TestCase):
+    """Both feature producers must pass PRIOR-bar history.
+
+    MLCollector.snapshot and LivePredictionLoop.run are independent callers of the
+    same compute functions. Fixing one and not the other silently corrupts the other's
+    features, so the ordering is asserted by source inspection for both.
+    """
+
+    def _append_lines_are_after_the_compute_call(self, source, compute_marker, appends):
+        compute_at = source.index(compute_marker)
+        for append in appends:
+            self.assertIn(append, source, f"{append!r} moved or was renamed")
+            self.assertGreater(
+                source.index(append), compute_at,
+                f"{append!r} must run AFTER {compute_marker!r} — history must hold prior bars only",
+            )
+
+    def test_collector_appends_after_computing(self):
+        import inspect
+        from ml_signal import collector
+        self._append_lines_are_after_the_compute_call(
+            inspect.getsource(collector.MLCollector.snapshot),
+            "compute_iv_features(",
+            ["self.volume_history.append(", "self.iv_history.append("],
+        )
+
+    def test_live_loop_appends_after_predicting(self):
+        import inspect
+        from ml_signal import live
+        cls = next(
+            obj for _, obj in vars(live).items()
+            if inspect.isclass(obj) and hasattr(obj, "run") and obj.__module__ == live.__name__
+        )
+        self._append_lines_are_after_the_compute_call(
+            inspect.getsource(cls.run),
+            "predict_from_raw(",
+            ["self.volume_history.append(", "self.iv_history.append("],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
