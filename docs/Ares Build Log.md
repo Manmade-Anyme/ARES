@@ -4,6 +4,40 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-21 · No Discord Alerts — Correct Silence on an Expiry Day, Plus Two ML Data Bugs
+
+User reported no trade alerts. Full audit of the signal → alert chain concluded the
+system was working: 2026-07-21 is a genuine expiry day, so `EXPIRY_CONFIG` was correctly
+applied, and its higher bars left a 95-point tape with nothing to fire on. Full writeup:
+`docs/ARES Signal Silence Audit 2026-07-21.md`.
+
+**Decisions**
+- Confirmed the live profile from the boot banner's `Cooldown : 20 minutes` — 20 exists
+  only in `EXPIRY_CONFIG`; NON_EXPIRY and the class default are both 15.
+- Replayed the real `ExhaustionDetector` against the real tape: the 10:08:28 candle
+  (vol_ratio 2.65, body/range 0.060) fires under NON_EXPIRY's 2.5x bar and is rejected by
+  EXPIRY's 3.5x. One qualifying setup, correctly declined as configured.
+- Fixed two ML-data defects in PR #46: `pcr_oi` pinned to 1.0 (nested vs flat chain keys
+  — true PCR 0.7323) and `iv_change_1` structurally 0.0 (history appended before the
+  compute call). Both ML-training-data only; neither could suppress a signal.
+- Codex review caught the collector fix was one-sided — `ml_signal/live.py` had the same
+  append-before-compute defect. Both callers now honour one contract (history holds prior
+  bars only), asserted for both by source inspection.
+- Corrected the collector test fixture, which mocked the chain in a nested shape the
+  fetcher never emits and therefore asserted the bug was correct.
+- Deployed mid-session against advice; the merge contains no signal-path files, so it
+  cost a VWAP reset and a 30-minute buffer warmup for no signal upside.
+
+**TODOs**
+- [ ] Expiry `exhaustion_volume_multiplier` 3.5 → ~3.0 — needs a backtest and a number.
+- [ ] `exhaustion.py:42-48` includes the current candle in its own volume baseline.
+- [ ] Derive expiry from `oi_fetcher.get_nearest_expiry()` instead of once pre-open.
+- [ ] VWAP survives restart — Dhan already returns the full session on every poll.
+- [ ] Discord non-2xx swallowed at `alerts.py:96-101`; `main.py:263-264` is dead code.
+- [ ] Nothing starts the Fly machine before 09:15.
+
+---
+
 ## 2026-07-20 · Kronos Inference Needs 3.6GB on a 768mb VM — Removed Entirely (TASK-190)
 
 User reported the ARES startup alert arriving in Discord repeatedly. The alert code was not at fault: the Fly machine was OOM-killed and restarted six times in three minutes, and `send_startup_alert()` fires once per boot.
