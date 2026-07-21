@@ -64,18 +64,17 @@ class MLCollector:
         all_ce_oi: List[int] = []
         all_pe_oi: List[int] = []
 
+        # OIFetcher.fetch_chain emits FLAT rows ("ce_oi"/"pe_oi"), not nested
+        # {"ce": {"oi": ...}} — reading the nested shape silently zeroed every total
+        # and pinned pcr_oi to its 1.0 divide-guard. See tests/unit/test_ml_feature_fidelity.py.
         for strike_data in full_chain:
             if isinstance(strike_data, dict):
-                ce = strike_data.get("ce", {})
-                pe = strike_data.get("pe", {})
-                if isinstance(ce, dict):
-                    oi_val = int(ce.get("oi", 0))
-                    total_ce_oi += oi_val
-                    all_ce_oi.append(oi_val)
-                if isinstance(pe, dict):
-                    oi_val = int(pe.get("oi", 0))
-                    total_pe_oi += oi_val
-                    all_pe_oi.append(oi_val)
+                ce_oi = int(strike_data.get("ce_oi", 0) or 0)
+                pe_oi = int(strike_data.get("pe_oi", 0) or 0)
+                total_ce_oi += ce_oi
+                all_ce_oi.append(ce_oi)
+                total_pe_oi += pe_oi
+                all_pe_oi.append(pe_oi)
 
         return {
             "total_ce_oi": total_ce_oi,
@@ -114,9 +113,6 @@ class MLCollector:
         atm_ce_dict = self._option_row_to_dict(atm.ce)
         atm_pe_dict = self._option_row_to_dict(atm.pe)
 
-        self.volume_history.append(candle_dict["volume"])
-        self.iv_history.append(atm_ce_dict["iv"])
-
         oi_totals = self._compute_totals_from_chain(full_chain)
         level_prices = self._levels_to_prices(levels)
         ts = timestamp or candle.timestamp if hasattr(candle, "timestamp") else datetime.now()
@@ -133,6 +129,13 @@ class MLCollector:
             iv_pe=atm_pe_dict["iv"],
             iv_history=list(self.iv_history),
         )
+
+        # Append AFTER the compute calls: both histories must hold only PRIOR bars.
+        # Appending first made iv_change_1 a self-vs-self diff (structurally 0.0
+        # forever), capped iv_percentile at 95.0, duplicated the last volume in
+        # vol_slope_5 and biased vol_ratio toward 1.0.
+        self.volume_history.append(candle_dict["volume"])
+        self.iv_history.append(atm_ce_dict["iv"])
 
         oi_feats = compute_oi_features(
             atm_ce_oi=atm_ce_dict["oi"],

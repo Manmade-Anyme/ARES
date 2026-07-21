@@ -174,12 +174,8 @@ class LiveRunner:
 
                 spot = candle["close"]
 
-                self.volume_history.append(candle["volume"])
-
                 oc_response = await self.fetch_option_chain(security_id, exchange_segment, expiry)
                 atm_ce, atm_pe = self._parse_option_chain(oc_response, spot)
-
-                self.iv_history.append(atm_ce["iv"])
 
                 result = self.predictor.predict_from_raw(
                     candle=candle,
@@ -199,6 +195,13 @@ class LiveRunner:
                     dte=None,
                     is_expiry=False,
                 )
+
+                # Append AFTER the predict call — build_feature_vector expects
+                # PRIOR bars only. Appending first made iv_change_1 a self-vs-self
+                # diff and zeroed iv_acceleration. Same contract as
+                # MLCollector.snapshot; see tests/unit/test_ml_feature_fidelity.py.
+                self.volume_history.append(candle["volume"])
+                self.iv_history.append(atm_ce["iv"])
 
                 result["source"] = "continuous"
 

@@ -80,9 +80,12 @@ def compute_iv_features(
     else:
         features["iv_change_5"] = 0.0
 
+    # Acceleration must include the current bar, so append it to the prior history
+    # rather than differencing history against itself.
     if iv_history and len(iv_history) >= 2:
-        prev_changes = [iv_history[i] - iv_history[i - 1] for i in range(1, len(iv_history))]
-        features["iv_acceleration"] = prev_changes[-1] - prev_changes[-2] if len(prev_changes) >= 2 else 0.0
+        series = list(iv_history) + [current_iv]
+        changes = [series[i] - series[i - 1] for i in range(1, len(series))]
+        features["iv_acceleration"] = changes[-1] - changes[-2] if len(changes) >= 2 else 0.0
     else:
         features["iv_acceleration"] = 0.0
 
@@ -107,7 +110,9 @@ def compute_oi_features(
     all_pe_oi: Optional[List[int]] = None,
 ) -> Dict[str, float]:
     features = {
-        "pcr_oi": total_pe_oi / total_ce_oi if total_ce_oi > 0 else 1.0,
+        # None, not 1.0 — a missing chain must stay distinguishable from a genuinely
+        # neutral PCR, otherwise a zeroed total reads as a real market reading.
+        "pcr_oi": total_pe_oi / total_ce_oi if total_ce_oi > 0 else None,
         "oi_bias": ce_oi_change_pct - pe_oi_change_pct,
         "atm_ce_oi_change_pct": ce_oi_change_pct,
         "atm_pe_oi_change_pct": pe_oi_change_pct,
