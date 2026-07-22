@@ -1,0 +1,63 @@
+name: gemini-review
+
+# Second-opinion PR reviewer using Gemini 3.5 Flash via the official
+# google-genai SDK. Complements the Codex review, does not replace it.
+#
+# No official Google Action exists for this since Gemini CLI was replaced by
+# Antigravity CLI (2026-06-18), and the community actions are unvetted
+# third-party code that would receive the repo, GITHUB_TOKEN and the API key.
+# So this is the DIY path Google's own guidance recommends: a small workflow
+# calling the SDK directly, every line of which is readable here.
+
+on:
+  pull_request:
+    # Not `synchronize` — that fires on every pushed commit and would post a
+    # fresh review each time. Reopen the PR (or re-run this workflow) to get a
+    # new review. Add `synchronize` here if you want per-commit reviews.
+    types: [opened, reopened]
+
+concurrency:
+  group: gemini-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write   # enough to comment; deliberately cannot merge/approve
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      MODEL: gemini-3.5-flash
+      # Fork PRs get no secrets by default (GitHub security), so GEMINI_API_KEY
+      # is empty there and the job skips — the untrusted-diff case never reaches
+      # the model with a real key. On same-repo PRs the secret flows.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Guard — skip if no API key
+        id: guard
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::warning::GEMINI_API_KEY not set — skipping Gemini review"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Review
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          pip install -q google-genai
+          # Diff via the API (gh), no checkout needed. To a file, not an env
+          # var — diffs routinely exceed the ~1 MB env limit.
+          gh pr diff "$PR" -R "$REPO" > /tmp/pr.diff
+          python .github/scripts/gemini_review.py < /tmp/pr.diff > /tmp/review.md
+          gh pr comment "$PR" -R "$REPO" --body-file /tmp/review.md
