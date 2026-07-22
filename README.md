@@ -361,3 +361,5 @@ cron-job.com jobs — see [DEPLOYMENT.md](DEPLOYMENT.md) for that setup.
 ## ⚠️ Disclaimer
 
 ARES is an algorithmic signaling tool designed for educational and informational purposes. It does **not** execute trades automatically. Options trading carries significant risk. Always forward-test in a paper-trading environment before risking real capital.
+
+# CodeRabbit install check — remove after verifying (test/coderabbit-check).
