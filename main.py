@@ -157,7 +157,8 @@ async def run():
     buffers_full_printed = False
     last_error_msg = None
     last_heartbeat_time = None
-    
+    report_sent = False
+
     while True:
         now = datetime.now()
         current_time = now.time()
@@ -169,9 +170,9 @@ async def run():
             print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
             
         # Session gate: only run between 09:15 and 15:30
-        if current_time >= time(15, 30):
-            print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
-            # Post performance digest before the machine scales to zero.
+        # Post the performance digest once at 15:29, just before shutdown.
+        if current_time >= time(15, 29) and not report_sent:
+            report_sent = True
             try:
                 if now.weekday() == 4:  # Friday
                     await send_performance_report(storage.supabase, now, "weekly")
@@ -179,6 +180,9 @@ async def run():
                     await send_performance_report(storage.supabase, now, "monthly")
             except Exception as e:
                 print(f"{Y}[-] Performance report failed: {e}{RESET}")
+
+        if current_time >= time(15, 30):
+            print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
             tick_feed.stop()
             break
             

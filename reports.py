@@ -89,6 +89,7 @@ def fetch_closed_trades(supabase: Any, start_utc: str, end_utc: str) -> list[dic
         .select("setup_type, direction, pnl_points, result_state, market_context")
         .gte("exit_timestamp", start_utc)
         .lte("exit_timestamp", end_utc)
+        .neq("entry_price", 24001.0)  # exclude seeded test fixtures (see project memory)
         .execute()
     )
     rows = getattr(response, "data", None) or []
