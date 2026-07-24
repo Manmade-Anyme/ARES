@@ -12,6 +12,7 @@ from config import settings
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple
 from alerts import send_discord, send_startup_alert, send_error_alert
+from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
 from options_math import process_options_calculation
 
@@ -170,6 +171,14 @@ async def run():
         # Session gate: only run between 09:15 and 15:30
         if current_time >= time(15, 30):
             print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
+            # Post performance digest before the machine scales to zero.
+            try:
+                if now.weekday() == 4:  # Friday
+                    await send_performance_report(storage.supabase, now, "weekly")
+                if is_last_trading_day_of_month(now.date()):
+                    await send_performance_report(storage.supabase, now, "monthly")
+            except Exception as e:
+                print(f"{Y}[-] Performance report failed: {e}{RESET}")
             tick_feed.stop()
             break
             
