@@ -12,6 +12,7 @@ from config import settings
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple
 from alerts import send_discord, send_startup_alert, send_error_alert
+from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
 from options_math import process_options_calculation
 
@@ -156,7 +157,9 @@ async def run():
     buffers_full_printed = False
     last_error_msg = None
     last_heartbeat_time = None
-    
+    weekly_report_sent = False
+    monthly_report_sent = False
+
     while True:
         now = datetime.now()
         current_time = now.time()
@@ -168,6 +171,20 @@ async def run():
             print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
             
         # Session gate: only run between 09:15 and 15:30
+        # Post the performance digest once, in the final live minute (15:29–15:30).
+        # The upper bound keeps an after-hours restart from re-posting: the *_sent
+        # flags are in-memory and reset on reboot, but a boot at any other time
+        # can't satisfy the window. Each flag flips only on successful delivery so
+        # a failed webhook stays eligible for retry on the next poll in the window.
+        # ponytail: trades closing in this last minute are excluded, and a skipped
+        # 60s poll tick can rarely miss the window — accepted for a summary digest;
+        # persist a per-period marker if either ever matters.
+        if time(15, 29) <= current_time < time(15, 30):
+            if now.weekday() == 4 and not weekly_report_sent:  # Friday
+                weekly_report_sent = await send_performance_report(storage.supabase, now, "weekly")
+            if is_last_trading_day_of_month(now.date()) and not monthly_report_sent:
+                monthly_report_sent = await send_performance_report(storage.supabase, now, "monthly")
+
         if current_time >= time(15, 30):
             print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
             tick_feed.stop()
