@@ -89,7 +89,6 @@ def fetch_closed_trades(supabase: Any, start_utc: str, end_utc: str) -> list[dic
         .select("setup_type, direction, pnl_points, result_state, market_context")
         .gte("exit_timestamp", start_utc)
         .lte("exit_timestamp", end_utc)
-        .neq("entry_price", 24001.0)  # exclude seeded test fixtures (see project memory)
         .execute()
     )
     rows = getattr(response, "data", None) or []
@@ -192,14 +191,17 @@ def build_report_embed(period_label: str, date_range: str, metrics: dict) -> dic
     }
 
 
-async def send_performance_report(supabase: Any, now_ist: datetime, period: str) -> None:
+async def send_performance_report(supabase: Any, now_ist: datetime, period: str) -> bool:
     """
     Build and post a weekly/monthly performance report to the main Discord webhook.
     Guarded end-to-end so a failure never blocks session shutdown.
+
+    Returns True only on successful delivery, so the caller can leave a failed
+    report eligible for retry instead of marking it done.
     """
     webhook_url = settings.discord_webhook_url
     if not webhook_url:
-        return
+        return False
 
     period_label = "WEEKLY" if period == "weekly" else "MONTHLY"
     try:
@@ -212,5 +214,9 @@ async def send_performance_report(supabase: Any, now_ist: datetime, period: str)
             response = await client.post(webhook_url, json=payload)
             response.raise_for_status()
         print(f"[+] {period_label} performance report sent ({metrics['overall']['trades']} trades).")
+        return True
     except Exception as e:
-        print(f"[-] {period_label} performance report failed: {type(e).__name__} - {e}")
+        # Log only the exception type — the message can embed the webhook URL
+        # (and its secret token) via httpx's raise_for_status().
+        print(f"[-] {period_label} performance report failed: {type(e).__name__}")
+        return False
