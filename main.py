@@ -10,7 +10,7 @@ from storage import Storage, load_dhan_credentials_from_supabase
 from position_manager import PositionManager
 from config import settings
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
-from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple
+from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple, days_to_expiry
 from alerts import send_discord, send_startup_alert, send_error_alert
 from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
@@ -33,7 +33,10 @@ def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT", ml_activ
     profile_color = Y if profile_name == "EXPIRY" else G
     print(f"{profile_color}[+] Config       : {W}{B}{profile_name} DAY PROFILE{RESET}")
     print(f"{G}[+] Target Asset : {W}{settings.yahoo_symbol} (1-minute timeframe){RESET}")
-    print(f"{G}[+] Detectors    : {W}Failed Breakout, OI Wall, Exhaustion{RESET}")
+    detector_names = ["Failed Breakout", "OI Wall", "Exhaustion"]
+    if settings.continuation_enabled:
+        detector_names.append("Trend Continuation")
+    print(f"{G}[+] Detectors    : {W}{', '.join(detector_names)}{RESET}")
     print(f"{G}[+] Session      : {W}09:15 to 15:30 IST{RESET}")
     print(f"{G}[+] Cooldown     : {W}{settings.signal_cooldown_minutes} minutes between signals{RESET}")
     print(f"{G}[+] PDH / PDL    : {W}{pdh:.2f} / {pdl:.2f}{RESET}")
@@ -238,7 +241,7 @@ async def run():
                 pdh=pdh,
                 pdl=pdl,
                 is_expiry=is_expiry,
-                dte=None,
+                dte=days_to_expiry(expiry_date),
                 timestamp=now,
             )
 

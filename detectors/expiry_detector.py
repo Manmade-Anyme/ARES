@@ -10,6 +10,7 @@ defaults to Tuesday as the standard weekly expiry day.
 
 import asyncio
 from datetime import datetime, date, timezone, timedelta
+from typing import Optional
 
 # IST = UTC+5:30
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -26,6 +27,28 @@ def is_expiry_day_simple() -> bool:
     Used when the API-based check isn't available.
     """
     return _today_ist().weekday() == 1  # Monday=0, Tuesday=1
+
+
+def days_to_expiry(expiry: str) -> Optional[int]:
+    """
+    Calendar days from today (IST) to the given expiry date.
+
+    Args:
+        expiry: Expiry date as "YYYY-MM-DD" (the shape OIFetcher.get_nearest_expiry
+            returns). Some Dhan responses carry a trailing time component, so only
+            the date part is parsed.
+
+    Returns:
+        Days remaining — 0 on expiry day itself — or None if `expiry` is missing or
+        unparseable, so the caller falls back rather than recording a wrong number.
+    """
+    if not expiry:
+        return None
+    try:
+        expiry_date = datetime.strptime(str(expiry).split(" ")[0], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    return (expiry_date - _today_ist()).days
 
 
 async def is_expiry_day_from_api() -> bool:

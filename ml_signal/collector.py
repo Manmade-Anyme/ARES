@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 
 from supabase import create_client, Client
 
+from models import SetupType
 from .config import MLConfig, DEFAULT_CONFIG
 from .features import (
     compute_candle_features,
@@ -176,13 +177,16 @@ class MLCollector:
         signal_id = (
             str(getattr(signal, "signal_id", "")) if signal_generated else None
         )
+        # Enum members must be stored by .value — str(SetupType.X) yields
+        # "SetupType.X", which silently broke the detector_scores one-hot below
+        # for every row ever collected. See tests/unit/test_ml_feature_fidelity.py.
         signal_setup = (
-            str(getattr(signal, "setup_type", ""))
+            getattr(getattr(signal, "setup_type", None), "value", None)
             if signal_generated
             else None
         )
         signal_direction = (
-            str(getattr(signal, "direction", ""))
+            getattr(getattr(signal, "direction", None), "value", None)
             if signal_generated
             else None
         )
@@ -192,10 +196,11 @@ class MLCollector:
             else None
         )
 
+        # Keyed off SetupType itself so a newly added setup gets a column for free
+        # instead of silently scoring as all-zeros (TREND_CONTINUATION had no key).
         detector_scores = {
-            "failed_breakout": int(signal_setup == "FAILED_BREAKOUT") if signal_generated else 0,
-            "oi_wall_rejection": int(signal_setup == "OI_WALL_REJECTION") if signal_generated else 0,
-            "exhaustion_reversal": int(signal_setup == "EXHAUSTION_REVERSAL") if signal_generated else 0,
+            s.value.lower(): int(signal_generated and signal_setup == s.value)
+            for s in SetupType
         }
 
         record = {
