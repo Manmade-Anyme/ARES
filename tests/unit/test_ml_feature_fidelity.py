@@ -313,6 +313,17 @@ class TestDaysToExpiry(unittest.TestCase):
             "main.py must pass a computed dte, not the None that forces the 7.0 fallback",
         )
 
+    def test_live_serving_path_does_not_hardcode_dte(self):
+        """Collection and serving must agree, or the model trains on a real dte and
+        is served the 7.0 fallback (training-serving skew)."""
+        import inspect
+        from ml_signal import live
+        source = inspect.getsource(live)
+        self.assertNotIn(
+            "dte=None", source,
+            "ml_signal/live.py must pass the same computed dte that MLCollector records",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
