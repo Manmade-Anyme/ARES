@@ -9,9 +9,14 @@ These tests build chain rows from the fetcher's real key set, so a future shape 
 on either side fails here instead of silently zeroing the feature.
 """
 
+import json
 import unittest
+from collections import deque
+from datetime import datetime, timedelta
 
+from models import AresSignal, Direction, SetupType
 from ml_signal.collector import MLCollector
+from ml_signal.config import DEFAULT_CONFIG
 from ml_signal.features import compute_iv_features, compute_oi_features
 
 
@@ -33,6 +38,50 @@ def _chain_row(strike, ce_oi, pe_oi):
         "pe_oi": pe_oi, "pe_oi_prev": pe_oi, "pe_oi_change_pct": 0.0,
         "pe_ltp": 100.0, "pe_iv": 16.0, "pe_delta": -0.5,
     }
+
+
+def _candle():
+    """A real-shaped candle. Plain object, not a mock — attributes must stringify sanely."""
+    from models import OHLCVCandle
+    return OHLCVCandle(
+        timestamp=datetime(2026, 7, 28, 10, 32),
+        open=24000.0, high=24010.0, low=23995.0, close=24002.0,
+        volume=150_000, vwap=24001.0,
+    )
+
+
+class _Row:
+    def __init__(self):
+        self.iv, self.oi, self.oi_change_pct = 15.0, 500_000, 2.5
+        self.gamma, self.theta, self.vega = 0.05, -0.8, 0.3
+        self.oi_prev = 490_000
+
+
+class _ATM:
+    def __init__(self):
+        self.ce, self.pe = _Row(), _Row()
+
+
+def _atm():
+    return _ATM()
+
+
+def _signal(setup_type, direction=Direction.BULLISH):
+    """A real AresSignal carrying real enum members."""
+    return AresSignal(
+        setup_type=setup_type,
+        direction=direction,
+        trigger_price=24000.0,
+        entry_zone=(23995.0, 24005.0),
+        stop_loss=23988.0,
+        target_1=24020.0,
+        target_2=24040.0,
+        confidence="HIGH",
+        reasons=["test"],
+        timestamp=datetime(2026, 7, 28, 10, 32),
+        strike_to_trade=24000,
+        option_type="CE" if direction is Direction.BULLISH else "PE",
+    )
 
 
 class TestChainTotalsMatchFetcherShape(unittest.TestCase):
@@ -151,6 +200,128 @@ class TestHistoryContractHoldsForEveryCaller(unittest.TestCase):
             inspect.getsource(cls.run),
             "predict_from_raw(",
             ["self.volume_history.append(", "self.iv_history.append("],
+        )
+
+
+class TestSignalColumnsCarryEnumValues(unittest.TestCase):
+    """Regression: every ``detector_scores`` row ever collected was all-zero.
+
+    ``str(SetupType.OI_WALL_REJECTION)`` is ``'SetupType.OI_WALL_REJECTION'``, which
+    never equals the bare ``'OI_WALL_REJECTION'`` the one-hot compared against — so the
+    column was well-formed and constantly wrong. These tests pass a REAL AresSignal
+    (never a MagicMock, whose attributes stringify to something arbitrary) so the
+    assertion is against the shape the engine actually emits.
+    """
+
+    def _snapshot_record(self, signal, **kwargs):
+        """Run snapshot() with the Supabase client stubbed and return the record."""
+        from unittest.mock import patch
+        from ml_signal.collector import MLCollector
+
+        collector = MLCollector.__new__(MLCollector)
+        collector.config = DEFAULT_CONFIG
+        collector.volume_history = deque(maxlen=20)
+        collector.iv_history = deque(maxlen=20)
+        collector._total_snapshots = 0
+        collector._signals_recorded = 0
+
+        captured = {}
+        with patch.object(MLCollector, "_insert", lambda self, record: captured.update(record)):
+            collector.snapshot(
+                candle=_candle(),
+                atm=_atm(),
+                full_chain=[_chain_row(24000, ce_oi=1_000_000, pe_oi=1_000_000)],
+                levels=[],
+                spot=24000.0,
+                signal=signal,
+                **kwargs,
+            )
+        return captured
+
+    def test_each_setup_type_sets_exactly_its_own_flag(self):
+        for setup in SetupType:
+            with self.subTest(setup=setup):
+                record = self._snapshot_record(_signal(setup))
+                scores = json.loads(record["detector_scores"])
+
+                self.assertEqual(
+                    scores.get(setup.value.lower()), 1,
+                    f"{setup.value} must set its own flag to 1, got {scores}",
+                )
+                self.assertEqual(
+                    sum(scores.values()), 1,
+                    f"exactly one flag may be set for {setup.value}, got {scores}",
+                )
+
+    def test_every_setup_type_has_a_flag(self):
+        """TREND_CONTINUATION had no key at all, so it scored as all-zeros."""
+        scores = json.loads(
+            self._snapshot_record(_signal(SetupType.FAILED_BREAKOUT))["detector_scores"]
+        )
+        self.assertEqual(
+            set(scores), {s.value.lower() for s in SetupType},
+            "detector_scores must carry one key per SetupType member",
+        )
+
+    def test_no_signal_leaves_every_flag_zero(self):
+        scores = json.loads(self._snapshot_record(None)["detector_scores"])
+        self.assertEqual(set(scores.values()), {0})
+
+    def test_setup_and_direction_store_bare_enum_values(self):
+        record = self._snapshot_record(
+            _signal(SetupType.EXHAUSTION_REVERSAL, Direction.BEARISH)
+        )
+        self.assertEqual(record["signal_setup_type"], "EXHAUSTION_REVERSAL")
+        self.assertEqual(record["signal_direction"], "BEARISH")
+
+    def test_dte_reaches_meta_features(self):
+        record = self._snapshot_record(None, is_expiry=True, dte=0)
+        meta = json.loads(record["meta_features"])
+
+        self.assertEqual(meta["is_expiry_day"], 1)
+        self.assertEqual(
+            meta["dte"], 0.0,
+            "an expiry-day row must record dte=0, not the 7.0 fallback",
+        )
+
+
+class TestDaysToExpiry(unittest.TestCase):
+    """dte was pinned at the 7.0 fallback on every row because main.py passed None."""
+
+    def test_expiry_today_is_zero(self):
+        from detectors.expiry_detector import days_to_expiry, _today_ist
+        self.assertEqual(days_to_expiry(_today_ist().strftime("%Y-%m-%d")), 0)
+
+    def test_future_expiry_counts_calendar_days(self):
+        from detectors.expiry_detector import days_to_expiry, _today_ist
+        future = _today_ist() + timedelta(days=7)
+        self.assertEqual(days_to_expiry(future.strftime("%Y-%m-%d")), 7)
+
+    def test_unparseable_input_returns_none_not_a_wrong_number(self):
+        from detectors.expiry_detector import days_to_expiry
+        for bad in ["", None, "not-a-date", "28-07-2026"]:
+            with self.subTest(bad=bad):
+                self.assertIsNone(days_to_expiry(bad))
+
+    def test_main_does_not_hardcode_dte(self):
+        """Regression: the snapshot call passed a literal dte=None for months."""
+        import inspect
+        import main
+        source = inspect.getsource(main)
+        self.assertNotIn(
+            "dte=None", source,
+            "main.py must pass a computed dte, not the None that forces the 7.0 fallback",
+        )
+
+    def test_live_serving_path_does_not_hardcode_dte(self):
+        """Collection and serving must agree, or the model trains on a real dte and
+        is served the 7.0 fallback (training-serving skew)."""
+        import inspect
+        from ml_signal import live
+        source = inspect.getsource(live)
+        self.assertNotIn(
+            "dte=None", source,
+            "ml_signal/live.py must pass the same computed dte that MLCollector records",
         )
 
 

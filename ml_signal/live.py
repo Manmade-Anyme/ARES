@@ -17,6 +17,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from dhanhq import dhanhq
 from supabase import create_client, Client
 
+from detectors.expiry_detector import days_to_expiry
 from .config import MLConfig, DEFAULT_CONFIG
 from .predictor import SignalPredictor
 from .discord import send_prediction_alert, send_summary_alert
@@ -177,6 +178,11 @@ class LiveRunner:
                 oc_response = await self.fetch_option_chain(security_id, exchange_segment, expiry)
                 atm_ce, atm_pe = self._parse_option_chain(oc_response, spot)
 
+                # Must match what MLCollector records, or the model trains on a real
+                # dte and is served the 7.0 fallback. `expiry` is the same date the
+                # chain above was fetched for.
+                dte = days_to_expiry(expiry)
+
                 result = self.predictor.predict_from_raw(
                     candle=candle,
                     volume_history=list(self.volume_history),
@@ -192,8 +198,8 @@ class LiveRunner:
                     spot=spot,
                     pdh=None,
                     pdl=None,
-                    dte=None,
-                    is_expiry=False,
+                    dte=dte,
+                    is_expiry=(dte == 0),
                 )
 
                 # Append AFTER the predict call — build_feature_vector expects
