@@ -234,7 +234,7 @@ def main() -> None:
 
     df = build_real_outcome_frame(
         rows,
-        t1_is_win=False, # Treat T1_HIT as loss/break-even by default
+        t1_is_win=True, # Predict probability of hitting T1 (Win=1)
     )
     if df.empty:
         print("[-] No valid real trade outcomes found. "
