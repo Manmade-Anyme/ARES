@@ -63,6 +63,7 @@ CREATE TABLE trade_analytics (
   entry_price numeric NOT NULL,
   exit_price numeric,
   pnl_points numeric,
+  score integer,
   
   -- Outcome
   result_state text DEFAULT 'OPEN', -- OPEN, T1_HIT, T2_HIT, STOPPED_OUT, EXPIRED

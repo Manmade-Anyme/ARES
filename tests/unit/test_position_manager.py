@@ -212,11 +212,11 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trade["stop_loss"], 24000.0)
         mock_send_trade_update.assert_called_with(trade, 24050.0, "T1_HIT")
 
-        # 2. Price hits SL -> CLOSED, update_type = T1_HIT
+        # 2. Price hits SL -> CLOSED, update_type = STOPPED_OUT_AT_BE
         mock_send_trade_update.reset_mock()
         await pm.update_trades(23999.0)
         self.assertEqual(trade["state"], "CLOSED")
-        mock_send_trade_update.assert_called_with(trade, 24000.0, "T1_HIT")
+        mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -246,11 +246,11 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trade["stop_loss"], 24000.0)
         mock_send_trade_update.assert_called_with(trade, 23950.0, "T1_HIT")
 
-        # 2. Price hits trailed SL -> CLOSED, update_type = T1_HIT
+        # 2. Price hits trailed SL -> CLOSED, update_type = STOPPED_OUT_AT_BE
         mock_send_trade_update.reset_mock()
         await pm.update_trades(24001.0)
         self.assertEqual(trade["state"], "CLOSED")
-        mock_send_trade_update.assert_called_with(trade, 24000.0, "T1_HIT")
+        mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
 
         # Reset for Bearish T2 Hit
         trade_t2 = {
