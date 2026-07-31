@@ -6,14 +6,18 @@ import numpy as np
 
 def label_from_ares_outcome(
     trade_analytics_records: List[dict],
+    t1_is_win: bool = False,
 ) -> pd.DataFrame:
     rows = []
     for rec in trade_analytics_records:
         result = rec.get("result_state", "")
-        if result in ("T1_HIT", "T2_HIT"):
+        
+        if result == "T2_HIT":
             label = 1
-        elif result in ("SL_HIT", "STOPPED_OUT"):
+        elif result in ("SL_HIT", "STOPPED_OUT", "TIME_STOP"):
             label = 0
+        elif result == "T1_HIT":
+            label = 1 if t1_is_win else 0
         else:
             continue
 
