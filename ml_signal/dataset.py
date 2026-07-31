@@ -203,41 +203,32 @@ def feature_columns(df: pd.DataFrame) -> List[str]:
 
 def build_real_outcome_frame(
     rows: Sequence[Dict[str, Any]],
-    t1_is_win: bool = False,
+    t1_is_win: bool = True,
 ) -> pd.DataFrame:
     """
     Flatten + label using real historical ARES trade outcomes.
     Filters the dataset to only include rows where `trade_outcome` is a definitive win or loss.
     """
-    from ml_signal.labeling import label_from_ares_outcome
+    from ml_signal.labeling import classify_ares_outcome
     
-    # Filter rows to only those that had a trade (i.e. trade_outcome is not null)
-    trade_rows = [r for r in rows if r.get("trade_outcome")]
+    valid_rows = []
+    labels = []
     
-    if not trade_rows:
-        df = flatten_features([])
-        return df.assign(label=pd.Series(dtype=int))
-
-    # We need to compute labels first so we can drop inconclusive (e.g. OPEN) outcomes
-    mock_records = [{"result_state": r.get("trade_outcome")} for r in trade_rows]
-    labels_df = label_from_ares_outcome(mock_records, t1_is_win=t1_is_win)
-    
-    # The length of labels_df might be smaller than trade_rows if some were OPEN or ignored.
-    # To fix this, we map labels directly during flattening or filter trade_rows first.
-    # Since label_from_ares_outcome just inspects result_state, let's filter trade_rows.
-    valid_outcomes = {"T2_HIT", "SL_HIT", "STOPPED_OUT", "TIME_STOP", "T1_HIT"}
-    valid_rows = [r for r in trade_rows if r.get("trade_outcome") in valid_outcomes]
+    for r in rows:
+        outcome = r.get("trade_outcome")
+        if not outcome:
+            continue
+            
+        label = classify_ares_outcome(outcome, t1_is_win=t1_is_win)
+        if label is not None:
+            valid_rows.append(r)
+            labels.append(label)
 
     if not valid_rows:
         df = flatten_features([])
         return df.assign(label=pd.Series(dtype=int))
 
     df = flatten_features(valid_rows)
-    
-    # Now valid_rows exactly matches the length of labels_df (if recreated on valid_rows)
-    mock_records_valid = [{"result_state": r.get("trade_outcome")} for r in valid_rows]
-    labels_df_valid = label_from_ares_outcome(mock_records_valid, t1_is_win=t1_is_win)
-    
-    df["label"] = labels_df_valid["label"].values
+    df["label"] = labels
     
     return df

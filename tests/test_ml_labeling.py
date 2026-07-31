@@ -76,3 +76,41 @@ def test_label_from_ares_outcome():
     df_t1_win = label_from_ares_outcome(records)
     assert df_t1_win.iloc[2]["label"] == 1  # T1_HIT is win
     assert df_t1_win.iloc[3]["label"] == 0  # TIME_STOP is still loss
+
+def test_build_real_outcome_frame_regression():
+    from ml_signal.dataset import build_real_outcome_frame
+    
+    # Realistic ml_collection rows
+    rows = [
+        {
+            "timestamp": "2026-07-30T10:00:00Z",
+            "trade_outcome": "T2_HIT",
+            "raw_candle": {"close": 100},
+            "candle_features": {"f1": 1.0}
+        },
+        {
+            "timestamp": "2026-07-30T10:01:00Z",
+            "trade_outcome": "OPEN", # Should be ignored
+            "raw_candle": {"close": 100},
+            "candle_features": {"f1": 1.0}
+        },
+        {
+            "timestamp": "2026-07-30T10:02:00Z",
+            "trade_outcome": None, # Should be ignored
+            "raw_candle": {"close": 100},
+            "candle_features": {"f1": 1.0}
+        },
+        {
+            "timestamp": "2026-07-30T10:03:00Z",
+            "trade_outcome": "SL_HIT",
+            "raw_candle": {"close": 100},
+            "candle_features": {"f1": 1.0}
+        }
+    ]
+    
+    df = build_real_outcome_frame(rows, t1_is_win=True)
+    assert len(df) == 2
+    assert "label" in df.columns
+    assert df.iloc[0]["label"] == 1
+    assert df.iloc[1]["label"] == 0
+    assert "candle_features__f1" in df.columns
