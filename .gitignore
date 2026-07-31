@@ -53,3 +53,6 @@ ml_signal/models/*.joblib
 
 # ai-grep vault index — machine-local generated cache, rebuilt via `ai-grep setup`.
 SEARCH/
+
+.coverage
+.claude/
