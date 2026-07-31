@@ -230,21 +230,6 @@ async def run():
             # Run the engine
             signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
 
-            # ML Data Collection: log feature snapshot for every cycle
-            ml_collector.snapshot(
-                candle=candle,
-                atm=atm,
-                full_chain=full_chain,
-                levels=levels,
-                spot=spot,
-                signal=signal,
-                pdh=pdh,
-                pdl=pdl,
-                is_expiry=is_expiry,
-                dte=days_to_expiry(expiry_date),
-                timestamp=now,
-            )
-
             # Terminal UI: Track Warmup State
             buffer_len = len(engine.candle_buffer)
             if buffer_len == settings.candle_buffer_size and not buffers_full_printed:
@@ -282,6 +267,28 @@ async def run():
                     await send_discord(signal, spot)
                 except Exception as alert_err:
                     print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
+
+            # ML Data Collection: log a feature snapshot every cycle, signal or not.
+            #
+            # Deliberately AFTER the `if signal:` block: storage.log_signal sets
+            # signal.db_id, and db_id is the key ml_collection rows are joined to
+            # trade_analytics by. Snapshotting before that (as this did) captured
+            # db_id=None on every row, which is why the label columns were never
+            # writable. Nothing in that block mutates candle/atm/full_chain/levels
+            # — only the signal's own sizing fields — so the features are identical.
+            ml_collector.snapshot(
+                candle=candle,
+                atm=atm,
+                full_chain=full_chain,
+                levels=levels,
+                spot=spot,
+                signal=signal,
+                pdh=pdh,
+                pdl=pdl,
+                is_expiry=is_expiry,
+                dte=days_to_expiry(expiry_date),
+                timestamp=now,
+            )
 
             # Update active trades with new spot price. Candle high/low enable
             # intrabar SL/target detection (TASK-172, audit item 11).

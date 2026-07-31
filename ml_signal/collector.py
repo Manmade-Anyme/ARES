@@ -174,9 +174,17 @@ class MLCollector:
         )
 
         signal_generated = signal is not None
-        signal_id = (
-            str(getattr(signal, "signal_id", "")) if signal_generated else None
-        )
+        # db_id (ares_signals.id), NOT signal_id — the latter is a RANDOM 4-digit
+        # display code (models.AresSignal: f"{random.randint(0, 9999):04d}") used
+        # only in Discord alerts. trade_analytics.signal_id stores db_id, so
+        # writing signal_id here left the two tables un-joinable: 0 of 119 prod
+        # rows overlapped, and the trade_outcome/trade_pnl/trade_id columns had
+        # no key to be written against on any row ever collected.
+        #
+        # None when db_id is unset (log_signal failed, or no signal): a NULL is
+        # honest about having nothing to join to; a fabricated key is not.
+        db_id = getattr(signal, "db_id", None) if signal_generated else None
+        signal_id = str(db_id) if db_id is not None else None
         # Enum members must be stored by .value — str(SetupType.X) yields
         # "SetupType.X", which silently broke the detector_scores one-hot below
         # for every row ever collected. See tests/unit/test_ml_feature_fidelity.py.
