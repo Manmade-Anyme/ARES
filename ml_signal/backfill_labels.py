@@ -58,6 +58,30 @@ _SENTINEL_FIELDS = (
     "dist_to_pdl",
 )
 
+# The 9 test-fixture trades that TASK-188's migration exists to purge. They are
+# not real trades and must never be linked to a signal.
+#
+# Matched by ID, never by price: a genuine trade can legitimately fill at 24001.0,
+# and the migration's own notes call the price predicate unsafe on its own. This
+# list is copied verbatim from
+# migrations/2026-07-17-task188-fixture-cleanup-and-ist.sql — keep them in sync.
+#
+# Why this guard exists: repair_orphan_trades matched two of these fixtures to
+# fixture signals 169/170. Harmless in itself, but the migration selects fixture
+# trades with `AND signal_id IS NULL`, so those two silently stopped matching and
+# would have survived a migration that still deleted the signals they point at.
+_FIXTURE_TRADE_IDS = frozenset({
+    "38191236-c717-487a-ad62-e6eb637c482e",
+    "132a34db-0292-4760-8d2b-706e2e774213",
+    "9138816b-47dd-4234-a206-14f5eb3037f9",
+    "16b7fe7a-644e-43af-a147-609258f17b7f",
+    "8c6714c0-bd42-4c77-9cc2-196746ca5b48",
+    "1feee0a2-2eea-4ed5-935c-f5f83dc51233",
+    "a4da1358-e76f-457e-a0a5-20e7c20d7ff8",
+    "3bd130e1-7b4c-43f2-a514-fcd15da043cc",
+    "0269584d-c41e-4e00-8948-e6eb59ffe124",
+})
+
 
 def _load_env(path: str = ".env") -> Dict[str, str]:
     env = {}
@@ -258,8 +282,19 @@ def repair_orphan_trades(sb, apply: bool) -> int:
     trades = _page(sb, "trade_analytics", "id,signal_id,setup_type,entry_timestamp,result_state")
     signals = _page(sb, "ares_signals", "id,setup_type,timestamp,created_at")
 
-    orphans = [t for t in trades if t.get("signal_id") is None]
+    # Fixtures are not trades. Linking one both fabricates a relationship and
+    # breaks TASK-188's migration, which selects them on `signal_id IS NULL`.
+    orphans = [
+        t for t in trades
+        if t.get("signal_id") is None and str(t.get("id")) not in _FIXTURE_TRADE_IDS
+    ]
+    skipped_fixtures = sum(
+        1 for t in trades
+        if t.get("signal_id") is None and str(t.get("id")) in _FIXTURE_TRADE_IDS
+    )
     print(f"  trades without a signal_id: {len(orphans)}")
+    if skipped_fixtures:
+        print(f"  known fixtures skipped    : {skipped_fixtures}  (TASK-188 migration purges these)")
     if not orphans:
         return 0
 
@@ -301,6 +336,39 @@ def repair_orphan_trades(sb, apply: bool) -> int:
     print(f"  recovered                 : {fixed}")
     print(f"  still unattributable      : {len(unmatched)}")
     return fixed
+
+
+def unlink_fixture_trades(sb, apply: bool) -> int:
+    """Phase 0 — undo any signal_id written onto a known test fixture.
+
+    An earlier run of repair_orphan_trades, before the fixture guard existed,
+    linked two fixtures to fixture signals 169/170. Harmless as data, but
+    TASK-188's migration selects fixture trades with `AND signal_id IS NULL`, so
+    those two silently stopped matching. Running the migration in that state
+    would delete 7 of the 9 fixture trades and all 4 fixture signals, leaving two
+    fixture trades pointing at rows that no longer exist.
+
+    Restores the precondition. Runs first so the rest of the pass sees clean
+    state. Idempotent: a no-op once nothing is linked.
+    """
+    trades = _page(sb, "trade_analytics", "id,signal_id")
+    linked = [
+        t for t in trades
+        if str(t.get("id")) in _FIXTURE_TRADE_IDS and t.get("signal_id") is not None
+    ]
+    print(f"  fixtures carrying a signal_id: {len(linked)}")
+    if not linked:
+        print("  nothing to undo — TASK-188's migration precondition is intact")
+        return 0
+
+    for t in linked:
+        print(f"    {t['id']} -> signal_id {t['signal_id']} (clearing)")
+        if apply:
+            sb.table("trade_analytics").update(
+                {"signal_id": None}
+            ).eq("id", t["id"]).execute()
+    print(f"  cleared                      : {len(linked)}")
+    return len(linked)
 
 
 def repair_structure_sentinel(sb, apply: bool) -> int:
@@ -368,7 +436,11 @@ def main() -> int:
     mode = "APPLY — WRITING TO PRODUCTION" if args.apply else "DRY RUN — no writes"
     print(f"=== ml_collection label backfill [{mode}] ===\n")
 
-    print("Phase 1 — rebuild the ml_collection join key")
+    # First: a fixture must not be carrying a signal_id when anything else runs.
+    print("Phase 0 — unlink test fixtures")
+    unlink_fixture_trades(sb, args.apply)
+
+    print("\nPhase 1 — rebuild the ml_collection join key")
     repair_join_key(sb, args.apply)
 
     # Before phase 3: a trade recovered here becomes labellable in the same run.

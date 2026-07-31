@@ -35,7 +35,11 @@ That `dist_to_pdh` never fired and `dist_to_pdl` fired once means the sentinel i
 
 **Ordering**: orphan recovery runs before the label back-fill, so a recovered trade gets labelled in the same pass. Dry run flags that phase 2's recoveries aren't reflected in phase 3's counts, so the figures can't be misread as final.
 
-319 tests green (10 new). Dry run verified; **not applied** — user-run.
+**Applied 2026-07-31.** Verified end state: `ml_collection` 9,102 rows and `trade_analytics` 127 rows **both unchanged** (nothing deleted), **0** sentinels remaining, 5,226 rows nulled in place with candle+OI features intact on **9,102/9,102**, labels **90 -> 110**, orphans **36 -> 7**.
+
+**Defect found in the first apply**: two of TASK-188's nine fixtures were linked to fixture signals 169/170. No `ml_collection` row was labelled from them, so the data is clean — but the migration selects fixture trades on `AND signal_id IS NULL`, so those two stopped matching. Running it in that state would have deleted 7 of 9 fixture trades and all 4 fixture signals, leaving two fixtures pointing at deleted rows. Fixed: `repair_orphan_trades` skips known fixtures, and phase 0 `unlink_fixture_trades` clears the two already written. Guarded **by id, never by price**, with a test pinning the list against the migration SQL.
+
+All 7 remaining orphans are fixtures (`entry_price` 24001.0, `reasons[0]` "Reason 1", `OPEN`, no exit) — not trades. 325 tests green (16 new).
 
 - [ ] Run `python -m ml_signal.backfill_labels --apply` to perform phases 2 and 4.
 - [ ] The 7 still-unattributable trades have no signal within 180s of any matching setup — inspect individually or accept as permanently unlinkable.

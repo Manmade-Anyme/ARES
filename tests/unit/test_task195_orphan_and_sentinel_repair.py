@@ -115,6 +115,82 @@ class TestOrphanTradeRepair(unittest.TestCase):
         self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 0)
 
 
+# One real id from the migration's fixture list.
+_FIXTURE_ID = "38191236-c717-487a-ad62-e6eb637c482e"
+
+
+class TestFixturesAreNeverLinked(unittest.TestCase):
+    """A fixture is not a trade, and linking one breaks TASK-188's migration.
+
+    That migration selects fixture trades with `AND signal_id IS NULL`. Two got
+    linked before this guard existed, which would have left them alive while the
+    signals they point at were deleted.
+    """
+
+    def test_a_fixture_orphan_is_never_matched(self):
+        rows = {
+            "trade_analytics": [
+                {"id": _FIXTURE_ID, "signal_id": None, "setup_type": "OI_WALL_REJECTION",
+                 "entry_timestamp": "2026-07-06T04:40:07+00:00"},
+            ],
+            "ares_signals": [
+                {"id": 169, "setup_type": "OI_WALL_REJECTION",
+                 "timestamp": "2026-07-06T04:40:07+00:00",
+                 "created_at": "2026-07-06T04:40:07+00:00"},
+            ],
+        }
+        sb = _FakeSupabase(rows)
+        self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 0)
+        self.assertIsNone(rows["trade_analytics"][0]["signal_id"])
+
+    def test_a_real_trade_at_the_fixture_price_is_still_repaired(self):
+        """Guard is by id, never by price — 24001.0 is a reachable real fill."""
+        rows = {
+            "trade_analytics": [
+                {"id": "real-uuid", "signal_id": None, "setup_type": "OI_WALL_REJECTION",
+                 "entry_price": 24001.0,
+                 "entry_timestamp": "2026-07-23T03:49:20+00:00"},
+            ],
+            "ares_signals": [
+                {"id": 243, "setup_type": "OI_WALL_REJECTION",
+                 "timestamp": "2026-07-23T03:49:19+00:00",
+                 "created_at": "2026-07-23T03:49:19+00:00"},
+            ],
+        }
+        sb = _FakeSupabase(rows)
+        self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 1)
+
+    def test_unlink_clears_a_previously_linked_fixture(self):
+        rows = {"trade_analytics": [
+            {"id": _FIXTURE_ID, "signal_id": 169},
+            {"id": "real-uuid", "signal_id": 243},
+        ]}
+        sb = _FakeSupabase(rows)
+        self.assertEqual(_mod().unlink_fixture_trades(sb, apply=True), 1)
+        self.assertIsNone(rows["trade_analytics"][0]["signal_id"])
+        self.assertEqual(rows["trade_analytics"][1]["signal_id"], 243,
+                         "a real trade's link must not be touched")
+
+    def test_unlink_is_a_noop_once_clean(self):
+        rows = {"trade_analytics": [{"id": _FIXTURE_ID, "signal_id": None}]}
+        sb = _FakeSupabase(rows)
+        self.assertEqual(_mod().unlink_fixture_trades(sb, apply=True), 0)
+        self.assertFalse(sb.updates)
+
+    def test_unlink_dry_run_writes_nothing(self):
+        rows = {"trade_analytics": [{"id": _FIXTURE_ID, "signal_id": 169}]}
+        sb = _FakeSupabase(rows)
+        self.assertEqual(_mod().unlink_fixture_trades(sb, apply=False), 1)
+        self.assertFalse(sb.updates)
+
+    def test_fixture_id_list_matches_the_migration(self):
+        """Drift here silently re-opens the bug, so pin it to the SQL."""
+        import re
+        sql = open("migrations/2026-07-17-task188-fixture-cleanup-and-ist.sql").read()
+        in_sql = set(re.findall(r"'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'", sql))
+        self.assertEqual(set(_mod()._FIXTURE_TRADE_IDS), in_sql)
+
+
 class TestSentinelRepair(unittest.TestCase):
 
     @staticmethod
