@@ -6,7 +6,7 @@ import numpy as np
 
 def label_from_ares_outcome(
     trade_analytics_records: List[dict],
-    t1_is_win: bool = False,
+    t1_is_win: bool = True,
 ) -> pd.DataFrame:
     rows = []
     for rec in trade_analytics_records:
