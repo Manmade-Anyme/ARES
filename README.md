@@ -19,6 +19,38 @@ ARES follows a strict **five-layer architecture** designed for modularity, perfo
 
 ---
 
+### 📐 Design principle — ARES is a **spot-based** system
+
+This is the single most important thing to understand before analysing anything in
+this repo, and it is easy to get wrong.
+
+**Every decision is made on the spot price of the underlying** — NIFTY (Dhan
+`security_id` 13), or any other index or stock the config points at. Detection,
+confidence scoring, entry, stop-loss, targets, backtests, recorded P&L and ML
+features are all computed on the spot chart. `pnl_points` is, correctly and
+deliberately, **NIFTY spot points**.
+
+**The options layer is derived reference, not the source of truth.** Strike
+selection, entry premium, option SL and option target are a convenience
+calculation projected from the spot levels via the selected contract's delta (see
+*Option Sizing* below). They exist so a spot signal can be acted on as an options
+trade. They are **not** what determines whether a trade won or lost.
+
+Consequences worth stating plainly, because each has been mistaken for a bug:
+
+*   **Spot-points P&L on a multi-day carry is not a measurement error.** Positions
+    are intentionally carried across sessions (TASK-170) — there is no end-of-day
+    square-off and none is wanted. A carry judged in spot points is judged exactly
+    as intended.
+*   **Exit premium is deliberately not recorded.** Entry premium is stored only as
+    reference. Reconstructing true option P&L is explicitly out of scope, and the
+    options layer may eventually be removed entirely.
+*   **Do not "fix" analysis to price trades in premium.** Any audit, report or
+    model that switches to premium is measuring something this system does not
+    trade on.
+
+---
+
 ## 🎯 Detection Strategies & Confidence Scoring
 
 ARES evaluates three distinct market phenomena in strict **short-circuit priority order**, utilizing dynamic confidence scoring matrices:
@@ -61,7 +93,11 @@ ARES evaluates three distinct market phenomena in strict **short-circuit priorit
 
 ## ⚖️ Option Sizing & Delta-Based Strike Selection
 
-ARES integrates dynamic options contract selection and risk-managed lot sizing (implemented in [options_math.py](file:///Users/manmadeanyme/Documents/Work/ARES/options_math.py)):
+ARES integrates dynamic options contract selection and risk-managed lot sizing (implemented in [options_math.py](file:///Users/manmadeanyme/Documents/Work/ARES/options_math.py)).
+
+> **This layer is reference only.** Everything below is projected *from* the spot
+> levels via delta — it never feeds back into detection, scoring, or how a trade is
+> judged. See *Design principle — ARES is a spot-based system* above.
 
 *   **Delta-Based Strike Selection**: Rather than trading arbitrary strikes, the system scans the live option chain to select the contract (CE or PE) with an absolute delta closest to **0.45** (target range: `0.45` to `0.55`).
 *   **Capital-Aware Ingress**: Queries the DhanHQ API dynamically for available trading balance (`availabelBalance` or `availableBalance`). If the API call fails, it falls back to the configured default capital.

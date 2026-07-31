@@ -27,11 +27,14 @@ Two things to carry into that discussion:
 
 - **Multi-day carry is intentional** (TASK-170, confirmed 2026-07-31). There is no
   EOD square-off and none is wanted. T2 rides until hit or stopped.
-- **`pnl_points` is NIFTY spot, not option premium.** Entry premium is recorded;
-  exit premium is not, so true P&L on a carry is unknown. The 24 multi-session
-  carries are **+1,011.7 pts of a +655.5 total** — i.e. everything intraday is net
-  negative and the carries are the whole edge. Their numbers are the least
-  accurate ones on the table. Not backfillable; only fixable going forward.
+- **`pnl_points` is NIFTY spot, and that is correct.** ARES is a spot-based system:
+  detection, entry, SL, targets, ML features and P&L are all judged on the spot
+  chart. The options layer is derived reference projected from spot via delta, and
+  may eventually be removed. Exit premium is deliberately **not** recorded and
+  pricing trades in premium is out of scope. See the design principle in
+  `README.md`. Still worth carrying into the SL discussion: the 24 multi-session
+  carries are **+1,011.7 pts of a +655.5 total**, so everything held intraday is
+  net negative and the carries are where the entire edge sits.
 
 ---
 
@@ -39,10 +42,9 @@ Two things to carry into that discussion:
 
 Kept so they are not lost. None are in progress.
 
-- [ ] **Exit premium not recorded.** See above. Loses information every trading
-      day, but requires a code change and the decision is to hold.
-- [ ] **82 of 111 trades sized to 0 lots** (empty Dhan balance). Every P&L figure
-      in this repo is paper until this is resolved. Not a code issue.
+- [ ] **82 of 111 trades sized to 0 lots** (empty Dhan balance). Affects the
+      options sizing layer only — spot-based signal quality and recorded P&L are
+      unaffected, since those never depend on lots. Not a code issue.
 - [ ] **`oi_wall_min_oi = 4_000_000` is a raw share count.** Sits above the entire
       live chain for most of a weekly cycle; fires only as OI builds toward expiry.
       TASK-195 now records `max_*_oi` / `p85_*_oi`, so the proposed
