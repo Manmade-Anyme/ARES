@@ -39,9 +39,13 @@ Also: the phase-2 counter reported trades iterated rather than rows touched, and
 
 309 tests green (16 new).
 
+**Status**: Merged to `main` via [PR #57](https://github.com/Manmade-Anyme/ARES/pull/57) (merge commit `80ccc8f`, 2026-07-31). Local branch `feature/TASK-194-ml-labels-and-oi-distribution` deleted after merge. Deployed as **Fly v87** at 21:29 IST, verified against `fly releases` per the TASK-186 deploy-gap lesson — machine is `stopped` (post-close), so the image comes up at Monday's start rather than restarting a live session.
+
 - [x] Run `python -m ml_signal.backfill_labels --apply` against production.
-- [ ] Re-audit label coverage after the next full trading day to confirm the live path writes.
-- [ ] Fix the 28% orphan rate (`trade_analytics.signal_id` NULL) — those trades can never be labelled.
+- [ ] **First live verification is Monday 2026-08-03**: confirm new `ml_collection` rows carry a real `ares_signals.id` in `signal_id`, and that a closed trade writes `trade_outcome`/`trade_pnl`/`trade_id`. Until a trade closes on v87 the write path is tested but unproven in production.
+- [ ] Confirm `oi_features` now carries `max_*_oi` / `p85_*_oi` / `strikes_with_*_oi` on live rows — this is what makes the p85 wall-threshold rule testable and answers whether `oi_wall_min_oi = 4_000_000` only clears near expiry.
+- [ ] Fix the 28% orphan rate (`trade_analytics.signal_id` NULL) — those trades can never be labelled, and the rate applies to every future day.
+- [ ] `structure_features` now emits `None` instead of `100.0`; the 57% of historical rows carrying the sentinel are **not** retroactively fixed and stay unusable for those four features.
 
 ---
 
