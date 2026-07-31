@@ -7,6 +7,10 @@
 
 ## Active
 
+### 🎯 Automate Weekly ML Pipeline (CI/CD)
+**Owner: System/Dev.** 
+Set up a weekly CI/CD pipeline (e.g., GitHub Actions) to automatically run the ML training and evaluation on the latest Supabase data. This ensures the XGBClassifier continuously learns from recent market regimes and the newly implemented T1-breakeven multi-class scoring.
+
 ### 🎯 SL / Entry / Target recalibration — per detector
 **Owner: user.** Not started, not scoped. To be discussed before any code.
 
@@ -18,10 +22,10 @@ Starting picture (118 trades, clean data):
 
 | detector | n | SL | T1 | T2 | SL_HIT% | avg P&L |
 |---|---|---|---|---|---|---|
-| EXHAUSTION_REVERSAL | 56 | 12.0 | 24.0 | 81.8 | 71.4% | +5.66 |
-| TREND_CONTINUATION | 34 | 25.0 | 40.0 | 80.0 | 40.0% | +0.25 |
-| FAILED_BREAKOUT | 14 | 15.0 | 30.0 | 94.7 | 55.6% | +17.96 |
-| OI_WALL_REJECTION | 13 | 12.0 | 25.0 | 40.0 | 40.0% | +6.07 |
+| EXHAUSTION_REVERSAL | 56 | 12.0 | 24.0 | 81.8 | 76.8% | +5.66 |
+| TREND_CONTINUATION | 34 | 25.0 | 40.0 | 80.0 | 76.5% | +0.25 |
+| FAILED_BREAKOUT | 14 | 15.0 | 30.0 | 94.7 | 64.3% | +17.96 |
+| OI_WALL_REJECTION | 13 | 12.0 | 25.0 | 40.0 | 46.2% | +6.07 |
 
 Two things to carry into that discussion:
 
@@ -42,9 +46,6 @@ Two things to carry into that discussion:
 
 Kept so they are not lost. None are in progress.
 
-- [ ] **82 of 111 trades sized to 0 lots** (empty Dhan balance). Affects the
-      options sizing layer only — spot-based signal quality and recorded P&L are
-      unaffected, since those never depend on lots. Not a code issue.
 - [ ] **`oi_wall_min_oi = 4_000_000` is a raw share count.** Sits above the entire
       live chain for most of a weekly cycle; fires only as OI builds toward expiry.
       TASK-195 now records `max_*_oi` / `p85_*_oi`, so the proposed
@@ -53,12 +54,8 @@ Kept so they are not lost. None are in progress.
 - [ ] **`breakout_detector` and `continuation_detector` have the stateful-skip bug**
       TASK-188 fixed for `oi_wall`. Left alone deliberately — FAILED_BREAKOUT is
       the best performer and there is no evidence its rate is wrong.
-- [ ] **Nothing restarts the Fly machine at 09:15.** Cost 46% of a session on
-      2026-07-15. Machine start/stop is cron-job.org → `api.machines.dev`.
 - [ ] **Full threshold sweep against `ml_collection`** (audit item 17, open since
       2026-07-02). Now unblocked — the table has labels for the first time.
-- [ ] "Paper Sizing Only" indicator on Discord alerts and the console UI.
-      Directly relevant to the 0-lot finding above.
 - [ ] Distinct BREAKEVEN exit type; candle timestamp dedup. Untagged P0s from the
       2026-07-02 audit, never decided.
 
@@ -66,6 +63,8 @@ Kept so they are not lost. None are in progress.
 
 ## Resolved
 
+- [x] **0-lot trades & Paper Sizing Indicator** — Confirmed as a feature, not a bug. If Dhan balance is low, 0 lots is the correct suggestion. No Discord indicator needed.
+- [x] **Fly machine restart** — Confirmed working as intended via existing cron job.
 - [x] **TASK-195** (2026-07-31) — orphaned trades and the `structure_features`
       sentinel repaired rather than deleted. 29 trades relinked, 5,226 rows nulled
       in place, nothing deleted.
