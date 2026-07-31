@@ -41,8 +41,8 @@ That `dist_to_pdh` never fired and `dist_to_pdl` fired once means the sentinel i
 
 All 7 remaining orphans are fixtures (`entry_price` 24001.0, `reasons[0]` "Reason 1", `OPEN`, no exit) — not trades. 325 tests green (16 new).
 
-- [ ] Run `python -m ml_signal.backfill_labels --apply` to perform phases 2 and 4.
-- [ ] The 7 still-unattributable trades have no signal within 180s of any matching setup — inspect individually or accept as permanently unlinkable.
+- [x] Run `python -m ml_signal.backfill_labels --apply` — done 2026-07-31.
+- [x] The 7 still-unattributable trades were the TASK-188 test fixtures, not trades. Purged by the migration; orphan count is now **0**.
 
 ---
 
@@ -84,10 +84,10 @@ Also: the phase-2 counter reported trades iterated rather than rows touched, and
 **Status**: Merged to `main` via [PR #57](https://github.com/Manmade-Anyme/ARES/pull/57) (merge commit `80ccc8f`, 2026-07-31). Local branch `feature/TASK-194-ml-labels-and-oi-distribution` deleted after merge. Deployed as **Fly v87** at 21:29 IST, verified against `fly releases` per the TASK-186 deploy-gap lesson — machine is `stopped` (post-close), so the image comes up at Monday's start rather than restarting a live session.
 
 - [x] Run `python -m ml_signal.backfill_labels --apply` against production.
-- [ ] **First live verification is Monday 2026-08-03**: confirm new `ml_collection` rows carry a real `ares_signals.id` in `signal_id`, and that a closed trade writes `trade_outcome`/`trade_pnl`/`trade_id`. Until a trade closes on v87 the write path is tested but unproven in production.
-- [ ] Confirm `oi_features` now carries `max_*_oi` / `p85_*_oi` / `strikes_with_*_oi` on live rows — this is what makes the p85 wall-threshold rule testable and answers whether `oi_wall_min_oi = 4_000_000` only clears near expiry.
-- [ ] Fix the 28% orphan rate (`trade_analytics.signal_id` NULL) — those trades can never be labelled, and the rate applies to every future day.
-- [ ] `structure_features` now emits `None` instead of `100.0`; the 57% of historical rows carrying the sentinel are **not** retroactively fixed and stay unusable for those four features.
+- [ ] **Monday 2026-08-03 — verification only, no work pending.** Confirm new `ml_collection` rows carry a real `ares_signals.id`, and that a closed trade writes `trade_outcome`/`trade_pnl`/`trade_id`. Tested and deployed (v89); unproven in production only because no trade has closed since.
+- [ ] **Monday 2026-08-03 — verification only.** Confirm `oi_features` carries `max_*_oi` / `p85_*_oi` / `strikes_with_*_oi` on live rows. Makes the p85 wall-threshold rule testable.
+- [x] The 28% orphan rate is **not an ongoing defect**. TASK-172 fixed the source on 2026-07-03; every orphan predates it or was a fixture. Verified 2026-07-31: 57 signals / 57 trades / 57 collected rows over the last 10 trading days, zero orphans, zero dangling links. Table-wide orphans now 0.
+- [x] `structure_features` emits `None` going forward, and the 5,226 historical rows **were** repaired in place by TASK-195 — 0 sentinels remain, with all other features intact on 9,102/9,102 rows.
 
 ---
 
