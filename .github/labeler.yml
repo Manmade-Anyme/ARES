@@ -1,0 +1,63 @@
+# actions/labeler@v5 config. v5 syntax ("changed-files" / "any-glob-to-any-file")
+# is NOT compatible with the v4 "any"/"all" form — copying a v4 example here
+# fails at load with a config error, not a no-op.
+#
+# Labels that do not exist yet are created automatically by the labels API.
+
+detectors:
+  - changed-files:
+      - any-glob-to-any-file: 'detectors/**'
+
+execution:
+  - changed-files:
+      - any-glob-to-any-file: 'execution/**'
+
+fetchers:
+  - changed-files:
+      - any-glob-to-any-file: 'fetchers/**'
+
+ml:
+  - changed-files:
+      - any-glob-to-any-file: 'ml_signal/**'
+
+migrations:
+  - changed-files:
+      - any-glob-to-any-file: 'migrations/**'
+
+reports:
+  - changed-files:
+      - any-glob-to-any-file: ['reports/**', 'reports.py']
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file: ['tests/**', 'test_*.py']
+
+config:
+  - changed-files:
+      - any-glob-to-any-file: ['config.py', 'config_profiles.py', '.env.example']
+
+# The engine and its immediate collaborators — a PR touching these is changing
+# trading behaviour, not plumbing.
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'engine.py'
+          - 'main.py'
+          - 'models.py'
+          - 'position_manager.py'
+          - 'options_math.py'
+          - 'storage.py'
+          - 'alerts.py'
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'
+
+deployment:
+  - changed-files:
+      - any-glob-to-any-file: ['Dockerfile', 'fly.toml', '.dockerignore', 'requirements*.txt']
+
+# Reuses the stock GitHub label rather than minting a near-duplicate.
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', 'directives/**', '.agents/**', '**/*.md']

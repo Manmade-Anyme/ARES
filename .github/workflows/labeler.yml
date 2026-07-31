@@ -1,0 +1,26 @@
+name: Auto Labeler
+
+on:
+  # `pull_request_target` runs the workflow from the BASE branch, so a fork PR
+  # still gets a write-scoped token. Safe here because actions/labeler only
+  # reads the changed-file list from the API — it never checks out or executes
+  # PR code, which is the thing that makes pull_request_target dangerous.
+  #
+  # Consequence: both this file and .github/labeler.yml are read from `main`,
+  # never from the PR. Edits to either take effect only after they merge.
+  pull_request_target:
+    # `synchronize`, not `synchronized` — GitHub silently ignores an unknown
+    # type rather than erroring, so the typo costs you every re-label after
+    # the opening commit.
+    types: [opened, synchronize, reopened]
+
+jobs:
+  label:
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
