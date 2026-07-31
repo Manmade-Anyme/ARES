@@ -200,3 +200,35 @@ def build_labeled_frame(
 def feature_columns(df: pd.DataFrame) -> List[str]:
     """The flattened feature columns (everything except bookkeeping/label)."""
     return [c for c in df.columns if c not in _META_COLS]
+
+def build_real_outcome_frame(
+    rows: Sequence[Dict[str, Any]],
+    t1_is_win: bool = True,
+) -> pd.DataFrame:
+    """
+    Flatten + label using real historical ARES trade outcomes.
+    Filters the dataset to only include rows where `trade_outcome` is a definitive win or loss.
+    """
+    from ml_signal.labeling import classify_ares_outcome
+    
+    valid_rows = []
+    labels = []
+    
+    for r in rows:
+        outcome = r.get("trade_outcome")
+        if not outcome:
+            continue
+            
+        label = classify_ares_outcome(outcome, t1_is_win=t1_is_win)
+        if label is not None:
+            valid_rows.append(r)
+            labels.append(label)
+
+    if not valid_rows:
+        df = flatten_features([])
+        return df.assign(label=pd.Series(dtype=int))
+
+    df = flatten_features(valid_rows)
+    df["label"] = labels
+    
+    return df

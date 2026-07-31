@@ -4,17 +4,27 @@ import pandas as pd
 import numpy as np
 
 
+def classify_ares_outcome(result_state: str, t1_is_win: bool = True) -> Optional[int]:
+    """Pure function to map an ARES result state to a binary ML label."""
+    if result_state == "T2_HIT":
+        return 1
+    if result_state in ("SL_HIT", "STOPPED_OUT", "TIME_STOP"):
+        return 0
+    if result_state == "T1_HIT":
+        return 1 if t1_is_win else 0
+    return None
+
+
 def label_from_ares_outcome(
     trade_analytics_records: List[dict],
+    t1_is_win: bool = True,
 ) -> pd.DataFrame:
     rows = []
     for rec in trade_analytics_records:
         result = rec.get("result_state", "")
-        if result in ("T1_HIT", "T2_HIT"):
-            label = 1
-        elif result in ("SL_HIT", "STOPPED_OUT"):
-            label = 0
-        else:
+        label = classify_ares_outcome(result, t1_is_win=t1_is_win)
+        
+        if label is None:
             continue
 
         rows.append({

@@ -179,7 +179,7 @@ def run_training(
 
 def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     """Read-only, paginated pull of ml_collection ordered by timestamp asc."""
-    cols = "timestamp,raw_candle," + ",".join([
+    cols = "timestamp,raw_candle,trade_outcome," + ",".join([
         "candle_features", "volume_features", "iv_features", "oi_features",
         "greek_features", "structure_features", "meta_features",
     ])
@@ -228,19 +228,17 @@ def main() -> None:
     config = DEFAULT_CONFIG
     print(f"[*] Reading ml_collection (read-only)...")
     rows = _fetch_ml_collection(supabase)
-    print(f"[*] {len(rows)} rows fetched. Labeling "
-          f"(lookforward={config.lookforward_candles}, "
-          f"tp={config.tp_points}pts, sl={config.sl_points}pts, day-bounded)...")
+    
+    from ml_signal.dataset import build_real_outcome_frame
+    print(f"[*] {len(rows)} rows fetched. Filtering for real trade outcomes...")
 
-    df = build_labeled_frame(
+    df = build_real_outcome_frame(
         rows,
-        lookforward=config.lookforward_candles,
-        tp_points=config.tp_points,
-        sl_points=config.sl_points,
+        t1_is_win=True, # Predict probability of hitting T1 (Win=1)
     )
     if df.empty:
-        print("[-] No labeled rows produced (data too flat / too little). "
-              "Collect more, then rerun.")
+        print("[-] No valid real trade outcomes found. "
+              "Collect more live trades, then rerun.")
         return
 
     fcols = feature_columns(df)
