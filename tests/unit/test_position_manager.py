@@ -152,6 +152,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
     async def test_add_trade_success_and_exception_safety(self, mock_settings):
         mock_settings.trade_dedupe_tolerance_pts = 1.0
         pm = PositionManager()
+        pm.analytics.log_entry = MagicMock()
         
         signal = AresSignal(
             setup_type=SetupType.OI_WALL_REJECTION,
@@ -214,9 +215,11 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
 
         # 2. Price hits SL -> CLOSED, update_type = STOPPED_OUT_AT_BE
         mock_send_trade_update.reset_mock()
-        await pm.update_trades(23999.0)
-        self.assertEqual(trade["state"], "CLOSED")
-        mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            await pm.update_trades(23999.0)
+            self.assertEqual(trade["state"], "CLOSED")
+            mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
+            mock_log_exit.assert_called_with("trade-bullish", 24000.0, "STOPPED_OUT_AT_BE")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -248,9 +251,11 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
 
         # 2. Price hits trailed SL -> CLOSED, update_type = STOPPED_OUT_AT_BE
         mock_send_trade_update.reset_mock()
-        await pm.update_trades(24001.0)
-        self.assertEqual(trade["state"], "CLOSED")
-        mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            await pm.update_trades(24001.0)
+            self.assertEqual(trade["state"], "CLOSED")
+            mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
+            mock_log_exit.assert_called_with("trade-bearish", 24000.0, "STOPPED_OUT_AT_BE")
 
         # Reset for Bearish T2 Hit
         trade_t2 = {
@@ -568,6 +573,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         same setup/direction at (nearly) the same entry is now skipped."""
         mock_settings.trade_dedupe_tolerance_pts = 1.0
         pm = PositionManager()
+        pm.analytics.log_entry = MagicMock()
         pm.active_trades = []
         signal = self._make_signal()
 

@@ -230,7 +230,7 @@ class AnalyticsLogger:
 
             pnl = round(pnl, 2)
             
-            score = 0
+            score = None
             if final_state == "T2_HIT":
                 score = 2
             elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE"):
