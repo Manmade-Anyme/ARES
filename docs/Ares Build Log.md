@@ -4,6 +4,48 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-31 · Orphans and Sentinel Repaired Rather Than Deleted (TASK-195)
+
+User asked to remove the 36 orphaned trades and the 5,226 sentinel rows from Supabase. Measured both before touching anything; both are recoverable, and deletion would have destroyed materially more than it removed.
+
+**The 36 orphan trades**
+
+| | |
+|---|---|
+| net P&L they carry | **+728.2 pts** |
+| still `OPEN` | **8** — deletion would have removed live positions |
+| `OI_WALL_REJECTION` | **17** — the detector with only n=5 joinable data |
+| recoverable by (`entry_timestamp`, `setup_type`) | **29 of 36**, deltas 0–64s, median 0 |
+
+They were never junk — only unlinkable. Deleting them would have shrunk exactly the dataset the SL/target recalibration needs.
+
+**The 5,226 sentinel rows**
+
+| field | rows at exactly 100.0 |
+|---|---|
+| `dist_to_nearest_resistance` | 3,353 |
+| `dist_to_nearest_support` | 1,873 |
+| `dist_to_pdl` | 1 |
+| `dist_to_pdh` | **0** |
+| **all four poisoned** | **0** |
+
+Every affected row holds 1–3 bad fields and 29–32 good ones. Deleting rows to remove at most two fields would have cut the table 9,102 → 3,876 and taken the whole OI-clean and IV-clean windows with it. The fields are nulled **in place** instead. Exact float equality only, so a near-100 value stays a genuine reading.
+
+That `dist_to_pdh` never fired and `dist_to_pdl` fired once means the sentinel is almost entirely *levels not found* — consistent with TASK-184's finding that the OI gate blinds `level_fetcher`. Worth revisiting as its own question.
+
+**Ordering**: orphan recovery runs before the label back-fill, so a recovered trade gets labelled in the same pass. Dry run flags that phase 2's recoveries aren't reflected in phase 3's counts, so the figures can't be misread as final.
+
+**Applied 2026-07-31.** Verified end state: `ml_collection` 9,102 rows and `trade_analytics` 127 rows **both unchanged** (nothing deleted), **0** sentinels remaining, 5,226 rows nulled in place with candle+OI features intact on **9,102/9,102**, labels **90 -> 110**, orphans **36 -> 7**.
+
+**Defect found in the first apply**: two of TASK-188's nine fixtures were linked to fixture signals 169/170. No `ml_collection` row was labelled from them, so the data is clean — but the migration selects fixture trades on `AND signal_id IS NULL`, so those two stopped matching. Running it in that state would have deleted 7 of 9 fixture trades and all 4 fixture signals, leaving two fixtures pointing at deleted rows. Fixed: `repair_orphan_trades` skips known fixtures, and phase 0 `unlink_fixture_trades` clears the two already written. Guarded **by id, never by price**, with a test pinning the list against the migration SQL.
+
+All 7 remaining orphans are fixtures (`entry_price` 24001.0, `reasons[0]` "Reason 1", `OPEN`, no exit) — not trades. 325 tests green (16 new).
+
+- [ ] Run `python -m ml_signal.backfill_labels --apply` to perform phases 2 and 4.
+- [ ] The 7 still-unattributable trades have no signal within 180s of any matching setup — inspect individually or accept as permanently unlinkable.
+
+---
+
 ## 2026-07-31 · ml_collection Had No Join Key, So It Had No Labels (TASK-194)
 
 User asked what `ml_collection` had actually collected and whether it was doing a useful job. Audit of all 9,102 rows (2026-06-29 → 07-31, 25 trading days, median 374 rows/day — a complete per-minute tape) found the collector mechanically healthy and the table untrainable.
