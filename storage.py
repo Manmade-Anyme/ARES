@@ -265,7 +265,15 @@ class AnalyticsLogger:
             # No running loop (sync caller, tests, backfill scripts). Previously
             # this branch only printed, so log_exit silently did nothing at all
             # outside async context. Mirrors MLCollector._insert's fallback.
-            _update()
+            #
+            # Guarded separately: run_in_executor above only schedules the work,
+            # so the outer handler never sees _update's own failures. Calling it
+            # inline here would otherwise raise straight into the caller — a
+            # different failure mode for the same function depending on context.
+            try:
+                _update()
+            except Exception as e:
+                print(f"Failed to log trade analytics exit: {e}")
         except Exception as e:
             print(f"Failed to log trade analytics exit: {e}")
 

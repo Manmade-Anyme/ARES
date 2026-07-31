@@ -187,8 +187,8 @@ def compute_structure_features(
     # 100-point distance, and 57% of collected rows carried it, so any model
     # would learn "distance == 100" as a genuine market state. dataset._numeric_only
     # drops None, landing it as NaN in the matrix, which XGBoost handles natively.
-    resistances = sorted([l for l in levels if l > spot]) if levels else []
-    supports = sorted([l for l in levels if l < spot], reverse=True) if levels else []
+    resistances = sorted([lvl for lvl in levels if lvl > spot]) if levels else []
+    supports = sorted([lvl for lvl in levels if lvl < spot], reverse=True) if levels else []
     features["dist_to_nearest_resistance"] = resistances[0] - spot if resistances else None
     features["dist_to_nearest_support"] = spot - supports[0] if supports else None
 

@@ -27,10 +27,21 @@ User asked what `ml_collection` had actually collected and whether it was doing 
 
 **History repair**: `ml_signal/backfill_labels.py`, dry-run by default. Production dry run: **120/120 join keys repairable** (matched on `created_at` within 120s + normalised `setup_type`; observed clock deltas sub-second, median 0.1s), **90 labels writable**, 0 unmatchable. 36 trades cannot be labelled — their own `signal_id` is NULL. Legacy rows storing `str(SetupType.X)` are normalised during the match.
 
-**Not run** — user-run like the TASK-188 migration. 305 tests green (12 new).
+**Applied** by the user during review. Verified after the fact: all 120 signal-bearing rows now carry a real `ares_signals.id`, and 90 rows carry `trade_outcome` with real `trade_pnl`. First labels the table has ever held.
 
-- [ ] Run `python -m ml_signal.backfill_labels --apply` against production.
+**Review findings addressed (CodeRabbit, PR #57)** — three latent data-integrity bugs in the repair script, all measured at **0 occurrences in current production data** and all genuinely reachable:
+
+1. An existing `signal_id` was trusted on numeric membership alone. Legacy codes are 4-digit zero-padded, so once `ares_signals.id` passes 999 a stale `"1234"` string-matches a real id, and the row would be skipped as already-valid while pointing at an unrelated signal — which phase 2 would then label with another trade's outcome. Now corroborated by the same (time, setup) evidence used to repair.
+2. Matching was not one-to-one. Two rows inside the tolerance window of one signal both took its id, and phase 2 updates by `signal_id`, so both received the same trade's label. Signals are now claimed once, with contention reported. Reachable: TASK-185 recorded three exhaustion entries in three consecutive minutes.
+3. Two closed trades sharing a `signal_id` meant the last write silently won, with the winner decided by pagination order. Now detected, reported and skipped.
+
+Also: the phase-2 counter reported trades iterated rather than rows touched, and `log_exit`'s new sync fallback called `_update()` uncaught — the async path swallows its failures, so the same function failed differently depending on caller context.
+
+309 tests green (16 new).
+
+- [x] Run `python -m ml_signal.backfill_labels --apply` against production.
 - [ ] Re-audit label coverage after the next full trading day to confirm the live path writes.
+- [ ] Fix the 28% orphan rate (`trade_analytics.signal_id` NULL) — those trades can never be labelled.
 
 ---
 

@@ -249,9 +249,151 @@ class TestLabelBackfillOnTradeClose(unittest.TestCase):
             MagicMock(data=[{"entry_price": 24002.0, "direction": "BULLISH",
                              "signal_id": None}])
         lg.log_exit("trade-uuid-2", exit_price=24050.0, final_state="T1_HIT")
-        payloads = [c.args[0] for c in sb.table.return_value.update.call_args_list if c.args]
-        self.assertFalse([p for p in payloads if "trade_outcome" in p],
+
+        calls = sb.table.return_value.update.call_args_list
+        # Positional AND keyword — reading only c.args would make the negative
+        # assertion below pass vacuously if the call shape ever changes.
+        payloads = [(c.args[0] if c.args else c.kwargs.get("json", c.kwargs)) for c in calls]
+        # The trade exit itself must still have been written; only the label is skipped.
+        self.assertTrue([p for p in payloads if isinstance(p, dict) and "result_state" in p],
+                        "the trade exit update itself went missing — test is not exercising the path")
+        self.assertFalse([p for p in payloads if isinstance(p, dict) and "trade_outcome" in p],
                          "orphan trade must not write a label against a null key")
+
+
+class _FakeTable:
+    """Records updates and replays canned select results for one table."""
+
+    def __init__(self, store, name):
+        self._store, self._name = store, name
+        self._filters = {}
+
+    # -- select path -------------------------------------------------------
+    def select(self, *_a, **_k):
+        return self
+
+    def order(self, *_a, **_k):
+        return self
+
+    def not_(self, *_a, **_k):
+        return self
+
+    def range(self, start, end):
+        self._slice = (start, end)
+        return self
+
+    def eq(self, col, val):
+        self._filters[col] = val
+        return self
+
+    # -- update path -------------------------------------------------------
+    def update(self, payload):
+        self._pending = payload
+        return self
+
+    def execute(self):
+        if hasattr(self, "_pending"):
+            payload, self._pending = self._pending, None
+            del self._pending
+            affected = [
+                r for r in self._store.rows.get(self._name, [])
+                if all(str(r.get(k)) == str(v) for k, v in self._filters.items())
+            ]
+            for r in affected:
+                r.update(payload)
+            self._store.updates.append((self._name, dict(self._filters), payload))
+            return MagicMock(data=affected)
+        start, end = getattr(self, "_slice", (0, 999))
+        return MagicMock(data=self._store.rows.get(self._name, [])[start:end + 1])
+
+
+class _FakeSupabase:
+    def __init__(self, rows):
+        self.rows, self.updates = rows, []
+
+    def table(self, name):
+        return _FakeTable(self, name)
+
+
+class TestBackfillGuards(unittest.TestCase):
+    """The repair script mutates production; its guards need to be real."""
+
+    def _mod(self):
+        from ml_signal import backfill_labels
+        return backfill_labels
+
+    def test_one_signal_is_never_claimed_by_two_rows(self):
+        """Two rows inside tolerance of one signal must not both take its id."""
+        rows = {
+            "ml_collection": [
+                {"id": 1, "created_at": "2026-07-31T04:00:00+00:00",
+                 "signal_id": "0007", "signal_setup_type": "SetupType.EXHAUSTION_REVERSAL"},
+                {"id": 2, "created_at": "2026-07-31T04:00:30+00:00",
+                 "signal_id": "9999", "signal_setup_type": "SetupType.EXHAUSTION_REVERSAL"},
+            ],
+            "ares_signals": [
+                {"id": 300, "created_at": "2026-07-31T04:00:05+00:00",
+                 "setup_type": "EXHAUSTION_REVERSAL"},
+            ],
+        }
+        sb = _FakeSupabase(rows)
+        fixed = self._mod().repair_join_key(sb, apply=True)
+        self.assertEqual(fixed, 1, "the single signal must be claimed exactly once")
+        assigned = [u for u in sb.updates if "signal_id" in u[2]]
+        self.assertEqual(len(assigned), 1)
+
+    def test_coincidental_numeric_match_is_not_trusted(self):
+        """A legacy 4-digit code equal to a real id must still be corroborated."""
+        rows = {
+            "ml_collection": [
+                # "1234" collides with ares_signals.id 1234, but the timestamps are
+                # days apart and the setups differ — it is a stale random code.
+                {"id": 1, "created_at": "2026-07-31T04:00:00+00:00",
+                 "signal_id": "1234", "signal_setup_type": "FAILED_BREAKOUT"},
+            ],
+            "ares_signals": [
+                {"id": 1234, "created_at": "2026-07-20T06:00:00+00:00",
+                 "setup_type": "EXHAUSTION_REVERSAL"},
+                {"id": 1240, "created_at": "2026-07-31T04:00:02+00:00",
+                 "setup_type": "FAILED_BREAKOUT"},
+            ],
+        }
+        sb = _FakeSupabase(rows)
+        self._mod().repair_join_key(sb, apply=True)
+        writes = [u for u in sb.updates if "signal_id" in u[2]]
+        self.assertEqual(len(writes), 1, "row was skipped as already-valid on a coincidence")
+        self.assertEqual(writes[0][2]["signal_id"], "1240")
+
+    def test_two_closed_trades_on_one_signal_are_skipped_not_overwritten(self):
+        rows = {
+            "trade_analytics": [
+                {"id": "t1", "signal_id": 300, "result_state": "SL_HIT", "pnl_points": -12.0},
+                {"id": "t2", "signal_id": 300, "result_state": "T2_HIT", "pnl_points": 80.0},
+                {"id": "t3", "signal_id": 301, "result_state": "T1_HIT", "pnl_points": 0.0},
+            ],
+            "ml_collection": [
+                {"id": 1, "signal_id": "300"},
+                {"id": 2, "signal_id": "301"},
+            ],
+        }
+        sb = _FakeSupabase(rows)
+        self._mod().backfill_labels(sb, apply=True)
+        labelled = [u for u in sb.updates if "trade_outcome" in u[2]]
+        self.assertEqual(len(labelled), 1, "the contested signal must not be labelled at all")
+        self.assertEqual(labelled[0][1]["signal_id"], "301")
+        self.assertIsNone(rows["ml_collection"][0].get("trade_outcome"))
+
+    def test_open_and_orphan_trades_are_excluded(self):
+        rows = {
+            "trade_analytics": [
+                {"id": "t1", "signal_id": 300, "result_state": "OPEN", "pnl_points": None},
+                {"id": "t2", "signal_id": None, "result_state": "SL_HIT", "pnl_points": -5.0},
+            ],
+            "ml_collection": [{"id": 1, "signal_id": "300"}],
+        }
+        sb = _FakeSupabase(rows)
+        self._mod().backfill_labels(sb, apply=True)
+        self.assertFalse([u for u in sb.updates if "trade_outcome" in u[2]])
 
 
 if __name__ == "__main__":
