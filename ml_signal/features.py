@@ -1,3 +1,4 @@
+import math
 from typing import Dict, List, Optional, Any
 
 import numpy as np
@@ -124,7 +125,32 @@ def compute_oi_features(
     features["oi_concentration"] = atm_total_oi / total_oi if total_oi > 0 else 0
     features["atm_total_oi"] = atm_total_oi
 
+    # The chain's SHAPE, not just its sum. Without this the "wall = OI >= p85 of
+    # strikes with non-zero OI" rule cannot be validated against history, and the
+    # fact that `oi_wall_min_oi = 4_000_000` sits above the entire live chain for
+    # most of a weekly cycle stays invisible. Sum alone hid both.
+    for side, values in (("ce", all_ce_oi), ("pe", all_pe_oi)):
+        live = [int(v) for v in (values or []) if v]
+        features[f"strikes_with_{side}_oi"] = len(live)
+        features[f"max_{side}_oi"] = max(live) if live else None
+        features[f"p85_{side}_oi"] = _percentile_nearest_rank(live, 0.85)
+
     return features
+
+
+def _percentile_nearest_rank(values: List[int], q: float) -> Optional[int]:
+    """Nearest-rank percentile — returns an OI level some strike actually has.
+
+    Deliberately not interpolated: a wall threshold is compared against real
+    per-strike OI, so a synthetic value between two strikes would qualify a wall
+    that does not exist. Returns None on an empty chain so "no data" stays
+    distinguishable from a genuine zero.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, math.ceil(q * len(ordered)))
+    return ordered[rank - 1]
 
 
 def compute_greek_features(
@@ -157,23 +183,17 @@ def compute_structure_features(
 ) -> Dict[str, float]:
     features = {}
 
-    if levels:
-        resistances = sorted([l for l in levels if l > spot])
-        supports = sorted([l for l in levels if l < spot], reverse=True)
-        features["dist_to_nearest_resistance"] = resistances[0] - spot if resistances else 100.0
-        features["dist_to_nearest_support"] = spot - supports[0] if supports else 100.0
-    else:
-        features["dist_to_nearest_resistance"] = 100.0
-        features["dist_to_nearest_support"] = 100.0
+    # None, not 100.0 — a literal sentinel is indistinguishable from a real
+    # 100-point distance, and 57% of collected rows carried it, so any model
+    # would learn "distance == 100" as a genuine market state. dataset._numeric_only
+    # drops None, landing it as NaN in the matrix, which XGBoost handles natively.
+    resistances = sorted([lvl for lvl in levels if lvl > spot]) if levels else []
+    supports = sorted([lvl for lvl in levels if lvl < spot], reverse=True) if levels else []
+    features["dist_to_nearest_resistance"] = resistances[0] - spot if resistances else None
+    features["dist_to_nearest_support"] = spot - supports[0] if supports else None
 
-    if pdh is not None:
-        features["dist_to_pdh"] = pdh - spot
-    else:
-        features["dist_to_pdh"] = 100.0
-    if pdl is not None:
-        features["dist_to_pdl"] = spot - pdl
-    else:
-        features["dist_to_pdl"] = 100.0
+    features["dist_to_pdh"] = pdh - spot if pdh is not None else None
+    features["dist_to_pdl"] = spot - pdl if pdl is not None else None
 
     return features
 

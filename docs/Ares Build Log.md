@@ -4,6 +4,47 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-07-31 · ml_collection Had No Join Key, So It Had No Labels (TASK-194)
+
+User asked what `ml_collection` had actually collected and whether it was doing a useful job. Audit of all 9,102 rows (2026-06-29 → 07-31, 25 trading days, median 374 rows/day — a complete per-minute tape) found the collector mechanically healthy and the table untrainable.
+
+**What the audit found**
+
+| Finding | Measured |
+|---|---|
+| `trade_outcome` / `trade_pnl` / `trade_id` populated | **0 of 9,102** |
+| `ml_collection.signal_id` ∩ `ares_signals.id` | **0 of 119** |
+| `detector_scores` carrying info beyond `signal_setup_type` | **none** — hot key matched in 100% of rows, 0 mismatches |
+| `structure_features` at the `100.0` sentinel | **57%** of rows |
+| `dte` correct | 12% (stuck at 7.0 until the 07-28 fix) |
+| `pcr_oi` / `oi_concentration` usable | 35% (pinned to the 1.0 divide-guard until PR #46 on 07-21) |
+
+**Root cause — a key, not a missing write.** `MLCollector.snapshot` stored `signal.signal_id`; `models.AresSignal` defines that as `f"{random.randint(0, 9999):04d}"`, a Discord display code. `AnalyticsLogger.add_trade` stores `signal.db_id`, the real `ares_signals.id`. The two tables have never been joinable, so there was no row to attribute an outcome to. `main.py` also ran the snapshot **before** `storage.log_signal`, the call that assigns `db_id` — so even the correct field would have read `None` every time.
+
+**Fixed**: collector writes `db_id` (NULL when unset, never a fabricated key); snapshot moved after the signal block; `storage.log_exit` writes the three label columns on close and skips cleanly on a NULL `signal_id`. `log_exit` also gained the `except RuntimeError` fallback `MLCollector._insert` already had — without a running loop it previously printed an error and performed **no update at all**.
+
+**Also fixed, same pass**: `compute_oi_features` was handed the full per-strike OI distribution and used it only to compute a sum, discarding the shape — which is precisely why the p85 wall-threshold proposal was untestable against history. Now stores `max_*_oi`, `p85_*_oi`, `strikes_with_*_oi` (nearest-rank, non-interpolated, zero-OI strikes excluded). And `compute_structure_features` no longer returns `100.0` for "unknown" — a sentinel that 57% of rows carried and that no amount of further recording would have healed.
+
+**History repair**: `ml_signal/backfill_labels.py`, dry-run by default. Production dry run: **120/120 join keys repairable** (matched on `created_at` within 120s + normalised `setup_type`; observed clock deltas sub-second, median 0.1s), **90 labels writable**, 0 unmatchable. 36 trades cannot be labelled — their own `signal_id` is NULL. Legacy rows storing `str(SetupType.X)` are normalised during the match.
+
+**Applied** by the user during review. Verified after the fact: all 120 signal-bearing rows now carry a real `ares_signals.id`, and 90 rows carry `trade_outcome` with real `trade_pnl`. First labels the table has ever held.
+
+**Review findings addressed (CodeRabbit, PR #57)** — three latent data-integrity bugs in the repair script, all measured at **0 occurrences in current production data** and all genuinely reachable:
+
+1. An existing `signal_id` was trusted on numeric membership alone. Legacy codes are 4-digit zero-padded, so once `ares_signals.id` passes 999 a stale `"1234"` string-matches a real id, and the row would be skipped as already-valid while pointing at an unrelated signal — which phase 2 would then label with another trade's outcome. Now corroborated by the same (time, setup) evidence used to repair.
+2. Matching was not one-to-one. Two rows inside the tolerance window of one signal both took its id, and phase 2 updates by `signal_id`, so both received the same trade's label. Signals are now claimed once, with contention reported. Reachable: TASK-185 recorded three exhaustion entries in three consecutive minutes.
+3. Two closed trades sharing a `signal_id` meant the last write silently won, with the winner decided by pagination order. Now detected, reported and skipped.
+
+Also: the phase-2 counter reported trades iterated rather than rows touched, and `log_exit`'s new sync fallback called `_update()` uncaught — the async path swallows its failures, so the same function failed differently depending on caller context.
+
+309 tests green (16 new).
+
+- [x] Run `python -m ml_signal.backfill_labels --apply` against production.
+- [ ] Re-audit label coverage after the next full trading day to confirm the live path writes.
+- [ ] Fix the 28% orphan rate (`trade_analytics.signal_id` NULL) — those trades can never be labelled.
+
+---
+
 ## 2026-07-20 · Kronos Inference Needs 3.6GB on a 768mb VM — Removed Entirely (TASK-190)
 
 User reported the ARES startup alert arriving in Discord repeatedly. The alert code was not at fault: the Fly machine was OOM-killed and restarted six times in three minutes, and `send_startup_alert()` fires once per boot.

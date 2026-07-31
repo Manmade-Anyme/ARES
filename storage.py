@@ -212,33 +212,68 @@ class AnalyticsLogger:
             final_state: The final state of the trade (e.g., SL_HIT, T1_HIT).
         """
         def _update():
-            # First, fetch the entry price to calculate P&L
-            response = self.supabase.table("trade_analytics").select("entry_price", "direction").eq("id", trade_id).execute()
+            # signal_id comes back too: it is the key the ml_collection label
+            # back-fill below joins on.
+            response = self.supabase.table("trade_analytics").select("entry_price", "direction", "signal_id").eq("id", trade_id).execute()
             if not response.data:
                 return
 
             record = response.data[0]
             entry_price = float(record["entry_price"])
             direction = record["direction"]
-            
+
             # Calculate P&L points based on spot price
             if direction == "BULLISH":
                 pnl = exit_price - entry_price
             else:
                 pnl = entry_price - exit_price
 
+            pnl = round(pnl, 2)
             update_data = {
                 "exit_timestamp": datetime.now(timezone.utc).isoformat(),
                 "exit_price": float(exit_price),
-                "pnl_points": round(pnl, 2),
+                "pnl_points": pnl,
                 "result_state": final_state
             }
-            
+
             self.supabase.table("trade_analytics").update(update_data).eq("id", trade_id).execute()
+
+            # Back-fill the ml_collection label columns. schema.sql always said
+            # "Trade outcomes are back-filled when trades close" — the code to do
+            # it was never written, so trade_id/trade_outcome/trade_pnl were NULL
+            # on all 9,102 collected rows and the table could train nothing.
+            #
+            # Skipped when signal_id is NULL (log_signal failed): there is no row
+            # to attribute the outcome to, and guessing one would poison the label.
+            signal_id = record.get("signal_id")
+            if signal_id is None:
+                return
+            try:
+                self.supabase.table("ml_collection").update({
+                    "trade_id": trade_id,
+                    "trade_outcome": final_state,
+                    "trade_pnl": pnl,
+                }).eq("signal_id", str(signal_id)).execute()
+            except Exception as ml_err:
+                # Never let a labelling failure lose the trade exit above.
+                print(f"Failed to back-fill ml_collection label: {ml_err}")
 
         try:
             loop = asyncio.get_running_loop()
             loop.run_in_executor(None, _update)
+        except RuntimeError:
+            # No running loop (sync caller, tests, backfill scripts). Previously
+            # this branch only printed, so log_exit silently did nothing at all
+            # outside async context. Mirrors MLCollector._insert's fallback.
+            #
+            # Guarded separately: run_in_executor above only schedules the work,
+            # so the outer handler never sees _update's own failures. Calling it
+            # inline here would otherwise raise straight into the caller — a
+            # different failure mode for the same function depending on context.
+            try:
+                _update()
+            except Exception as e:
+                print(f"Failed to log trade analytics exit: {e}")
         except Exception as e:
             print(f"Failed to log trade analytics exit: {e}")
 
