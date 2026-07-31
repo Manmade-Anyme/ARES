@@ -27,6 +27,12 @@ def format_signal(signal: AresSignal, spot: float) -> str:
    🛑 SL  : **₹ {signal.option_sl:.2f}**
    🎯 Target : **₹ {signal.option_target:.2f}**"""
 
+    ml_pred_str = ""
+    if hasattr(signal, "ml_prediction") and signal.ml_prediction:
+        prob = int(signal.ml_prediction.get("probability", 0) * 100)
+        version = signal.ml_prediction.get("model_version", "v1")
+        ml_pred_str = f"\n\n   🤖 ML Prediction: {prob}% (proxy model, {version})"
+
     msg = f"""```diff
 {marker} {emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})
 ```
@@ -36,7 +42,7 @@ def format_signal(signal: AresSignal, spot: float) -> str:
    🛑 SL    : **{signal.stop_loss:.2f} **(Spot Ref)
    🎯 Target: **T1={signal.target_1:.2f} | T2={signal.target_2:.2f}**
    ⚡ Trade : **{signal.strike_to_trade} {signal.option_type}**
-   ⭐ Confidence : {signal.confidence}{sizing_str}
+   ⭐ Confidence : {signal.confidence}{sizing_str}{ml_pred_str}
 
    📝 Reasons:
 {reasons_str}"""
@@ -78,6 +84,12 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         fields.append({"name": "✅ Option Entry", "value": f"**₹ {signal.option_premium:.2f}** (Delta: {signal.option_delta:+.4f})", "inline": True})
         fields.append({"name": "🛑 Option SL", "value": f"**₹ {signal.option_sl:.2f}**", "inline": True})
         fields.append({"name": "🎯 Option Target", "value": f"**₹ {signal.option_target:.2f}**", "inline": True})
+
+    # ML Prediction
+    if hasattr(signal, "ml_prediction") and signal.ml_prediction:
+        prob = int(signal.ml_prediction.get("probability", 0) * 100)
+        version = signal.ml_prediction.get("model_version", "v1")
+        fields.append({"name": "🤖 ML Prediction", "value": f"**{prob}%** (proxy model, {version})", "inline": False})
 
     # Reasons
     reasons_str = "\n".join([f"• {r}" for r in signal.reasons])

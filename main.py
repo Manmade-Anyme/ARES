@@ -14,6 +14,7 @@ from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simp
 from alerts import send_discord, send_startup_alert, send_error_alert
 from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
+from ml_signal.predictor import SignalPredictor
 from options_math import process_options_calculation
 
 # ANSI Color Codes for Premium Terminal UI
@@ -123,6 +124,12 @@ async def run():
     position_manager = PositionManager()
     ml_collector = MLCollector(settings.supabase_url, settings.supabase_key)
     tick_feed = TickFeed()
+    
+    ml_predictor = SignalPredictor()
+    try:
+        ml_predictor.load_model("ml_signal/models/v1.joblib")
+    except Exception as e:
+        ml_predictor = None
 
     # Make this dynamic via Yahoo Finance Oracle 
     try:
@@ -143,6 +150,11 @@ async def run():
     else:
         print(f"{Y}[!] ML Data Collection Logger: table 'ml_collection' not found{RESET}")
         print(f"{Y}    Run ml_signal/schema.sql in Supabase SQL Editor to enable.{RESET}")
+
+    if ml_predictor:
+        print(f"{G}[+] ML Predictor     : {B}ACTIVE{RESET} (v1.joblib)")
+    else:
+        print(f"{Y}[!] ML Predictor     : inactive (model not found){RESET}")
 
     # WebSocket tick feed for exit monitoring (TASK-173, audit item 18).
     # Best-effort: on failure the loop just falls back to REST-only 60s
@@ -244,6 +256,36 @@ async def run():
             
             # Process signal
             if signal:
+                if ml_predictor:
+                    try:
+                        candle_dict = MLCollector._candle_to_dict(candle)
+                        atm_ce_dict = MLCollector._option_row_to_dict(atm.ce)
+                        atm_pe_dict = MLCollector._option_row_to_dict(atm.pe)
+                        oi_totals = ml_collector._compute_totals_from_chain(full_chain)
+                        level_prices = MLCollector._levels_to_prices(levels)
+                        
+                        ml_pred = ml_predictor.predict_from_raw(
+                            candle=candle_dict,
+                            volume_history=list(ml_collector.volume_history),
+                            iv_history=list(ml_collector.iv_history),
+                            atm_ce=atm_ce_dict,
+                            atm_pe=atm_pe_dict,
+                            total_ce_oi=oi_totals["total_ce_oi"],
+                            total_pe_oi=oi_totals["total_pe_oi"],
+                            all_ce_oi=oi_totals["all_ce_oi"],
+                            all_pe_oi=oi_totals["all_pe_oi"],
+                            levels=level_prices,
+                            timestamp=now,
+                            spot=spot,
+                            pdh=pdh,
+                            pdl=pdl,
+                            dte=days_to_expiry(expiry_date),
+                            is_expiry=is_expiry
+                        )
+                        signal.ml_prediction = ml_pred
+                    except Exception as pred_err:
+                        print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ ML Prediction failed: {pred_err}{RESET}")
+
                 # Run options calculations (sizing, optimal strike selection)
                 try:
                     await process_options_calculation(signal, full_chain, price_fetcher.dhan)

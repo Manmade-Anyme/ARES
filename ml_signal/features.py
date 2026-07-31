@@ -253,12 +253,12 @@ def build_feature_vector(
     use = getattr(config, "use_candle_features", True)
     if use:
         candle_feats = compute_candle_features(candle)
-        features.update(candle_feats)
+        features.update({f"candle_features__{k}": v for k, v in candle_feats.items()})
 
     use = getattr(config, "use_volume_features", True)
     if use:
         vol_feats = compute_volume_features(candle.get("volume", 0), volume_history)
-        features.update(vol_feats)
+        features.update({f"volume_features__{k}": v for k, v in vol_feats.items()})
 
     use = getattr(config, "use_iv_features", True)
     if use:
@@ -268,7 +268,7 @@ def build_feature_vector(
             iv_pe=atm_pe.get("iv", 0),
             iv_history=iv_history,
         )
-        features.update(iv_feats)
+        features.update({f"iv_features__{k}": v for k, v in iv_feats.items()})
 
     use = getattr(config, "use_oi_features", True)
     if use:
@@ -282,7 +282,7 @@ def build_feature_vector(
             all_ce_oi=all_ce_oi,
             all_pe_oi=all_pe_oi,
         )
-        features.update(oi_feats)
+        features.update({f"oi_features__{k}": v for k, v in oi_feats.items()})
 
     use = getattr(config, "use_greek_features", True)
     if use:
@@ -295,7 +295,7 @@ def build_feature_vector(
             atm_pe_vega=atm_pe.get("vega", 0),
             spot=spot,
         )
-        features.update(greek_feats)
+        features.update({f"greek_features__{k}": v for k, v in greek_feats.items()})
 
     use = getattr(config, "use_structure_features", True)
     if use:
@@ -306,7 +306,7 @@ def build_feature_vector(
             pdh=pdh,
             pdl=pdl,
         )
-        features.update(struct_feats)
+        features.update({f"structure_features__{k}": v for k, v in struct_feats.items()})
 
     use = getattr(config, "use_meta_features", True)
     if use:
@@ -315,6 +315,6 @@ def build_feature_vector(
             dte=dte,
             is_expiry=is_expiry,
         )
-        features.update(meta_feats)
+        features.update({f"meta_features__{k}": v for k, v in meta_feats.items()})
 
     return features
