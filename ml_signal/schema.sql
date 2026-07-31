@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS ml_collection (
   trade_id uuid,
   trade_outcome text,
   trade_pnl numeric,
+  trade_score integer,
 
   -- Raw market snapshot for repro
   raw_candle jsonb,

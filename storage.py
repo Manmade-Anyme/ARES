@@ -229,10 +229,20 @@ class AnalyticsLogger:
                 pnl = entry_price - exit_price
 
             pnl = round(pnl, 2)
+            
+            score = None
+            if final_state == "T2_HIT":
+                score = 2
+            elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE"):
+                score = 1
+            elif final_state in ("SL_HIT", "TIME_STOP", "STOPPED_OUT"):
+                score = 0
+
             update_data = {
                 "exit_timestamp": datetime.now(timezone.utc).isoformat(),
                 "exit_price": float(exit_price),
                 "pnl_points": pnl,
+                "score": score,
                 "result_state": final_state
             }
 
@@ -253,6 +263,7 @@ class AnalyticsLogger:
                     "trade_id": trade_id,
                     "trade_outcome": final_state,
                     "trade_pnl": pnl,
+                    "trade_score": score,
                 }).eq("signal_id", str(signal_id)).execute()
             except Exception as ml_err:
                 # Never let a labelling failure lose the trade exit above.

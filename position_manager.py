@@ -185,7 +185,7 @@ class PositionManager:
                     if trade.get("_time_stopped"):
                         update_type = "TIME_STOP"  # Breakeven exit forced by time-stop, not a T1 win
                     elif trade["stop_loss"] == trade["entry_price"]:
-                        update_type = "T1_HIT"  # Trailed SL hit, logged as a T1 win
+                        update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
                     else:
                         update_type = "SL_HIT"
                 # Check if T2 hit
@@ -211,7 +211,7 @@ class PositionManager:
                     if trade.get("_time_stopped"):
                         update_type = "TIME_STOP"  # Breakeven exit forced by time-stop, not a T1 win
                     elif trade["stop_loss"] == trade["entry_price"]:
-                        update_type = "T1_HIT"  # Trailed SL hit, logged as a T1 win
+                        update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
                     else:
                         update_type = "SL_HIT"
                 # Check if T2 hit

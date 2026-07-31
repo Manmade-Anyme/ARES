@@ -5,6 +5,7 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Multi-class Trade Scoring Migration (TASK-198)**: Migrated database analytics to a pure point-based outcome system where `score` natively tracks trade scale outcomes (T2_HIT=2, T1_HIT=1, STOPPED_OUT_AT_BE=1, SL_HIT/TIME_STOP=0). Trailed stops hit after touching T1 are now distinctively logged as `STOPPED_OUT_AT_BE` instead of `T1_HIT`, separating manual T1 exits from reversed runners in database reporting while both score 1 point. The ML pipeline retains its XGBClassifier, now explicitly trained to predict the probability of reaching T1 (score >= 1). Both `trade_analytics` and `ml_collection` gained integer score columns to natively map outcomes.
 - **ML Proxy Model Reliability Score (TASK-196)**: Added XGBoost ML Predictor to enrich fired signals and Discord alerts with a forward-probability score, without generating or gating live signals.
 
 ### Fixed
