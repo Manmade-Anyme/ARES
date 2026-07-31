@@ -7,6 +7,8 @@ class Secrets(BaseSettings):
     Credentials and API keys only.
     Loaded from .env file or environment variables (e.g., fly.io secrets).
     """
+    # Dhan instrument identity for the traded underlying. "13"/"IDX_I" is the
+    # NIFTY 50 index; override both together to point ARES at another symbol.
     security_id: str = "13"
     exchange_segment: str = "IDX_I"
 
