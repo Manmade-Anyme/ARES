@@ -20,12 +20,12 @@ TASK-188 migration: orphans 0, labels written, timestamps correct, fixtures gone
 
 Starting picture (118 trades, clean data):
 
-| detector | n | SL | T1 | T2 | SL_HIT% | avg P&L |
+| detector | n | Loss (0 pt) | BE/T1 (1 pt) | T2 (2 pt) | Win Rate (1+ pt) | avg P&L |
 |---|---|---|---|---|---|---|
-| EXHAUSTION_REVERSAL | 56 | 12.0 | 24.0 | 81.8 | 76.8% | +5.66 |
-| TREND_CONTINUATION | 34 | 25.0 | 40.0 | 80.0 | 76.5% | +0.25 |
-| FAILED_BREAKOUT | 14 | 15.0 | 30.0 | 94.7 | 64.3% | +17.96 |
-| OI_WALL_REJECTION | 13 | 12.0 | 25.0 | 40.0 | 46.2% | +6.07 |
+| EXHAUSTION_REVERSAL | 56 | 43 | 5 | 8 | 23.2% | +5.66 |
+| TREND_CONTINUATION | 34 | 26 | 4 | 4 | 23.5% | +0.25 |
+| FAILED_BREAKOUT | 14 | 9 | 3 | 2 | 35.7% | +17.96 |
+| OI_WALL_REJECTION | 13 | 6 | 2 | 5 | 53.8% | +6.07 |
 
 Two things to carry into that discussion:
 
