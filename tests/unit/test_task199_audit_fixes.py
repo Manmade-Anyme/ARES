@@ -114,22 +114,59 @@ def test_predict_from_raw_survives_unknown_structure_features(levels, pdh, pdl):
 # P1 — STOPPED_OUT_AT_BE posted a Discord embed with a blank Action line.
 # --------------------------------------------------------------------------
 
+def _fallback_text(update_type):
+    """The generic line trade_update_action_text returns for an unmapped state."""
+    return f"Trade Closed ({update_type})."
+
+
+# A trailed stop: position_manager sets stop_loss = entry_price on T1.
+TRAILED = {"state": "T1_HIT", "stop_loss": 24000.0, "entry_price": 24000.0}
+# An untouched stop, still at its original level.
+UNTRAILED = {"state": "ACTIVE", "stop_loss": 23950.0, "entry_price": 24000.0}
+
+
 @pytest.mark.parametrize(
-    "update_type",
-    ["T1_HIT", "T2_HIT", "SL_HIT", "TIME_STOP", "STOPPED_OUT_AT_BE"],
+    "update_type,trade,expected",
+    [
+        ("T1_HIT", TRAILED, "Target 1 Reached! Stop Loss trailed to Entry."),
+        ("T2_HIT", TRAILED, "Target 2 Reached! Trade Closed with Full Profit."),
+        ("STOPPED_OUT_AT_BE", TRAILED,
+         "Trailing Stop Loss Hit at Entry. Trade Closed at Break-even."),
+        ("TIME_STOP", TRAILED, "Time-Stop: SL Trailed to Entry Hit. Trade Closed."),
+        # Legacy pre-TASK-198 rows: SL_HIT still has to describe both shapes.
+        ("SL_HIT", TRAILED, "Trailing Stop Loss Hit at Entry. Trade Closed."),
+        ("SL_HIT", UNTRAILED, "Stop Loss Hit. Trade Closed."),
+    ],
 )
-def test_every_exit_state_has_alert_text(update_type):
-    """position_manager emits STOPPED_OUT_AT_BE since TASK-198; an unmapped state
-    renders '⚡ Action : ****' in the live Discord embed.
+def test_exit_state_renders_its_exact_message(update_type, trade, expected):
+    """Each known state maps to its own sentence.
+
+    Asserting the exact text, not merely non-empty: the fallback added alongside
+    this mapping is itself non-empty, so a non-empty check would pass even if a
+    state silently fell through to it.
     """
     from alerts import trade_update_action_text
 
-    trade = {"state": "T1_HIT", "stop_loss": 24000.0, "entry_price": 24000.0}
-    assert trade_update_action_text(update_type, trade).strip()
+    assert trade_update_action_text(update_type, trade) == expected
 
 
-def test_position_manager_exit_states_are_all_mapped():
-    """Whatever position_manager can emit must be renderable by alerts."""
+def test_unknown_state_uses_the_readable_fallback():
+    """An unmapped state degrades to a readable line, never the blank string that
+    rendered '⚡ Action : ****' before TASK-199.
+    """
+    from alerts import trade_update_action_text
+
+    text = trade_update_action_text("SOME_FUTURE_STATE", TRAILED)
+    assert text == _fallback_text("SOME_FUTURE_STATE")
+    assert text.strip()
+
+
+def test_position_manager_exit_states_are_explicitly_mapped():
+    """Whatever position_manager can emit must have its OWN alert text.
+
+    Reads the literals out of position_manager.py so adding a state there
+    without adding it here fails, rather than quietly riding the fallback.
+    """
     import re
 
     from alerts import trade_update_action_text
@@ -138,9 +175,13 @@ def test_position_manager_exit_states_are_all_mapped():
     emitted = set(re.findall(r'update_type = "([A-Z0-9_]+)"', source))
     assert emitted, "no update_type literals found — regex needs updating"
 
-    trade = {"state": "T1_HIT", "stop_loss": 24000.0, "entry_price": 24000.0}
-    unmapped = [s for s in sorted(emitted) if not trade_update_action_text(s, trade).strip()]
-    assert not unmapped, f"position_manager emits states alerts cannot render: {unmapped}"
+    riding_fallback = [
+        state for state in sorted(emitted)
+        if trade_update_action_text(state, TRAILED) == _fallback_text(state)
+    ]
+    assert not riding_fallback, (
+        f"position_manager emits states with no dedicated alert text: {riding_fallback}"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -164,6 +205,7 @@ def test_unknown_feature_is_nan_not_zero():
     assert unknown["dist_to_nearest_support"] is None  # precondition
 
     def row(feats, ts):
+        """One ml_collection row carrying the given structure_features."""
         return {
             "timestamp": ts,
             "raw_candle": json.dumps({"close": 24030.0}),

@@ -69,13 +69,24 @@ WHERE score IS NULL
 
 -- ---------------------------------------------------------------------
 -- 4. Propagate to ml_collection for rows already joined to a trade.
---    ml_collection.signal_id is text; trade_analytics.signal_id is the
---    ares_signals row id (see TASK-194) — hence the cast.
+--
+--    Joined on trade_id, NOT signal_id. trade_id is the key the label
+--    back-fill already wrote (storage.log_exit and backfill_labels phase 2
+--    set trade_id/trade_outcome/trade_pnl together), so this fills exactly
+--    the rows that carry a label and cannot disagree with it.
+--
+--    Joining on signal_id instead would be wrong on any restored or
+--    partially repaired history where two closed trades share a signal_id:
+--    UPDATE ... FROM picks an arbitrary matching row, so trade_score could
+--    land from a different trade than trade_outcome came from. The label
+--    back-fill deliberately skips those ambiguous ids; this must skip them
+--    too. Current production has 0 such collisions — this keeps it that way
+--    after a rebuild rather than relying on it.
 -- ---------------------------------------------------------------------
 UPDATE ml_collection AS m
 SET trade_score = t.score
 FROM trade_analytics AS t
-WHERE m.signal_id = t.signal_id::text
+WHERE m.trade_id = t.id
   AND t.score IS NOT NULL
   AND m.trade_score IS NULL;
 

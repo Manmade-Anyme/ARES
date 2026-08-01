@@ -9,13 +9,24 @@ from .features import build_feature_vector
 
 
 class SignalPredictor:
+    """Scores a fired signal with the offline-trained reliability model.
+
+    Read-only with respect to trading: the probability is attached to the signal
+    for display in the Discord alert and gates nothing.
+    """
 
     def __init__(self, config: MLConfig = DEFAULT_CONFIG):
+        """Hold config only — no model is read until load_model is called."""
         self.config = config
         self.model = None
         self.feature_names = None
 
     def load_model(self, path: Optional[str] = None) -> None:
+        """Load the joblib model and remember the column order it was fit on.
+
+        Raises whatever joblib/xgboost raise; main.py treats a failure here as
+        "predictor unavailable" and carries on without one.
+        """
         model_path = path or self.config.model_path
         self.model = joblib.load(model_path)
 
@@ -27,6 +38,11 @@ class SignalPredictor:
             self.feature_names = None
 
     def predict_proba(self, features: Dict[str, float]) -> float:
+        """Probability of the positive class for one feature dict.
+
+        Reindexes to the model's training column order; a feature the model was
+        not fit on is dropped and one it expects but did not receive is missing.
+        """
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
@@ -56,6 +72,7 @@ class SignalPredictor:
         return float(proba)
 
     def classify_confidence(self, proba: float) -> str:
+        """Bucket a probability into HIGH / MEDIUM / LOW on the configured thresholds."""
         if proba >= self.config.high_threshold:
             return "HIGH"
         elif proba >= self.config.medium_threshold:
@@ -82,6 +99,13 @@ class SignalPredictor:
         dte: Optional[int] = None,
         is_expiry: bool = False,
     ) -> Dict[str, Any]:
+        """Build the feature vector from a raw market snapshot and score it.
+
+        Takes the same inputs MLCollector.snapshot does, so the live prediction
+        and the stored training row are computed by the identical code path.
+        Returns probability, confidence tier, model version and the features
+        used — the dict main.py attaches to the signal as `ml_prediction`.
+        """
         features = build_feature_vector(
             candle=candle,
             volume_history=volume_history,
