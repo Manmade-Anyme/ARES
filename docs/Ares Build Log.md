@@ -4,6 +4,48 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-08-01 · Post-Merge Audit of PRs #57–#61 (TASK-199)
+
+Audited everything merged after 20:00 on 2026-07-31 (TASK-194→198) ahead of Monday's session. The suite was green at 330 tests and stayed green; all four defects below were found by checking the merged code against production data and the container's real dependency set instead.
+
+**The one that mattered: ARES would not have started**
+
+`main.py:17` imports `ml_signal.predictor` at module scope → `import joblib` → unpickles an `XGBClassifier`. Neither `joblib` nor `xgboost` was in `requirements.txt`, whose full 43-package dependency closure contained neither, and the Dockerfile installs only that file.
+
+| | |
+|---|---|
+| failure | `ModuleNotFoundError: No module named 'joblib'` at import time |
+| caught by the `try/except`? | **No** — it wraps `load_model`, not the import |
+| deployed as | v94, `2026-07-31T19:21:52Z` |
+| why nobody saw it | machine stopped at 10:00Z for the weekend; the eight deploys from 16:00Z only *staged* the image |
+| first real execution | Monday 09:15 → crash loop, no signals all session |
+
+**Decisions**
+
+- **Pin `xgboost==3.0.5`.** `python:3.10-slim` publishes no newer wheel while this Mac resolves to 3.3.0, so unpinned, dev and prod load the same `v1.joblib` under different versions and XGBoost warns that cross-version unpickling is unsupported. `v1.joblib` re-serialised by 3.0.5 — predictions verified bit-identical (max abs delta 0.0 over 500 rows).
+- **Keep plain `xgboost`, not `xgboost-cpu`.** The CPU build is 4.9MB against ~250MB (plain pulls `nvidia-nccl-cu12` on Linux), but publishes no macOS wheel and so cannot be verified here. Noted as the upgrade path rather than shipping an unverifiable optimisation.
+- **Unknown ≠ zero.** `predict_proba` now coerces to `float64` and `flatten_features` fills `np.nan`. TASK-194/195 removed the `100.0` sentinel but `flatten_features` filled absent keys with `0.0`, so every unknown distance re-entered training as *"spot is exactly at support/resistance"* — a stronger claim than the value removed. 28.2% of rows claimed zero distance to resistance, 20.0% to support, with zero NaN anywhere. A genuine `0.0` distance is preserved and pinned by a test.
+- **Exhaustive alert mapping.** `STOPPED_OUT_AT_BE` (TASK-198) had no branch in `alerts.send_trade_update`, rendering `⚡ Action : ****`. Extracted to the pure `trade_update_action_text` with a fallback; a test reads the `update_type` literals out of `position_manager.py` so the two cannot drift.
+- **Scoring deviation is correct, the directive was stale.** Implemented `STOPPED_OUT_AT_BE=1` / `SL_HIT=0` against a spec saying `0` / `-1`. `STOPPED_OUT_AT_BE` can only follow T1 being touched, so 40% is already booked — it is a win. Documented rather than "fixed".
+
+**Numbers worth keeping**
+
+| | |
+|---|---|
+| live snapshots carrying an unknown structure value | **668 / 1000** (667 = no level above spot) |
+| prediction on the previously-working path | **0.394 → 0.394**, unchanged |
+| `ml_collection` rows labeled by the TASK-195 back-fill | **0 → 110** of 117 closed trades |
+| fixture trades still linked to a signal | **0** |
+| `v1.joblib` proxy model | **AUC 0.514**, shown on every alert, gates nothing |
+| real-outcome retrain | not viable — 110 rows / 29 positives, auto-flagged PROVISIONAL (AUC 0.381) |
+
+**TODOs**
+- [ ] Merge PR #63, then verify the Fly image actually boots before Monday 09:15.
+- [ ] Decide whether a 0.514-AUC probability should keep appearing on Discord alerts.
+- [ ] TASK-198 step 3 (multi-class / regression training) — blocked on data, not code.
+
+---
+
 ## 2026-07-31 · Orphans and Sentinel Repaired Rather Than Deleted (TASK-195)
 
 User asked to remove the 36 orphaned trades and the 5,226 sentinel rows from Supabase. Measured both before touching anything; both are recoverable, and deletion would have destroyed materially more than it removed.
