@@ -118,7 +118,6 @@ async def send_startup_alert(
     profile_name: str = "DEFAULT",
     ml_active: bool = False,
     predictor_active: bool = False,
-    training_summary: str = "",
 ) -> None:
     """
     Sends a startup message to Discord with the current PDH/PDL and status.
@@ -135,9 +134,6 @@ async def send_startup_alert(
     # with it. Carrying it here too rendered "+ + [+] ML Data Collection ...".
     ml_line = "ACTIVE (recording 50+ features per cycle)" if ml_active else "inactive (table not found)"
     predictor_line = "ACTIVE (v1.joblib)" if predictor_active else "inactive (model not loaded)"
-    # What the live model was actually fitted on. Only meaningful when a model
-    # is loaded, so it is omitted entirely rather than shown as empty.
-    trained_line = f"\n+ [+] Trained on   : {training_summary}" if (predictor_active and training_summary) else ""
 
     msg = f"""```diff
 + =================================================================
@@ -150,7 +146,7 @@ async def send_startup_alert(
 + [+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals
 + [+] PDH / PDL    : {pdh:.2f} / {pdl:.2f}
 + [+] ML Collection: {ml_line}
-+ [+] ML Predictor : {predictor_line}{trained_line}
++ [+] ML Predictor : {predictor_line}
 + =================================================================
 ```"""
 

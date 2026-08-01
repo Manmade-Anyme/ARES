@@ -152,9 +152,6 @@ async def run():
 
     if ml_predictor:
         print(f"{G}[+] ML Predictor     : {B}ACTIVE{RESET} (v1.joblib)")
-        # State the offline data behind the served model, so a stale or
-        # provisional one is visible at a glance instead of only in a report.
-        print(f"{G}[+] Trained on       : {W}{ml_predictor.training_summary()}{RESET}")
     else:
         print(f"{Y}[!] ML Predictor     : inactive (model not found){RESET}")
 
@@ -170,7 +167,6 @@ async def run():
         pdh, pdl, profile_name,
         ml_active=ml_table_ok,
         predictor_active=ml_predictor is not None,
-        training_summary=ml_predictor.training_summary() if ml_predictor else "",
     )
 
     prev_iv = None

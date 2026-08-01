@@ -1,4 +1,3 @@
-import json
 from typing import Optional, Dict, List, Any
 
 import joblib
@@ -21,41 +20,12 @@ class SignalPredictor:
         self.config = config
         self.model = None
         self.feature_names = None
-        self.training_info = None
-
-    def training_summary(self) -> str:
-        """One line describing the offline data this model was fitted on.
-
-        Read from the training report rather than hardcoded, so it cannot drift
-        when the model is retrained. Returns "provenance unknown" when no report
-        sits alongside the model — which is itself worth seeing in the banner,
-        since it means the live model predates provenance tracking.
-        """
-        info = self.training_info
-        if not info:
-            return "provenance unknown"
-
-        bits = []
-        source = info.get("label_source")
-        if source:
-            bits.append(str(source))
-        if info.get("n_samples") is not None:
-            bits.append(f"n={info['n_samples']}")
-        if info.get("auc_roc") is not None:
-            bits.append(f"AUC {float(info['auc_roc']):.3f}")
-        if info.get("provisional"):
-            bits.append("PROVISIONAL")
-        if info.get("trained_at"):
-            bits.append(str(info["trained_at"])[:10])
-        return " · ".join(bits) if bits else "provenance unknown"
 
     def load_model(self, path: Optional[str] = None) -> None:
-        """Load the joblib model, its column order, and its training provenance.
+        """Load the joblib model and remember the column order it was fit on.
 
         Raises whatever joblib/xgboost raise; main.py treats a failure here as
-        "predictor unavailable" and carries on without one. A missing or
-        unreadable report is NOT fatal — the model still serves, it just reports
-        its provenance as unknown.
+        "predictor unavailable" and carries on without one.
         """
         model_path = path or self.config.model_path
         self.model = joblib.load(model_path)
@@ -66,21 +36,6 @@ class SignalPredictor:
             self.feature_names = list(self.model.estimator.feature_names_in_)
         else:
             self.feature_names = None
-
-        self.training_info = self._load_training_report()
-
-    def _load_training_report(self) -> Optional[Dict[str, Any]]:
-        """The train_offline metrics for this model, or None if unavailable."""
-        path = getattr(self.config, "model_report_path", None)
-        if not path:
-            return None
-        try:
-            with open(path) as fh:
-                report = json.load(fh)
-            return report if isinstance(report, dict) else None
-        except (OSError, ValueError):
-            # Report missing or malformed — never block serving on it.
-            return None
 
     def predict_proba(self, features: Dict[str, float]) -> float:
         """Probability of the positive class for one feature dict.

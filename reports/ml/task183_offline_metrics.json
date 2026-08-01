@@ -11,9 +11,6 @@
   "n_test": 122,
   "pos_rate": 0.39080459770114945,
   "provisional": false,
-  "label_source": "triple_barrier_proxy(lookforward=5, tp=35, sl=25)",
-  "trained_at": "2026-07-31T17:28:00+00:00",
-  "provenance_note": "label_source/trained_at backfilled in TASK-200 from git history (v1.joblib committed in 063f532, before build_real_outcome_frame existed); every metric above is as emitted by the original run.",
   "top_features": [
     {
       "feature": "oi_features__oi_bias",

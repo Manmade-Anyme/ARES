@@ -8,10 +8,6 @@ class MLConfig:
     # Model
     model_path: str = "ml_signal/models/v1.joblib"
     active_model_version: str = "v1"
-    # Metrics written by train_offline for the model above. Read at startup so
-    # the banner can state what the live model was actually trained on rather
-    # than just naming the file.
-    model_report_path: str = "reports/ml/task183_offline_metrics.json"
 
     # Live polling
     poll_interval_seconds: int = 60

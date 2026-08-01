@@ -63,43 +63,16 @@ def test_discord_banner_matches_the_real_config():
         assert name in msg, f"detector {name!r} missing from the startup alert"
 
 
-def test_training_provenance_is_read_from_the_report_not_hardcoded():
-    """The served model must state which offline dataset produced it."""
-    from ml_signal.predictor import SignalPredictor
+def test_banner_makes_no_training_provenance_claim():
+    """The banner reports live status only — never how the model was trained.
 
-    predictor = SignalPredictor()
-    predictor.training_info = {
-        "label_source": "real_outcomes(t1_is_win=True)",
-        "n_samples": 110,
-        "auc_roc": 0.381,
-        "provisional": True,
-        "trained_at": "2026-08-03T09:00:00+00:00",
-    }
-    summary = predictor.training_summary()
-    assert "real_outcomes(t1_is_win=True)" in summary
-    assert "n=110" in summary
-    assert "AUC 0.381" in summary
-    assert "PROVISIONAL" in summary          # a weak model must say so
-    assert "2026-08-03" in summary
-
-
-def test_missing_report_degrades_instead_of_crashing():
-    """A model with no report still serves; it just cannot claim provenance."""
-    from ml_signal.predictor import SignalPredictor
-
-    predictor = SignalPredictor()
-    predictor.config.model_report_path = "does/not/exist.json"
-    assert predictor._load_training_report() is None
-    assert predictor.training_summary() == "provenance unknown"
-
-
-def test_trained_on_line_appears_only_with_a_live_model():
-    msg = _render(ml_active=True, predictor_active=True, training_summary="proxy · n=609")
-    assert "[+] Trained on   : proxy · n=609" in msg
-
-    # No model loaded -> no provenance claim at all, rather than a blank line.
-    off = _render(ml_active=True, predictor_active=False, training_summary="proxy · n=609")
-    assert "Trained on" not in off
+    A "Trained on ..." line was added and removed again: the startup alert is a
+    status message, not a model card, and the summary it printed was long enough
+    to dominate the banner.
+    """
+    msg = _render(ml_active=True, predictor_active=True)
+    for token in ("Trained on", "triple_barrier", "AUC", "n_samples", "provenance"):
+        assert token not in msg, f"banner leaked training provenance: {token!r}"
 
 
 def test_both_ml_lines_are_reported():
