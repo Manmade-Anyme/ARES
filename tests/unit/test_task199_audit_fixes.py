@@ -161,19 +161,65 @@ def test_unknown_state_uses_the_readable_fallback():
     assert text.strip()
 
 
+def _emitted_update_types():
+    """Every string literal assigned to `update_type` in position_manager.py.
+
+    Parsed with ast rather than matched with a regex: this is the input to the
+    coverage check below, so a pattern that silently misses an assignment would
+    quietly hollow out the very test meant to catch a new state. ast is immune
+    to quote style, spacing, and line breaks.
+    """
+    import ast
+
+    tree = ast.parse((REPO / "position_manager.py").read_text())
+    found = set()
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        if not any(isinstance(t, ast.Name) and t.id == "update_type" for t in targets):
+            continue
+        value = getattr(node, "value", None)
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            found.add(value.value)
+    return found
+
+
+def test_emitted_update_type_extractor_is_syntax_tolerant():
+    """Guard the guard: the extractor must not depend on quote style or spacing."""
+    import ast
+
+    src = "\n".join([
+        'update_type = "DOUBLE_QUOTED"',
+        "update_type='SINGLE_QUOTED'",
+        'update_type   =   "ODD_SPACING"',
+        "update_type = (\n    'WRAPPED'\n)",
+        "update_type = some_call()",       # non-literal, correctly ignored
+        'other_var = "NOT_AN_UPDATE_TYPE"',
+    ])
+    tree = ast.parse(src)
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "update_type" for t in node.targets
+        ):
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                found.add(node.value.value)
+    assert found == {"DOUBLE_QUOTED", "SINGLE_QUOTED", "ODD_SPACING", "WRAPPED"}
+
+
 def test_position_manager_exit_states_are_explicitly_mapped():
     """Whatever position_manager can emit must have its OWN alert text.
 
     Reads the literals out of position_manager.py so adding a state there
     without adding it here fails, rather than quietly riding the fallback.
     """
-    import re
-
     from alerts import trade_update_action_text
 
-    source = (REPO / "position_manager.py").read_text()
-    emitted = set(re.findall(r'update_type = "([A-Z0-9_]+)"', source))
-    assert emitted, "no update_type literals found — regex needs updating"
+    emitted = _emitted_update_types()
+    assert emitted, "no update_type literals found — the ast extractor needs updating"
 
     riding_fallback = [
         state for state in sorted(emitted)
