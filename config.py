@@ -57,3 +57,23 @@ class Settings:
 
 # Singleton — importable as `from config import settings`
 settings = Settings()
+
+
+# --- Startup banner facts -------------------------------------------------
+# Defined here because the banner is rendered TWICE — once to the console by
+# main.print_banner and once to Discord by alerts.send_startup_alert — and the
+# two copies drifted: the Discord one advertised a 23:30 session and omitted
+# Trend Continuation entirely. Only the formatting differs between them (ANSI
+# vs a diff code block), so the facts live in one place.
+
+# The live session gate is main.py's `time(9, 15)` / `time(15, 30)`. Keep this
+# string in step with it.
+SESSION_DISPLAY = "09:15 to 15:30 IST"
+
+
+def detector_names() -> list:
+    """The detectors the engine will actually run, given the active profile."""
+    names = ["Failed Breakout", "OI Wall", "Exhaustion"]
+    if settings.continuation_enabled:
+        names.append("Trend Continuation")
+    return names
