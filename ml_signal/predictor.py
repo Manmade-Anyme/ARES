@@ -35,8 +35,22 @@ class SignalPredictor:
         if self.feature_names is not None:
             for col in self.feature_names:
                 if col not in df.columns:
-                    df[col] = 0.0
+                    df[col] = None
             df = df[self.feature_names]
+
+        # Coerce to float64 so an unknown feature arrives as NaN, which XGBoost
+        # treats natively as missing.
+        #
+        # compute_structure_features returns None when a distance is unknown (no
+        # level above spot, no prior-day high). Across many rows pandas infers a
+        # float column; on the SINGLE row built here the column stays object
+        # dtype and predict_proba raises "DataFrame.dtypes for data must be int,
+        # float, bool or category". 668 of the last 1000 collected snapshots
+        # carry at least one such None, so this raised on most live signals.
+        #
+        # NaN, not 0.0: a zero distance means "spot is exactly at the level",
+        # which is a real and strongly-signalling market state, not "unknown".
+        df = df.astype("float64")
 
         proba = self.model.predict_proba(df)[0, 1]
         return float(proba)

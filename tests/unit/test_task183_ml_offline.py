@@ -57,14 +57,21 @@ class TestFlatten(unittest.TestCase):
         # values preserved
         self.assertAlmostEqual(df.iloc[0]["iv_features__iv_level"], 12.0)
 
-    def test_missing_keys_filled_zero_and_columns_stable(self):
+    def test_missing_keys_filled_nan_and_columns_stable(self):
+        # The column union stays stable across rows (the guarantee this test was
+        # written for). The fill is NaN, not 0.0 (TASK-199): 0.0 is a real
+        # reading for most features — an unknown structure distance filled with
+        # it claims "spot is exactly at support/resistance". XGBoost consumes
+        # NaN natively as missing.
         rows = [
             _row("2026-07-08T09:15:00+00:00", 24000.0, iv={"iv_level": 12.0, "iv_slope": 0.5}),
             _row("2026-07-08T09:16:00+00:00", 24010.0, iv={"iv_level": 13.0}),  # iv_slope missing
         ]
         df = flatten_features(rows)
         self.assertIn("iv_features__iv_slope", df.columns)
-        self.assertEqual(df.iloc[1]["iv_features__iv_slope"], 0.0)  # filled
+        self.assertTrue(pd.isna(df.iloc[1]["iv_features__iv_slope"]))
+        # A value that IS present is untouched.
+        self.assertAlmostEqual(df.iloc[0]["iv_features__iv_slope"], 0.5)
 
     def test_accepts_dict_columns_not_only_json_strings(self):
         r = _row("2026-07-08T09:15:00+00:00", 24000.0)

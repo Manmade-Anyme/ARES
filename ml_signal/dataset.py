@@ -95,8 +95,15 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
             "date": ts.date() if ts is not None and not pd.isna(ts) else None,
             "close": close,
         }
+        # NaN, not 0.0. _numeric_only drops a None value, so an unknown feature
+        # reaches here as an absent key. Filling 0.0 made every unknown
+        # structure distance read as "spot is exactly at support/resistance" —
+        # the strongest structural state there is, and a worse lie than the
+        # 100.0 sentinel TASK-194/195 removed to get here. It affected 28% of
+        # the rows train_offline would build. XGBoost treats NaN as missing
+        # natively; a genuine 0.0 distance still arrives as 0.0.
         for col in feature_cols:
-            row[col] = 0.0
+            row[col] = np.nan
         for g in FEATURE_GROUPS:
             for k, v in groups[g].items():
                 row[f"{g}__{k}"] = v
