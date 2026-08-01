@@ -49,6 +49,25 @@ Consequences worth stating plainly, because each has been mistaken for a bug:
     model that switches to premium is measuring something this system does not
     trade on.
 
+**Two deliberate exceptions, both reviewed and kept (2026-08-01):**
+
+*   **IV is a legitimate detector input** (`exhaustion` gates on `iv_spiked`;
+    `breakout` scores `iv_falling` as 1 of 4 points). IV is derived from premium,
+    but it is used to judge whether a *spot* move will actually translate into
+    premium movement — rising IV means it will, falling IV means it may not. That
+    is a spot-thesis input, not option-price analysis. Open Interest is likewise
+    fine: it is positioning data, not price, and is core to the OI-wall strategy.
+*   **`reports.py::_option_rupees()`** converts spot points to rupees via
+    `spot_points × |delta| × lot_size × suggested_lots` for the Discord digest.
+    Known and accepted for now. Note it returns `0.0` for any trade without
+    sizing, and most trades currently size to 0 lots, so that rupee figure is
+    close to meaningless until the account is funded.
+
+An audit of all four detectors on 2026-08-01 confirmed **zero** reads of premium,
+LTP, delta, lot size or capital in signal generation. SL/T1/T2 come from
+`engine.apply_per_type_levels`, computed purely from `trigger_price` (spot close)
+and structural levels; exits are checked against spot in `position_manager`.
+
 ---
 
 ## 🎯 Detection Strategies & Confidence Scoring
