@@ -1,7 +1,7 @@
 import httpx
 from datetime import datetime, timezone, timedelta
 from models import AresSignal
-from config import settings
+from config import settings, detector_names, SESSION_DISPLAY
 
 def format_signal(signal: AresSignal, spot: float) -> str:
     """
@@ -112,15 +112,32 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         except Exception as e:
             print(f"[-] Discord signal alert failed: {type(e).__name__} - {e}")
 
-async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAULT", ml_active: bool = False) -> None:
+async def send_startup_alert(
+    pdh: float,
+    pdl: float,
+    profile_name: str = "DEFAULT",
+    ml_active: bool = False,
+    predictor_active: bool = False,
+    training_summary: str = "",
+) -> None:
     """
     Sends a startup message to Discord with the current PDH/PDL and status.
+
+    Mirrors main.print_banner. The detector list and session string come from
+    config so the two renderings cannot drift apart again — this copy had been
+    advertising a 23:30 session and omitting Trend Continuation.
     """
     webhook_url = settings.discord_webhook_url
     if not webhook_url:
         return
 
-    ml_line = "+ [+] ML Data Collection : ACTIVE (recording 50+ features per cycle)" if ml_active else "+ [+] ML Data Collection : inactive (table not found)"
+    # No leading "+ " on these values — the template already prefixes every line
+    # with it. Carrying it here too rendered "+ + [+] ML Data Collection ...".
+    ml_line = "ACTIVE (recording 50+ features per cycle)" if ml_active else "inactive (table not found)"
+    predictor_line = "ACTIVE (v1.joblib)" if predictor_active else "inactive (model not loaded)"
+    # What the live model was actually fitted on. Only meaningful when a model
+    # is loaded, so it is omitted entirely rather than shown as empty.
+    trained_line = f"\n+ [+] Trained on   : {training_summary}" if (predictor_active and training_summary) else ""
 
     msg = f"""```diff
 + =================================================================
@@ -128,11 +145,12 @@ async def send_startup_alert(pdh: float, pdl: float, profile_name: str = "DEFAUL
 + =================================================================
 + [+] Config       : {profile_name} DAY PROFILE
 + [+] Target Asset : {settings.yahoo_symbol} (1-minute timeframe)
-+ [+] Detectors    : Failed Breakout, OI Wall, Exhaustion
-+ [+] Session      : 09:15 to 23:30 IST
++ [+] Detectors    : {', '.join(detector_names())}
++ [+] Session      : {SESSION_DISPLAY}
 + [+] Cooldown     : {settings.signal_cooldown_minutes} minutes between signals
 + [+] PDH / PDL    : {pdh:.2f} / {pdl:.2f}
-+ {ml_line}
++ [+] ML Collection: {ml_line}
++ [+] ML Predictor : {predictor_line}{trained_line}
 + =================================================================
 ```"""
 

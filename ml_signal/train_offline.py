@@ -13,6 +13,7 @@ OFFLINE / ADDITIVE: no Supabase writes, no engine changes. See ADR-183.
 import os
 import sys
 import json
+from datetime import datetime, timezone
 from typing import List, Tuple, Dict, Optional
 
 import numpy as np
@@ -124,6 +125,7 @@ def run_training(
     train_frac: float = 0.8,
     save_path: Optional[str] = None,
     report_path: Optional[str] = None,
+    label_source: Optional[str] = None,
 ) -> Tuple[object, Dict[str, float]]:
     """
     Train + evaluate on a chronological split. Degrades gracefully on tiny data
@@ -156,6 +158,12 @@ def run_training(
         "n_test": int(len(test)),
         "pos_rate": float(df[label_col].mean()) if n else float("nan"),
         "provisional": bool(provisional),
+        # Provenance — surfaced in the startup banner via
+        # SignalPredictor.training_summary(). Without these, a served model
+        # cannot say which offline dataset produced it: the committed v1 report
+        # predates them and reports "provenance unknown".
+        "label_source": label_source or "unspecified",
+        "trained_at": datetime.now(timezone.utc).isoformat(),
     })
 
     importance = _importance(model, feature_cols)
@@ -251,6 +259,10 @@ def main() -> None:
         config=config,
         save_path=os.path.join(repo, config.model_path),
         report_path=report_path,
+        # main() labels from real closed trades (build_real_outcome_frame,
+        # TASK-197). The committed v1 predates this and used the triple-barrier
+        # proxy, which is why its report carries no label_source.
+        label_source="real_outcomes(t1_is_win=True)",
     )
 
     print("\n=== OFFLINE TRAINING RESULT ===")

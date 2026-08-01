@@ -8,7 +8,7 @@ from fetchers.level_fetcher import LevelFetcher
 from fetchers.tick_feed import TickFeed
 from storage import Storage, load_dhan_credentials_from_supabase
 from position_manager import PositionManager
-from config import settings
+from config import settings, detector_names, SESSION_DISPLAY
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple, days_to_expiry
 from alerts import send_discord, send_startup_alert, send_error_alert
@@ -34,15 +34,14 @@ def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT", ml_activ
     profile_color = Y if profile_name == "EXPIRY" else G
     print(f"{profile_color}[+] Config       : {W}{B}{profile_name} DAY PROFILE{RESET}")
     print(f"{G}[+] Target Asset : {W}{settings.yahoo_symbol} (1-minute timeframe){RESET}")
-    detector_names = ["Failed Breakout", "OI Wall", "Exhaustion"]
-    if settings.continuation_enabled:
-        detector_names.append("Trend Continuation")
-    print(f"{G}[+] Detectors    : {W}{', '.join(detector_names)}{RESET}")
-    print(f"{G}[+] Session      : {W}09:15 to 15:30 IST{RESET}")
+    print(f"{G}[+] Detectors    : {W}{', '.join(detector_names())}{RESET}")
+    print(f"{G}[+] Session      : {W}{SESSION_DISPLAY}{RESET}")
     print(f"{G}[+] Cooldown     : {W}{settings.signal_cooldown_minutes} minutes between signals{RESET}")
     print(f"{G}[+] PDH / PDL    : {W}{pdh:.2f} / {pdl:.2f}{RESET}")
     ml_status = f"{G}ACTIVE (recording 50+ features per cycle)" if ml_active else f"{Y}inactive"
-    print(f"{G}[+] ML Data Collection : {W}{ml_status}{RESET}")
+    # Label padded to match the lines above; "ML Data Collection" overshot the
+    # colon column every other row lines up on.
+    print(f"{G}[+] ML Collection: {W}{ml_status}{RESET}")
     print(f"{C}{'=' * 65}{RESET}")
 
 def format_signal_console(signal, spot):
@@ -153,6 +152,9 @@ async def run():
 
     if ml_predictor:
         print(f"{G}[+] ML Predictor     : {B}ACTIVE{RESET} (v1.joblib)")
+        # State the offline data behind the served model, so a stale or
+        # provisional one is visible at a glance instead of only in a report.
+        print(f"{G}[+] Trained on       : {W}{ml_predictor.training_summary()}{RESET}")
     else:
         print(f"{Y}[!] ML Predictor     : inactive (model not found){RESET}")
 
@@ -164,7 +166,12 @@ async def run():
     else:
         print(f"{Y}[!] Tick Feed       : unavailable — falling back to REST-only exit monitoring{RESET}")
 
-    await send_startup_alert(pdh, pdl, profile_name, ml_active=ml_table_ok)
+    await send_startup_alert(
+        pdh, pdl, profile_name,
+        ml_active=ml_table_ok,
+        predictor_active=ml_predictor is not None,
+        training_summary=ml_predictor.training_summary() if ml_predictor else "",
+    )
 
     prev_iv = None
     last_vwap_reset_date = None
