@@ -175,6 +175,32 @@ async def send_error_alert(error_msg: str) -> None:
         except Exception as e:
             print(f"[-] Discord error alert failed: {type(e).__name__} - {e}")
 
+def trade_update_action_text(update_type: str, trade: dict) -> str:
+    """The human sentence describing one trade state change.
+
+    Pure and exhaustive on purpose. TASK-198 added STOPPED_OUT_AT_BE to
+    position_manager but not here, so the if/elif chain this replaces fell
+    through and rendered "⚡ Action : ****" in the live Discord embed for every
+    break-even exit. The final fallback means a state added to position_manager
+    in future degrades to a readable line instead of a blank one.
+    """
+    if update_type == "T1_HIT":
+        return "Target 1 Reached! Stop Loss trailed to Entry."
+    if update_type == "T2_HIT":
+        return "Target 2 Reached! Trade Closed with Full Profit."
+    if update_type == "STOPPED_OUT_AT_BE":
+        return "Trailing Stop Loss Hit at Entry. Trade Closed at Break-even."
+    if update_type == "TIME_STOP":
+        return "Time-Stop: SL Trailed to Entry Hit. Trade Closed."
+    if update_type == "SL_HIT":
+        # Pre-TASK-198 rows can still reach here with a trailed stop; keep
+        # reporting those as the break-even exit they were.
+        if trade.get("state") == "T1_HIT" or trade.get("stop_loss") == trade.get("entry_price"):
+            return "Trailing Stop Loss Hit at Entry. Trade Closed."
+        return "Stop Loss Hit. Trade Closed."
+    return f"Trade Closed ({update_type})."
+
+
 async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     """
     Sends an alert when an active trade state changes using embeds (e.g., T1 Hit, Trailing Stop triggered, SL Hit).
@@ -187,18 +213,7 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     color = 3066993 if is_bullish else 15158332  # Green or Red
     icon = "🚨 🐂 🟢" if is_bullish else "🚨 🐻 🔴"
     
-    action_text = ""
-    if update_type == "T1_HIT":
-        action_text = "Target 1 Reached! Stop Loss trailed to Entry."
-    elif update_type == "T2_HIT":
-        action_text = "Target 2 Reached! Trade Closed with Full Profit."
-    elif update_type == "SL_HIT":
-        if trade["state"] == "T1_HIT" or trade.get("stop_loss") == trade.get("entry_price"):
-            action_text = "Trailing Stop Loss Hit at Entry. Trade Closed."
-        else:
-            action_text = "Stop Loss Hit. Trade Closed."
-    elif update_type == "TIME_STOP":
-        action_text = "Time-Stop: SL Trailed to Entry Hit. Trade Closed."
+    action_text = trade_update_action_text(update_type, trade)
 
     # Get current IST time
     ist = timezone(timedelta(hours=5, minutes=30))

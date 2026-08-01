@@ -6,3 +6,19 @@ python-dateutil
 pandas
 numpy
 tqdm
+
+# ML reliability score (TASK-196). main.py imports ml_signal.predictor at module
+# scope, so these are startup dependencies, not optional extras — omitting them
+# is a ModuleNotFoundError before the first tick, not a degraded feature.
+#
+# xgboost is pinned: the Dockerfile runs python:3.10-slim, for which 3.0.5 is the
+# newest published wheel, while this Mac (3.14) resolves to 3.3.0. Unpinned, prod
+# and dev load ml_signal/models/v1.joblib with different versions and XGBoost
+# warns that cross-version unpickling is unsupported. The committed model is
+# saved by this exact version.
+#
+# ponytail: plain xgboost pulls nvidia-nccl-cu12 (~250MB, GPU-only) on Linux.
+# xgboost-cpu is the 4.9MB CPU build, but publishes no macOS wheel, so it cannot
+# be verified here. Switch the Docker install to it if image size starts to hurt.
+joblib
+xgboost==3.0.5

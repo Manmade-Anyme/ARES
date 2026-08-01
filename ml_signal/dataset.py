@@ -62,9 +62,12 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
 
     Each of the 7 feature-group dicts becomes columns named ``<group>__<key>``.
     Columns are the stable union of keys seen across all rows (sorted); a key
-    missing from a given row is filled with 0.0. `close` is taken from
-    `raw_candle`; `timestamp`/`date` support day-bounded labeling and
-    chronological splitting.
+    missing from a given row is filled with NaN, which XGBoost consumes as
+    missing. Do not "restore" a 0.0 fill here — 0.0 is a real reading for most
+    of these features, and for a structure distance it asserts that spot is
+    exactly at support/resistance (TASK-199). A genuine 0.0 is preserved.
+    `close` is taken from `raw_candle`; `timestamp`/`date` support day-bounded
+    labeling and chronological splitting.
 
     Returns a DataFrame with columns: timestamp, date, close, and one column
     per flattened feature.
@@ -95,8 +98,15 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
             "date": ts.date() if ts is not None and not pd.isna(ts) else None,
             "close": close,
         }
+        # NaN, not 0.0. _numeric_only drops a None value, so an unknown feature
+        # reaches here as an absent key. Filling 0.0 made every unknown
+        # structure distance read as "spot is exactly at support/resistance" —
+        # the strongest structural state there is, and a worse lie than the
+        # 100.0 sentinel TASK-194/195 removed to get here. It affected 28% of
+        # the rows train_offline would build. XGBoost treats NaN as missing
+        # natively; a genuine 0.0 distance still arrives as 0.0.
         for col in feature_cols:
-            row[col] = 0.0
+            row[col] = np.nan
         for g in FEATURE_GROUPS:
             for k, v in groups[g].items():
                 row[f"{g}__{k}"] = v
