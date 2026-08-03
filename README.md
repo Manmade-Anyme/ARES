@@ -382,6 +382,9 @@ buffers — merging during market hours costs the rest of that session's warmup.
 IST and stops itself at 15:30 via `main.py`'s session gate, driven by external
 cron-job.com jobs — see [DEPLOYMENT.md](DEPLOYMENT.md) for that setup.
 
+### 8. Automated ML Model Training (GitHub Actions)
+[`.github/workflows/ml_training.yml`](.github/workflows/ml_training.yml) runs offline XGBoost training (`python -m ml_signal.train_offline`) automatically every Saturday at 00:00 UTC (05:30 IST) or on-demand via `workflow_dispatch` (`gh workflow run ml_training.yml`). It uses `SUPABASE_URL` and `SUPABASE_KEY` GitHub Secrets to pull dataset rows, posts training metrics directly to the GitHub Step Summary, and attaches trained model artifacts (`ml_signal/models/`) and metrics reports (`reports/ml/`) to the workflow run.
+
 ---
 
 ## 🚀 Operational Parameters

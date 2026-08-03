@@ -92,6 +92,8 @@ not set the other, and they are stored in different places entirely:
 | `DISCORD_HEALTH_WEBHOOK_URL` | Fly app secret (Step 2) | `alerts.py` at runtime — heartbeats, error alerts |
 | `DISCORD_HEALTH_WEBHOOK_URL` | **GitHub repo secret** | the `notify` job, on a failed `main` deploy |
 | `FLY_API_TOKEN` | **GitHub repo secret** | the `deploy` job, to authenticate `flyctl` |
+| `SUPABASE_URL` | **GitHub repo secret** | the `train` job in `ml_training.yml`, for offline model training |
+| `SUPABASE_KEY` | **GitHub repo secret** | the `train` job in `ml_training.yml`, for offline model training |
 
 Set both repo secrets:
 
