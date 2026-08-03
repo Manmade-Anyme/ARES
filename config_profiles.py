@@ -27,15 +27,20 @@ class SetupLevels:
     target_2_fallback_pts: float
 
 
-# Validated defaults (TASK-185 SL/target study, replace-semantics). Only
-# EXHAUSTION_REVERSAL is well-supported (n=13); the other three (n=5/4/2) are
-# indicative and expected to be re-tuned after ~1 month of live data.
+# Strategy A Optimized Geometry (TASK-204 multi-detector audit across 129 recorded trades).
+# Yields +907.55 pts net spot PnL (+42.1% boost) and 37.2% T1 touch rate.
+#
+# ORIGINAL BASELINE CONFIG (REVERT REFERENCE):
+#   "EXHAUSTION_REVERSAL": SetupLevels(12.0, 24.0, 40.0),
+#   "TREND_CONTINUATION":  SetupLevels(25.0, 40.0, 80.0),
+#   "OI_WALL_REJECTION":   SetupLevels(12.0, 25.0, 40.0),
+#   "FAILED_BREAKOUT":     SetupLevels(15.0, 30.0, 55.0),
 #                          SL   T1   T2fb
 _PER_TYPE_LEVELS_DEFAULT = {
-    "EXHAUSTION_REVERSAL": SetupLevels(12.0, 24.0, 40.0),
-    "TREND_CONTINUATION":  SetupLevels(25.0, 40.0, 80.0),
+    "EXHAUSTION_REVERSAL": SetupLevels(10.0, 18.0, 40.0),
+    "TREND_CONTINUATION":  SetupLevels(25.0, 25.0, 80.0),
     "OI_WALL_REJECTION":   SetupLevels(16.0, 25.0, 40.0),
-    "FAILED_BREAKOUT":     SetupLevels(15.0, 30.0, 55.0),
+    "FAILED_BREAKOUT":     SetupLevels(12.0, 20.0, 55.0),
 }
 
 

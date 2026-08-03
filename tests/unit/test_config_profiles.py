@@ -40,7 +40,7 @@ class TestTuningConfig:
         assert EXPIRY_CONFIG.signal_cooldown_minutes == 20
         assert EXPIRY_CONFIG.breakout_confirmation_candles == 2
         assert EXPIRY_CONFIG.oi_wall_min_oi == 10_000_000
-        assert EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 12.0
+        assert EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 10.0
         assert EXPIRY_CONFIG.level_scan_range == 300.0
 
     def test_non_expiry_profile_values(self):
@@ -48,7 +48,7 @@ class TestTuningConfig:
         assert NON_EXPIRY_CONFIG.signal_cooldown_minutes == 15
         assert NON_EXPIRY_CONFIG.breakout_confirmation_candles == 3
         assert NON_EXPIRY_CONFIG.oi_wall_min_oi == 4_000_000
-        assert NON_EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 12.0
+        assert NON_EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 10.0
         assert NON_EXPIRY_CONFIG.level_scan_range == 500.0
 
 

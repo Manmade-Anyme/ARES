@@ -5,6 +5,17 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **Strategy A Multi-Detector Geometry Optimization (TASK-204)**: Applied Strategy A geometry optimization across all four detector setups in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`). Based on 1-minute OHLC empirical grid-search audit across 129 recorded past trades, Strategy A increased total net spot PnL from **+638.45 pts -> +907.55 pts (+42.1% boost)**, boosted options P&L from **+₹7,920 -> +₹29,017 (+266% boost)**, increased win rate from 15.5% -> 27.9%, and increased T1 touch rate from 27.9% -> 37.2% (+12 trades protected at Break-Even).
+  - `EXHAUSTION_REVERSAL`: `SetupLevels(10.0, 18.0, 40.0)` (was `12.0, 24.0, 40.0`)
+  - `TREND_CONTINUATION`: `SetupLevels(25.0, 25.0, 80.0)` (was `25.0, 40.0, 80.0`)
+  - `OI_WALL_REJECTION`: `SetupLevels(16.0, 25.0, 40.0)` (was `12.0, 25.0, 40.0`, merged TASK-203)
+  - `FAILED_BREAKOUT`: `SetupLevels(12.0, 20.0, 55.0)` (was `15.0, 30.0, 55.0`)
+  - **ORIGINAL BASELINE REVERT REFERENCE**:
+    - `EXHAUSTION_REVERSAL`: `SetupLevels(12.0, 24.0, 40.0)`
+    - `TREND_CONTINUATION`: `SetupLevels(25.0, 40.0, 80.0)`
+    - `OI_WALL_REJECTION`: `SetupLevels(12.0, 25.0, 40.0)`
+    - `FAILED_BREAKOUT`: `SetupLevels(15.0, 30.0, 55.0)`
+
 - **OI_WALL_REJECTION Stop Loss Tuning (TASK-203)**: Tuned `OI_WALL_REJECTION` Stop Loss from `12.0` to `16.0` pts in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`). Empirical 1-minute OHLC replay simulation across 120 recorded trades showed widening the SL for OI wall rejections absorbed intraday wick sweeps past wall buffers, converting fake stop-outs into full Target 2 wins and boosting `OI_WALL_REJECTION` net spot profit by **+43.3%** (+34.15 pts net gain, win rate 38.5% -> 46.2%). All other setup types retain their validated baseline stop-loss settings.
 
 ### Added
