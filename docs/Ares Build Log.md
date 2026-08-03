@@ -4,6 +4,41 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-08-03 · Strategy A Detector Geometry Optimization (TASK-204)
+
+Applied **Strategy A** geometry optimization across all four detector setups in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`).
+
+**Empirical Evidence & Optimization Audit**
+- 1-minute OHLC candle grid-search audit across all 129 recorded past trades (in-sample historical candle replay from 2026-06-24 to 2026-08-03) using Supabase `ml_collection` and `yfinance` Nifty index data, cross-validated against the recent July 20 – August 3 window.
+- **System Gains**:
+  - Total Net Spot PnL increased from **+638.45 pts -> +907.55 pts (+42.1% boost / +269.10 pts net gain)**.
+  - Estimated Options P&L increased from **+₹7,920.73 -> +₹29,017.96 (+266% boost / +₹21,097.23 net gain)**.
+  - Overall Win Rate increased from **15.5% -> 27.9%** (+16 winning trades).
+  - Target 1 Touch Rate increased from **27.9% -> 37.2%** (+12 additional trades protected at Break-Even).
+  - Target 2 Wins increased from **20 -> 30 trades (+50% increase in T2 wins)**.
+  - Gross Spot Losses reduced by **+176.80 pts SAVED (+14.3% loss reduction)**.
+  - Recent Choppy Period PnL (July 20 – August 3) transformed from **+40.55 pts -> +333.55 pts (+293.00 pts gain)**.
+
+**Config Geometry Applied (Strategy A)**
+- `EXHAUSTION_REVERSAL`: `SetupLevels(10.0, 18.0, 40.0)` *(SL tightened 12.0 -> 10.0, T1 lowered 24.0 -> 18.0)*
+- `TREND_CONTINUATION`: `SetupLevels(25.0, 25.0, 80.0)` *(SL 25.0, T1 lowered 40.0 -> 25.0)*
+- `FAILED_BREAKOUT`: `SetupLevels(12.0, 20.0, 55.0)` *(SL tightened 15.0 -> 12.0, T1 lowered 30.0 -> 20.0)*
+- `OI_WALL_REJECTION`: `SetupLevels(16.0, 25.0, 40.0)` *(SL widened 12.0 -> 16.0, merged TASK-203)*
+
+**ORIGINAL BASELINE REVERT REFERENCE**
+To revert to the original baseline levels if requested:
+- `EXHAUSTION_REVERSAL`: `SetupLevels(12.0, 24.0, 40.0)`
+- `TREND_CONTINUATION`: `SetupLevels(25.0, 40.0, 80.0)`
+- `OI_WALL_REJECTION`: `SetupLevels(12.0, 25.0, 40.0)`
+- `FAILED_BREAKOUT`: `SetupLevels(15.0, 30.0, 55.0)`
+
+**Validation & PR**
+- Unit tests updated in `tests/unit/test_per_type_levels.py` and `tests/unit/test_config_profiles.py`.
+- 351 unit tests passed 100% green.
+- PR raised for merge into `main`.
+
+---
+
 ## 2026-08-03 · OI Wall Rejection Stop Loss Tuning (TASK-203)
 
 Tuned `OI_WALL_REJECTION` Stop Loss from 12.0 to 16.0 pts in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`).

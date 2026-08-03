@@ -14,14 +14,16 @@ The data is finally ready for it. As of 2026-07-31, after TASK-194/195 and the
 TASK-188 migration: orphans 0, labels written, timestamps correct, fixtures gone.
 `trade_analytics` joins to `ares_signals` for SL/T1/T2 on every trade.
 
-Starting picture (118 trades, clean data):
+Starting picture (129 trades, Strategy A applied in TASK-204):
 
-| detector | n | SL | T1 | T2 | SL_HIT% | avg P&L |
+| detector | n | SL (Strategy A) | T1 (Strategy A) | T2 | Orig SL Baseline | Orig T1 Baseline |
 |---|---|---|---|---|---|---|
-| EXHAUSTION_REVERSAL | 56 | 12.0 | 24.0 | 81.8 | 71.4% | +5.66 |
-| TREND_CONTINUATION | 34 | 25.0 | 40.0 | 80.0 | 40.0% | +0.25 |
-| FAILED_BREAKOUT | 14 | 15.0 | 30.0 | 94.7 | 55.6% | +17.96 |
-| OI_WALL_REJECTION | 13 | 16.0 | 25.0 | 40.0 | 30.8% | +8.69 |
+| EXHAUSTION_REVERSAL | 64 | **10.0** | **18.0** | 40.0 | 12.0 | 24.0 |
+| TREND_CONTINUATION | 38 | **25.0** | **25.0** | 80.0 | 25.0 | 40.0 |
+| FAILED_BREAKOUT | 14 | **12.0** | **20.0** | 55.0 | 15.0 | 30.0 |
+| OI_WALL_REJECTION | 13 | **16.0** | **25.0** | 40.0 | 12.0 | 25.0 |
+
+> *Note: Original Baseline Config values are documented above to allow reverting anytime if required.*
 
 Two things to carry into that discussion:
 
