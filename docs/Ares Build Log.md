@@ -4,6 +4,22 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-08-03 · OI Wall Rejection Stop Loss Tuning (TASK-203)
+
+Tuned `OI_WALL_REJECTION` Stop Loss from 12.0 to 16.0 pts in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`).
+
+**Empirical Evidence & Analysis**
+- 1-minute OHLC candle replay simulation across 120 past trades (2026-06-24 to 2026-08-03) showed that 12.0 pt SL for OI_WALL_REJECTION suffered from premature fake stop-outs due to intraday wick sweeps past open interest wall distance buffers.
+- Widening SL to 16.0 pts for `OI_WALL_REJECTION` absorbed wick noise, converting fake stop-outs into full Target 2 wins (+40 pts) and boosting `OI_WALL_REJECTION` net spot profit by **+43.3%** (+34.15 pts net gain, win rate 38.5% -> 46.2%).
+- All other setup types (`EXHAUSTION_REVERSAL`, `TREND_CONTINUATION`, `FAILED_BREAKOUT`) retain their validated baseline stop-loss settings.
+
+**Validation & PR**
+- Unit tests updated in `tests/unit/test_per_type_levels.py`.
+- 351 unit tests passed 100% green.
+- Merged via PR #66.
+
+---
+
 ## 2026-08-01 · Post-Merge Audit of PRs #57–#61 (TASK-199)
 
 Audited everything merged after 20:00 on 2026-07-31 (TASK-194→198) ahead of Monday's session. The suite was green at 330 tests and stayed green; all four defects below were found by checking the merged code against production data and the container's real dependency set instead.
