@@ -1,76 +1,76 @@
 {
-  "auc_roc": 0.5140374331550803,
-  "precision": 0.2631578947368421,
-  "recall": 0.29411764705882354,
-  "f1": 0.2777777777777778,
-  "brier_score": 0.24033749103546143,
-  "accuracy": 0.5737704918032787,
-  "precision_top20": 0.25,
-  "n_samples": 609,
-  "n_train": 487,
-  "n_test": 122,
-  "pos_rate": 0.39080459770114945,
-  "provisional": false,
+  "auc_roc": 0.78,
+  "precision": 0.5,
+  "recall": 0.2,
+  "f1": 0.2857142857142857,
+  "brier_score": 0.21245277416892577,
+  "accuracy": 0.8,
+  "precision_top20": 0.4,
+  "n_samples": 122,
+  "n_train": 97,
+  "n_test": 25,
+  "pos_rate": 0.26229508196721313,
+  "provisional": true,
   "top_features": [
     {
-      "feature": "oi_features__oi_bias",
-      "gain": 0.06176454946398735
-    },
-    {
-      "feature": "iv_features__iv_percentile",
-      "gain": 0.05379196256399155
-    },
-    {
-      "feature": "oi_features__atm_pe_oi_change_pct",
-      "gain": 0.05108233913779259
-    },
-    {
-      "feature": "structure_features__dist_to_pdh",
-      "gain": 0.0469936765730381
-    },
-    {
-      "feature": "candle_features__range_pct",
-      "gain": 0.045189592987298965
-    },
-    {
-      "feature": "structure_features__dist_to_nearest_resistance",
-      "gain": 0.04285779222846031
-    },
-    {
-      "feature": "greek_features__total_vega",
-      "gain": 0.04101533442735672
-    },
-    {
-      "feature": "candle_features__volume",
-      "gain": 0.04080897197127342
-    },
-    {
-      "feature": "iv_features__iv_ce_pe_spread",
-      "gain": 0.04063964635133743
-    },
-    {
-      "feature": "volume_features__vol_slope_5",
-      "gain": 0.03967556357383728
+      "feature": "structure_features__dist_to_pdl",
+      "gain": 0.06816455721855164
     },
     {
       "feature": "structure_features__dist_to_nearest_support",
-      "gain": 0.03950333222746849
-    },
-    {
-      "feature": "structure_features__dist_to_pdl",
-      "gain": 0.039452217519283295
-    },
-    {
-      "feature": "oi_features__atm_ce_oi_change_pct",
-      "gain": 0.03932234272360802
+      "gain": 0.06771952658891678
     },
     {
       "feature": "iv_features__iv_change_5",
-      "gain": 0.038103632628917694
+      "gain": 0.05905664712190628
     },
     {
-      "feature": "candle_features__upper_wick_pct",
-      "gain": 0.03780665248632431
+      "feature": "candle_features__volume",
+      "gain": 0.05676316097378731
+    },
+    {
+      "feature": "oi_features__pcr_oi",
+      "gain": 0.054751213639974594
+    },
+    {
+      "feature": "greek_features__gamma_theta_ratio",
+      "gain": 0.04963921010494232
+    },
+    {
+      "feature": "structure_features__dist_to_nearest_resistance",
+      "gain": 0.04188590869307518
+    },
+    {
+      "feature": "candle_features__body_to_range_ratio",
+      "gain": 0.04132812097668648
+    },
+    {
+      "feature": "greek_features__total_vega",
+      "gain": 0.04048118740320206
+    },
+    {
+      "feature": "structure_features__dist_to_pdh",
+      "gain": 0.0362396277487278
+    },
+    {
+      "feature": "candle_features__lower_wick_pct",
+      "gain": 0.036140430718660355
+    },
+    {
+      "feature": "iv_features__iv_ce_pe_spread",
+      "gain": 0.03471064567565918
+    },
+    {
+      "feature": "candle_features__body_pct",
+      "gain": 0.03456336259841919
+    },
+    {
+      "feature": "oi_features__atm_pe_oi_change_pct",
+      "gain": 0.034538671374320984
+    },
+    {
+      "feature": "candle_features__range_pct",
+      "gain": 0.03255847468972206
     }
   ]
 }
