@@ -212,12 +212,16 @@ def main() -> None:
     except Exception:
         pass
 
-    try:
-        from config import settings
-        url, key = settings.supabase_url, settings.supabase_key
-    except Exception:
-        url = os.environ.get("SUPABASE_URL", "")
-        key = os.environ.get("SUPABASE_KEY", "")
+    url = (os.environ.get("SUPABASE_URL") or "").strip().strip('"\'')
+    key = (os.environ.get("SUPABASE_KEY") or "").strip().strip('"\'')
+    if not url or not key:
+        try:
+            from config import settings
+            url = url or (getattr(settings, "supabase_url", "") or "").strip().strip('"\'')
+            key = key or (getattr(settings, "supabase_key", "") or "").strip().strip('"\'')
+        except Exception:
+            pass
+
     if not url or not key:
         print("[-] SUPABASE_URL / SUPABASE_KEY not available. Aborting.")
         return
