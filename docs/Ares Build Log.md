@@ -10,9 +10,10 @@ Created `.github/workflows/ml_training.yml` to automate offline XGBoost model tr
 
 **Implementation Details**
 - **Triggers**: Weekly Saturday schedule at 00:00 UTC / 05:30 IST (`cron: "0 0 * * 6"`) + manual trigger (`workflow_dispatch`).
-- **Environment**: Runs on `ubuntu-latest` (Python 3.10) with secrets `SUPABASE_URL` and `SUPABASE_KEY` configured in GitHub repository secrets.
+- **Environment**: Runs on `ubuntu-latest` (Python 3.10) with secrets `SUPABASE_URL` and `SUPABASE_KEY` scoped to the training step.
 - **Reporting & Artifacts**: Writes JSON training metrics directly to `$GITHUB_STEP_SUMMARY` and uploads model binaries (`ml_signal/models/`) and metrics reports (`reports/ml/`) via `actions/upload-artifact@v4` (30-day retention).
-- **Verification**: 355 unit tests green including `tests/unit/test_task205_ml_workflow.py`.
+- **Auto-Commit**: Automatically commits and pushes updated `v1.joblib` and metrics JSON to `main` (`[skip ci]`).
+- **Verification**: 355 unit tests green including `tests/unit/test_task205_ml_workflow.py`; CI run passed.
 
 ---
 

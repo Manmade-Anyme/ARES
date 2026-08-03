@@ -11,10 +11,6 @@ jobs:
     permissions:
       contents: write
 
-    env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,6 +29,9 @@ jobs:
           pip install -r ml_signal/requirements.txt
 
       - name: Run offline ML model training
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           python -m ml_signal.train_offline
 
