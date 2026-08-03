@@ -4,6 +4,9 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **OI_WALL_REJECTION Stop Loss Tuning (TASK-203)**: Tuned `OI_WALL_REJECTION` Stop Loss from `12.0` to `16.0` pts in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`). Empirical 1-minute OHLC replay simulation across 120 recorded trades showed widening the SL for OI wall rejections absorbed intraday wick sweeps past wall buffers, converting fake stop-outs into full Target 2 wins and boosting `OI_WALL_REJECTION` net spot profit by **+43.3%** (+34.15 pts net gain, win rate 38.5% -> 46.2%). All other setup types retain their validated baseline stop-loss settings.
+
 ### Added
 - **Multi-class Trade Scoring Migration (TASK-198)**: Migrated database analytics to a pure point-based outcome system where `score` natively tracks trade scale outcomes (T2_HIT=2, T1_HIT=1, STOPPED_OUT_AT_BE=1, SL_HIT/TIME_STOP=0). Trailed stops hit after touching T1 are now distinctively logged as `STOPPED_OUT_AT_BE` instead of `T1_HIT`, separating manual T1 exits from reversed runners in database reporting while both score 1 point. The ML pipeline retains its XGBClassifier, now explicitly trained to predict the probability of reaching T1 (score >= 1). Both `trade_analytics` and `ml_collection` gained integer score columns to natively map outcomes.
 - **ML Proxy Model Reliability Score (TASK-196)**: Added XGBoost ML Predictor to enrich fired signals and Discord alerts with a forward-probability score, without generating or gating live signals.

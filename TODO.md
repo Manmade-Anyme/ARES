@@ -21,7 +21,7 @@ Starting picture (118 trades, clean data):
 | EXHAUSTION_REVERSAL | 56 | 12.0 | 24.0 | 81.8 | 71.4% | +5.66 |
 | TREND_CONTINUATION | 34 | 25.0 | 40.0 | 80.0 | 40.0% | +0.25 |
 | FAILED_BREAKOUT | 14 | 15.0 | 30.0 | 94.7 | 55.6% | +17.96 |
-| OI_WALL_REJECTION | 13 | 12.0 | 25.0 | 40.0 | 40.0% | +6.07 |
+| OI_WALL_REJECTION | 13 | 16.0 | 25.0 | 40.0 | 30.8% | +8.69 |
 
 Two things to carry into that discussion:
 
