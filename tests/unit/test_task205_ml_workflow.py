@@ -33,8 +33,9 @@ def test_ml_workflow_structure():
     assert "workflow_dispatch:" in content
     assert 'cron: "0 0 * * 6"' in content or "cron: '0 0 * * 6'" in content
 
-    # Job & Runner
+    # Job & Runner & Permissions
     assert "runs-on: ubuntu-latest" in content
+    assert "contents: write" in content
 
     # Env secrets
     assert "SUPABASE_URL: ${{ secrets.SUPABASE_URL }}" in content
@@ -44,6 +45,8 @@ def test_ml_workflow_structure():
     assert "actions/checkout@v4" in content
     assert "actions/setup-python@v5" in content
     assert "python -m ml_signal.train_offline" in content
+    assert "git commit -m" in content
+    assert "git push origin main" in content
 
     # Artifacts & Step summary
     assert "actions/upload-artifact@v4" in content

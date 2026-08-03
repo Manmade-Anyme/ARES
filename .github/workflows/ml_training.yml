@@ -8,6 +8,9 @@ name: Offline ML Model Training
 jobs:
   train:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -15,6 +18,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
@@ -41,6 +46,19 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
           else
             echo "[-] No training metrics report was produced." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Commit and push updated model artifact to main
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ml_signal/models/v1.joblib reports/ml/
+          if git diff --staged --quiet; then
+            echo "[*] Model artifact v1.joblib is unchanged."
+          else
+            git commit -m "chore(ml): update trained model v1.joblib and metrics report [skip ci]"
+            git push origin main
           fi
 
       - name: Upload trained model and report artifacts
