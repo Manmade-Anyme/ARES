@@ -68,6 +68,7 @@ Kept so they are not lost. None are in progress.
 
 ## Resolved
 
+- [x] **TASK-205** (2026-08-03) — Automated GitHub Actions workflow (`.github/workflows/ml_training.yml`) configured for weekly Saturday offline XGBoost ML training on `ubuntu-latest`. Automatically fetches Supabase training dataset via repo secrets, publishes metrics to Job Summary, uploads artifacts (30-day retention), and auto-commits retrained `v1.joblib` model binaries directly back to `main`.
 - [x] **TASK-195** (2026-07-31) — orphaned trades and the `structure_features`
       sentinel repaired rather than deleted. 29 trades relinked, 5,226 rows nulled
       in place, nothing deleted.
