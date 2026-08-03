@@ -4,6 +4,19 @@ A chronological log of session updates, technical decisions, and validation step
 
 ---
 
+## 2026-08-03 · Automated GitHub Actions ML Model Training Workflow (TASK-205)
+
+Created `.github/workflows/ml_training.yml` to automate offline XGBoost model training (`ml_signal/train_offline`) via GitHub Actions.
+
+**Implementation Details**
+- **Triggers**: Weekly Saturday schedule at 00:00 UTC / 05:30 IST (`cron: "0 0 * * 6"`) + manual trigger (`workflow_dispatch`).
+- **Environment**: Runs on `ubuntu-latest` (Python 3.10) with secrets `SUPABASE_URL` and `SUPABASE_KEY` scoped to the training step.
+- **Reporting & Artifacts**: Writes JSON training metrics directly to `$GITHUB_STEP_SUMMARY` and uploads model binaries (`ml_signal/models/`) and metrics reports (`reports/ml/`) via `actions/upload-artifact@v4` (30-day retention).
+- **Auto-Commit**: Automatically commits and pushes updated `v1.joblib` and metrics JSON to `main` (`[skip ci]`).
+- **Verification**: 355 unit tests green including `tests/unit/test_task205_ml_workflow.py`; CI run passed.
+
+---
+
 ## 2026-08-03 · Strategy A Detector Geometry Optimization (TASK-204)
 
 Applied **Strategy A** geometry optimization across all four detector setups in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`).
