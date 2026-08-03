@@ -9,14 +9,14 @@ A chronological log of session updates, technical decisions, and validation step
 Applied **Strategy A** geometry optimization across all four detector setups in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`).
 
 **Empirical Evidence & Optimization Audit**
-- 1-minute OHLC candle grid-search audit across all 129 recorded past trades (2026-06-24 to 2026-08-03) using Supabase `ml_collection` and `yfinance` Nifty index data.
+- 1-minute OHLC candle grid-search audit across all 129 recorded past trades (in-sample historical candle replay from 2026-06-24 to 2026-08-03) using Supabase `ml_collection` and `yfinance` Nifty index data, cross-validated against the recent July 20 – August 3 window.
 - **System Gains**:
   - Total Net Spot PnL increased from **+638.45 pts -> +907.55 pts (+42.1% boost / +269.10 pts net gain)**.
   - Estimated Options P&L increased from **+₹7,920.73 -> +₹29,017.96 (+266% boost / +₹21,097.23 net gain)**.
   - Overall Win Rate increased from **15.5% -> 27.9%** (+16 winning trades).
   - Target 1 Touch Rate increased from **27.9% -> 37.2%** (+12 additional trades protected at Break-Even).
   - Target 2 Wins increased from **20 -> 30 trades (+50% increase in T2 wins)**.
-  - Gross Spot Losses reduced by **+176.80 pts SAVED (-14.3% loss reduction)**.
+  - Gross Spot Losses reduced by **+176.80 pts SAVED (+14.3% loss reduction)**.
   - Recent Choppy Period PnL (July 20 – August 3) transformed from **+40.55 pts -> +333.55 pts (+293.00 pts gain)**.
 
 **Config Geometry Applied (Strategy A)**

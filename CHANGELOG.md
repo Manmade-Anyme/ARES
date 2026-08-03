@@ -5,7 +5,7 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Changed
-- **Strategy A Multi-Detector Geometry Optimization (TASK-204)**: Applied Strategy A geometry optimization across all four detector setups in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`). Based on 1-minute OHLC empirical grid-search audit across 129 recorded past trades, Strategy A increased total net spot PnL from **+638.45 pts -> +907.55 pts (+42.1% boost)**, boosted options P&L from **+₹7,920 -> +₹29,017 (+266% boost)**, increased win rate from 15.5% -> 27.9%, and increased T1 touch rate from 27.9% -> 37.2% (+12 trades protected at Break-Even).
+- **Strategy A Multi-Detector Geometry Optimization (TASK-204)**: Applied Strategy A geometry optimization across all four detector setups in `_PER_TYPE_LEVELS_DEFAULT` (`config_profiles.py`). Based on 1-minute OHLC empirical grid-search audit across 129 recorded past trades, Strategy A increased total net spot PnL from **+638.45 pts -> +907.55 pts (+42.1% boost)**, boosted options P&L from **+₹7,920.73 -> +₹29,017.96 (+₹21,097.23 net gain, +266% boost)**, increased win rate from 15.5% -> 27.9%, and increased T1 touch rate from 27.9% -> 37.2% (+12 trades protected at Break-Even).
   - `EXHAUSTION_REVERSAL`: `SetupLevels(10.0, 18.0, 40.0)` (was `12.0, 24.0, 40.0`)
   - `TREND_CONTINUATION`: `SetupLevels(25.0, 25.0, 80.0)` (was `25.0, 40.0, 80.0`)
   - `OI_WALL_REJECTION`: `SetupLevels(16.0, 25.0, 40.0)` (was `12.0, 25.0, 40.0`, merged TASK-203)
