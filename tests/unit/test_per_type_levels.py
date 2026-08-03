@@ -25,7 +25,7 @@ def lvl(price):
 APPROVED = {
     "EXHAUSTION_REVERSAL": (12.0, 24.0, 40.0),
     "TREND_CONTINUATION": (25.0, 40.0, 80.0),
-    "OI_WALL_REJECTION": (12.0, 25.0, 40.0),
+    "OI_WALL_REJECTION": (16.0, 25.0, 40.0),
     "FAILED_BREAKOUT": (15.0, 30.0, 55.0),
 }
 

@@ -34,7 +34,7 @@ class SetupLevels:
 _PER_TYPE_LEVELS_DEFAULT = {
     "EXHAUSTION_REVERSAL": SetupLevels(12.0, 24.0, 40.0),
     "TREND_CONTINUATION":  SetupLevels(25.0, 40.0, 80.0),
-    "OI_WALL_REJECTION":   SetupLevels(12.0, 25.0, 40.0),
+    "OI_WALL_REJECTION":   SetupLevels(16.0, 25.0, 40.0),
     "FAILED_BREAKOUT":     SetupLevels(15.0, 30.0, 55.0),
 }
 
