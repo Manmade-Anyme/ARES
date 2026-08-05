@@ -187,9 +187,11 @@ ARES integrates dynamic options contract selection and risk-managed lot sizing (
 - **Risk-Managed Lot Sizing:**
   - Computes max risk amount based on user-defined percentage of available capital (`risk_per_trade_pct`).
   - Translates index-based profit targets (T1) and stop-loss (SL) points into option premium movement using the selected option's delta:
-    $$\text{Option Target/SL Price} = \text{LTP} \pm (\text{Index Points} \times |\text{Delta}|)$$
+    ```text
+    Option Target / SL Price = LTP ± (Index Points × |Delta|)
+    ```
   - Calculates suggested lots based on risk and affordable lots based on entry premium and lot size (default size `65` for Nifty).
-  - Suggests the lower of the two: $\min(\text{suggested\_lots}, \text{affordable\_lots})$ to prevent over-allocation.
+  - Suggests the lower of the two: `min(suggested_lots, affordable_lots)` to prevent over-allocation.
 - **Decoupled Formatting:** Option sizing details are persisted in Supabase under `market_context` / `reasons` and presented clearly in Discord alerts.
 
 ---
@@ -304,9 +306,12 @@ ares/
 
 ## ⚙️ Setup & Deployment
 
-### 1. Environment Configuration
+### 1. Environment & Profile Configuration
 
-Clone the repository and create a `.env` file based on `.env.example`:
+ARES separates secrets and database connections (`.env` & `config.py`) from dynamic trading parameters (`config_profiles.py`):
+
+#### A. Environment Secrets (`.env`)
+Clone the repository and create `.env` for secrets and database connections:
 
 ```bash
 # ==========================================
@@ -320,47 +325,22 @@ DISCORD_HEALTH_WEBHOOK_URL="your_health_webhook"  # Optional: For heartbeats and
 # ==========================================
 SUPABASE_URL="your_supabase_url"
 SUPABASE_KEY="your_supabase_anon_key"
-
-# ==========================================
-# Engine & Polling Parameters
-# ==========================================
-POLL_INTERVAL_SECONDS=60
-SIGNAL_COOLDOWN_MINUTES=5
-CANDLE_BUFFER_SIZE=30
-IV_BUFFER_SIZE=10
-
-# ==========================================
-# Detector Configuration & Thresholds
-# ==========================================
-BREAKOUT_CONFIRMATION_CANDLES=3
-BREAKOUT_FAILURE_MIN_SCORE=2
-BREAKOUT_WEAK_VOLUME_RATIO=0.75
-BREAKOUT_IV_FALLING_THRESHOLD=-3.0
-BREAKOUT_WRITERS_ACTIVE_MIN_PCT=10.0
-BREAKOUT_DEEP_CLOSE_PTS=5.0
-
-OI_WALL_MIN_OI=5000000
-OI_WALL_MIN_OI_CHANGE_PCT=20.0
-OI_WALL_APPROACH_DISTANCE=40.0
-OI_WALL_TEST_DISTANCE=20.0
-
-EXHAUSTION_VOLUME_MULTIPLIER=2.5
-EXHAUSTION_BODY_RATIO=0.3
-EXHAUSTION_IV_SPIKE_THRESHOLD=1.0
-EXHAUSTION_MIN_CANDLES=5
-
-# ==========================================
-# Targets & Zones
-# ==========================================
-TARGET_1_PTS=40.0
-TARGET_2_PTS=80.0
-STRIKE_INTERVAL=50
-ENTRY_ZONE_OFFSET_PTS=5.0
-STRUCTURAL_TARGET_MIN_DISTANCE_PTS=20.0
-TARGET_1_FALLBACK_MIN_PTS=15.0
-TARGET_2_FALLBACK_MIN_PTS=30.0
-LEVEL_SCAN_RANGE=500.0
 ```
+
+#### B. Automated Dual-Profile Tuning (`config_profiles.py`)
+Trading parameters and detector thresholds are managed dynamically in Python profiles (`TuningConfig`), **automatically selected at engine startup** based on Expiry Day detection (`expiry_detector.py`):
+- **`NON_EXPIRY_CONFIG`**: Standard session parameters optimized for regular trading days.
+- **`EXPIRY_CONFIG`**: Tailored parameters with adjusted writer growth sensitivity, OI wall thresholds, and tighter SL/T1 tolerances for weekly expiry volatility.
+
+#### C. Per-Setup Geometry (`SetupLevels`)
+SL, T1, and T2 fallback points are defined centrally per setup type in `_PER_TYPE_LEVELS_DEFAULT` ([`config_profiles.py`](file:///Users/manmadeanyme/Documents/Work/ARES/config_profiles.py#L39-L44)):
+
+| Setup Type | Stop Loss (pts) | Target 1 (pts) | Target 2 Fallback (pts) |
+|---|:---:|:---:|:---:|
+| `EXHAUSTION_REVERSAL` | 10.0 | 18.0 | 40.0 |
+| `TREND_CONTINUATION` | 25.0 | 25.0 | 80.0 |
+| `OI_WALL_REJECTION` | 16.0 | 25.0 | 40.0 |
+| `FAILED_BREAKOUT` | 12.0 | 20.0 | 55.0 |
 
 ---
 

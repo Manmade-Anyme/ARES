@@ -2,13 +2,13 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
-## 2026-08-05 · ML Signal Architecture & Root README Documentation Updates (TASK-207)
+## 2026-08-05 · ML Signal Architecture & Configuration Profile Documentation Updates (TASK-207)
 
-Clarified operating modes and system architecture across root `README.md`, `ml_signal/README.md`, and `ml_signal/schema.sql`.
+Clarified operating modes, dynamic configuration profiles, and system architecture across root `README.md`, `ml_signal/README.md`, and `ml_signal/schema.sql`.
 
 **Implementation Details**
-- **Problem**: Root `README.md` and `ml_signal/README.md` were missing recent architecture components (Machine Learning Layer, `ml_signal/` project structure tree, 4th detector `TrendContinuation`, multi-class trade score column in `trade_analytics`, and in-process `SignalPredictor` details).
-- **Fix**: Updated root `README.md` to add Machine Learning Layer (Layer 7), added `TrendContinuation` (TASK-177), updated FailedBreakout score thresholds (TASK-184), added `ml_signal/` tree, updated `trade_analytics` schema (`score` integer column, TASK-198). Updated `ml_signal/README.md` architecture diagram and module descriptions to reflect production's in-process `SignalPredictor` and `MLCollector` architecture. Updated `ml_signal/schema.sql` header comment above `ml_predictions` to document `live.py`/`signal_consumer.py` as optional standalone processes.
+- **Problem**: Root `README.md` previously showed a static monolithic `.env` file instead of documenting the dynamic dual-profile configuration system (`config_profiles.py` -> `EXPIRY_CONFIG` vs `NON_EXPIRY_CONFIG`) and per-setup geometry (`SetupLevels`), and had a LaTeX math rendering glitch on `_` characters in option lot sizing math.
+- **Fix**: Updated root `README.md` to document the automated dual-profile configuration system (`config_profiles.py`), added per-setup geometry table (`SetupLevels`), fixed LaTeX math rendering glitches in option lot sizing formulas, added Machine Learning Layer (Layer 7), added `TrendContinuation` (TASK-177), updated FailedBreakout score thresholds (TASK-184), added `ml_signal/` tree, updated `trade_analytics` schema (`score` integer column, TASK-198). Updated `ml_signal/README.md` architecture diagram and module descriptions to reflect production's in-process `SignalPredictor` and `MLCollector` architecture. Updated `ml_signal/schema.sql` header comment above `ml_predictions` to document `live.py`/`signal_consumer.py` as optional standalone processes.
 - **Verification**: 359 unit tests green.
 
 ---
