@@ -8,6 +8,21 @@ independent process.
 ## Architecture
 
 ```
+┌──────────────────────────────────────────────────────────┐
+│  ARES Main Loop (Production In-Process)                  │
+│                                                          │
+│  SignalPredictor -> Enriches Discord Alerts (TASK-196)   │
+│  MLCollector      -> Logs features to ml_collection      │
+└──────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+               ┌──────────────────────┐
+               │  ml_collection       │
+               │  (Supabase table)    │
+               └──────────────────────┘
+
+Optional Standalone Processes:
+
 ┌─────────────────────┐     ┌─────────────────────┐
 │  live.py            │     │  signal_consumer.py │
 │  (continuous)       │     │  (event-triggered)  │
@@ -26,6 +41,9 @@ independent process.
           └─────────────────────┘
 ```
 
+> **Production Note**:
+> Production ARES uses the **in-process `SignalPredictor`** (TASK-196) inside `main.py`, which enriches live Discord alerts with forward probabilities and persists nothing. Data collection is handled in-process by `MLCollector` writing to `ml_collection`. `live.py` and `signal_consumer.py` are optional standalone processes; the `ml_predictions` table is only written when running those optional scripts.
+
 ## Modules
 
 | File | Purpose |
@@ -35,10 +53,12 @@ independent process.
 | `labeling.py` | Label generation (ARES outcomes + self-labeled candles) |
 | `data.py` | Load training data from Supabase / Dhan API |
 | `trainer.py` | Walk-forward training, Optuna tuning, SHAP analysis |
-| `predictor.py` | Runtime inference wrapper |
-| `live.py` | Standalone continuous prediction loop |
-| `signal_consumer.py` | Event-triggered prediction on ARES signals |
-| `schema.sql` | Supabase `ml_predictions` table |
+| `train_offline.py` | Offline dataset export & XGBoost model training |
+| `predictor.py` | In-process runtime inference wrapper (`SignalPredictor`) |
+| `collector.py` | In-process feature logger (`MLCollector`) writing to `ml_collection` |
+| `live.py` | Optional standalone continuous prediction loop |
+| `signal_consumer.py` | Optional standalone event-triggered prediction on ARES signals |
+| `schema.sql` | Supabase `ml_collection` and `ml_predictions` table definitions |
 
 ## Feature Categories
 

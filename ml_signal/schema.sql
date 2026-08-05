@@ -1,8 +1,10 @@
 -- Run this in Supabase SQL Editor to create the ML tables.
 
 -- ============================================================
--- ml_predictions: Stores XGBoost inference results (live mode)
--- Used AFTER model is trained and deployed.
+-- ml_predictions: Stores predictions written ONLY by optional
+-- standalone processes (live.py, signal_consumer.py).
+-- Production ARES uses in-process SignalPredictor (TASK-196), which
+-- enriches Discord alerts and does not persist rows to this table.
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS ml_predictions (

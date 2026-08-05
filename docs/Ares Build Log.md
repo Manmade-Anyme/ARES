@@ -2,6 +2,17 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-08-05 · ML Signal Architecture Documentation Clarification (TASK-207)
+
+Clarified operating modes and persistence behavior across `ml_signal/README.md` and `ml_signal/schema.sql`.
+
+**Implementation Details**
+- **Problem**: `ml_signal/README.md` presented `live.py` and `signal_consumer.py` as primary operating modes writing to `ml_predictions`, but production runs neither (the `ml_predictions` table has 0 rows in production). Production runs the in-process `SignalPredictor` (TASK-196) inside `main.py`, which enriches Discord alerts without writing to `ml_predictions`.
+- **Fix**: Updated `ml_signal/README.md` architecture diagram and module descriptions to reflect production's in-process `SignalPredictor` and `MLCollector` architecture. Updated `ml_signal/schema.sql` header comment above `ml_predictions` to document `live.py`/`signal_consumer.py` as optional standalone processes.
+- **Verification**: 359 unit tests green.
+
+---
+
 ## 2026-08-05 · ML Collector Timestamp Naive IST to UTC Normalization (TASK-206)
 
 Fixed a 5.5-hour timestamp timezone mismatch in `ml_collection`.
