@@ -324,5 +324,84 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(collector.stats["total_snapshots"], 1)
 
+    @patch("ml_signal.collector.create_client")
+    def test_snapshot_converts_naive_ist_timestamp_to_utc(self, mock_create_client):
+        from datetime import timezone, timedelta
+        mock_supabase = MagicMock()
+        mock_create_client.return_value = mock_supabase
+
+        collector = MLCollector(self.url, self.key, self.config)
+        candle = self._make_mock_candle()
+        atm = self._make_mock_atm()
+
+        naive_dt = datetime(2026, 8, 5, 14, 12, 0)
+        captured = {}
+        with patch.object(collector, "_insert", lambda rec: captured.update(rec)):
+            collector.snapshot(
+                candle=candle,
+                atm=atm,
+                full_chain=[],
+                levels=[],
+                spot=24120.0,
+                timestamp=naive_dt,
+            )
+
+        from storage import to_utc_iso
+        self.assertEqual(captured["timestamp"], "2026-08-05T08:42:00+00:00")
+        self.assertEqual(captured["timestamp"], to_utc_iso(naive_dt))
+
+    @patch("ml_signal.collector.create_client")
+    def test_snapshot_handles_utc_aware_timestamp(self, mock_create_client):
+        from datetime import timezone
+        mock_supabase = MagicMock()
+        mock_create_client.return_value = mock_supabase
+
+        collector = MLCollector(self.url, self.key, self.config)
+        candle = self._make_mock_candle()
+        atm = self._make_mock_atm()
+
+        captured = {}
+        utc_ts = datetime(2026, 8, 5, 8, 42, 0, tzinfo=timezone.utc)
+        with patch.object(collector, "_insert", lambda rec: captured.update(rec)):
+            collector.snapshot(
+                candle=candle,
+                atm=atm,
+                full_chain=[],
+                levels=[],
+                spot=24120.0,
+                timestamp=utc_ts,
+            )
+
+        self.assertEqual(captured["timestamp"], "2026-08-05T08:42:00+00:00")
+
+    @patch("ml_signal.collector.create_client")
+    def test_snapshot_handles_string_timestamps(self, mock_create_client):
+        mock_supabase = MagicMock()
+        mock_create_client.return_value = mock_supabase
+
+        collector = MLCollector(self.url, self.key, self.config)
+        candle = self._make_mock_candle()
+        atm = self._make_mock_atm()
+
+        captured = {}
+        with patch.object(collector, "_insert", lambda rec: captured.update(rec)):
+            collector.snapshot(
+                candle=candle,
+                atm=atm,
+                full_chain=[],
+                levels=[],
+                spot=24120.0,
+                timestamp="2026-08-05T14:12:00",
+            )
+
+        import json
+        self.assertEqual(captured["timestamp"], "2026-08-05T08:42:00+00:00")
+        meta_feats = json.loads(captured["meta_features"])
+        self.assertEqual(meta_feats["minutes_since_open"], 297.0)
+        self.assertEqual(meta_feats["session_phase"], 2)
+
+
+
 if __name__ == '__main__':
     unittest.main()
+

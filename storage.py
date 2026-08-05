@@ -30,7 +30,7 @@ from config import settings
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def to_utc_iso(ts: datetime) -> str:
+def to_utc_iso(ts: Any) -> str:
     """
     Normalize a timestamp for Supabase timestamptz columns (TASK-172, audit
     item 13/18). Candle timestamps arrive as naive IST wall-clock from the Dhan
@@ -38,9 +38,15 @@ def to_utc_iso(ts: datetime) -> str:
     timestamps 5h30m ahead of the real-UTC exit timestamps and breaking every
     hold-time analysis. Naive values are labeled IST, then converted to UTC.
     """
+    if isinstance(ts, str):
+        if ts.endswith("Z") or ts.endswith("z"):
+            ts = ts[:-1] + "+00:00"
+        ts = datetime.fromisoformat(ts)
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=IST)
     return ts.astimezone(timezone.utc).isoformat()
+
+
 
 
 class Storage:

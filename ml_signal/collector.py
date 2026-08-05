@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 from supabase import create_client, Client
 
 from models import SetupType
+from storage import to_utc_iso
 from .config import MLConfig, DEFAULT_CONFIG
 from .features import (
     compute_candle_features,
@@ -116,7 +117,11 @@ class MLCollector:
 
         oi_totals = self._compute_totals_from_chain(full_chain)
         level_prices = self._levels_to_prices(levels)
-        ts = timestamp or candle.timestamp if hasattr(candle, "timestamp") else datetime.now()
+        ts = timestamp or (candle.timestamp if hasattr(candle, "timestamp") else datetime.now())
+        if isinstance(ts, str):
+            if ts.endswith("Z") or ts.endswith("z"):
+                ts = ts[:-1] + "+00:00"
+            ts = datetime.fromisoformat(ts)
 
         candle_feats = compute_candle_features(candle_dict)
 
@@ -212,7 +217,7 @@ class MLCollector:
         }
 
         record = {
-            "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+            "timestamp": to_utc_iso(ts),
             "spot": spot,
             "candle_features": json.dumps(candle_feats),
             "volume_features": json.dumps(vol_feats),
