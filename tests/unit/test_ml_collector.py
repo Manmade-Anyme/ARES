@@ -394,7 +394,11 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
                 timestamp="2026-08-05T14:12:00",
             )
 
+        import json
         self.assertEqual(captured["timestamp"], "2026-08-05T08:42:00+00:00")
+        meta_feats = json.loads(captured["meta_features"])
+        self.assertEqual(meta_feats["minutes_since_open"], 297.0)
+        self.assertEqual(meta_feats["session_phase"], 2)
 
 
 

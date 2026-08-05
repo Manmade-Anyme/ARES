@@ -9,10 +9,11 @@
 -- future relative to true UTC created_at values and other system tables.
 --
 -- This migration normalizes legacy ml_collection timestamps back by 5.5 hours.
--- It guards on created_at - timestamp > interval '5 hours', so reruns are no-ops
+-- It guards on timestamp - created_at > interval '5 hours', so reruns are no-ops
 -- and newly collected rows (where abs(created_at - timestamp) < 2 min) are untouched.
 --
 
 UPDATE ml_collection
 SET timestamp = timestamp - interval '5.5 hours'
-WHERE created_at - timestamp > interval '5 hours';
+WHERE timestamp - created_at > interval '5 hours';
+
