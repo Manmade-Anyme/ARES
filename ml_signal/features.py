@@ -211,7 +211,12 @@ def compute_meta_features(
     minutes_since_open = 0
     if timestamp is not None:
         try:
-            seconds = timestamp.hour * 3600 + timestamp.minute * 60
+            ts = timestamp
+            if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+                from datetime import timezone, timedelta
+                ist = timezone(timedelta(hours=5, minutes=30))
+                ts = ts.astimezone(ist)
+            seconds = ts.hour * 3600 + ts.minute * 60
             session_start = 9 * 3600 + 15 * 60
             minutes_since_open = (seconds - session_start) / 60.0
         except Exception:

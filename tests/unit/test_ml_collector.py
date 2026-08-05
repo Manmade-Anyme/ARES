@@ -334,6 +334,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         candle = self._make_mock_candle()
         atm = self._make_mock_atm()
 
+        naive_dt = datetime(2026, 8, 5, 14, 12, 0)
         captured = {}
         with patch.object(collector, "_insert", lambda rec: captured.update(rec)):
             collector.snapshot(
@@ -342,10 +343,12 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
                 full_chain=[],
                 levels=[],
                 spot=24120.0,
-                timestamp=datetime(2026, 8, 5, 14, 12, 0),
+                timestamp=naive_dt,
             )
 
+        from storage import to_utc_iso
         self.assertEqual(captured["timestamp"], "2026-08-05T08:42:00+00:00")
+        self.assertEqual(captured["timestamp"], to_utc_iso(naive_dt))
 
     @patch("ml_signal.collector.create_client")
     def test_snapshot_handles_utc_aware_timestamp(self, mock_create_client):
