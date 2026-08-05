@@ -12,10 +12,11 @@ ARES follows a strict **five-layer architecture** designed for modularity, perfo
 
 1.  **🧩 Ingestion Layer:** Asynchronous fetchers (`PriceFetcher`, `OIFetcher`) poll the DhanHQ API for 1-min candles, real-time Option Chains, and previous day OHLC levels.
 2.  **⚙️ Orchestration Layer:** The `AresEngine` manages the evaluation pipeline, maintaining rolling state buffers (Volume, IV) and enforcing signal cooldowns.
-3.  **🔬 Detection Layer:** A suite of specialized detectors (`FailedBreakout`, `OIWall`, `Exhaustion`) score market conditions against technical and structural levels.
+3.  **🔬 Detection Layer:** A suite of specialized detectors (`FailedBreakout`, `OIWall`, `Exhaustion`, `TrendContinuation`) score market conditions against technical and structural levels.
 4.  **💾 Persistence Layer:** All generated signals and **active trade states** are logged to **Supabase (PostgreSQL)** for post-session performance auditing and backtesting.
 5.  **📢 Broadcasting Layer:** Signals are formatted into rich, scannable alerts and dispatched via **Discord Webhooks** and the local console.
 6.  **📊 Analysis Layer:** A specialized `backtest/` suite allows for historical simulation and visual export of signals to TradingView via PineScript.
+7.  **🧠 Machine Learning Layer:** `MLCollector` logs 50+ intraday market features to `ml_collection` on every cycle, while an in-process `SignalPredictor` (TASK-196) enriches live Discord alerts with forward win probabilities. Automated weekly training (TASK-205) via GitHub Actions continuously updates the model.
 
 ---
 
@@ -53,7 +54,7 @@ Consequences worth stating plainly, because each has been mistaken for a bug:
 
 ## 🎯 Detection Strategies & Confidence Scoring
 
-ARES evaluates three distinct market phenomena in strict **short-circuit priority order**, utilizing dynamic confidence scoring matrices:
+ARES evaluates four distinct market phenomena in strict **short-circuit priority order**, utilizing dynamic confidence scoring matrices:
 
 ### 1. 🚨 Failed Breakout (Highest Priority)
 *   **Logic**: Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically from Dhan Historical API or massive OI wall) but fails to hold.
@@ -64,7 +65,7 @@ ARES evaluates three distinct market phenomena in strict **short-circuit priorit
     *   `IV Crush`: Dropping Implied Volatility during the cross.
     *   `Active OI Growth`: Decisive open interest build (`breakout_writers_active_min_pct`: $\ge 10\%$ normal / $\ge 15\%$ expiry) confirming writer defense. Writers merely holding is reported as context but not scored.
     *   `Deep Close-Back`: Index closes back inside the level by $\ge 5.0$ points.
-*   **Confidence Rating**: Shared 60% band — needs `breakout_failure_min_score` (3 of 4) to fire, which is `HIGH` by construction.
+*   **Confidence Rating**: `breakout_failure_min_score` (default `2` of 4, TASK-184) fires `MEDIUM` (score 2) and `HIGH` (score $\ge 3$) confidence alerts.
 *   **Direction**: Fully bidirectional (handles both Bullish and Bearish failures).
 
 ### 2. 🧱 OI Wall Rejection (High Priority)
@@ -87,7 +88,12 @@ ARES evaluates three distinct market phenomena in strict **short-circuit priorit
     *   `Extreme Doji Body Ratio`: Tiny real body relative to wicks ($\le 0.3$).
     *   `Panic IV Spike`: Rapid IV expansion during the exhaustion candle.
     *   `Structural Level Testing`: Price actively testing a key horizontal level or wall.
-*   **Confidence Rating**: Sets confidence to `HIGH` if the score is $\ge 2$, otherwise `MEDIUM`.
+    *   **Confidence Rating**: Sets confidence to `HIGH` if the score is $\ge 2$, otherwise `MEDIUM`.
+
+### 4. 📈 Trend Continuation (Medium Priority, TASK-177)
+*   **Logic**: Rides strong intraday momentum when price decisively breaks and holds above/below key structural levels with supporting volume and open interest expansion.
+*   **Dynamic Targets**: Project T1/T2 targets along trend extension levels while enforcing structural SL protection at the breakout level.
+*   **Confidence Rating**: Sets confidence to `HIGH` for strong multi-factor volume+OI confirmations, otherwise `MEDIUM`.
 
 ---
 
@@ -160,7 +166,17 @@ ares/
 │   ├── breakout.py        # Stateful detector for Failed Breakouts
 │   ├── oi_wall.py         # Stateless structural rejection detector
 │   ├── exhaustion.py      # Volume history & price extreme tracker
+│   ├── continuation.py    # Trend Continuation detector (TASK-177)
 │   └── expiry_detector.py # Expiry day detection (Dhan API check/Tuesday fallback)
+├── ml_signal/         # Machine Learning Module
+│   ├── config.py      # ML parameters & thresholds
+│   ├── features.py    # 50+ feature extraction logic
+│   ├── collector.py   # In-process feature logger (MLCollector -> ml_collection)
+│   ├── predictor.py   # In-process runtime inference (SignalPredictor)
+│   ├── dataset.py     # Data preparation & preprocessing
+│   ├── labeling.py    # Multi-class outcome labeler
+│   ├── train_offline.py # Offline XGBoost training & metric exporter
+│   └── schema.sql     # Supabase ml_collection & ml_predictions definitions
 ├── backtest/          # Analysis Layer
 │   ├── pinescript_exporter.py # Generates TradingView v6 visualization scripts
 │   ├── engine.py          # Historical simulation engine
@@ -291,7 +307,8 @@ CREATE TABLE trade_analytics (
   pnl_points numeric,
   
   -- Outcome
-  result_state text DEFAULT 'OPEN', -- OPEN, T1_HIT, T2_HIT, STOPPED_OUT, EXPIRED
+  result_state text DEFAULT 'OPEN', -- OPEN, T1_HIT, T2_HIT, STOPPED_OUT_AT_BE, SL_HIT, TIME_STOP
+  score integer,                     -- Point-based outcome (TASK-198): T2=2, T1/STOPPED_OUT_AT_BE=1, SL/TIME_STOP=0
   
   -- Deep Context (JSONB for ML flexibility)
   market_context jsonb, -- { "reasons": [...], "spot_at_signal": 24500, "confidence": "HIGH" }
@@ -302,6 +319,8 @@ CREATE TABLE trade_analytics (
 
 -- Index for temporal analysis
 CREATE INDEX idx_trade_analytics_entry ON trade_analytics (entry_timestamp DESC);
+
+-- See ml_signal/schema.sql for the complete ml_collection training data table definition.
 ```
 
 ### 3. Row Level Security (RLS) Note
