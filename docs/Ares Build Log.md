@@ -2,6 +2,15 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-08-05 · ML Collector Timestamp Naive IST to UTC Normalization (TASK-206)
+
+Fixed a 5.5-hour timestamp timezone mismatch in `ml_collection`.
+
+**Implementation Details**
+- **Problem**: `MLCollector.snapshot` recorded `ts.isoformat()` directly from naive IST wall-clock datetimes without timezone labeling (`ml_signal/collector.py`). Postgres `timestamptz` columns interpreted naive strings as UTC, shifting `ml_collection` timestamp values +5h30m into the future relative to true UTC tables (`ares_signals` and `trade_analytics`).
+- **Fix**: Updated `storage.to_utc_iso` to parse string ISO timestamps and label naive datetimes as IST (`+05:30`) before converting to UTC ISO format (`+00:00`). Updated `MLCollector.snapshot` to call `to_utc_iso(ts)`.
+- **Verification**: 357 unit tests green (15 in `test_ml_collector.py` including 2 new timezone conversion unit tests).
+
 ---
 
 ## 2026-08-03 · Automated GitHub Actions ML Model Training Workflow (TASK-205)

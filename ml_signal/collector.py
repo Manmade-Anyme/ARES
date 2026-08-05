@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 from supabase import create_client, Client
 
 from models import SetupType
+from storage import to_utc_iso
 from .config import MLConfig, DEFAULT_CONFIG
 from .features import (
     compute_candle_features,
@@ -212,7 +213,7 @@ class MLCollector:
         }
 
         record = {
-            "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+            "timestamp": to_utc_iso(ts),
             "spot": spot,
             "candle_features": json.dumps(candle_feats),
             "volume_features": json.dumps(vol_feats),
