@@ -338,6 +338,17 @@ class TestSignalIdAndTimezones(unittest.IsolatedAsyncioTestCase):
         inserted = self.mock_client.insert_mock.call_args[0][0]
         self.assertEqual(inserted["timestamp"], "2026-07-02T08:42:00+00:00")
 
+    def test_to_utc_iso_string_inputs(self):
+        """to_utc_iso handles naive strings, Z strings, and offset strings correctly."""
+        from storage import to_utc_iso
+        # Naive IST string
+        self.assertEqual(to_utc_iso("2026-07-02T14:12:00"), "2026-07-02T08:42:00+00:00")
+        # Trailing Z string
+        self.assertEqual(to_utc_iso("2026-07-02T08:42:00Z"), "2026-07-02T08:42:00+00:00")
+        # Explicit offset string
+        self.assertEqual(to_utc_iso("2026-07-02T14:12:00+05:30"), "2026-07-02T08:42:00+00:00")
+
+
 
 # Clean up patch after class execution
 def tearDownModule():

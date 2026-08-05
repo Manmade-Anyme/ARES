@@ -39,10 +39,13 @@ def to_utc_iso(ts: Any) -> str:
     hold-time analysis. Naive values are labeled IST, then converted to UTC.
     """
     if isinstance(ts, str):
+        if ts.endswith("Z") or ts.endswith("z"):
+            ts = ts[:-1] + "+00:00"
         ts = datetime.fromisoformat(ts)
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=IST)
     return ts.astimezone(timezone.utc).isoformat()
+
 
 
 

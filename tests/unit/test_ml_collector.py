@@ -374,6 +374,29 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["timestamp"], "2026-08-05T08:42:00+00:00")
 
+    @patch("ml_signal.collector.create_client")
+    def test_snapshot_handles_string_timestamps(self, mock_create_client):
+        mock_supabase = MagicMock()
+        mock_create_client.return_value = mock_supabase
+
+        collector = MLCollector(self.url, self.key, self.config)
+        candle = self._make_mock_candle()
+        atm = self._make_mock_atm()
+
+        captured = {}
+        with patch.object(collector, "_insert", lambda rec: captured.update(rec)):
+            collector.snapshot(
+                candle=candle,
+                atm=atm,
+                full_chain=[],
+                levels=[],
+                spot=24120.0,
+                timestamp="2026-08-05T14:12:00",
+            )
+
+        self.assertEqual(captured["timestamp"], "2026-08-05T08:42:00+00:00")
+
+
 
 if __name__ == '__main__':
     unittest.main()
