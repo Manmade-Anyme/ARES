@@ -34,6 +34,8 @@ def test_secrets_defaults_without_env(monkeypatch):
 def test_settings_instantiation_without_discord_webhook(monkeypatch):
     """Settings() should instantiate cleanly even if DISCORD_WEBHOOK_URL is missing."""
     monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
     
     with patch("config.Secrets", return_value=Secrets(_env_file=None)):
         s = Settings()
