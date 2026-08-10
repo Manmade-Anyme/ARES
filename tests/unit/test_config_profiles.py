@@ -62,7 +62,7 @@ class TestSettings:
         s = Settings()
         assert hasattr(s, "dhan_client_id")
         assert hasattr(s, "dhan_access_token")
-        assert s.discord_webhook_url
+        assert hasattr(s, "discord_webhook_url")
 
     def test_settings_exposes_tuning(self):
         """settings.xxx should work for tuning fields."""

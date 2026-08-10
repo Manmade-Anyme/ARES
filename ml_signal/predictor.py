@@ -1,4 +1,7 @@
-from typing import Optional, Dict, List, Any
+import os
+import re
+from pathlib import Path
+from typing import Optional, Dict, List, Any, Tuple
 
 import joblib
 import numpy as np
@@ -6,6 +9,64 @@ import pandas as pd
 
 from .config import MLConfig, DEFAULT_CONFIG
 from .features import build_feature_vector
+
+
+def discover_latest_model(models_dir: Optional[str | Path] = None) -> Tuple[str, str]:
+    """Finds the highest numbered version model file in models_dir (e.g. 'v1.joblib', 'v2.joblib').
+
+    Returns (model_path, version_string), e.g. ('ml_signal/models/v1.joblib', 'v1').
+    Falls back to ('ml_signal/models/v1.joblib', 'v1') if no model files exist.
+    """
+    if models_dir is None:
+        target_dir = Path(__file__).parent / "models"
+    else:
+        target_dir = Path(models_dir)
+
+    if not target_dir.exists():
+        return str(target_dir / "v1.joblib"), "v1"
+
+    pattern = re.compile(r"^v(\d+)\.joblib$")
+    highest_ver = 0
+    highest_file = None
+
+    for file in target_dir.iterdir():
+        if file.is_file():
+            match = pattern.match(file.name)
+            if match:
+                ver = int(match.group(1))
+                if ver > highest_ver:
+                    highest_ver = ver
+                    highest_file = file
+
+    if highest_file is not None:
+        return str(highest_file), f"v{highest_ver}"
+    return str(target_dir / "v1.joblib"), "v1"
+
+
+def get_next_model_version_and_path(models_dir: Optional[str | Path] = None) -> Tuple[str, str]:
+    """Determines the next version string and save path for a newly trained model.
+
+    E.g., if 'v1.joblib' exists, returns ('ml_signal/models/v2.joblib', 'v2').
+    """
+    if models_dir is None:
+        target_dir = Path(__file__).parent / "models"
+    else:
+        target_dir = Path(models_dir)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(r"^v(\d+)\.joblib$")
+    highest_ver = 0
+
+    for file in target_dir.iterdir():
+        if file.is_file():
+            match = pattern.match(file.name)
+            if match:
+                ver = int(match.group(1))
+                if ver > highest_ver:
+                    highest_ver = ver
+
+    next_ver = highest_ver + 1
+    return str(target_dir / f"v{next_ver}.joblib"), f"v{next_ver}"
 
 
 class SignalPredictor:
@@ -20,14 +81,32 @@ class SignalPredictor:
         self.config = config
         self.model = None
         self.feature_names = None
+        self.loaded_model_path: Optional[str] = None
+        self.loaded_model_version: str = config.active_model_version
+
+    @property
+    def model_filename(self) -> str:
+        """Returns the base filename of the currently loaded model (e.g. 'v1.joblib')."""
+        if self.loaded_model_path:
+            return os.path.basename(self.loaded_model_path)
+        return f"{self.loaded_model_version}.joblib"
 
     def load_model(self, path: Optional[str] = None) -> None:
         """Load the joblib model and remember the column order it was fit on.
 
-        Raises whatever joblib/xgboost raise; main.py treats a failure here as
-        "predictor unavailable" and carries on without one.
+        If path is None, automatically discovers and loads the highest-versioned
+        model in the models directory. Raises whatever joblib/xgboost raise;
+        main.py treats a failure here as "predictor unavailable" and carries on.
         """
-        model_path = path or self.config.model_path
+        if path is None:
+            model_path, version = discover_latest_model()
+            self.loaded_model_version = version
+        else:
+            model_path = path
+            match = re.search(r"v(\d+)\.joblib", os.path.basename(path))
+            self.loaded_model_version = f"v{match.group(1)}" if match else self.config.active_model_version
+
+        self.loaded_model_path = model_path
         self.model = joblib.load(model_path)
 
         if hasattr(self.model, "feature_names_in_"):
@@ -132,7 +211,7 @@ class SignalPredictor:
         return {
             "probability": round(proba, 4),
             "confidence_tier": confidence,
-            "model_version": self.config.active_model_version,
+            "model_version": self.loaded_model_version or self.config.active_model_version,
             "spot": spot,
             "timestamp": str(timestamp),
             "features": {k: round(v, 4) if isinstance(v, float) else v for k, v in features.items()},

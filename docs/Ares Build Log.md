@@ -824,3 +824,22 @@ Upgraded the project unit test suite to achieve 100% line coverage on all target
 
 **TODOs**
 - [x] Merge PR #8 and perform local branch merge verification and cleanup.
+
+---
+
+## 2026-08-10 13:30 · Secrets Schema Default Values & Dynamic Model Auto-Versioning (TASK-208)
+
+Fixed a fatal pydantic `ValidationError: discord_webhook_url: Field required` when running headless offline ML model training (`python -m ml_signal.train_offline`) in GitHub Actions, and implemented dynamic model auto-versioning (e.g. `v1.joblib` -> `v2.joblib` on retrain).
+
+**Decisions**
+- Added empty string defaults (`""`) to `discord_webhook_url`, `supabase_url`, and `supabase_key` in `config.Secrets`.
+- Implemented `discover_latest_model` and `get_next_model_version_and_path` in `ml_signal.predictor` to auto-increment newly trained artifacts to `v{N+1}.joblib` on retrain.
+- Updated `SignalPredictor` to dynamically discover and load the highest versioned model, tagging predictions with the active version string.
+- Wired `main.py` and `alerts.py` to display the active model filename in initialization banners and Discord alerts.
+- Removed `ml_signal/models/*.joblib` from `.gitignore` so newly trained versioned model artifacts are committed and tracked properly.
+- Added unit test suites `tests/unit/test_task208_secrets_defaults.py` and `tests/unit/test_task208_model_autoversion.py`.
+
+**TODOs**
+- [ ] Merge PR for feature branch `feature/TASK-208-fix-secrets-optional-defaults` and perform cleanup.
+
+
