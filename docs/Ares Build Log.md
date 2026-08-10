@@ -824,3 +824,18 @@ Upgraded the project unit test suite to achieve 100% line coverage on all target
 
 **TODOs**
 - [x] Merge PR #8 and perform local branch merge verification and cleanup.
+
+---
+
+## 2026-08-10 13:30 · Secrets Schema Default Values for Headless/Offline Execution (TASK-208)
+
+Fixed a fatal pydantic `ValidationError: discord_webhook_url: Field required` when running headless offline ML model training (`python -m ml_signal.train_offline`) in GitHub Actions.
+
+**Decisions**
+- Added empty string defaults (`""`) to `discord_webhook_url`, `supabase_url`, and `supabase_key` in `config.Secrets`.
+- Maintained existing alerting and persistence safeguards (e.g. `alerts.py` skipping cleanly if `discord_webhook_url` is not provided).
+- Added unit test suite `tests/unit/test_task208_secrets_defaults.py` to lock in behavior across headless/isolated environments.
+
+**TODOs**
+- [ ] Merge PR for feature branch `feature/TASK-208-fix-secrets-optional-defaults` and perform cleanup.
+

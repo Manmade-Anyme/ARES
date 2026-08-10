@@ -10,11 +10,11 @@ class Secrets(BaseSettings):
     security_id: str = "13"
     exchange_segment: str = "IDX_I"
 
-    discord_webhook_url: str
+    discord_webhook_url: str = ""
     discord_health_webhook_url: str | None = None
 
-    supabase_url: str
-    supabase_key: str
+    supabase_url: str = ""
+    supabase_key: str = ""
 
     model_config = SettingsConfigDict(
         env_file='.env', env_file_encoding='utf-8', extra='ignore'
