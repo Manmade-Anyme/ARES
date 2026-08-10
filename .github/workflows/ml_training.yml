@@ -52,11 +52,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ml_signal/models/v1.joblib reports/ml/
+          git add ml_signal/models/ reports/ml/
           if git diff --staged --quiet; then
-            echo "[*] Model artifact v1.joblib is unchanged."
+            echo "[*] Model artifacts are unchanged."
           else
-            git commit -m "chore(ml): update trained model v1.joblib and metrics report [skip ci]"
+            git commit -m "chore(ml): update trained model artifact and metrics report [skip ci]"
             git push origin main
           fi
 

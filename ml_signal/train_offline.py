@@ -249,13 +249,22 @@ def main() -> None:
     print(f"[*] {len(df)} labeled samples, {len(fcols)} features, "
           f"positive-rate={df['label'].mean():.3f}")
 
+    from ml_signal.predictor import get_next_model_version_and_path
+    models_dir = os.path.join(repo, "ml_signal", "models")
+    save_path, next_version = get_next_model_version_and_path(models_dir)
+    print(f"[*] Incrementing model version -> {next_version} ({save_path})")
+
     report_path = os.path.join(repo, "reports", "ml", "task183_offline_metrics.json")
+    versioned_report_path = os.path.join(repo, "reports", "ml", f"{next_version}_offline_metrics.json")
     model, metrics = run_training(
         df, fcols,
         config=config,
-        save_path=os.path.join(repo, config.model_path),
+        save_path=save_path,
         report_path=report_path,
     )
+    metrics["model_version"] = next_version
+    with open(versioned_report_path, "w") as f:
+        json.dump(metrics, f, indent=2, default=str)
 
     print("\n=== OFFLINE TRAINING RESULT ===")
     print(f"  samples={metrics['n_samples']} (train={metrics['n_train']}, test={metrics['n_test']})  "

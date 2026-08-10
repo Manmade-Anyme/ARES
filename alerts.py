@@ -118,6 +118,7 @@ async def send_startup_alert(
     profile_name: str = "DEFAULT",
     ml_active: bool = False,
     predictor_active: bool = False,
+    predictor_model_name: str = "v1.joblib",
 ) -> None:
     """
     Sends a startup message to Discord with the current PDH/PDL and status.
@@ -133,7 +134,7 @@ async def send_startup_alert(
     # No leading "+ " on these values — the template already prefixes every line
     # with it. Carrying it here too rendered "+ + [+] ML Data Collection ...".
     ml_line = "ACTIVE (recording 50+ features per cycle)" if ml_active else "inactive (table not found)"
-    predictor_line = "ACTIVE (v1.joblib)" if predictor_active else "inactive (model not loaded)"
+    predictor_line = f"ACTIVE ({predictor_model_name})" if predictor_active else "inactive (model not loaded)"
 
     msg = f"""```diff
 + =================================================================

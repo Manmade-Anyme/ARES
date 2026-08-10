@@ -126,7 +126,7 @@ async def run():
     
     ml_predictor = SignalPredictor()
     try:
-        ml_predictor.load_model("ml_signal/models/v1.joblib")
+        ml_predictor.load_model()
     except Exception as e:
         ml_predictor = None
 
@@ -150,8 +150,9 @@ async def run():
         print(f"{Y}[!] ML Data Collection Logger: table 'ml_collection' not found{RESET}")
         print(f"{Y}    Run ml_signal/schema.sql in Supabase SQL Editor to enable.{RESET}")
 
+    predictor_name = ml_predictor.model_filename if ml_predictor else "v1.joblib"
     if ml_predictor:
-        print(f"{G}[+] ML Predictor     : {B}ACTIVE{RESET} (v1.joblib)")
+        print(f"{G}[+] ML Predictor     : {B}ACTIVE{RESET} ({predictor_name})")
     else:
         print(f"{Y}[!] ML Predictor     : inactive (model not found){RESET}")
 
@@ -167,6 +168,7 @@ async def run():
         pdh, pdl, profile_name,
         ml_active=ml_table_ok,
         predictor_active=ml_predictor is not None,
+        predictor_model_name=predictor_name,
     )
 
     prev_iv = None
