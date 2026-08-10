@@ -153,3 +153,15 @@ async def test_discord_startup_and_signal_alert_version_display():
         fields = payload["embeds"][0]["fields"]
         ml_field = next(f for f in fields if f["name"] == "🤖 ML Prediction")
         assert "**85%** (proxy model, v2)" in ml_field["value"]
+
+
+def test_gitignore_does_not_ignore_versioned_models():
+    """Verify that .gitignore does not ignore ml_signal/models/*.joblib so retrained models are tracked."""
+    import subprocess
+    result = subprocess.run(
+        ["git", "check-ignore", "-v", "ml_signal/models/v2.joblib"],
+        capture_output=True,
+        text=True,
+    )
+    # git check-ignore exits with 1 when the file is NOT ignored (what we want)
+    assert result.returncode == 1, f"ml_signal/models/v2.joblib is ignored: {result.stdout}"
