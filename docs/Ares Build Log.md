@@ -838,8 +838,10 @@ Fixed a fatal pydantic `ValidationError: discord_webhook_url: Field required` wh
 - Wired `main.py` and `alerts.py` to display the active model filename in initialization banners and Discord alerts.
 - Removed `ml_signal/models/*.joblib` from `.gitignore` so newly trained versioned model artifacts are committed and tracked properly.
 - Added unit test suites `tests/unit/test_task208_secrets_defaults.py` and `tests/unit/test_task208_model_autoversion.py`.
+- **Live Verification**: Dispatched GitHub Actions training workflow `ml_training.yml` (run `31370677830`). The job completed successfully in 1m33s, generated and pushed `ml_signal/models/v2.joblib` and `reports/ml/v2_offline_metrics.json` to `main`. `SignalPredictor` dynamically verified loading `v2.joblib`.
 
 **TODOs**
 - [x] Merge PR #71 and perform local branch merge verification and cleanup.
+
 
 
