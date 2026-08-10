@@ -72,5 +72,6 @@
       "feature": "iv_features__iv_ce_pe_spread",
       "gain": 0.029918953776359558
     }
-  ]
+  ],
+  "model_version": "v2"
 }
