@@ -10,7 +10,7 @@ def _trade(setup, pnl, delta=None, lots=None, opt_entry=None, opt_sl=None, opt_t
     if delta is not None and lots is not None:
         sizing = {"delta": delta, "suggested_lots": lots}
         if opt_entry is not None:
-            sizing["option_entry"] = opt_entry
+            sizing["premium"] = opt_entry
             sizing["option_sl"] = opt_sl
             sizing["option_target"] = opt_target
         mc["options_sizing"] = sizing

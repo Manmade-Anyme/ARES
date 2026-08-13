@@ -122,7 +122,7 @@ def _option_1_lot_rupees(trade: dict) -> float:
     if not sizing:
         return 0.0
     
-    option_entry = sizing.get("option_entry")
+    option_entry = sizing.get("premium")
     option_sl = sizing.get("option_sl")
     option_target = sizing.get("option_target")
     
