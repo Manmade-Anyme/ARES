@@ -134,8 +134,10 @@ def _option_1_lot_rupees(trade: dict) -> float:
     
     if pnl_points > 0:
         return (float(option_target) - float(option_entry)) * lot_size
-    else:
+    elif pnl_points < 0:
         return (float(option_sl) - float(option_entry)) * lot_size
+    else:
+        return 0.0
 
 
 def _bucket(trades: list[dict]) -> dict:
@@ -212,7 +214,7 @@ def build_report_embed(period_label: str, date_range: str, metrics: dict) -> dic
         "description": f"🗓️ {date_range}",
         "color": color,
         "fields": fields,
-        "footer": {"text": "Spot movement P&L is a delta-based estimate (spot pts × |Δ| × lots × lot size)."},
+        "footer": {"text": "Spot movement P&L is a delta-based estimate (spot pts x |Δ| x lots x lot size)."},
     }
 
 
