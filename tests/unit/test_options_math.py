@@ -121,7 +121,7 @@ class TestOptionsMath(unittest.IsolatedAsyncioTestCase):
 
     @patch('options_math.fetch_dhan_capital')
     async def test_process_options_calculation(self, mock_fetch_capital):
-        mock_fetch_capital.return_value = 9106.09
+        mock_fetch_capital.return_value = 22765.225
         
         signal = AresSignal(
             setup_type=SetupType.FAILED_BREAKOUT,
@@ -148,7 +148,7 @@ class TestOptionsMath(unittest.IsolatedAsyncioTestCase):
         # Verify signal properties updated
         self.assertEqual(signal.strike_to_trade, 24050)
         self.assertEqual(signal.option_type, "PE")
-        self.assertEqual(signal.capital, 9106.09)
+        self.assertEqual(signal.capital, 22765.225)
         self.assertEqual(signal.option_premium, 82.8)
         self.assertEqual(signal.option_delta, -0.45982)
         self.assertAlmostEqual(signal.option_sl, 82.8 - (27.75 * 0.45982), places=4)
