@@ -166,7 +166,7 @@ def build_report_embed(period_label: str, date_range: str, metrics: dict) -> dic
         f"🎯 **Win Rate:** {o['win_rate']:.0f}%\n"
         f"📊 **Net Spot Points:** {net:+.1f}   "
         f"🕒 **Avg/Trade:** {o['avg_points']:+.1f}\n"
-        f"💰 **Est. Options P&L:** {_fmt_rupees(o['option_rupees'])}\n"
+        f"💰 **Est. Spot movement P&L:** {_fmt_rupees(o['option_rupees'])}\n"
         f"🟢 **Best:** {o['best']:+.1f}   🔴 **Worst:** {o['worst']:+.1f}"
     )
     fields = [{"name": "📋 Overall", "value": summary, "inline": False}]
@@ -187,7 +187,7 @@ def build_report_embed(period_label: str, date_range: str, metrics: dict) -> dic
         "description": f"🗓️ {date_range}",
         "color": color,
         "fields": fields,
-        "footer": {"text": "Options P&L is a delta-based estimate (spot pts × |Δ| × lots × lot size)."},
+        "footer": {"text": "Spot movement P&L is a delta-based estimate (spot pts × |Δ| × lots × lot size)."},
     }
 
 
