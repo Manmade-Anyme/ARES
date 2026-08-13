@@ -116,6 +116,28 @@ def _option_rupees(trade: dict) -> float:
     return pnl_points * abs(float(delta)) * lot_size * int(lots)
 
 
+def _option_1_lot_rupees(trade: dict) -> float:
+    """Exact option premium P&L for 1 lot: (target - entry)*lot for wins, (sl - entry)*lot for losses."""
+    sizing = (trade.get("market_context") or {}).get("options_sizing")
+    if not sizing:
+        return 0.0
+    
+    option_entry = sizing.get("option_entry")
+    option_sl = sizing.get("option_sl")
+    option_target = sizing.get("option_target")
+    
+    if option_entry is None or option_sl is None or option_target is None:
+        return 0.0
+        
+    pnl_points = float(trade.get("pnl_points", 0.0))
+    lot_size = int(settings.nifty_lot_size)
+    
+    if pnl_points > 0:
+        return (float(option_target) - float(option_entry)) * lot_size
+    else:
+        return (float(option_sl) - float(option_entry)) * lot_size
+
+
 def _bucket(trades: list[dict]) -> dict:
     """Aggregate one list of trades into a metrics dict."""
     n = len(trades)
@@ -124,6 +146,7 @@ def _bucket(trades: list[dict]) -> dict:
             "trades": 0, "wins": 0, "win_rate": 0.0,
             "net_points": 0.0, "avg_points": 0.0,
             "best": 0.0, "worst": 0.0, "option_rupees": 0.0,
+            "option_1_lot_rupees": 0.0,
         }
     points = [float(t["pnl_points"]) for t in trades]
     wins = sum(1 for p in points if p > 0)
@@ -137,6 +160,7 @@ def _bucket(trades: list[dict]) -> dict:
         "best": max(points),
         "worst": min(points),
         "option_rupees": sum(_option_rupees(t) for t in trades),
+        "option_1_lot_rupees": sum(_option_1_lot_rupees(t) for t in trades),
     }
 
 
