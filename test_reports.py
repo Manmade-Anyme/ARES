@@ -31,10 +31,10 @@ def test_metrics():
     m = compute_metrics(trades)
     o = m["overall"]
 
-    assert o["trades"] == 4
-    assert o["wins"] == 2                      # 30 and 20; 0.0 excluded
-    assert o["win_rate"] == 50.0
-    assert o["net_points"] == 40.0             # 30 -10 +20 +0
+    assert o["trades"] == 5
+    assert o["wins"] == 3                      # 30, 20 and 10; 0.0 excluded
+    assert o["win_rate"] == 60.0
+    assert o["net_points"] == 50.0             # 30 -10 +20 +0 +10
     assert o["best"] == 30.0 and o["worst"] == -10.0
 
     # options rupees: FAILED_BREAKOUT trades and EXHAUSTION_REVERSAL trades with sizing contribute.
