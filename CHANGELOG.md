@@ -5,6 +5,7 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **Risk per Trade Update (TASK-206)**: Updated `risk_per_trade_pct` in `config_profiles.py` from 10.0% to 4.0% to align with proper risk management sizing against the current strategy win rate.
 - **Exact 1-Lot P&L Added to Reports**: Added a new metric to the performance reports that calculates exact option premium P&L for a single lot based on the actual entry/sl/target premiums saved during the trade.
 - **Report Terminology Update (TASK-000)**: Renamed "Options P&L" to "Spot movement P&L" in performance reports.
 - **ML Signal Architecture & Configuration Profile Documentation Updates (TASK-207)**: Updated root `README.md`, `ml_signal/README.md`, and `ml_signal/schema.sql`. Documented automated dual-profile configuration system (`EXPIRY_CONFIG` vs `NON_EXPIRY_CONFIG`) and per-setup geometry (`SetupLevels`), fixed LaTeX math rendering glitch in option lot sizing math, added Machine Learning Layer to architecture overview, added 4th detector (`TrendContinuation`, TASK-177), updated FailedBreakout score thresholds (TASK-184), updated `ml_signal/` project structure tree, updated `trade_analytics` schema (`score` integer column, TASK-198), and clarified production in-process `SignalPredictor` vs optional standalone scripts.
