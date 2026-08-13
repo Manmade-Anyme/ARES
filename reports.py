@@ -191,6 +191,7 @@ def build_report_embed(period_label: str, date_range: str, metrics: dict) -> dic
         f"📊 **Net Spot Points:** {net:+.1f}   "
         f"🕒 **Avg/Trade:** {o['avg_points']:+.1f}\n"
         f"💰 **Est. Spot movement P&L:** {_fmt_rupees(o['option_rupees'])}\n"
+        f"💰 **Exact 1-Lot P&L:** {_fmt_rupees(o['option_1_lot_rupees'])}\n"
         f"🟢 **Best:** {o['best']:+.1f}   🔴 **Worst:** {o['worst']:+.1f}"
     )
     fields = [{"name": "📋 Overall", "value": summary, "inline": False}]
