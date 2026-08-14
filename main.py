@@ -44,8 +44,14 @@ def print_banner(pdh: float, pdl: float, profile_name: str = "DEFAULT", ml_activ
     print(f"{G}[+] ML Collection: {W}{ml_status}{RESET}")
     print(f"{C}{'=' * 65}{RESET}")
 
-def format_signal_console(signal, spot):
-    """Formats and prints a detailed signal alert to the console."""
+def format_signal_console(signal, spot: float):
+    """
+    Formats and prints a detailed signal alert to the console.
+
+    Args:
+        signal: The generated AresSignal object containing trade details.
+        spot (float): The current spot price of the underlying asset.
+    """
     color = G if signal.direction.value == "BULLISH" else R
     emoji = "🐂 🟢" if signal.direction.value == "BULLISH" else "🐻 🔴"
     print("\n" + f"{color}{B}━" * 65 + RESET)
