@@ -4,16 +4,23 @@ Always adhere to the Global Development Pipeline workflows when performing any w
 
 ## 1. Development Pipeline Modes
 
+Every task must involve the Project Manager, Documentation, QA, and PR Reviewer agents. The Software Architect agent can be skipped only if there are no architectural changes.
+
 Choose the appropriate mode based on scope:
 *   **Code-First Mode** (< 1 day, quick features/fixes):
-    1. Write failing unit tests first (TDD).
-    2. Assist with minimal implementation to pass tests.
-    3. Run Debug & QA steps to check coverage (target: 100%).
+    1. PM phase: Define the task and create a directive if needed.
+    2. Write failing unit tests first (TDD).
+    3. Assist with minimal implementation to pass tests.
+    4. Documentation phase: Update all documentation properly.
+    5. Run Debug & QA steps to check coverage (target: 100%).
+    6. PR Reviewer phase: Review the PR.
 *   **Design-First Mode** (complex changes, > 1 day, architectural decisions):
     1. PM phase: Write a directive (`directives/TASK-###_[description].md`). **Wait for human approval.**
-    2. Architect phase: Write an ADR (`directives/adr/TASK-###_[description].md`) detailing design and API contracts. **Wait for human approval.**
+    2. Architect phase: Write an ADR (`directives/adr/TASK-###_[description].md`) detailing design and API contracts. **Wait for human approval.** *(Skip if no architectural changes)*
     3. Code Generator phase: Implement from the ADR.
-    4. Run Debug & QA validation.
+    4. Documentation phase: Update all documentation properly.
+    5. Run Debug & QA validation.
+    6. PR Reviewer phase: Review the PR.
 *   **Research/Brainstorm Mode** (exploring unknowns, stress-testing plans):
     1. Ask clarifying questions one at a time.
     2. Map out decision trees and document insights.
