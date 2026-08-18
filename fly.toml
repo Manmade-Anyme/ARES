@@ -20,5 +20,5 @@ primary_region = 'bom'
   processes = ['app']
   size = 'shared-cpu-1x'
 
-[restart]
+[[restart]]
   policy = 'never'
