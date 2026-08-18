@@ -43,6 +43,14 @@ jobs:
           # checkout, but scoping also keeps stray root-level test_*.py out.
           python -m pytest tests/ -q
 
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl status -a ares-xzy-gq || true
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - run: flyctl machine list -a ares-xzy-gq || true
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
   deploy:
     needs: test
     # The push trigger is main-only, but workflow_dispatch accepts any ref
