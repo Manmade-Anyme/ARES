@@ -19,3 +19,6 @@ primary_region = 'bom'
   memory_mb = 768
   processes = ['app']
   size = 'shared-cpu-1x'
+
+[restart]
+  policy = 'never'
