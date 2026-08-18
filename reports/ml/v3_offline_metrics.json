@@ -72,5 +72,6 @@
       "feature": "greek_features__gamma_theta_ratio",
       "gain": 0.028544483706355095
     }
-  ]
+  ],
+  "model_version": "v3"
 }

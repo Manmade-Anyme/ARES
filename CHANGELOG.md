@@ -7,6 +7,9 @@ All notable changes to the ARES trading system will be documented in this file.
 ### Added
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
+### Fixed
+- **Fly.io Crash Loop and Timezone Fix (MANM-28)**: Added `[restart] policy = 'never'` to `fly.toml` to prevent infinite restart loops when `main.py` intentionally exits at the end of the market session. Added `tzdata` to `requirements.txt` to ensure proper timezone resolution on lightweight Python slim Docker images.
+
 ### Changed
 - **Risk per Trade Update (TASK-206)**: Updated `risk_per_trade_pct` in `config_profiles.py` from 10.0% to 4.0% to align with proper risk management sizing against the current strategy win rate.
 - **Exact 1-Lot P&L Added to Reports**: Added a new metric to the performance reports that calculates exact option premium P&L for a single lot based on the actual entry/sl/target premiums saved during the trade.
