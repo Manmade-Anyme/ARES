@@ -5,6 +5,8 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **GitHub App token minting helper (MANM-40)**: Added a reusable command-line tool (`scripts/mint-github-app-token.py`) to securely mint short-lived GitHub App installation tokens for agents, with repository-scoping support. Documented usage in `docs/github-app-agent-token.md`.
+
 - **Verify PR workflow and autopilot CI (MANM-23)**: Added a dummy text file to trigger the PR webhooks to verify if the Automated PR Reviewer autopilot and CI/CD pipelines work correctly.
 
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
