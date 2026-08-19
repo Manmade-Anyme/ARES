@@ -460,6 +460,12 @@ ARES is fully containerized with Docker and configured for **Fly.io**:
 
 ---
 
+### 6. Agent Automation
+
+The `manmade-agents` GitHub App is configured for agent-driven automated PR approval and merging. For running scripts requiring temporary, repo-scoped installation tokens, see [GitHub App Agent Token Documentation](docs/github-app-agent-token.md).
+
+---
+
 ## 🚀 Operational Bounds
 
 - **Session Window:** Actively polls from **09:20 to 15:25 IST** (Standard NSE session window).
