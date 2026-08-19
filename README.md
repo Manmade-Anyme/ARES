@@ -300,6 +300,8 @@ ares/
 ├── alerts.py          # Formatting & Discord broadcasting
 ├── storage.py         # Supabase persistence logic
 ├── main.py            # Entry point, polling loop, and session gate
+├── scripts/           # Standalone utilities (e.g. mint-github-app-token.py)
+├── docs/              # System documentation & workflows
 ```
 
 ---
@@ -448,6 +450,12 @@ PYTHONPATH=. pytest --cov=. tests/
 ---
 
 ### 5. Deployment (Fly.io & GitHub Actions)
+
+### 6. Automated Agents & Tokens
+
+ARES uses the `manmade-agents` GitHub App to securely interact with the repository (e.g., automated PR reviews and deployments). To test or manually generate short-lived installation tokens, use the minting helper:
+- **Helper Script**: `scripts/mint-github-app-token.py`
+- **Documentation**: [`docs/github-app-agent-token.md`](docs/github-app-agent-token.md)
 
 ARES is fully containerized with Docker and configured for **Fly.io**:
 
