@@ -1,12 +1,12 @@
 """
-TASK-183 — offline XGBoost training entrypoint.
+MANM-48 — continuous XGBoost training entrypoint.
 
 Reads `ml_collection` (read-only), self-labels it via ml_signal.dataset, trains
 an XGBoost classifier on a chronological (small-data-safe) split, evaluates on
 the held-out tail, and writes a model artifact + a metrics/feature-importance
 report. This is what actually *enables* XGBoost on the data ARES collects.
 
-Run from the repo root:  python -m ml_signal.train_offline
+Run from the repo root:  python -m ml_signal.train_continuous
 
 OFFLINE / ADDITIVE: no Supabase writes, no engine changes. See ADR-183.
 """
