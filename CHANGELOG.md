@@ -4,6 +4,9 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **ML Pipeline Improvement Roadmap (TODO.md)**: Added 8 new TODO items from ML pipeline analysis against production trading ML frameworks. Includes: regime filter for signal context (IV rank, realised vol, price slope, ADX, PCR trend), simulated P&L evaluation metrics (equity curve, max drawdown, profit factor), model stacking/ensemble research, Garman-Klass realised volatility feature, model degradation monitoring, and deferred items (transaction cost–aware labeling, conviction threshold tuning, online learning) pending data volume growth.
+
 ### Changed
 - **Risk per Trade Update (TASK-206)**: Updated `risk_per_trade_pct` in `config_profiles.py` from 10.0% to 4.0% to align with proper risk management sizing against the current strategy win rate.
 - **Exact 1-Lot P&L Added to Reports**: Added a new metric to the performance reports that calculates exact option premium P&L for a single lot based on the actual entry/sl/target premiums saved during the trade.
