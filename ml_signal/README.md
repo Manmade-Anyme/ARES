@@ -54,9 +54,10 @@ Optional Standalone Processes:
 | `data.py` | Load training data from Supabase / Dhan API |
 | `trainer.py` | Walk-forward training, Optuna tuning, SHAP analysis |
 | `train_offline.py` | Offline dataset export & XGBoost model training |
+| `train_continuous.py` | Offline continuous market regime training |
 | `predictor.py` | In-process runtime inference wrapper (`SignalPredictor`) |
 | `collector.py` | In-process feature logger (`MLCollector`) writing to `ml_collection` |
-| `live.py` | Optional standalone continuous prediction loop |
+| `live.py` | Optional standalone continuous prediction loop (loads from `models_continuous/`) |
 | `signal_consumer.py` | Optional standalone event-triggered prediction on ARES signals |
 | `schema.sql` | Supabase `ml_collection` and `ml_predictions` table definitions |
 
@@ -68,6 +69,7 @@ Optional Standalone Processes:
 - **OI**: PCR, OI bias, concentration, change%
 - **Greeks**: gamma/theta ratio, total vega
 - **Structure**: distance to nearest resistance/support, PDH/PDL
+- **Context**: `detector_scores` matrix, `signal_direction`
 - **Meta**: DTE, expiry day flag, session phase
 
 ## Usage

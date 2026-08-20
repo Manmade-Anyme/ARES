@@ -5,6 +5,8 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **ML Data Distribution and Context Repair (MANM-48)**: Implemented Context Repair by adding `detector_scores` and `signal_direction` to dataset features and offline training query. Implemented Distribution Governance by separating continuous market regime training into `train_continuous.py` and routing `live.py` to load models from `models_continuous/`.
+
 - **GitHub App token minting helper (MANM-40)**: Added a reusable command-line tool (`scripts/mint-github-app-token.py`) to securely mint short-lived GitHub App installation tokens for agents, with repository-scoping support. Documented usage in `docs/github-app-agent-token.md`.
 
 - **Verify PR workflow and autopilot CI (MANM-23)**: Added a dummy text file to trigger the PR webhooks to verify if the Automated PR Reviewer autopilot and CI/CD pipelines work correctly.
