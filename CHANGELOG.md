@@ -5,6 +5,7 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **ML Pipeline Improvement Roadmap (TODO.md)**: Added 8 new TODO items from ML pipeline analysis against production trading ML frameworks. Includes: regime filter for signal context (IV rank, realised vol, price slope, ADX, PCR trend), simulated P&L evaluation metrics (equity curve, max drawdown, profit factor), model stacking/ensemble research, Garman-Klass realised volatility feature, model degradation monitoring, and deferred items (transaction cost–aware labeling, conviction threshold tuning, online learning) pending data volume growth.
 - **GitHub App token minting helper (MANM-40)**: Added a reusable command-line tool (`scripts/mint-github-app-token.py`) to securely mint short-lived GitHub App installation tokens for agents, with repository-scoping support. Documented usage in `docs/github-app-agent-token.md`.
 
 - **Verify PR workflow and autopilot CI (MANM-23)**: Added a dummy text file to trigger the PR webhooks to verify if the Automated PR Reviewer autopilot and CI/CD pipelines work correctly.

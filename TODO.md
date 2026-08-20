@@ -40,6 +40,84 @@ Two things to carry into that discussion:
 
 ---
 
+## ML Pipeline Improvements
+
+> **Added 2026-08-20** from analysis of ARES ML pipeline against production ML
+> trading frameworks. Items below are scoped and prioritised; no code changes
+> until each is individually discussed and approved.
+
+### 🔬 Regime Filter for Signal Context
+
+- [ ] **Add market regime detection at signal generation time.**
+      Goal: every generated signal should carry a regime tag so we can see
+      "this signal fired during a trending / ranging / volatile regime."
+      Proposed features to compute per cycle:
+  - IV level (ATM CE+PE average) — already collected, needs regime bucketing
+  - IV % change (1-bar and 5-bar) — already in `iv_features`
+  - Rolling ATM IV rank (current IV as percentile of last N sessions)
+  - Realised volatility over 10/20 bars (Garman-Klass or Parkinson estimator
+    on the 1-min candle OHLC — pure spot, no external dependency)
+  - Spot price slope (linear regression over 20 bars) — positive = trending up,
+    negative = trending down, flat = ranging
+  - ADX-style directional strength from candle highs/lows (no TA-Lib needed,
+    hand-rolled from the OHLC buffer the engine already keeps)
+  - OI PCR trend direction (rising PCR = bearish pressure building)
+  - **Output**: a single `regime` field on the signal:
+    `TRENDING_UP | TRENDING_DOWN | RANGING | HIGH_VOL_CHOP`
+
+### 📊 Evaluation Metrics — Simulated P&L
+
+- [ ] **Add equity curve, max drawdown, and profit factor to the training loop.**
+      After walk-forward evaluation, compute:
+  - Cumulative P&L curve (equity curve) from the test-set predictions
+  - Max drawdown (peak-to-trough of equity curve)
+  - Profit factor (gross wins / gross losses)
+  - Win rate at each confidence tier
+  - Plot / persist the equity curve alongside the metrics JSON report
+
+### 🔍 Model Stacking / Ensemble Research
+
+- [ ] **Research feasibility of model stacking beyond single XGBoost.**
+      Investigate whether combining XGBoost with a simpler model (logistic
+      regression, LightGBM) via stacking or voting improves reliability.
+      Blocked on data volume — revisit once labeled samples exceed 500.
+
+### 📈 Garman-Klass / Realised Volatility Feature
+
+- [ ] **Add realised volatility estimator to feature engineering.**
+      Garman-Klass uses OHLC (no external data needed):
+      `σ² = 0.5 * ln(H/L)² − (2ln2−1) * ln(C/O)²`
+      Compute over rolling 10 and 20 bar windows. Add as
+      `volatility_features__gk_vol_10` and `_20`. Also compute
+      IV-minus-realised spread (vol risk premium) — a classic edge signal
+      in options markets.
+
+### 🔄 Model Degradation Monitoring
+
+- [ ] **Add live-vs-training performance tracking.**
+      After each prediction cycle, compare rolling live accuracy/AUC against
+      the training report's metrics. Alert (Discord or console) when live AUC
+      drops >10% below training AUC over a 50-prediction window. Track in a
+      lightweight Supabase table or local CSV.
+
+### ⏳ Deferred — Pending Data Volume
+
+The following are recognised improvements but blocked on having more labelled
+training data (currently 147 samples, target ≥500):
+
+- [ ] **Transaction cost–aware labeling** — deduct estimated round-trip cost
+      (brokerage + STT + exchange) from the label threshold so "win" means
+      "win after costs." Deferred: requires options premium tracking which is
+      out of current scope (spot-only system).
+- [ ] **High-conviction threshold tuning** — optimise the decision boundary
+      (currently `HIGH ≥ 0.70`) on a validation set using precision-recall
+      curves rather than hard-coding. Needs meaningful AUC first.
+- [ ] **Online / incremental learning** — investigate partial_fit or
+      warm-start retraining on new data without full batch retrain. Blocked
+      on data volume; weekly batch retrain is sufficient for now.
+
+---
+
 ## Open but parked — no action agreed
 
 Kept so they are not lost. None are in progress.
