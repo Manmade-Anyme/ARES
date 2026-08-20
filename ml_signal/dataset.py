@@ -26,6 +26,8 @@ FEATURE_GROUPS = [
     "greek_features",
     "structure_features",
     "meta_features",
+    "detector_scores",
+    "context_features",
 ]
 
 # Non-feature bookkeeping columns produced by flatten_features().
@@ -82,9 +84,17 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
 
         groups: Dict[str, Dict[str, float]] = {}
         for g in FEATURE_GROUPS:
+            if g == "context_features":
+                continue
             nd = _numeric_only(_load(r.get(g)))
             groups[g] = nd
             keys_by_group[g].update(nd.keys())
+            
+        sig_dir = r.get("signal_direction")
+        dir_val = 1.0 if sig_dir == "BULLISH" else (-1.0 if sig_dir == "BEARISH" else 0.0)
+        groups["context_features"] = {"signal_direction": dir_val}
+        keys_by_group["context_features"].update(["signal_direction"])
+        
         parsed.append((ts, close, groups))
 
     feature_cols = sorted(

@@ -233,16 +233,17 @@ def main() -> None:
     print(f"[*] Reading ml_collection (read-only)...")
     rows = _fetch_ml_collection(supabase)
     
-    from ml_signal.dataset import build_real_outcome_frame
-    print(f"[*] {len(rows)} rows fetched. Filtering for real trade outcomes...")
+    from ml_signal.dataset import build_labeled_frame
+    print(f"[*] {len(rows)} rows fetched. Labeling continuous candles...")
 
-    df = build_real_outcome_frame(
+    df = build_labeled_frame(
         rows,
-        t1_is_win=True, # Predict probability of hitting T1 (Win=1)
+        lookforward=config.label_lookforward,
+        tp_points=config.label_tp_points,
+        sl_points=config.label_sl_points,
     )
     if df.empty:
-        print("[-] No valid real trade outcomes found. "
-              "Collect more live trades, then rerun.")
+        print("[-] No valid continuous outcomes found.")
         return
 
     fcols = feature_columns(df)
@@ -250,12 +251,12 @@ def main() -> None:
           f"positive-rate={df['label'].mean():.3f}")
 
     from ml_signal.predictor import get_next_model_version_and_path
-    models_dir = os.path.join(repo, "ml_signal", "models")
+    models_dir = os.path.join(repo, "ml_signal", "models_continuous")
     save_path, next_version = get_next_model_version_and_path(models_dir)
     print(f"[*] Incrementing model version -> {next_version} ({save_path})")
 
-    report_path = os.path.join(repo, "reports", "ml", "task183_offline_metrics.json")
-    versioned_report_path = os.path.join(repo, "reports", "ml", f"{next_version}_offline_metrics.json")
+    report_path = os.path.join(repo, "reports", "ml", "continuous_metrics.json")
+    versioned_report_path = os.path.join(repo, "reports", "ml", f"{next_version}_continuous_metrics.json")
     model, metrics = run_training(
         df, fcols,
         config=config,

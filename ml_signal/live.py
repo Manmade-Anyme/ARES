@@ -158,7 +158,10 @@ class LiveRunner:
     ):
         self._init_dhan(dhan_client_id, dhan_access_token)
         self._init_supabase(supabase_url, supabase_key)
-        self.predictor.load_model()
+        continuous_models = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models_continuous")
+        from .predictor import discover_latest_model
+        latest_path, _ = discover_latest_model(continuous_models)
+        self.predictor.load_model(latest_path)
 
         print(f"[ML Signal] Starting continuous prediction loop (poll={self.config.poll_interval_seconds}s)")
 
