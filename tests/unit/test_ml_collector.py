@@ -375,6 +375,94 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["timestamp"], "2026-08-05T08:42:00+00:00")
 
     @patch("ml_signal.collector.create_client")
+    def test_option_row_to_dict_includes_delta(self, mock_create_client):
+        """_option_row_to_dict must forward delta from the OptionRow."""
+        mock_create_client.return_value = MagicMock()
+        collector = MLCollector(self.url, self.key, self.config)
+
+        row = MagicMock()
+        row.iv = 15.0
+        row.oi = 500000
+        row.oi_change_pct = 2.5
+        row.gamma = 0.05
+        row.theta = -0.8
+        row.vega = 0.3
+        row.delta = 0.45  # ← the field being asserted
+
+        result = collector._option_row_to_dict(row)
+
+        self.assertIn("delta", result)
+        self.assertEqual(result["delta"], 0.45)
+
+    def test_compute_greek_features_net_delta_bullish(self):
+        """CE delta=0.5, PE delta=-0.3 → net_delta = 0.5 − 0.3 = 0.2 (bullish bias)."""
+        from ml_signal.features import compute_greek_features
+
+        feats = compute_greek_features(
+            atm_ce_gamma=0.05,
+            atm_pe_gamma=0.05,
+            atm_ce_theta=-0.8,
+            atm_pe_theta=-0.8,
+            atm_ce_vega=0.3,
+            atm_pe_vega=0.3,
+            atm_ce_delta=0.5,
+            atm_pe_delta=-0.3,
+            spot=24000.0,
+        )
+
+        self.assertIn("net_delta", feats)
+        self.assertAlmostEqual(feats["net_delta"], 0.2, places=9)
+
+    def test_compute_greek_features_net_delta_bearish(self):
+        """CE delta=0.3, PE delta=-0.6 → net_delta = 0.3 − 0.6 = -0.3 (bearish bias)."""
+        from ml_signal.features import compute_greek_features
+
+        feats = compute_greek_features(
+            atm_ce_gamma=0.05,
+            atm_pe_gamma=0.05,
+            atm_ce_theta=-0.8,
+            atm_pe_theta=-0.8,
+            atm_ce_vega=0.3,
+            atm_pe_vega=0.3,
+            atm_ce_delta=0.3,
+            atm_pe_delta=-0.6,
+            spot=24000.0,
+        )
+
+        self.assertIn("net_delta", feats)
+        self.assertAlmostEqual(feats["net_delta"], -0.3, places=9)
+
+    def test_feature_vector_includes_net_delta(self):
+        """build_feature_vector propagates delta → greek_features__net_delta."""
+        from ml_signal.features import build_feature_vector
+
+        atm_ce = {"iv": 15.0, "oi": 500000, "oi_change_pct": 2.5,
+                  "gamma": 0.05, "theta": -0.8, "vega": 0.3, "delta": 0.5}
+        atm_pe = {"iv": 16.0, "oi": 600000, "oi_change_pct": 1.5,
+                  "gamma": 0.05, "theta": -0.8, "vega": 0.3, "delta": -0.3}
+
+        candle = {"open": 24100.0, "high": 24150.0, "low": 24080.0,
+                  "close": 24120.0, "volume": 150000, "vwap": 24110.0}
+
+        result = build_feature_vector(
+            candle=candle,
+            volume_history=[],
+            iv_history=None,
+            atm_ce=atm_ce,
+            atm_pe=atm_pe,
+            total_ce_oi=1000000,
+            total_pe_oi=1200000,
+            all_ce_oi=[500000],
+            all_pe_oi=[600000],
+            levels=[24200.0, 24000.0],
+            timestamp=None,
+            spot=24120.0,
+        )
+
+        self.assertIn("greek_features__net_delta", result)
+        self.assertAlmostEqual(result["greek_features__net_delta"], 0.2, places=9)
+
+    @patch("ml_signal.collector.create_client")
     def test_snapshot_handles_string_timestamps(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_create_client.return_value = mock_supabase

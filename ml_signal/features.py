@@ -161,6 +161,8 @@ def compute_greek_features(
     atm_ce_vega: float,
     atm_pe_vega: float,
     spot: float,
+    atm_ce_delta: Optional[float] = None,  # CE delta ∈ [0, 1]; None = old row → NaN
+    atm_pe_delta: Optional[float] = None,  # PE delta ∈ [-1, 0]; None = old row → NaN
 ) -> Dict[str, float]:
     total_gamma = atm_ce_gamma + atm_pe_gamma
     total_theta = abs(atm_ce_theta) + abs(atm_pe_theta)
@@ -171,7 +173,20 @@ def compute_greek_features(
         "total_vega": total_vega,
     }
 
+    # net_delta > 0 = directional bias bullish; < 0 = bearish; ~0 = balanced.
+    # CE delta is positive (0→1), PE delta is negative (-1→0), so:
+    #   net_delta = ce_delta − |pe_delta| = ce_delta − abs(pe_delta)
+    #             = ce_delta + pe_delta   (since pe_delta is already negative)
+    # None is kept as None rather than coerced to 0.0 so that old ml_collection
+    # rows (pre-delta) become NaN in the feature matrix via _numeric_only, which
+    # XGBoost handles natively.  A zero delta is a real market state (exactly ATM).
+    if atm_ce_delta is not None and atm_pe_delta is not None:
+        features["net_delta"] = atm_ce_delta - abs(atm_pe_delta)
+    else:
+        features["net_delta"] = None  # type: ignore[assignment]
+
     return features
+
 
 
 def compute_structure_features(
@@ -298,6 +313,8 @@ def build_feature_vector(
             atm_pe_theta=atm_pe.get("theta", 0),
             atm_ce_vega=atm_ce.get("vega", 0),
             atm_pe_vega=atm_pe.get("vega", 0),
+            atm_ce_delta=atm_ce.get("delta"),  # None if key absent (old row → NaN)
+            atm_pe_delta=atm_pe.get("delta"),  # None if key absent (old row → NaN)
             spot=spot,
         )
         features.update({f"greek_features__{k}": v for k, v in greek_feats.items()})

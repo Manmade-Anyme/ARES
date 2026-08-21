@@ -56,6 +56,7 @@ class MLCollector:
             "gamma": float(getattr(option, "gamma", 0)),
             "theta": float(getattr(option, "theta", 0)),
             "vega": float(getattr(option, "vega", 0)),
+            "delta": float(getattr(option, "delta", 0)),  # CE: [0,1]; PE: [-1,0]
         }
 
     def _compute_totals_from_chain(
@@ -161,6 +162,8 @@ class MLCollector:
             atm_pe_theta=atm_pe_dict["theta"],
             atm_ce_vega=atm_ce_dict["vega"],
             atm_pe_vega=atm_pe_dict["vega"],
+            atm_ce_delta=atm_ce_dict["delta"],  # forwarded from OptionRow.delta
+            atm_pe_delta=atm_pe_dict["delta"],  # forwarded from OptionRow.delta
             spot=spot,
         )
 
