@@ -149,8 +149,9 @@ class PositionManager:
         Two accounting rules follow from this:
           - Fill-at-level: events are reported/logged at the touched level
             (stop or target price), not at the close that detected them.
-          - Pessimistic resolution: if one candle touches both the stop and a
-            target, the stop is assumed to have filled first.
+          - Optimistic resolution: if one candle touches both the stop and a
+            target, the target is assumed to have filled first (wicks that
+            touch targets are counted as wins).
 
         Returns a list of (trade_id, update_type) for every state change this
         tick, so the caller can react (e.g. clear the engine cooldown on SL_HIT).

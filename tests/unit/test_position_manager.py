@@ -521,6 +521,27 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
+    async def test_intrabar_bearish_both_sl_and_target_resolves_optimistically(self, mock_settings, mock_alert):
+        """A BEARISH candle that spans both the stop and a target is resolved as
+        a target hit — mirrors the BULLISH optimistic resolution test so that a
+        regression in the BEARISH elif ordering is always caught."""
+        trade = self._bullish_trade(
+            direction="BEARISH", stop_loss=24250.0,
+            target_1=24180.0, target_2=24130.0,
+        )
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            # low goes to 24120 (past T2 = 24130), high goes to 24260 (past SL = 24250)
+            events = await pm.update_trades(24200.0, candle_high=24260.0, candle_low=24120.0)
+
+        self.assertEqual(trade["state"], "CLOSED")
+        self.assertIn(("trade-intrabar", "T2_HIT"), events)
+        mock_log_exit.assert_called_with("trade-intrabar", 24130.0, "T2_HIT")
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
     async def test_intrabar_t2_fills_at_level_not_close(self, mock_settings, mock_alert):
         trade = self._bullish_trade(state="T1_HIT", stop_loss=24000.0)
         pm = PositionManager()
