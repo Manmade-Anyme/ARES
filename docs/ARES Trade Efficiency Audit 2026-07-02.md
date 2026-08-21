@@ -74,7 +74,7 @@ New findings from data:
 8. Raise `breakout_failure_min_score` 2→3; exclude `closed_back` from score. ✅ SHIPPED (TASK-172 — closed_back is the gate, not scored; min 3 of 5 conditions)
 9. Time-of-day gates: no entries before 09:30 / after 15:00 (config). [SKIP]
 10. IV-crush filter: exempt HIGH confidence, lengthen lookback (~60 samples), consider symmetric. ✅ SHIPPED (TASK-172 — HIGH exempt, 60-sample CE+PE lookbacks, symmetric; alert-only signals bypass)
-11. Intrabar high/low exit checks in update_trades (avg 6.8 pts slippage/stop recovered). ✅ SHIPPED (TASK-172 — candle high/low checks, fill-at-level exits, pessimistic same-candle resolution)
+11. Intrabar high/low exit checks in update_trades (avg 6.8 pts slippage/stop recovered). ✅ SHIPPED (TASK-172 — candle high/low checks, fill-at-level exits, optimistic same-candle resolution)
 12. Speed-filter threshold into config_profiles; standardize confidence bars (~≥60% of matrix). ✅ SHIPPED (TASK-172 — `speed_filter_*` config; shared HIGH bar ≥60%: breakout 3/5, wall/exhaustion 3/4)
 13. Fix signal_id logging + timestamp timezone consistency; dedupe add_trade. ✅ SHIPPED (TASK-172 — trade_analytics.signal_id ← ares_signals.id; entry timestamps IST→UTC; 1-pt dedupe guard)
 

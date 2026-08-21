@@ -504,19 +504,41 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
-    async def test_intrabar_both_sl_and_target_resolves_pessimistically(self, mock_settings, mock_alert):
+    async def test_intrabar_both_sl_and_target_resolves_optimistically(self, mock_settings, mock_alert):
         """A candle that spans both the stop and a target is resolved as a
-        stop-out — the honest assumption when intra-candle order is unknown."""
+        target hit — an optimistic assumption so wicks that touch targets count as wins."""
         trade = self._bullish_trade()
         pm = PositionManager()
         pm.active_trades = [trade]
 
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            # high goes to 24105 (past T2 = 24100), low goes to 23970 (past SL = 23975)
             events = await pm.update_trades(24080.0, candle_high=24105.0, candle_low=23970.0)
 
         self.assertEqual(trade["state"], "CLOSED")
-        self.assertIn(("trade-intrabar", "SL_HIT"), events)
-        mock_log_exit.assert_called_with("trade-intrabar", 23975.0, "SL_HIT")
+        self.assertIn(("trade-intrabar", "T2_HIT"), events)
+        mock_log_exit.assert_called_with("trade-intrabar", 24100.0, "T2_HIT")
+
+    @patch('position_manager.send_trade_update')
+    @patch('position_manager.settings')
+    async def test_intrabar_bearish_both_sl_and_target_resolves_optimistically(self, mock_settings, mock_alert):
+        """A BEARISH candle that spans both the stop and a target is resolved as
+        a target hit — mirrors the BULLISH optimistic resolution test so that a
+        regression in the BEARISH elif ordering is always caught."""
+        trade = self._bullish_trade(
+            direction="BEARISH", stop_loss=24250.0,
+            target_1=24180.0, target_2=24130.0,
+        )
+        pm = PositionManager()
+        pm.active_trades = [trade]
+
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            # low goes to 24120 (past T2 = 24130), high goes to 24260 (past SL = 24250)
+            events = await pm.update_trades(24200.0, candle_high=24260.0, candle_low=24120.0)
+
+        self.assertEqual(trade["state"], "CLOSED")
+        self.assertIn(("trade-intrabar", "T2_HIT"), events)
+        mock_log_exit.assert_called_with("trade-intrabar", 24130.0, "T2_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')

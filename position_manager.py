@@ -149,8 +149,9 @@ class PositionManager:
         Two accounting rules follow from this:
           - Fill-at-level: events are reported/logged at the touched level
             (stop or target price), not at the close that detected them.
-          - Pessimistic resolution: if one candle touches both the stop and a
-            target, the stop is assumed to have filled first.
+          - Optimistic resolution: if one candle touches both the stop and a
+            target, the target is assumed to have filled first (wicks that
+            touch targets are counted as wins).
 
         Returns a list of (trade_id, update_type) for every state change this
         tick, so the caller can react (e.g. clear the engine cooldown on SL_HIT).
@@ -177,19 +178,8 @@ class PositionManager:
 
             # Evaluate trailing stop logic
             if direction == "BULLISH":
-                # Check SL first (pessimistic when the candle spans both)
-                if low <= trade["stop_loss"]:
-                    trade["state"] = "CLOSED"
-                    state_changed = True
-                    event_price = trade["stop_loss"]
-                    if trade.get("_time_stopped"):
-                        update_type = "TIME_STOP"  # Breakeven exit forced by time-stop, not a T1 win
-                    elif trade["stop_loss"] == trade["entry_price"]:
-                        update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
-                    else:
-                        update_type = "SL_HIT"
                 # Check if T2 hit
-                elif high >= trade["target_2"]:
+                if high >= trade["target_2"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     update_type = "T2_HIT"
@@ -202,9 +192,8 @@ class PositionManager:
                     state_changed = True
                     update_type = "T1_HIT"
                     event_price = trade["target_1"]
-            elif direction == "BEARISH":
-                # Check SL first (pessimistic when the candle spans both)
-                if high >= trade["stop_loss"]:
+                # Check SL (optimistic when the candle spans both)
+                elif low <= trade["stop_loss"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     event_price = trade["stop_loss"]
@@ -214,8 +203,9 @@ class PositionManager:
                         update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
                     else:
                         update_type = "SL_HIT"
+            elif direction == "BEARISH":
                 # Check if T2 hit
-                elif low <= trade["target_2"]:
+                if low <= trade["target_2"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     update_type = "T2_HIT"
@@ -228,6 +218,17 @@ class PositionManager:
                     state_changed = True
                     update_type = "T1_HIT"
                     event_price = trade["target_1"]
+                # Check SL (optimistic when the candle spans both)
+                elif high >= trade["stop_loss"]:
+                    trade["state"] = "CLOSED"
+                    state_changed = True
+                    event_price = trade["stop_loss"]
+                    if trade.get("_time_stopped"):
+                        update_type = "TIME_STOP"  # Breakeven exit forced by time-stop, not a T1 win
+                    elif trade["stop_loss"] == trade["entry_price"]:
+                        update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
+                    else:
+                        update_type = "SL_HIT"
 
             if state_changed:
                 events.append((trade["id"], update_type))
