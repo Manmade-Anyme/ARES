@@ -15,8 +15,9 @@ from ml_signal.dataset import (
     label_forward_points,
     build_labeled_frame,
     feature_columns,
+    FEATURE_GROUPS,
 )
-from ml_signal.train_offline import chronological_split, run_training
+from ml_signal.train_offline import chronological_split, run_training, _fetch_ml_collection
 
 
 def _row(ts, close, **groups):
@@ -177,5 +178,77 @@ class TestRunTrainingSmallDataGuard(unittest.TestCase):
         self.assertIn("auc_roc", metrics)
 
 
+class TestDetectorScoresFeature(unittest.TestCase):
+    """TASK-4e: detector_scores fed from ml_collection into XGBoost training."""
+
+    # ── Test 1 ──────────────────────────────────────────────────────────────
+    def test_detector_scores_in_feature_groups(self):
+        """detector_scores must be the 8th entry in FEATURE_GROUPS."""
+        self.assertIn("detector_scores", FEATURE_GROUPS)
+
+    # ── Test 2 ──────────────────────────────────────────────────────────────
+    def test_flatten_features_includes_detector_scores(self):
+        """
+        A row that carries a detector_scores JSON string must produce
+        detector_scores__<key> columns with the correct float values.
+        """
+        ds_payload = json.dumps({
+            "failed_breakout": 1,
+            "oi_wall_rejection": 0,
+            "exhaustion_reversal": 0,
+            "trend_continuation": 0,
+        })
+        row = _row("2026-07-08T09:15:00+00:00", 24000.0)
+        row["detector_scores"] = ds_payload
+
+        df = flatten_features([row])
+
+        self.assertIn("detector_scores__failed_breakout", df.columns)
+        self.assertAlmostEqual(df.iloc[0]["detector_scores__failed_breakout"], 1.0)
+        self.assertAlmostEqual(df.iloc[0]["detector_scores__oi_wall_rejection"], 0.0)
+        self.assertAlmostEqual(df.iloc[0]["detector_scores__exhaustion_reversal"], 0.0)
+        self.assertAlmostEqual(df.iloc[0]["detector_scores__trend_continuation"], 0.0)
+
+    # ── Test 3 ──────────────────────────────────────────────────────────────
+    def test_flatten_features_missing_detector_scores_is_nan(self):
+        """
+        A row without detector_scores (pre-migration row, column = None) must
+        still produce the detector_scores__ columns, filled with NaN.
+        XGBoost consumes NaN natively; we never back-fill 0.
+        """
+        # First row has detector_scores so the columns exist in the union set.
+        ds_payload = json.dumps({
+            "failed_breakout": 0,
+            "oi_wall_rejection": 0,
+            "exhaustion_reversal": 0,
+            "trend_continuation": 0,
+        })
+        row_with = _row("2026-07-08T09:15:00+00:00", 24000.0)
+        row_with["detector_scores"] = ds_payload
+
+        # Second row is a pre-migration row — no detector_scores column at all.
+        row_without = _row("2026-07-08T09:16:00+00:00", 24010.0)
+        row_without["detector_scores"] = None  # simulate NULL from Supabase
+
+        df = flatten_features([row_with, row_without])
+
+        self.assertIn("detector_scores__failed_breakout", df.columns)
+        import numpy as np
+        self.assertTrue(pd.isna(df.iloc[1]["detector_scores__failed_breakout"]),
+                        "Pre-migration rows must have NaN, not 0.0")
+
+    # ── Test 4 ──────────────────────────────────────────────────────────────
+    def test_fetch_columns_include_detector_scores(self):
+        """
+        _fetch_ml_collection must request detector_scores from Supabase.
+        We inspect the column string it builds without connecting to the DB.
+        """
+        import inspect
+        source = inspect.getsource(_fetch_ml_collection)
+        self.assertIn("detector_scores", source,
+                      "_fetch_ml_collection must list 'detector_scores' in its SELECT column string")
+
+
 if __name__ == "__main__":
     unittest.main()
+

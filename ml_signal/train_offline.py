@@ -182,6 +182,7 @@ def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     cols = "timestamp,raw_candle,trade_outcome," + ",".join([
         "candle_features", "volume_features", "iv_features", "oi_features",
         "greek_features", "structure_features", "meta_features",
+        "detector_scores",   # TASK-4e: one-hot setup-detector dict
     ])
     rows: List[dict] = []
     start = 0

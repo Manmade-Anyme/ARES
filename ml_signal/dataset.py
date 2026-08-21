@@ -2,7 +2,7 @@
 TASK-183 — offline dataset assembly for the ML training pipeline.
 
 Reads the `ml_collection` snapshots (rich per-cycle features that the live
-system already logs), flattens the 7 feature-group JSON columns into a numeric
+system already logs), flattens the 8 feature-group JSON columns into a numeric
 matrix, and self-labels every row by its own forward price path — so the data
 ARES already collects becomes trainable *today*, without waiting on the trickle
 of realized trades and without touching any live-path code.
@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 
-# The 7 feature-group JSON columns written by ml_signal/collector.py.
+# The 8 feature-group JSON columns written by ml_signal/collector.py.
 FEATURE_GROUPS = [
     "candle_features",
     "volume_features",
@@ -26,6 +26,7 @@ FEATURE_GROUPS = [
     "greek_features",
     "structure_features",
     "meta_features",
+    "detector_scores",   # TASK-4e: one-hot dict keyed by SetupType.value.lower()
 ]
 
 # Non-feature bookkeeping columns produced by flatten_features().
