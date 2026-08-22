@@ -72,5 +72,6 @@
       "feature": "candle_features__lower_wick_pct",
       "gain": 0.026049088686704636
     }
-  ]
+  ],
+  "model_version": "v4"
 }
