@@ -72,5 +72,6 @@
       "feature": "oi_features__atm_total_oi",
       "gain": 0.02726294845342636
     }
-  ]
+  ],
+  "model_version": "v5"
 }
