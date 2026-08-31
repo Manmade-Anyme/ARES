@@ -10,3 +10,4 @@
 | TASK-007 | 2026-05-06 | Trade Analytics Persistence | Approved |
 | TASK-009 | 2026-06-25 | ML Data Collection Pipeline | Approved |
 | TASK-177 | 2026-07-06 | Trend-Continuation Detector | Approved |
+| MANM-93 | 2026-08-31 | Dhan Redis API Removal & Local/Supabase State Architecture | Proposed |
