@@ -107,6 +107,49 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
         self.assertIn("total points delta", report)
         self.assertIn("unrepairable", report)
 
+    def test_dry_run_simulates_orphan_signal_recovery_before_be_repair(self):
+        from ml_signal import backfill_labels
+
+        rows = {
+            "trade_analytics": [{
+                "id": "t-orphan",
+                "signal_id": None,
+                "setup_type": "OI_WALL_REJECTION",
+                "result_state": "STOPPED_OUT_AT_BE",
+                "pnl_points": 0.0,
+                "entry_price": 24000.0,
+                "direction": "BULLISH",
+                "entry_timestamp": "2026-08-25T08:42:00+00:00",
+                "exit_price": 24000.0,
+            }],
+            "active_trades": [],
+            "ares_signals": [{
+                "id": 205,
+                "setup_type": "OI_WALL_REJECTION",
+                "target_1": 24045.0,
+                "timestamp": "2026-08-25T08:42:00+00:00",
+                "created_at": "2026-08-25T08:42:00+00:00",
+            }],
+            "ml_collection": [{"id": 1, "signal_id": "205", "trade_pnl": 0.0}],
+        }
+        sb = _FakeSupabase(rows)
+        prospective_links = {}
+
+        self.assertEqual(
+            backfill_labels.repair_orphan_trades(
+                sb, apply=False, prospective_links=prospective_links
+            ),
+            1,
+        )
+        self.assertEqual(prospective_links, {"t-orphan": 205})
+        self.assertEqual(
+            backfill_labels.repair_be_after_t1(
+                sb, apply=False, prospective_signal_ids=prospective_links
+            ),
+            1,
+        )
+        self.assertFalse(sb.updates)
+
 
 if __name__ == "__main__":
     unittest.main()

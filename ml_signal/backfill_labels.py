@@ -307,12 +307,18 @@ def backfill_labels(sb, apply: bool) -> int:
     return rows_written if apply else trades_applied
 
 
-def repair_be_after_t1(sb, apply: bool) -> int:
+def repair_be_after_t1(
+    sb,
+    apply: bool,
+    prospective_signal_ids: Optional[Dict[str, Any]] = None,
+) -> int:
     """Repair zero-PnL ``STOPPED_OUT_AT_BE`` trades and their ML P&L.
 
     ``active_trades`` is the preferred target source because it shares the
     trade UUID. ``ares_signals`` is used only as an exact ``signal_id``
-    fallback. The function never infers a target from prices, setup type, or
+    fallback. In a dry-run, ``prospective_signal_ids`` represents exact
+    mappings that the preceding orphan-repair phase would write under
+    ``--apply``. The function never infers a target from prices, setup type, or
     timestamps.
 
     Returns the number of trade_analytics rows that have a repairable zero P&L.
@@ -373,8 +379,12 @@ def repair_be_after_t1(sb, apply: bool) -> int:
         )
         source_name = "active_trades" if pnl is not None else None
 
-        if pnl is None and trade.get("signal_id") is not None:
-            signal_source = signal_by_id.get(str(trade["signal_id"]))
+        signal_id = trade.get("signal_id")
+        if signal_id is None and prospective_signal_ids:
+            signal_id = prospective_signal_ids.get(str(trade.get("id")))
+
+        if pnl is None and signal_id is not None:
+            signal_source = signal_by_id.get(str(signal_id))
             pnl = _be_pnl(
                 trade.get("entry_price"),
                 signal_source.get("target_1") if signal_source else None,
@@ -388,7 +398,7 @@ def repair_be_after_t1(sb, apply: bool) -> int:
         source_counts[source_name] += 1
         repairs.append({
             "trade_id": trade["id"],
-            "signal_id": trade.get("signal_id"),
+            "signal_id": signal_id,
             "pnl_points": pnl,
         })
 
@@ -482,7 +492,11 @@ def repair_be_after_t1(sb, apply: bool) -> int:
     return len(repairs)
 
 
-def repair_orphan_trades(sb, apply: bool) -> int:
+def repair_orphan_trades(
+    sb,
+    apply: bool,
+    prospective_links: Optional[Dict[str, Any]] = None,
+) -> int:
     """Phase 2 — recover ``trade_analytics.signal_id`` where it was never written.
 
     36 trades carry no signal_id, so their SL/targets cannot be read back from
@@ -495,7 +509,9 @@ def repair_orphan_trades(sb, apply: bool) -> int:
     evidence phase 1 uses. Observed deltas are 0-64s, median 0.
 
     Runs BEFORE the label back-fill so newly linked closed trades get labelled in
-    the same pass.
+    the same pass. When ``prospective_links`` is supplied, it receives the
+    exact UUID-to-signal mappings even during a dry run so later phases can
+    preview the same repairs that ``--apply`` would perform.
     """
     trades = _page(sb, "trade_analytics", "id,signal_id,setup_type,entry_timestamp,result_state")
     signals = _page(sb, "ares_signals", "id,setup_type,timestamp,created_at")
@@ -545,6 +561,8 @@ def repair_orphan_trades(sb, apply: bool) -> int:
             unmatched.append(t["id"])
             continue
         claimed.add(str(best["id"]))
+        if prospective_links is not None:
+            prospective_links[str(t["id"])] = best["id"]
         if apply:
             sb.table("trade_analytics").update(
                 {"signal_id": best["id"]}
@@ -663,10 +681,15 @@ def main() -> int:
 
     # Before phase 3: a trade recovered here becomes labellable in the same run.
     print("\nPhase 2 — recover orphaned trade_analytics.signal_id")
-    repair_orphan_trades(sb, args.apply)
+    prospective_links: Dict[str, Any] = {}
+    repair_orphan_trades(sb, args.apply, prospective_links=prospective_links)
 
     print("\nPhase 3 — repair STOPPED_OUT_AT_BE P&L")
-    repair_be_after_t1(sb, args.apply)
+    repair_be_after_t1(
+        sb,
+        args.apply,
+        prospective_signal_ids=prospective_links,
+    )
 
     print("\nPhase 4 — back-fill outcome labels")
     backfill_labels(sb, args.apply)
