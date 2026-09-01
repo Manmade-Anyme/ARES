@@ -19,7 +19,12 @@ observed), so the match is unambiguous. Legacy rows stored setup_type as
 
 Phase 2 writes the outcome labels from every closed trade.
 
-Both phases are idempotent and safe to re-run: phase 1 only rewrites a signal_id
+Phase 3 repairs ``STOPPED_OUT_AT_BE`` rows whose stored P&L is zero. The
+target comes from the retained ``active_trades`` row first, then the exact
+``ares_signals.id`` referenced by ``trade_analytics.signal_id``. Rows without
+an exact source are reported and left untouched.
+
+All phases are idempotent and safe to re-run: phase 1 only rewrites a signal_id
 that is not already a known ares_signals id, phase 2 overwrites with the same
 values. DRY RUN BY DEFAULT — pass --apply to write.
 
@@ -81,6 +86,44 @@ _FIXTURE_TRADE_IDS = frozenset({
     "3bd130e1-7b4c-43f2-a514-fcd15da043cc",
     "0269584d-c41e-4e00-8948-e6eb59ffe124",
 })
+
+
+def _is_zero_pnl(value: Any) -> bool:
+    """Return True only for a stored numeric zero, not a missing P&L."""
+    if value is None:
+        return False
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _direction_name(value: Any) -> str:
+    """Normalise enum-like direction values to their stored name."""
+    return str(value or "").split(".")[-1].strip().upper()
+
+
+def _be_pnl(entry_price: Any, target_1: Any, direction: Any) -> Optional[float]:
+    """Calculate direction-aware entry-to-T1 points when all inputs are valid."""
+    try:
+        entry = float(entry_price)
+        target = float(target_1)
+    except (TypeError, ValueError):
+        return None
+    side = _direction_name(direction)
+    if side == "BULLISH":
+        return round(target - entry, 2)
+    if side == "BEARISH":
+        return round(entry - target, 2)
+    return None
+
+
+def _pnl_matches(value: Any, expected: float) -> bool:
+    """Compare stored numeric values without treating invalid data as equal."""
+    try:
+        return float(value) == expected
+    except (TypeError, ValueError):
+        return False
 
 
 def _load_env(path: str = ".env") -> Dict[str, str]:
@@ -262,6 +305,181 @@ def backfill_labels(sb, apply: bool) -> int:
     else:
         print(f"  trades attributable      : {trades_applied}  (row count unknown until --apply)")
     return rows_written if apply else trades_applied
+
+
+def repair_be_after_t1(sb, apply: bool) -> int:
+    """Repair zero-PnL ``STOPPED_OUT_AT_BE`` trades and their ML P&L.
+
+    ``active_trades`` is the preferred target source because it shares the
+    trade UUID. ``ares_signals`` is used only as an exact ``signal_id``
+    fallback. The function never infers a target from prices, setup type, or
+    timestamps.
+
+    Returns the number of trade_analytics rows that have a repairable zero P&L.
+    In dry-run mode this is the number that would be written.
+    """
+    trades = _page(
+        sb,
+        "trade_analytics",
+        "id,signal_id,result_state,pnl_points,entry_price,direction,entry_timestamp,exit_price",
+    )
+    be_rows = [
+        trade for trade in trades
+        if trade.get("result_state") == "STOPPED_OUT_AT_BE"
+    ]
+    zero_rows = [trade for trade in be_rows if _is_zero_pnl(trade.get("pnl_points"))]
+    nonzero_rows = [
+        trade for trade in be_rows
+        if trade.get("pnl_points") is not None and not _is_zero_pnl(trade.get("pnl_points"))
+    ]
+    missing_pnl_rows = [trade for trade in be_rows if trade.get("pnl_points") is None]
+
+    print(f"  STOPPED_OUT_AT_BE rows    : {len(be_rows)}")
+    print(f"  zero-PnL rows (affected)  : {len(zero_rows)}")
+    print(f"  already nonzero (review)  : {len(nonzero_rows)}")
+    if nonzero_rows:
+        print(f"    trade ids                 : {[row.get('id') for row in nonzero_rows[:10]]}")
+    if missing_pnl_rows:
+        print(f"  missing PnL (review)       : {len(missing_pnl_rows)}")
+
+    if not zero_rows:
+        print("  repairable rows            : 0")
+        print("  total points delta         : +0.00")
+        print("  ml_collection mismatches   : 0")
+        return 0
+
+    active_trades = _page(sb, "active_trades", "id,target_1")
+    signals = _page(sb, "ares_signals", "id,target_1")
+    active_by_id = {
+        str(row.get("id")): row
+        for row in active_trades
+        if row.get("id") is not None
+    }
+    signal_by_id = {
+        str(row.get("id")): row
+        for row in signals
+        if row.get("id") is not None
+    }
+
+    repairs = []
+    unrepairable = []
+    source_counts = {"active_trades": 0, "ares_signals": 0}
+    for trade in zero_rows:
+        active_source = active_by_id.get(str(trade.get("id")))
+        pnl = _be_pnl(
+            trade.get("entry_price"),
+            active_source.get("target_1") if active_source else None,
+            trade.get("direction"),
+        )
+        source_name = "active_trades" if pnl is not None else None
+
+        if pnl is None and trade.get("signal_id") is not None:
+            signal_source = signal_by_id.get(str(trade["signal_id"]))
+            pnl = _be_pnl(
+                trade.get("entry_price"),
+                signal_source.get("target_1") if signal_source else None,
+                trade.get("direction"),
+            )
+            source_name = "ares_signals" if pnl is not None else None
+        if source_name is None or pnl is None:
+            unrepairable.append(trade)
+            continue
+
+        source_counts[source_name] += 1
+        repairs.append({
+            "trade_id": trade["id"],
+            "signal_id": trade.get("signal_id"),
+            "pnl_points": pnl,
+        })
+
+    timestamps = sorted(
+        parsed
+        for parsed in (_parse_ts(trade.get("entry_timestamp")) for trade in be_rows)
+        if parsed is not None
+    )
+    date_range = (
+        f"{timestamps[0].isoformat()} .. {timestamps[-1].isoformat()}"
+        if timestamps else "unknown"
+    )
+    total_delta = sum(repair["pnl_points"] for repair in repairs)
+
+    print(f"  date range                 : {date_range}")
+    print(f"  repairable rows            : {len(repairs)}")
+    print(f"    active_trades source     : {source_counts['active_trades']}")
+    print(f"    ares_signals fallback    : {source_counts['ares_signals']}")
+    print(f"  unrepairable (left as-is)  : {len(unrepairable)}")
+    if unrepairable:
+        print(f"    trade ids                 : {[row.get('id') for row in unrepairable[:10]]}")
+    print(f"  total points delta         : {total_delta:+.2f}")
+
+    # Reconciliation is restricted to the exact signal IDs of repaired trades.
+    # Duplicate signal IDs with different repaired values are not safe to sync.
+    ml_rows = _page(sb, "ml_collection", "id,signal_id,trade_pnl")
+    expected_by_signal = {}
+    ambiguous_signal_ids = set()
+    for repair in repairs:
+        signal_id = repair.get("signal_id")
+        if signal_id is None:
+            continue
+        key = str(signal_id)
+        previous = expected_by_signal.get(key)
+        if previous is not None and previous != repair["pnl_points"]:
+            ambiguous_signal_ids.add(key)
+        expected_by_signal[key] = repair["pnl_points"]
+
+    ml_matches = 0
+    ml_mismatches = 0
+    ml_missing = 0
+    for signal_id, expected in expected_by_signal.items():
+        matches = [row for row in ml_rows if str(row.get("signal_id")) == signal_id]
+        if not matches:
+            ml_missing += 1
+            continue
+        ml_matches += len(matches)
+        if signal_id not in ambiguous_signal_ids:
+            ml_mismatches += sum(
+                1
+                for row in matches
+                if not _pnl_matches(row.get("trade_pnl"), expected)
+            )
+
+    print(f"  ml_collection exact rows  : {ml_matches}")
+    print(f"  ml_collection mismatches  : {ml_mismatches}")
+    if ml_missing:
+        print(f"  ml_collection missing ids : {ml_missing}")
+    if ambiguous_signal_ids:
+        print(f"  ambiguous signal IDs      : {sorted(ambiguous_signal_ids)} (ML sync skipped)")
+
+    if not apply:
+        return len(repairs)
+
+    for repair in repairs:
+        sb.table("trade_analytics").update(
+            {"pnl_points": repair["pnl_points"]}
+        ).eq("id", repair["trade_id"]).execute()
+
+    ml_rows_written = 0
+    for signal_id, expected in expected_by_signal.items():
+        if signal_id in ambiguous_signal_ids:
+            continue
+        response = sb.table("ml_collection").update(
+            {"trade_pnl": expected}
+        ).eq("signal_id", signal_id).execute()
+        ml_rows_written += len(getattr(response, "data", None) or [])
+
+    print(f"  trade_analytics rows written: {len(repairs)}")
+    print(f"  ml_collection rows written : {ml_rows_written}")
+    post_rows = _page(sb, "ml_collection", "id,signal_id,trade_pnl")
+    post_mismatches = sum(
+        1
+        for signal_id, expected in expected_by_signal.items()
+        if signal_id not in ambiguous_signal_ids
+        for row in post_rows
+        if str(row.get("signal_id")) == signal_id
+        and not _pnl_matches(row.get("trade_pnl"), expected)
+    )
+    print(f"  ml_collection mismatches after repair: {post_mismatches}")
+    return len(repairs)
 
 
 def repair_orphan_trades(sb, apply: bool) -> int:
@@ -447,10 +665,13 @@ def main() -> int:
     print("\nPhase 2 — recover orphaned trade_analytics.signal_id")
     repair_orphan_trades(sb, args.apply)
 
-    print("\nPhase 3 — back-fill outcome labels")
+    print("\nPhase 3 — repair STOPPED_OUT_AT_BE P&L")
+    repair_be_after_t1(sb, args.apply)
+
+    print("\nPhase 4 — back-fill outcome labels")
     backfill_labels(sb, args.apply)
 
-    print("\nPhase 4 — null the structure_features sentinel")
+    print("\nPhase 5 — null the structure_features sentinel")
     repair_structure_sentinel(sb, args.apply)
 
     if not args.apply:

@@ -224,6 +224,31 @@ class TestStorage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update_data_bearish["result_state"], "T2_HIT")
 
     @patch('config.settings')
+    async def test_log_exit_override_updates_analytics_and_ml_collection(self, mock_settings):
+        self.mock_client.execute_mock.return_value.data = [{
+            "entry_price": 24000.0,
+            "direction": "BULLISH",
+            "signal_id": 456,
+        }]
+
+        self.analytics.log_exit(
+            "trade-be",
+            24000.0,
+            "STOPPED_OUT_AT_BE",
+            pnl_points_override=50.0,
+        )
+        await asyncio.sleep(0.05)
+
+        calls = self.mock_client.update_mock.call_args_list
+        self.assertEqual(len(calls), 2)
+        analytics_update = calls[0].args[0]
+        ml_update = calls[1].args[0]
+        self.assertEqual(analytics_update["pnl_points"], 50.0)
+        self.assertEqual(analytics_update["exit_price"], 24000.0)
+        self.assertEqual(ml_update["trade_pnl"], 50.0)
+        self.assertEqual(ml_update["trade_score"], 1)
+
+    @patch('config.settings')
     async def test_log_exit_no_record_found(self, mock_settings):
         self.mock_client.execute_mock.return_value.data = []
         self.analytics.log_exit("trade-none", 24000.0, "SL_HIT")

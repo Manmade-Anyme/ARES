@@ -82,6 +82,25 @@ def test_last_trading_day():
     assert is_last_trading_day_of_month(date(2026, 5, 29)) is True
 
 
+def test_stopped_out_at_be_is_a_t1_win_and_credits_option_target():
+    trade = _trade(
+        "OI_WALL_REJECTION",
+        50.0,
+        delta=0.5,
+        lots=1,
+        opt_entry=100.0,
+        opt_sl=90.0,
+        opt_target=125.0,
+    )
+    trade["result_state"] = "STOPPED_OUT_AT_BE"
+
+    metrics = compute_metrics([trade])["overall"]
+
+    assert metrics["wins"] == 1
+    assert metrics["win_rate"] == 100.0
+    assert metrics["option_1_lot_rupees"] == (125.0 - 100.0) * settings.nifty_lot_size
+
+
 if __name__ == "__main__":
     test_metrics()
     test_last_trading_day()
