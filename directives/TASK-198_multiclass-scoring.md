@@ -37,11 +37,11 @@ Two deliberate deviations from the spec above:
    column map straight onto the ML label with no offset. The loss is already
    carried, with magnitude, in `pnl_points`.
 
-Caveat worth remembering: `STOPPED_OUT_AT_BE` books `pnl_points` ≈ 0.00 because
-P&L is measured in spot points and the exit is at entry. `reports.py` counts
-wins as `pnl_points > 0`, so the weekly report calls these losses while `score`
-calls them wins. The two metrics answer different questions; do not "fix" one to
-match the other without deciding which is wanted.
+MANM-66 supersedes the old zero-P&L caveat: `STOPPED_OUT_AT_BE` still preserves
+the actual exit fill at entry, but `PositionManager` passes an entry-to-T1 P&L
+override into `storage.log_exit`. `trade_analytics.pnl_points`,
+`ml_collection.trade_pnl`, and report win accounting now credit the locked T1
+move while keeping the result state and fill price distinct.
 
 ## Implementation Steps
 1. ✅ Update `trade_analytics` database logging to include an explicit `score` integer column.

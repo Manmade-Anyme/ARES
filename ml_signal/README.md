@@ -54,6 +54,7 @@ Optional Standalone Processes:
 | `data.py` | Load training data from Supabase / Dhan API |
 | `trainer.py` | Walk-forward training, Optuna tuning, SHAP analysis |
 | `train_offline.py` | Offline dataset export & XGBoost model training |
+| `backfill_labels.py` | Dry-run-first repair and catch-up script for `ml_collection` join keys, outcomes, historical BE-after-T1 P&L, orphan trade links, and legacy structure sentinels |
 | `predictor.py` | In-process runtime inference wrapper (`SignalPredictor`) |
 | `collector.py` | In-process feature logger (`MLCollector`) writing to `ml_collection` |
 | `live.py` | Optional standalone continuous prediction loop |
@@ -92,6 +93,17 @@ from ml_signal.trainer import train_pipeline
 df = load_training_data(...)
 model, metrics = train_pipeline(df, feature_cols, run_optuna=True)
 ```
+
+### Label and P&L repair
+```bash
+SUPABASE_URL=... SUPABASE_KEY=... \
+python -m ml_signal.backfill_labels
+```
+
+The backfill command is report-only by default. Re-run with `--apply` after
+reviewing the dry-run output to write repairs, including historical
+`STOPPED_OUT_AT_BE` rows whose stored P&L must be recalculated from exact
+`active_trades` or `ares_signals` target sources.
 
 ## Requirements
 
