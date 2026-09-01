@@ -89,7 +89,7 @@ Handles permanent storage of trade results and detailed market context in the `t
 
 **Methods:**
 - `log_entry(trade_id: str, signal: AresSignal, spot: float, atm: Any = None) -> None`: Creates a new entry in `trade_analytics` at the moment a trade is opened, capturing OI data and market context.
-- `log_exit(trade_id: str, exit_price: float, final_state: str) -> None`: Updates an existing entry with exit details and calculates P&L.
+- `log_exit(trade_id: str, exit_price: float, final_state: str, pnl_points_override: float | None = None) -> None`: Updates an existing entry with exit details and calculates P&L. `pnl_points_override` is used for `STOPPED_OUT_AT_BE` exits, where the exit fill remains at entry but the stored P&L must reflect the entry-to-T1 profit already locked.
 
 ## Position Management Layer
 
@@ -99,7 +99,7 @@ Tracks active trades, evaluates trailing stops against live spot prices on every
 **Methods:**
 - `_initialize_db() -> None`: Fetches active trades from Supabase on startup, purges expired records from previous days, and loads today's trades into memory.
 - `add_trade(signal: AresSignal, spot: float, atm: ATMStrikes = None) -> None`: Pushes a new trade into the active memory array, logs entry to `AnalyticsLogger`, and asynchronously logs it to Supabase as 'OPEN'. Every trade is assigned a 4-digit signal tracking ID.
-- `update_trades(spot_price: float) -> None`: Iterates over active trades, tracking trailing stops (e.g., trailing SL to entry price once T1 is hit) or stops triggering. Broadcasts state changes via Discord and logs exits to `AnalyticsLogger`.
+- `update_trades(spot_price: float) -> None`: Iterates over active trades, tracking trailing stops (e.g., trailing SL to entry price once T1 is hit) or stops triggering. For `STOPPED_OUT_AT_BE`, it passes the entry-to-T1 P&L override to `AnalyticsLogger` while preserving the actual exit fill at entry. Broadcasts state changes via Discord and logs exits to `AnalyticsLogger`.
 
 ## Analysis Layer (Backtesting)
 

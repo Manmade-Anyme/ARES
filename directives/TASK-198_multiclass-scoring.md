@@ -37,11 +37,10 @@ Two deliberate deviations from the spec above:
    column map straight onto the ML label with no offset. The loss is already
    carried, with magnitude, in `pnl_points`.
 
-Caveat worth remembering: `STOPPED_OUT_AT_BE` books `pnl_points` ≈ 0.00 because
-P&L is measured in spot points and the exit is at entry. `reports.py` counts
-wins as `pnl_points > 0`, so the weekly report calls these losses while `score`
-calls them wins. The two metrics answer different questions; do not "fix" one to
-match the other without deciding which is wanted.
+MANM-66 follow-up: `STOPPED_OUT_AT_BE` now preserves the actual exit fill at
+entry but records the entry-to-T1 profit in `pnl_points`, `trade_pnl`, and report
+metrics. This keeps the state semantics from TASK-198 while making P&L and score
+agree that a trailed stop after T1 is a credited win.
 
 ## Implementation Steps
 1. ✅ Update `trade_analytics` database logging to include an explicit `score` integer column.

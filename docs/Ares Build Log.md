@@ -2,6 +2,22 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-01 - MANM-66 BE-after-T1 P&L Repair
+
+`STOPPED_OUT_AT_BE` no longer means zero economic P&L. `PositionManager` still
+records the exit fill at the trailed stop entry price, but passes an
+entry-to-T1 P&L override into `AnalyticsLogger.log_exit` so `trade_analytics`,
+`ml_collection.trade_pnl`, and reports credit the locked T1 profit. Discord
+alerts now describe this as "T1 Profit Locked" instead of break-even.
+
+`ml_signal.backfill_labels` gained a dry-run-first repair phase for historical
+zero-PnL `STOPPED_OUT_AT_BE` rows. The repair derives targets only from exact
+sources: the matching `active_trades` UUID first, then the exact
+`ares_signals.id` referenced by `trade_analytics.signal_id`; rows without an
+exact source are reported and left untouched.
+
+---
+
 ## 2026-08-05 · ML Signal Architecture & Configuration Profile Documentation Updates (TASK-207)
 
 Clarified operating modes, dynamic configuration profiles, and system architecture across root `README.md`, `ml_signal/README.md`, and `ml_signal/schema.sql`.
@@ -842,6 +858,5 @@ Fixed a fatal pydantic `ValidationError: discord_webhook_url: Field required` wh
 
 **TODOs**
 - [x] Merge PR #71 and perform local branch merge verification and cleanup.
-
 
 

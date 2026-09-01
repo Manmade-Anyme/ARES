@@ -203,7 +203,7 @@ ARES actively tracks its signals using a persistent **Position Manager**:
 | Feature | Mechanism & Behavior |
 |---|---|
 | **Deterministic Targets** | Ensures **Target 1 (T1)** is always the level closest to entry price. Structural levels within **20 points** of entry are filtered out. |
-| **Trailing Stops** | When price reaches Target 1 (T1), Stop Loss is automatically trailed to entry price (`STOPPED_OUT_AT_BE`), locking in a risk-free runner. |
+| **Trailing Stops** | When price reaches Target 1 (T1), Stop Loss is automatically trailed to entry price. A later `STOPPED_OUT_AT_BE` exit keeps the fill at entry while crediting the locked entry-to-T1 P&L. |
 | **Multi-Class Scoring** | Natively records point scores (TASK-198): `T2_HIT=2`, `T1_HIT=1`, `STOPPED_OUT_AT_BE=1`, `SL_HIT=0`, `TIME_STOP=0`. |
 | **Persistent State** | Active trades sync in real-time with Supabase (`active_trades`) and load into memory on startup for resilient failover. |
 | **Tracking IDs** | Every trade signal is assigned a display code (e.g., `#0501`) and linked by DB ID (`signal_id`) to `trade_analytics`. |
