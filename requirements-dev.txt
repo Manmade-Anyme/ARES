@@ -18,4 +18,5 @@ pytest-cov       # for the coverage command in README section 5
 joblib
 xgboost
 scikit-learn
+matplotlib>=3.7.0,<4.0.0  # SHAP plot contract tests use the real headless renderer
 pyyaml
