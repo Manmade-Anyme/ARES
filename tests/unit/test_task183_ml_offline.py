@@ -590,6 +590,63 @@ class TestOfflineShapContract(unittest.TestCase):
         self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
         self.assertFalse(os.path.exists(plot_path))
 
+    def test_requested_plot_without_shap_removes_stale_file(self):
+        df = _training_frame()
+        with tempfile.TemporaryDirectory() as directory:
+            plot_path = os.path.join(directory, "stale-shap.png")
+            with open(plot_path, "wb") as plot_file:
+                plot_file.write(b"stale SHAP plot")
+            with patch.dict(sys.modules, {"shap": None}):
+                model, metrics = run_training(
+                    df, ["alpha", "beta", "gamma"], config=self._config(),
+                    shap_plot_path=plot_path,
+                )
+            self.assertFalse(os.path.exists(plot_path))
+        self.assertIsNotNone(model)
+        self.assertEqual(metrics["n_samples"], len(df))
+        self.assertFalse(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
+
+    def test_requested_plot_without_shap_preserves_symlink_and_target(self):
+        df = _training_frame()
+        with tempfile.TemporaryDirectory() as directory:
+            target_path = os.path.join(directory, "shap-target.png")
+            plot_path = os.path.join(directory, "shap-link.png")
+            with open(target_path, "wb") as target_file:
+                target_file.write(b"SHAP plot target")
+            os.symlink(target_path, plot_path)
+            with patch.dict(sys.modules, {"shap": None}):
+                model, metrics = run_training(
+                    df, ["alpha", "beta", "gamma"], config=self._config(),
+                    shap_plot_path=plot_path,
+                )
+            self.assertTrue(os.path.islink(plot_path))
+            with open(target_path, "rb") as target_file:
+                self.assertEqual(target_file.read(), b"SHAP plot target")
+        self.assertIsNotNone(model)
+        self.assertFalse(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
+
+    def test_stale_plot_cleanup_failure_is_nonfatal(self):
+        df = _training_frame()
+        with tempfile.TemporaryDirectory() as directory:
+            plot_path = os.path.join(directory, "stale-shap.png")
+            with open(plot_path, "wb") as plot_file:
+                plot_file.write(b"stale SHAP plot")
+            with patch.dict(sys.modules, {"shap": None}), \
+                    patch("ml_signal.train_offline.os.remove",
+                          side_effect=OSError("permission denied")):
+                model, metrics = run_training(
+                    df, ["alpha", "beta", "gamma"], config=self._config(),
+                    shap_plot_path=plot_path,
+                )
+            self.assertTrue(os.path.isfile(plot_path))
+        self.assertIsNotNone(model)
+        self.assertEqual(metrics["n_samples"], len(df))
+        self.assertFalse(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "stale_cleanup_failed")
+        self.assertEqual(metrics["shap_plot_error_type"], "OSError")
+
     def test_report_paths_and_both_shap_summary_output_branches(self):
         paths = _offline_report_paths("/repo", "v42")
         self.assertEqual(paths, (
