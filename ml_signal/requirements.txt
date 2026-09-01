@@ -1,7 +1,8 @@
 xgboost
 scikit-learn
 optuna
-shap
+shap>=0.47.0,<0.50.0
+matplotlib>=3.7.0,<4.0.0
 pandas
 numpy
 dhanhq

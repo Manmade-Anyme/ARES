@@ -52,7 +52,7 @@ Optional Standalone Processes:
 | `features.py` | 50+ feature engineering functions (candle, IV, OI, Greeks, structure, meta) |
 | `labeling.py` | Label generation (ARES outcomes + self-labeled candles) |
 | `data.py` | Load training data from Supabase / Dhan API |
-| `trainer.py` | Walk-forward training, Optuna tuning, SHAP analysis |
+| `trainer.py` | Walk-forward training and Optuna tuning |
 | `train_offline.py` | Offline dataset export & XGBoost model training |
 | `predictor.py` | In-process runtime inference wrapper (`SignalPredictor`) |
 | `collector.py` | In-process feature logger (`MLCollector`) writing to `ml_collection` |
@@ -92,6 +92,32 @@ from ml_signal.trainer import train_pipeline
 df = load_training_data(...)
 model, metrics = train_pipeline(df, feature_cols, run_optuna=True)
 ```
+
+### Offline training and SHAP reporting
+
+Run the offline trainer (it reads source data without changing live systems) with:
+
+```bash
+python -m ml_signal.train_offline
+```
+
+The chronological held-out test split is explained with `shap.TreeExplainer`,
+using the fitted model's `best_iteration`. On Python 3.10 SHAP/XGBoost
+compatibility failures, the trainer falls back to XGBoost's native exact
+TreeSHAP contributions and checks additivity in raw-margin units. If the SHAP
+package is genuinely missing, explanation is skipped as a nonfatal condition.
+
+Training writes the model under `ml_signal/models/`, a canonical report at
+`reports/ml/task183_offline_metrics.json`, a versioned report at
+`reports/ml/v{n}_offline_metrics.json`, and (when SHAP is available) a
+headless 150-DPI bar chart at `reports/ml/v{n}_shap_summary.png`. Reports
+include the model version and stable SHAP status/backend/output-unit fields;
+SHAP values are mean absolute contributions in raw-margin/log-odds units, with
+the top 15 features retained.
+
+This is offline analysis only: it does not change training predictions or live
+inference. SHAP describes association and model behavior, not causation, and
+does not automatically improve a model metric.
 
 ## Requirements
 
