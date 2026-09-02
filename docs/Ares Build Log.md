@@ -2,6 +2,31 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-01 · BE-after-T1 PnL Accounting Repair (MANM-66)
+
+Documented the trade-accounting repair for `STOPPED_OUT_AT_BE` exits. The live
+path now keeps the trailed-stop exit fill at entry while recording the locked
+entry-to-T1 move as realized P&L for `trade_analytics`, `ml_collection`, and
+reports.
+
+**Implementation Details**
+- `PositionManager` sends a P&L override to `AnalyticsLogger.log_exit` only for
+  BE-after-T1 exits; `TIME_STOP` remains excluded because it reaches entry
+  without touching T1.
+- Historical repair runs through `python -m ml_signal.backfill_labels`, which is
+  dry-run by default and only recalculates BE P&L from exact `active_trades` UUID
+  or `ares_signals.signal_id` target sources.
+- `STOPPED_OUT_AT_BE` remains score `1` and ML label `1`, matching the fact that
+  T1 was touched before the runner stopped at entry.
+
+**Verification**
+- PR #101 reports 381 passing tests, 8 passing subtests, `compileall` on changed
+  runtime modules, and `git diff --check`.
+- Production backfill report/apply was not run in this checkout because Supabase
+  credentials were unavailable.
+
+---
+
 ## 2026-08-05 · ML Signal Architecture & Configuration Profile Documentation Updates (TASK-207)
 
 Clarified operating modes, dynamic configuration profiles, and system architecture across root `README.md`, `ml_signal/README.md`, and `ml_signal/schema.sql`.
@@ -842,6 +867,5 @@ Fixed a fatal pydantic `ValidationError: discord_webhook_url: Field required` wh
 
 **TODOs**
 - [x] Merge PR #71 and perform local branch merge verification and cleanup.
-
 
 

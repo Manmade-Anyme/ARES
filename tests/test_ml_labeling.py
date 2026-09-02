@@ -1,6 +1,6 @@
 import pytest
 import pandas as pd
-from ml_signal.labeling import label_from_ares_outcome
+from ml_signal.labeling import classify_ares_outcome, label_from_ares_outcome
 
 def test_label_from_ares_outcome():
     records = [
@@ -114,3 +114,7 @@ def test_build_real_outcome_frame_regression():
     assert df.iloc[0]["label"] == 1
     assert df.iloc[1]["label"] == 0
     assert "candle_features__f1" in df.columns
+
+
+def test_stopped_out_at_be_keeps_the_existing_t1_win_label():
+    assert classify_ares_outcome("STOPPED_OUT_AT_BE") == 1

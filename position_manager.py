@@ -253,7 +253,19 @@ class PositionManager:
                 # the exit is recorded at the touched stop/target price)
                 if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
                     try:
-                        self.analytics.log_exit(trade["id"], event_price, update_type)
+                        if update_type == "STOPPED_OUT_AT_BE":
+                            if direction == "BULLISH":
+                                pnl_points_override = trade["target_1"] - trade["entry_price"]
+                            else:
+                                pnl_points_override = trade["entry_price"] - trade["target_1"]
+                            self.analytics.log_exit(
+                                trade["id"],
+                                event_price,
+                                update_type,
+                                pnl_points_override=pnl_points_override,
+                            )
+                        else:
+                            self.analytics.log_exit(trade["id"], event_price, update_type)
                     except Exception as e:
                         print(f"Failed to log trade exit to Analytics: {e}")
 

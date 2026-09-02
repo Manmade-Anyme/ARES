@@ -204,7 +204,7 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
     if update_type == "T2_HIT":
         return "Target 2 Reached! Trade Closed with Full Profit."
     if update_type == "STOPPED_OUT_AT_BE":
-        return "Trailing Stop Loss Hit at Entry. Trade Closed at Break-even."
+        return "Trailing Stop Loss Hit at Entry. T1 Profit Locked; Trade Closed."
     if update_type == "TIME_STOP":
         return "Time-Stop: SL Trailed to Entry Hit. Trade Closed."
     if update_type == "SL_HIT":

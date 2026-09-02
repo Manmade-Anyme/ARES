@@ -219,7 +219,10 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             await pm.update_trades(23999.0)
             self.assertEqual(trade["state"], "CLOSED")
             mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
-            mock_log_exit.assert_called_with("trade-bullish", 24000.0, "STOPPED_OUT_AT_BE")
+            mock_log_exit.assert_called_with(
+                "trade-bullish", 24000.0, "STOPPED_OUT_AT_BE",
+                pnl_points_override=50.0,
+            )
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -255,7 +258,10 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             await pm.update_trades(24001.0)
             self.assertEqual(trade["state"], "CLOSED")
             mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
-            mock_log_exit.assert_called_with("trade-bearish", 24000.0, "STOPPED_OUT_AT_BE")
+            mock_log_exit.assert_called_with(
+                "trade-bearish", 24000.0, "STOPPED_OUT_AT_BE",
+                pnl_points_override=50.0,
+            )
 
         # Reset for Bearish T2 Hit
         trade_t2 = {
@@ -301,10 +307,12 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
 
         # Tightened breakeven hit -> exits as TIME_STOP, not a fake T1 win
         # (fill-at-level: exit reported at the tightened stop, i.e. entry)
-        events = await pm.update_trades(23999.0)
-        self.assertEqual(trade["state"], "CLOSED")
-        self.assertIn(("trade-stale", "TIME_STOP"), events)
-        mock_send_trade_update.assert_called_with(trade, 24000.0, "TIME_STOP")
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            events = await pm.update_trades(23999.0)
+            self.assertEqual(trade["state"], "CLOSED")
+            self.assertIn(("trade-stale", "TIME_STOP"), events)
+            mock_send_trade_update.assert_called_with(trade, 24000.0, "TIME_STOP")
+            mock_log_exit.assert_called_once_with("trade-stale", 24000.0, "TIME_STOP")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')

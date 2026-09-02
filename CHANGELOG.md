@@ -16,6 +16,12 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **BE-after-T1 trade accounting (MANM-66)**: `STOPPED_OUT_AT_BE` exits now
+  preserve the actual entry fill while recording the locked entry-to-T1 P&L in
+  `trade_analytics` and `ml_collection`. Discord alerts identify the locked T1
+  profit, and `ml_signal.backfill_labels` provides a dry-run-first repair phase
+  using exact `active_trades` UUID or `ares_signals.signal_id` target sources.
+
 - **Fly.io Crash Loop and Timezone Fix (MANM-28)**: Added `[restart] policy = 'never'` to `fly.toml` to prevent infinite restart loops when `main.py` intentionally exits at the end of the market session. Added `tzdata` to `requirements.txt` to ensure proper timezone resolution on lightweight Python slim Docker images.
 
 ### Changed
