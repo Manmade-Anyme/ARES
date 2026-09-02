@@ -208,7 +208,13 @@ class AnalyticsLogger:
         except Exception as e:
             print(f"Failed to log trade analytics entry: {e}")
 
-    def log_exit(self, trade_id: str, exit_price: float, final_state: str) -> None:
+    def log_exit(
+        self,
+        trade_id: str,
+        exit_price: float,
+        final_state: str,
+        pnl_points_override: float | None = None,
+    ) -> None:
         """
         Updates an existing entry in 'trade_analytics' with exit details.
         
@@ -216,6 +222,9 @@ class AnalyticsLogger:
             trade_id: The unique UUID of the trade.
             exit_price: The spot price at exit.
             final_state: The final state of the trade (e.g., SL_HIT, T1_HIT).
+            pnl_points_override: Optional P&L points to persist instead of
+                calculating from the fill price. Used for BE stops after T1,
+                where the fill remains at entry but T1 profit was locked.
         """
         def _update():
             # signal_id comes back too: it is the key the ml_collection label
@@ -228,8 +237,12 @@ class AnalyticsLogger:
             entry_price = float(record["entry_price"])
             direction = record["direction"]
 
-            # Calculate P&L points based on spot price
-            if direction == "BULLISH":
+            # Calculate P&L points based on spot price unless the caller has a
+            # more accurate economic result for a state whose fill is not the
+            # realized profit (e.g. a trailed BE stop after T1).
+            if pnl_points_override is not None:
+                pnl = float(pnl_points_override)
+            elif direction == "BULLISH":
                 pnl = exit_price - entry_price
             else:
                 pnl = entry_price - exit_price
@@ -312,4 +325,3 @@ def load_dhan_credentials_from_supabase() -> None:
     settings.dhan_client_id = data["client_id"]
     settings.dhan_access_token = data["access_token"]
     print("[+] Successfully loaded Dhan credentials from Supabase.")
-
