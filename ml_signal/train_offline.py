@@ -242,7 +242,11 @@ def _save_shap_plot(metrics: Dict[str, object], shap_plot_path: Optional[str]) -
     if not shap_plot_path:
         return
     if not metrics["shap_computed"]:
-        if os.path.isfile(shap_plot_path) and not os.path.islink(shap_plot_path):
+        if (
+            shap_plot_path.lower().endswith(".png")
+            and os.path.isfile(shap_plot_path)
+            and not os.path.islink(shap_plot_path)
+        ):
             try:
                 os.remove(shap_plot_path)
             except OSError as exc:

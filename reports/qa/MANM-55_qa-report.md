@@ -79,10 +79,12 @@ QA approved. MANM-55 meets the requested implementation, regression, artifact, s
 
 ### QA checklist
 
-- [x] A stale regular SHAP PNG is removed when SHAP was not computed.
-- [x] An absent path remains nonfatal and reports `not_saved_no_shap`.
-- [x] A symlink is preserved with its target intact; cleanup applies only to a regular, non-symlink file.
-- [x] A removal `OSError` is nonfatal and reports `stale_cleanup_failed` plus `OSError`.
+- [x] Only an existing, regular, non-symlink `.png` is removed when SHAP was not computed.
+- [x] An absent `.png` path remains nonfatal and reports `not_saved_no_shap`.
+- [x] A `.png` symlink and its target are preserved byte-for-byte.
+- [x] A regular non-PNG file is preserved byte-for-byte.
+- [x] An existing directory is preserved and remains nonfatal.
+- [x] A removal `OSError` is nonfatal and truthfully reports `stale_cleanup_failed` plus `OSError`.
 - [x] `run_training()` still returns a model and preserves its normal metrics/report behavior.
 - [x] No ML training deployment workflow change is present.
 
@@ -90,29 +92,30 @@ QA approved. MANM-55 meets the requested implementation, regression, artifact, s
 
 | Command | Result |
 |---|---|
-| Three cleanup tests (regular file, symlink, removal error) | PASS — **3 passed in 2.15s** |
-| `python -m pytest tests/unit/test_task183_ml_offline.py -q` | PASS — **37 passed in 2.93s** |
-| `python -m pytest tests/unit/test_task183_ml_offline.py tests/unit/test_task205_ml_workflow.py -q` | PASS — **39 passed in 2.84s** |
-| `python -m pytest -q` | PASS — **396 passed, 1 existing XGBoost serialization warning, 8 subtests passed in 33.42s** |
+| Six focused cleanup paths (absent, regular PNG, symlink, non-PNG, directory, removal error) | PASS — **6 passed in 1.74s** |
+| `python -m pytest tests/unit/test_task183_ml_offline.py -q` | PASS — **39 passed in 3.20s** |
+| `python -m pytest tests/unit/test_task183_ml_offline.py tests/unit/test_task205_ml_workflow.py -q` | PASS — **41 passed in 2.83s** |
+| `python -m pytest -q` | PASS — **398 passed, 1 existing XGBoost serialization warning, 8 subtests passed in 33.15s** |
 
-The tests exercise observable `run_training()` outcomes with real temporary files and a real symlink; mocks are limited to the optional SHAP boundary and the removal failure boundary. They do not assert internal call counts.
+The tests exercise observable `run_training()` outcomes with real temporary artifacts, a real symlink, and byte-for-byte preservation checks. Mocks are limited to the optional SHAP boundary and the removal-failure boundary; no test asserts internal call counts.
 
 ### Differential coverage
 
 `pytest-cov` remains unavailable in this local Python 3.14.6 environment: collection aborts before tests with NumPy's `ImportError: cannot load module more than once per process`. No package was installed or changed.
 
-The reproducible fallback traced only `_save_shap_plot` while executing the four behavioral paths (absent, regular, symlink, removal error), then used Coverage.py 7.14.2's `PythonParser` to calculate the static arcs for the changed cleanup block.
+The reproducible fallback traced only `_save_shap_plot` while executing all six behavioral paths, then used Coverage.py 7.14.2's `PythonParser` to calculate static statements and arcs. `translate_lines()` and `translate_arcs()` map physical continuation lines 246–249 back to the multiline suffix decision at line 245, so the new `.png` guard is included rather than undercounted.
 
 | Metric | Result |
 |---|---:|
-| Changed executable statements (`train_offline.py:245-251`) | **7 / 7 = 100.00%** |
-| Changed outgoing static arcs | **8 / 8 = 100.00%** |
-| Uncovered changed statements/arcs | **None** |
+| Cleanup-block executable statements (`train_offline.py:245, 250-255`) | **7 / 7 = 100.00%** |
+| Cleanup-block outgoing static arcs, including suffix decision `245 → 250` / `245 → 256` | **8 / 8 = 100.00%** |
+| Uncovered cleanup statements/arcs | **None** |
 
 ### Scope guard and verdict
 
 - `git diff --check`: PASS.
 - `.github/workflows/ml_training.yml`: no diff; `HEAD` and `origin/main` both resolve to blob `f34e488cf0d52cb3dcb4ca2a07ecaaffeeaccfcc`.
-- Reviewer-fix production scope is limited to the stale-artifact guard in `ml_signal/train_offline.py`; the associated tests are in `tests/unit/test_task183_ml_offline.py`.
+- Reviewer-fix production scope is limited to the stale-artifact guard in `ml_signal/train_offline.py`; associated contract tests are in `tests/unit/test_task183_ml_offline.py`.
+- QA amended only this existing addendum; the pre-existing dirty documentation files and workflow were not touched.
 
-**Verdict: PASS.** The reviewer’s stale-artifact concern is addressed without a regression or workflow change.
+**Verdict: PASS.** The reviewer’s stale-artifact and non-PNG safety concerns are addressed without a regression or workflow change.

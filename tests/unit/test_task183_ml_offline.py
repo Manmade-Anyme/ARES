@@ -586,9 +586,9 @@ class TestOfflineShapContract(unittest.TestCase):
             with patch.dict(sys.modules, {"shap": None}):
                 _, metrics = run_training(df, ["alpha", "beta", "gamma"],
                                            config=self._config(), shap_plot_path=plot_path)
+            self.assertFalse(os.path.exists(plot_path))
         self.assertFalse(metrics["shap_computed"])
         self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
-        self.assertFalse(os.path.exists(plot_path))
 
     def test_requested_plot_without_shap_removes_stale_file(self):
         df = _training_frame()
@@ -623,6 +623,39 @@ class TestOfflineShapContract(unittest.TestCase):
             self.assertTrue(os.path.islink(plot_path))
             with open(target_path, "rb") as target_file:
                 self.assertEqual(target_file.read(), b"SHAP plot target")
+        self.assertIsNotNone(model)
+        self.assertFalse(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
+
+    def test_requested_non_png_plot_without_shap_preserves_regular_file(self):
+        df = _training_frame()
+        with tempfile.TemporaryDirectory() as directory:
+            plot_path = os.path.join(directory, "notes.txt")
+            with open(plot_path, "wb") as plot_file:
+                plot_file.write(b"unrelated training notes")
+            with patch.dict(sys.modules, {"shap": None}):
+                model, metrics = run_training(
+                    df, ["alpha", "beta", "gamma"], config=self._config(),
+                    shap_plot_path=plot_path,
+                )
+            self.assertTrue(os.path.isfile(plot_path))
+            with open(plot_path, "rb") as plot_file:
+                self.assertEqual(plot_file.read(), b"unrelated training notes")
+        self.assertIsNotNone(model)
+        self.assertFalse(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
+
+    def test_requested_directory_plot_without_shap_is_nonfatal(self):
+        df = _training_frame()
+        with tempfile.TemporaryDirectory() as directory:
+            plot_path = os.path.join(directory, "existing-plot-directory")
+            os.mkdir(plot_path)
+            with patch.dict(sys.modules, {"shap": None}):
+                model, metrics = run_training(
+                    df, ["alpha", "beta", "gamma"], config=self._config(),
+                    shap_plot_path=plot_path,
+                )
+            self.assertTrue(os.path.isdir(plot_path))
         self.assertIsNotNone(model)
         self.assertFalse(metrics["shap_computed"])
         self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
