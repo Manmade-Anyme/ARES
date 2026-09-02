@@ -229,12 +229,12 @@ ARES features an integrated, offline-trained and in-process served **XGBoost Mac
   │  GitHub Actions Automated Workflow (.github/workflows) │
   │                                                        │
   │  Weekly Retraining (Sat 00:00Z) ──► Retrains XGBoost   │
-  │  Model Artifacts ────────────────► Stores v1.joblib    │
+  │  Model Artifacts ────────────────► Stores v{n}.joblib  │
   └────────────────────────────────────────────────────────┘
 ```
 
 - **Feature Snapshot (`MLCollector`):** Captures 50+ technical, IV, OI, Greek, and structural features per cycle into Supabase `ml_collection`.
-- **In-Process Inference (`SignalPredictor`):** Uses lightweight XGBoost model (`v1.joblib`) inside `main.py` to add forward probabilities (e.g., `🤖 ML Prediction: 46%`) directly to Discord alerts (TASK-196) without database write latency.
+- **In-Process Inference (`SignalPredictor`):** Uses the highest versioned lightweight XGBoost model (`v{n}.joblib`) inside `main.py` to add forward probabilities (e.g., `🤖 ML Prediction: 46%`) directly to Discord alerts (TASK-196) without database write latency.
 - **Timestamp Normalization (TASK-206):** Stores timestamps in normalized UTC (`+00:00`) using `storage.to_utc_iso`, guaranteeing 1:1 joinability with `ares_signals` and `trade_analytics`.
 - **Automated Retraining (TASK-205):** GitHub Actions workflow (`.github/workflows/ml_training.yml`) runs `ml_signal/train_offline.py` every Saturday, updating metrics reports (`reports/ml/`) and model binaries (`ml_signal/models/`).
 

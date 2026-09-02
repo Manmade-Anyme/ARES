@@ -115,6 +115,193 @@ def _safe_metrics(model, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, f
         }
 
 
+def _shap_metrics() -> Dict[str, object]:
+    """Return the stable, explicit schema for optional offline SHAP output."""
+    return {
+        "shap_computed": False,
+        "shap_top_features": [],
+        "shap_output_unit": "raw_margin_log_odds",
+        "shap_explained_rows": 0,
+        "shap_backend": "none",
+        "shap_status": "not_attempted",
+        "shap_plot_saved": False,
+        "shap_plot_status": "not_requested",
+        "shap_plot_error_type": None,
+        "shap_fallback_reason": None,
+        "shap_error_type": None,
+        "shap_iteration_range": None,
+        "shap_raw_margin_additivity": False,
+    }
+
+
+def _native_shap_values(model, X_test: pd.DataFrame, best_iteration: int):
+    """Compute exact raw-margin TreeSHAP values through XGBoost itself."""
+    iteration_range = (0, best_iteration + 1)
+    dtest = xgb.DMatrix(X_test)
+    booster = model.get_booster()
+    contributions = np.asarray(booster.predict(
+        dtest, pred_contribs=True, iteration_range=iteration_range,
+    ))
+    if contributions.ndim != 2 or contributions.shape[1] != X_test.shape[1] + 1:
+        raise ValueError("native SHAP contribution shape mismatch")
+    if not np.isfinite(contributions).all():
+        raise ValueError("native SHAP contributions contain non-finite values")
+    raw_margin = np.asarray(booster.predict(
+        dtest, output_margin=True, iteration_range=iteration_range,
+    ))
+    if raw_margin.ndim != 1 or not np.isfinite(raw_margin).all():
+        raise ValueError("native SHAP raw margins contain non-finite values")
+    if not np.allclose(contributions.sum(axis=1), raw_margin, rtol=1e-5, atol=1e-6):
+        raise ValueError("native SHAP contributions are not additive to raw margin")
+    return contributions[:, :-1], iteration_range
+
+
+def _compute_shap(
+    model,
+    X_test: pd.DataFrame,
+    feature_cols: List[str],
+    metrics: Dict[str, object],
+):
+    """Populate metrics with optional held-out-set SHAP analysis."""
+    best_iteration = int(getattr(model, "best_iteration", model.n_estimators - 1))
+    metrics["shap_iteration_range"] = [0, best_iteration + 1]
+    import_failure = None
+    try:
+        import shap
+    except ModuleNotFoundError as exc:
+        if exc.name == "shap":
+            print("[!] SHAP unavailable; skipping offline explanation and continuing.")
+            metrics["shap_status"] = "shap_unavailable"
+            metrics["shap_error_type"] = type(exc).__name__
+            return
+        import_failure = exc
+    except Exception as exc:
+        import_failure = exc
+
+    values = None
+    tree_exc = import_failure
+    if tree_exc is None:
+        try:
+            explainer = shap.TreeExplainer(model)
+            # `tree_limit` is the SHAP API's equivalent of XGBoost's iteration range.
+            if hasattr(explainer, "shap_values"):
+                values = explainer.shap_values(
+                    X_test, tree_limit=best_iteration + 1, check_additivity=True,
+                )
+            else:
+                values = explainer(
+                    X_test, tree_limit=best_iteration + 1, check_additivity=True,
+                ).values
+            if isinstance(values, list):
+                values = values[-1]
+            values = np.asarray(values, dtype=float)
+            expected_shape = (len(X_test), len(feature_cols))
+            if values.shape != expected_shape:
+                raise ValueError("SHAP contribution shape mismatch")
+            if not np.isfinite(values).all():
+                raise ValueError("SHAP contributions contain non-finite values")
+            backend = "shap_tree_explainer"
+            iteration_range = [0, best_iteration + 1]
+            metrics["shap_raw_margin_additivity"] = True
+        except Exception as exc:
+            tree_exc = exc
+
+    if tree_exc is not None:
+        reason = str(tree_exc).strip().replace("\n", " ")[:200]
+        metrics["shap_fallback_reason"] = type(tree_exc).__name__ + (
+            f": {reason}" if reason else ""
+        )
+        try:
+            values, native_range = _native_shap_values(model, X_test, best_iteration)
+            expected_shape = (len(X_test), len(feature_cols))
+            if values.shape != expected_shape or not np.isfinite(values).all():
+                raise ValueError("native SHAP contribution shape mismatch")
+            backend = "xgboost_pred_contribs"
+            iteration_range = list(native_range)
+            metrics["shap_raw_margin_additivity"] = True
+        except Exception as native_exc:
+            metrics["shap_status"] = "failed"
+            metrics["shap_error_type"] = type(native_exc).__name__
+            return
+
+    means = np.mean(np.abs(values), axis=0)
+    ranked = sorted(zip(feature_cols, means), key=lambda item: item[1], reverse=True)
+    metrics["shap_top_features"] = [
+        {"feature": feature, "mean_abs_shap": round(float(value), 6)}
+        for feature, value in ranked[:15]
+    ]
+    metrics["shap_computed"] = True
+    metrics["shap_explained_rows"] = int(len(X_test))
+    metrics["shap_backend"] = backend
+    metrics["shap_status"] = "computed"
+    metrics["shap_iteration_range"] = iteration_range
+
+
+def _save_shap_plot(metrics: Dict[str, object], shap_plot_path: Optional[str]) -> None:
+    """Save the optional headless top-feature SHAP plot without aborting training."""
+    if not shap_plot_path:
+        return
+    if not metrics["shap_computed"]:
+        if (
+            shap_plot_path.lower().endswith(".png")
+            and os.path.isfile(shap_plot_path)
+            and not os.path.islink(shap_plot_path)
+        ):
+            try:
+                os.remove(shap_plot_path)
+            except OSError as exc:
+                metrics["shap_plot_status"] = "stale_cleanup_failed"
+                metrics["shap_plot_error_type"] = type(exc).__name__
+                return
+        metrics["shap_plot_status"] = "not_saved_no_shap"
+        return
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        top = metrics["shap_top_features"]
+        labels = [row["feature"] for row in reversed(top)]
+        values = [row["mean_abs_shap"] for row in reversed(top)]
+        fig, ax = plt.subplots(figsize=(10, 6))
+        try:
+            ax.barh(labels, values)
+            ax.set_xlabel("Mean absolute SHAP value (raw margin / log-odds)")
+            ax.set_title("Offline SHAP feature importance")
+            fig.tight_layout()
+            os.makedirs(os.path.dirname(shap_plot_path) or ".", exist_ok=True)
+            fig.savefig(shap_plot_path, dpi=150, bbox_inches="tight")
+        finally:
+            plt.close(fig)
+        metrics["shap_plot_saved"] = True
+        metrics["shap_plot_status"] = "saved"
+        print(f"[+] SHAP plot saved -> {shap_plot_path}")
+    except Exception as exc:
+        metrics["shap_plot_status"] = "failed"
+        metrics["shap_plot_error_type"] = type(exc).__name__
+        print(f"[!] SHAP plot could not be saved; continuing ({type(exc).__name__}).")
+
+
+def _offline_report_paths(repo: str, version: str) -> Tuple[str, str, str]:
+    """Return canonical, versioned, and SHAP plot report paths."""
+    report_dir = os.path.join(repo, "reports", "ml")
+    return (
+        os.path.join(report_dir, "task183_offline_metrics.json"),
+        os.path.join(report_dir, f"{version}_offline_metrics.json"),
+        os.path.join(report_dir, f"{version}_shap_summary.png"),
+    )
+
+
+def _print_shap_summary(metrics: Dict[str, object]) -> None:
+    """Print the labeled raw-margin/log-odds SHAP summary."""
+    print("=== SHAP Feature Importance (mean |SHAP| on test set; raw margin/log-odds) ===")
+    if metrics["shap_computed"]:
+        for feat in metrics["shap_top_features"][:8]:
+            print(f"    {feat['feature']:32s} mean_abs_shap={feat['mean_abs_shap']:.6f}")
+    else:
+        print(f"    unavailable ({metrics['shap_status']})")
+
+
 def run_training(
     df: pd.DataFrame,
     feature_cols: List[str],
@@ -124,7 +311,9 @@ def run_training(
     train_frac: float = 0.8,
     save_path: Optional[str] = None,
     report_path: Optional[str] = None,
-) -> Tuple[object, Dict[str, float]]:
+    shap_plot_path: Optional[str] = None,
+    model_version: Optional[str] = None,
+) -> Tuple[object, Dict[str, object]]:
     """
     Train + evaluate on a chronological split. Degrades gracefully on tiny data
     (warns, marks metrics provisional, still trains). Optionally persists the
@@ -157,9 +346,14 @@ def run_training(
         "pos_rate": float(df[label_col].mean()) if n else float("nan"),
         "provisional": bool(provisional),
     })
+    metrics.update(_shap_metrics())
+    if model_version is not None:
+        metrics["model_version"] = model_version
 
     importance = _importance(model, feature_cols)
     metrics["top_features"] = importance.head(15).to_dict(orient="records")
+    _compute_shap(model, X_test, feature_cols, metrics)
+    _save_shap_plot(metrics, shap_plot_path)
 
     if save_path:
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
@@ -255,15 +449,17 @@ def main() -> None:
     save_path, next_version = get_next_model_version_and_path(models_dir)
     print(f"[*] Incrementing model version -> {next_version} ({save_path})")
 
-    report_path = os.path.join(repo, "reports", "ml", "task183_offline_metrics.json")
-    versioned_report_path = os.path.join(repo, "reports", "ml", f"{next_version}_offline_metrics.json")
+    report_path, versioned_report_path, shap_plot_path = _offline_report_paths(
+        repo, next_version,
+    )
     model, metrics = run_training(
         df, fcols,
         config=config,
         save_path=save_path,
         report_path=report_path,
+        shap_plot_path=shap_plot_path,
+        model_version=next_version,
     )
-    metrics["model_version"] = next_version
     with open(versioned_report_path, "w") as f:
         json.dump(metrics, f, indent=2, default=str)
 
@@ -277,6 +473,7 @@ def main() -> None:
     print("  top features:")
     for feat in metrics["top_features"][:8]:
         print(f"    {feat['feature']:32s} gain={feat['gain']:.4f}")
+    _print_shap_summary(metrics)
     print("\n  Interpretation: AUC > 0.55 => the collected features carry real")
     print("  short-horizon predictive signal. ~0.5 => not yet (more/other data).")
 
