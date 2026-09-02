@@ -391,6 +391,14 @@ Started from a live QA: "FailedBreakout / OIWall / Exhaustion feel silent — on
 
 ---
 
+## 2026-09-02 09:55 · MANM-55 Stale SHAP Plot Cleanup
+
+Follow-up reviewer fix for MANM-55 hardened the optional SHAP plot cleanup path in `ml_signal/train_offline.py`. If SHAP values are not computed but a plot path was requested, offline training now removes only an existing regular, non-symlink `.png` at that path before recording `not_saved_no_shap`; symlinks, directories, and non-PNG files are preserved. A cleanup `OSError` is nonfatal and is reported as `stale_cleanup_failed` with the exception type.
+
+**Validation**: The amended QA addendum records the six focused cleanup paths passing, `tests/unit/test_task183_ml_offline.py` passing with 39 tests, the TASK-183 plus TASK-205 workflow suite passing with 41 tests, and the full suite passing with 398 tests plus the existing XGBoost serialization warning.
+
+---
+
 ## 2026-07-08 11:30 · ML Offline Labeling & XGBoost Training Pipeline (TASK-183)
 
 Started from a live QA of the ML side: "is `ml_collection` recording as expected, and does the collected data add value?" Audit findings (all verified against Supabase): collection itself is **healthy** — 2,669 rows, ~350/trading day, all 7 feature groups + `raw_candle` + `raw_atm_oi` fully populated. **But the data was inert**: (1) `ml_collection.trade_outcome`/`trade_pnl`/`trade_id` are **0/2669 non-null** — nothing ever back-fills them despite the schema comment; (2) the trainer (`data.py`, `source="ares"`) reads a *different* table, `trade_analytics` (38 rows, sparse features), and **never `ml_collection`**; (3) XGBoost was **dormant** — empty `models/`, `ml_predictions=0`. Net: rich features collected every minute, but unlabeled, unread, untrained. User directive: fix it so the data adds value, create ADR + task, and **leave the live implementation untouched**.
@@ -842,6 +850,5 @@ Fixed a fatal pydantic `ValidationError: discord_webhook_url: Field required` wh
 
 **TODOs**
 - [x] Merge PR #71 and perform local branch merge verification and cleanup.
-
 
 
