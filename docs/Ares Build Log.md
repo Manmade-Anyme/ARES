@@ -57,7 +57,7 @@ Created `.github/workflows/ml_training.yml` to automate offline XGBoost model tr
 - **Triggers**: Weekly Saturday schedule at 00:00 UTC / 05:30 IST (`cron: "0 0 * * 6"`) + manual trigger (`workflow_dispatch`).
 - **Environment**: Runs on `ubuntu-latest` (Python 3.10) with secrets `SUPABASE_URL` and `SUPABASE_KEY` scoped to the training step.
 - **Reporting & Artifacts**: Writes JSON training metrics directly to `$GITHUB_STEP_SUMMARY` and uploads model binaries (`ml_signal/models/`) and metrics reports (`reports/ml/`) via `actions/upload-artifact@v4` (30-day retention).
-- **Auto-Commit**: Automatically commits and pushes updated `v1.joblib` and metrics JSON to `main` (`[skip ci]`).
+- **Auto-Commit**: Automatically commits and pushes updated versioned model artifacts (`v{n}.joblib`) and metrics JSON to `main` (`[skip ci]`).
 - **Verification**: 355 unit tests green including `tests/unit/test_task205_ml_workflow.py`; CI run passed.
 
 ---
@@ -867,5 +867,4 @@ Fixed a fatal pydantic `ValidationError: discord_webhook_url: Field required` wh
 
 **TODOs**
 - [x] Merge PR #71 and perform local branch merge verification and cleanup.
-
 
