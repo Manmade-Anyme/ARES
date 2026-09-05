@@ -253,6 +253,23 @@ Discord notifications maintain ARES standard embed styling while making the two-
    - `STOPPED_OUT_AT_BE`: Trailing Stop Loss Hit at Entry. T1 Profit Locked; Trade Closed.
    - `SL_HIT`: Stop Loss Hit. Trade Closed (-16 pts).
 
+### 3.6 Failure Modes and Invalidation Semantics
+
+The system deterministically isolates two distinct failure classes:
+
+1. **Pre-Entry Setup Invalidation (Setup Fails to Qualify)**:
+   - **Wall Breach / Penetration**: If price aggressively cuts through the wall and closes on the wrong side (e.g. above CE wall for bearish setup or below PE wall for bullish setup), the secondary re-test fails to close on the defended side. The bias transitions immediately to `EXPIRED` -> `none`.
+   - **Wall Shift / Dissolution**: If option writers unwind/roll or another strike becomes dominant, the tracked bias expires.
+   - **Runaway Trend Without Pullback**: If price trends strongly away without testing the re-test tolerance band, `RETEST_READY` times out on session reset or when the wall moves.
+   - **Pre-Entry Outcome**: Zero orders emitted, zero capital risked, zero cooldown locks. The trader receives only the informational watchlist heads-up (if enabled) without false fills.
+
+2. **Post-Entry Trade Failure (Qualified Signal Hits Stop Loss)**:
+   - **Stop-Loss Execution**: If the market absorbs the wall after entry and spot moves 16 points against the position, `position_manager` exits immediately at the fixed 16-pt SL (`SL_HIT`).
+   - **Discord Notification**: `alerts.send_trade_update` broadcasts: `🛑 Stop Loss Hit at {price}. Trade Closed (-16.0 pts)`.
+   - **Single-Entry Wall Consumption Policy**: Once a signal qualifies, the filter transitions the wall to `CONSUMED`. In Phase 1, **no re-entry is permitted on the same wall identity** during that session. This eliminates multi-stop churn on a broken or compromised strike.
+   - **Engine Cooldown**: Standard 15-minute engine-wide cooldown (`signal_cooldown_minutes = 15`) engages upon entry, suppressing immediate re-triggers and enforcing trading discipline.
+   - **Telemetry Audit**: Full entry-to-exit lifecycle with wall persistence snapshots and opening range context is recorded to `trade_analytics` for post-session postmortem and model retraining.
+
 ## 4. Alternatives Considered
 
 1. **Widen the stop** — rejected. It changes the risk budget and does not address the observed premature entry; the issue explicitly keeps SL unchanged.

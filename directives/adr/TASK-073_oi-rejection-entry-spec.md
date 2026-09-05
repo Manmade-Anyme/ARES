@@ -57,6 +57,13 @@ The index is optional if query plans show no benefit; JSON shape and null semant
 - `alerts.py:format_signal` and `alerts.py:send_discord` render the wall context (`wall_strike`, `persistence_snapshots`, `oi_change_pct`) and structural stop distance without breaking field contracts for other detectors.
 - Active trade state transitions (`T1_HIT`, `T2_HIT`, `STOPPED_OUT_AT_BE`, `SL_HIT`) continue to be dispatched via `alerts.py:send_trade_update`.
 
+## Failure and Invalidation Rules
+
+- **Pre-Entry Failure**: If price closes beyond the wall level during re-test, the filter invalidates the candidate and returns `EXPIRED`. No signal is built, no order is placed.
+- **Post-Entry SL Hit**: If an active trade hits the 16-pt SL, `position_manager` exits at `SL_HIT`. The wall remains in `CONSUMED` state for the rest of the day.
+- **No Re-Entry**: In Phase 1, `OIWallEntryFilter` strictly prevents re-entry on any consumed wall key (`wall_option_type:strike`) in the same trading session.
+- **Cooldown**: Standard 15-minute cooldown activates on entry, preventing conflicting executions.
+
 ## Acceptance evidence required from implementation/QA
 
 - Unit tests for every state transition and both direction mirrors.
