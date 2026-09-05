@@ -11,3 +11,4 @@
 | TASK-009 | 2026-06-25 | ML Data Collection Pipeline | Approved |
 | TASK-177 | 2026-07-06 | Trend-Continuation Detector | Approved |
 | MANM-93 | 2026-08-31 | Dhan Redis API Removal & Local/Supabase State Architecture | Proposed |
+| TASK-073 | 2026-09-05 | OI-wall directional bias, delayed entry qualification, and telemetry | Proposed |
