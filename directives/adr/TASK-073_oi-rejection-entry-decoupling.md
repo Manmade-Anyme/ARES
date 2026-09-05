@@ -97,7 +97,7 @@ OIFetcher + closed candle
 | `tests/unit/test_oi_wall.py` | Preserve detector coverage and add bias/persistence cases. |
 | `tests/unit/test_task073_oi_wall_entry.py` | Cover the filter state machine, both directions, reset/consumption, and no-entry cases. |
 | `tests/unit/test_engine_oi_wall_entry.py` | Verify per-candle advancement during cooldown/higher-priority signals and unchanged risk/R:R behavior. |
-| `tests/unit/test_storage.py` / `tests/unit/test_ml_collector.py` | Verify serialization, null handling, non-blocking writes, and persistence of non-entry wall observations. |
+| `tests/unit/test_storage.py` / `tests/unit/test_ml_collector.py` | Verify serialization (including optional VWAP and opening range), null handling, non-blocking writes, and persistence of non-entry wall observations. |
 
 ### 3.2 Public contracts
 
@@ -136,6 +136,7 @@ class OIWallTelemetry:
     favourable_excursion_pts: Optional[float]
     retest_timestamp: Optional[datetime]
     reference_price: Optional[float]
+    vwap: Optional[float]                 # Intraday VWAP from candle context when available
     opening_range: Optional[Dict[str, Optional[float]]]
 
     def to_dict(self) -> Dict[str, Any]: ...
@@ -230,6 +231,7 @@ Existing `oi_wall_min_oi`, `oi_wall_min_oi_change_pct`, confidence scoring, `ent
   "rejection_reason": null,
   "retest_timestamp": null,
   "reference_price": 24100.0,
+  "vwap": 24085.5,
   "opening_range": {
     "high": 24135.0,
     "low": 24060.0,
@@ -239,7 +241,7 @@ Existing `oi_wall_min_oi`, `oi_wall_min_oi_change_pct`, confidence scoring, `ent
 }
 ```
 
-The opening-range object is nullable and must not be fabricated when the session context is unavailable. Relative percentile is the percentage of non-zero same-side strikes with OI less than or equal to the selected wall; no synthetic/interpolated strike is introduced.
+The opening-range object and VWAP are nullable and must not be fabricated when the session context is unavailable. Relative percentile is the percentage of non-zero same-side strikes with OI less than or equal to the selected wall; no synthetic/interpolated strike is introduced.
 
 Storage requirements:
 

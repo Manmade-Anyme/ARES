@@ -43,7 +43,7 @@ This specification is subordinate to `directives/adr/TASK-073_oi-rejection-entry
 - The filter never consumes a wall from `update()`. Every `OIWallEntryDecision` returns the latest filter-owned `bias` and `telemetry`; `acknowledge()` returns the post-transition decision so the engine/main/collector cannot observe stale state. Every `QUALIFIED` decision is acknowledged exactly once after the engine's final gates; no signal alert or cooldown is attached to a merely provisional decision.
 - `stop_loss`, `target_1`, and `target_2` are populated only by the existing central engine policy after qualification; the filter never widens SL.
 - Non-OI-wall detector paths do not receive or depend on OI-wall context.
-- A missing opening-range context remains `NULL`, not a sentinel numeric value.
+- A missing opening-range context or VWAP remains `NULL`, not a sentinel numeric value.
 
 `AresEngine.latest_oi_wall_context` is the read-only handoff consumed by `main.py`. `main.py` passes it to the existing `MLCollector.snapshot(..., oi_wall_context=...)` call after each `engine.tick()`; the collector never reaches into engine/filter internals.
 
@@ -88,7 +88,7 @@ The index is optional if query plans show no benefit; JSON shape and null semant
 - Unit tests for every state transition and both direction mirrors.
 - Unit tests for the explicit `NO_WALL` decision, initial-interaction requirement, quantitative later-candle excursion, provisional qualification, and every acknowledgement outcome.
 - A regression test proving detector/filter advancement during cooldown and higher-priority signal emission.
-- Storage/collector tests proving identical serialized wall context and no extra API calls.
+- Storage/collector tests proving identical serialized wall context (including optional VWAP and opening range), null handling, and no extra API calls.
 - Integration coverage proving `main.py` forwards the engine's latest wall context into the collector for non-entry observations.
 - Alert tests proving the watchlist is opt-in, no signal alert is sent before final acknowledgement, and the sample Discord message renders with the agreed fields.
 - Replay report for the 18 reviewed trades with baseline and Phase 1 metrics, including cases that never qualified. The report must explicitly confirm that the fixed stop policy was used.
