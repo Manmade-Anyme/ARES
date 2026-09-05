@@ -167,6 +167,40 @@ class TestOIWallEntryFilter(unittest.TestCase):
         self.assertEqual(decision4.status, "QUALIFIED")
         self.assertEqual(decision4.bias.direction, Direction.BULLISH)
 
+    def test_arming_candle_does_not_qualify_as_retest(self):
+        interaction = OHLCVCandle(timestamp=self.t0, open=24060.0, high=24085.0, low=24055.0, close=24075.0, volume=1000)
+        self.filter.update(bias=self._make_ce_bias(persistence=1), candle=interaction, levels=[])
+
+        arm_time = self.t0 + timedelta(minutes=1)
+        arm_candle = OHLCVCandle(timestamp=arm_time, open=24075.0, high=24085.0, low=24070.0, close=24080.0, volume=1000)
+        decision = self.filter.update(bias=self._make_ce_bias(persistence=3), candle=arm_candle, levels=[])
+
+        self.assertEqual(decision.status, "WAITING")
+
+    def test_retest_after_arming_candle_qualifies(self):
+        interaction = OHLCVCandle(timestamp=self.t0, open=24060.0, high=24085.0, low=24055.0, close=24075.0, volume=1000)
+        self.filter.update(bias=self._make_ce_bias(persistence=1), candle=interaction, levels=[])
+
+        arm_time = self.t0 + timedelta(minutes=1)
+        arm_candle = OHLCVCandle(timestamp=arm_time, open=24075.0, high=24085.0, low=24070.0, close=24080.0, volume=1000)
+        self.filter.update(bias=self._make_ce_bias(persistence=3), candle=arm_candle, levels=[])
+
+        retest_time = self.t0 + timedelta(minutes=2)
+        retest_candle = OHLCVCandle(timestamp=retest_time, open=24080.0, high=24088.0, low=24075.0, close=24078.0, volume=1000)
+        decision = self.filter.update(bias=self._make_ce_bias(persistence=4), candle=retest_candle, levels=[])
+
+        self.assertEqual(decision.status, "QUALIFIED")
+
+    def test_vanished_active_wall_expires_before_no_wall(self):
+        interaction = OHLCVCandle(timestamp=self.t0, open=24060.0, high=24085.0, low=24055.0, close=24075.0, volume=1000)
+        self.filter.update(bias=self._make_ce_bias(persistence=1), candle=interaction, levels=[])
+
+        vanished_time = self.t0 + timedelta(minutes=1)
+        vanished_candle = OHLCVCandle(timestamp=vanished_time, open=24075.0, high=24078.0, low=24050.0, close=24060.0, volume=1000)
+        decision = self.filter.update(bias=None, candle=vanished_candle, levels=[])
+
+        self.assertEqual(decision.status, "EXPIRED")
+
     def test_retest_breach_invalidates_to_expired(self):
         # CE wall 24100. Reach RETEST_READY, but secondary re-test closes ABOVE 24100 (breach)
         candle1 = OHLCVCandle(timestamp=self.t0, open=24070.0, high=24085.0, low=24065.0, close=24075.0, volume=1000)

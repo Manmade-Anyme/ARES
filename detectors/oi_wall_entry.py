@@ -23,7 +23,7 @@ def _setting_float(name: str, default: float) -> float:
 class OIWallEntryFilter:
     """
     Deterministic state machine for secondary re-test entry qualification.
-    
+
     Transitions:
     NO_WALL -> TRACKING -> PERSISTENT -> INTERACTED -> RETEST_READY -> QUALIFIED -> CONSUMED
     Any breach / invalidation -> EXPIRED
@@ -37,7 +37,9 @@ class OIWallEntryFilter:
         self.initial_interaction_price: Optional[float] = None
         self.favourable_excursion_pts: float = 0.0
         self.retest_timestamp: Optional[datetime] = None
+        self.retest_ready_timestamp: Optional[datetime] = None
         self.rejection_reason: Optional[str] = None
+        self._latest_bias: Optional[OIWallBias] = None
         self.latest_watchlist_event: Optional[OIWallBias] = None
         self._watchlist_emitted_keys: Set[str] = set()
 
@@ -46,6 +48,7 @@ class OIWallEntryFilter:
         self.initial_interaction_price = None
         self.favourable_excursion_pts = 0.0
         self.retest_timestamp = None
+        self.retest_ready_timestamp = None
         self.rejection_reason = None
         self.latest_watchlist_event = None
         self.state = "NO_WALL"
@@ -83,9 +86,34 @@ class OIWallEntryFilter:
         self.latest_watchlist_event = None
 
         if bias is None:
-            if self.state not in ("NO_WALL", "CONSUMED"):
-                self._reset_candidate()
-            self.state = "NO_WALL"
+            if self.state not in ("NO_WALL", "CONSUMED", "EXPIRED") and self._latest_bias:
+                previous_bias = self._latest_bias
+                self.state = "EXPIRED"
+                self.rejection_reason = "Wall disappeared or no longer qualifies"
+                telemetry = self._build_telemetry(
+                    previous_bias,
+                    entry_status="EXPIRED",
+                    filter_state="EXPIRED",
+                    candle=candle,
+                    rejection_reason=self.rejection_reason,
+                )
+                self.current_wall_key = None
+                self._latest_bias = None
+                return OIWallEntryDecision(
+                    status="EXPIRED",
+                    wall_key=previous_bias.wall_key,
+                    decision_id=None,
+                    bias=previous_bias,
+                    telemetry=telemetry,
+                    trigger_price=None,
+                    retest_timestamp=None,
+                    rejection_reason=self.rejection_reason,
+                    reference_price=previous_bias.wall_strike,
+                )
+
+            self._reset_candidate()
+            self.current_wall_key = None
+            self._latest_bias = None
             telemetry = self._build_telemetry(None, entry_status="NO_WALL", filter_state="NO_WALL", candle=candle)
             return OIWallEntryDecision(
                 status="NO_WALL",
@@ -98,6 +126,8 @@ class OIWallEntryFilter:
                 rejection_reason=None,
                 reference_price=None,
             )
+
+        self._latest_bias = bias
 
         # Check if wall has already been consumed in this session
         if bias.wall_key in self.consumed_wall_keys:
@@ -179,12 +209,17 @@ class OIWallEntryFilter:
 
             if self.state in ("INTERACTED", "PERSISTENT") and persistence_met and excursion_met:
                 self.state = "RETEST_READY"
+                self.retest_ready_timestamp = candle.timestamp
                 if bias.wall_key not in self._watchlist_emitted_keys:
                     self.latest_watchlist_event = bias
                     self._watchlist_emitted_keys.add(bias.wall_key)
 
             # In RETEST_READY, check for secondary re-test
-            if self.state == "RETEST_READY" and candle.timestamp > self.initial_interaction_timestamp:
+            if (
+                self.state == "RETEST_READY"
+                and self.retest_ready_timestamp is not None
+                and candle.timestamp > self.retest_ready_timestamp
+            ):
                 retested = (
                     (candle.high >= strike - retest_dist)
                     if is_bearish
@@ -277,6 +312,7 @@ class OIWallEntryFilter:
         elif outcome in ("SUPPRESSED_BY_COOLDOWN", "SUPPRESSED_BY_PRIORITY"):
             self.state = "RETEST_READY"
             self.retest_timestamp = None
+            self.retest_ready_timestamp = decision.retest_timestamp
             telemetry = OIWallTelemetry(
                 bias=decision.bias,
                 entry_status="WAITING",

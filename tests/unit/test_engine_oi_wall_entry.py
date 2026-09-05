@@ -218,6 +218,19 @@ class TestEngineOIWallEntry(unittest.TestCase):
         self.assertEqual(ctx["wall_strike"], 24100.0)
         self.assertEqual(ctx["entry_status"], "WAITING")
 
+    def test_vanished_wall_expiration_persisted_for_telemetry(self):
+        bias = self._make_bias(state="INTERACTED")
+        decision = self._make_decision(status="EXPIRED", bias=bias)
+
+        self.engine.oi_wall_detector.update = MagicMock(return_value=None)
+        self.engine.oi_wall_filter.update = MagicMock(return_value=decision)
+
+        candle = self._make_candle(24050.0)
+        atm = self._make_atm(24050.0)
+        self.engine.tick(candle, [], atm, 0.0, [])
+
+        self.assertEqual(self.engine.latest_oi_wall_context["entry_status"], "EXPIRED")
+
 
 if __name__ == "__main__":
     unittest.main()

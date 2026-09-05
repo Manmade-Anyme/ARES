@@ -174,7 +174,11 @@ class AresEngine:
                 candle=candle,
                 levels=levels,
             )
-            self._latest_oi_wall_context = None
+            self._latest_oi_wall_context = (
+                oi_wall_decision.telemetry.to_dict()
+                if oi_wall_decision.status != "NO_WALL"
+                else None
+            )
             oi_wall_candidate = oi_wall_bias
 
         if in_cooldown:
