@@ -283,10 +283,20 @@ class TestOIWallEntryFilter(unittest.TestCase):
         self.filter.update(bias=self._make_ce_bias(strike=24100.0, persistence=1), candle=candle1, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
 
-        # Shift to 24150 CE
+        # Shift to 24150 CE: prior wall expires first
         t1 = self.t0 + timedelta(minutes=1)
         candle2 = OHLCVCandle(timestamp=t1, open=24075.0, high=24080.0, low=24070.0, close=24075.0, volume=1000)
-        self.filter.update(bias=self._make_ce_bias(strike=24150.0, persistence=1), candle=candle2, levels=[])
+        decision2 = self.filter.update(bias=self._make_ce_bias(strike=24150.0, persistence=1), candle=candle2, levels=[])
+        self.assertEqual(decision2.status, "EXPIRED")
+        self.assertEqual(decision2.wall_key, "CE:24100")
+        self.assertEqual(self.filter.state, "EXPIRED")
+        self.assertIn("replaced", decision2.rejection_reason.lower())
+
+        # Next candle: replacement wall begins tracking cleanly
+        t2 = self.t0 + timedelta(minutes=2)
+        candle3 = OHLCVCandle(timestamp=t2, open=24075.0, high=24080.0, low=24070.0, close=24075.0, volume=1000)
+        decision3 = self.filter.update(bias=self._make_ce_bias(strike=24150.0, persistence=2), candle=candle3, levels=[])
+        self.assertEqual(decision3.status, "WAITING")
         self.assertEqual(self.filter.state, "TRACKING")
         self.assertIsNone(self.filter.initial_interaction_timestamp)
         self.assertEqual(self.filter.current_wall_key, "CE:24150")

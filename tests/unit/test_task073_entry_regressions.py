@@ -85,12 +85,36 @@ def test_return_to_consumed_wall_clears_other_wall_geometry(profile, side):
     other = "PE" if side == "CE" else "CE"
     for index, prices in enumerate(GEOMETRY[:4]):
         update(detector, entry_filter, other, 5 + index, prices)
-    decision = update(detector, entry_filter, side, 9, GEOMETRY[0])
+    expired = update(detector, entry_filter, side, 9, GEOMETRY[0])
+    assert expired.status == "EXPIRED"
+    assert expired.wall_key == f"{other}:24100"
+    decision = update(detector, entry_filter, side, 10, GEOMETRY[0])
+    assert decision.status == "CONSUMED"
     assert (
         decision.telemetry.initial_interaction_timestamp,
         decision.telemetry.favourable_excursion_pts,
         decision.telemetry.retest_timestamp,
     ) == (None, None, None)
+
+
+@pytest.mark.parametrize("side", ["CE", "PE"])
+def test_tracked_wall_emits_expiration_on_replacement_wall(profile, side):
+    detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
+    for index, prices in enumerate(GEOMETRY[:3]):
+        update(detector, entry_filter, side, index, prices)
+    assert entry_filter.state == "RETEST_READY"
+    other = "PE" if side == "CE" else "CE"
+    expired = update(detector, entry_filter, other, 3, GEOMETRY[0])
+    assert expired.status == "EXPIRED"
+    assert expired.wall_key == f"{side}:24100"
+    assert expired.telemetry.filter_state == "EXPIRED"
+    assert expired.telemetry.initial_interaction_timestamp is not None
+    assert expired.telemetry.favourable_excursion_pts == 55.0
+    assert "replaced" in expired.rejection_reason.lower()
+    next_decision = update(detector, entry_filter, other, 4, GEOMETRY[0])
+    assert next_decision.status == "WAITING"
+    assert next_decision.wall_key == f"{other}:24100"
+    assert entry_filter.state == "INTERACTED"
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])

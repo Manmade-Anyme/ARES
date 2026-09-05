@@ -16,6 +16,11 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **OI wall shift expiration (TASK-073 / PR #103)**: Tracked walls directly
+  replaced by another non-null bias (such as strike shifts) now emit an
+  authoritative `EXPIRED` decision on the transition candle with preserved
+  interaction and excursion telemetry, before the filter initializes and
+  tracks the replacement candidate.
 - **OI wall audit fixes (TASK-073 / PR #103)**: Wall identity changes now clear
   candidate geometry before checking consumed walls, preventing alternating
   CE/PE walls from sharing terminal state. A defended re-test only arms entry:

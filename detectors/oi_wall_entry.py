@@ -129,13 +129,42 @@ class OIWallEntryFilter:
                 reference_price=None,
             )
 
-        self._latest_bias = bias
-
-        # Reset geometry before any terminal-state return for a different wall.
+        # If wall identity changed while a previous wall was actively tracked,
+        # emit EXPIRED for the prior wall before tracking the replacement candidate.
         if self.current_wall_key != bias.wall_key:
+            if self.state not in ("NO_WALL", "CONSUMED", "EXPIRED") and self._latest_bias:
+                previous_bias = self._latest_bias
+                self.state = "EXPIRED"
+                self.rejection_reason = "Wall replaced by another qualifying strike"
+                telemetry = self._build_telemetry(
+                    previous_bias,
+                    entry_status="EXPIRED",
+                    filter_state="EXPIRED",
+                    candle=candle,
+                    rejection_reason=self.rejection_reason,
+                )
+                self._reset_candidate()
+                self.state = "EXPIRED"
+                self.rejection_reason = "Wall replaced by another qualifying strike"
+                self.current_wall_key = None
+                self._latest_bias = None
+                return OIWallEntryDecision(
+                    status="EXPIRED",
+                    wall_key=previous_bias.wall_key,
+                    decision_id=None,
+                    bias=previous_bias,
+                    telemetry=telemetry,
+                    trigger_price=None,
+                    retest_timestamp=None,
+                    rejection_reason=self.rejection_reason,
+                    reference_price=previous_bias.wall_strike,
+                )
+
             self._reset_candidate()
             self.current_wall_key = bias.wall_key
             self.state = "TRACKING"
+
+        self._latest_bias = bias
 
         # Check if wall has already been consumed in this session
         if bias.wall_key in self.consumed_wall_keys:
