@@ -40,9 +40,11 @@ The Phase 1 re-test reference is the identified wall strike. VWAP, opening-range
 - A wall identity is `(wall_option_type, strike)`, where a CE wall above spot is bearish and a PE wall below spot is bullish.
 - A qualifying snapshot requires the existing wall size and OI-change thresholds. The same identity must qualify on `oi_wall_persistence_snapshots` consecutive engine evaluations; the default is `3`.
 - A wall identity change, invalid wall, session reset, or missing chain resets the consecutive counter and marks the prior bias expired. A consumed wall cannot produce a second entry until it resets.
+- Persistence alone never arms a re-test. The filter must first observe an initial wall interaction: a closed candle whose range enters the wall's `oi_wall_initial_interaction_distance_pts` band. A wrong-side close invalidates the bias; a defended-side close records the interaction and is never itself an entry.
+- Favourable excursion is quantitative and is measured only on later closed candles: for a CE wall, a low at least `oi_wall_min_excursion_pts` below the strike; for a PE wall, a high at least that distance above the strike. The candle that records the initial interaction cannot also establish the excursion.
 - **Bearish CE wall**: after the price has moved away below the wall, a later candle tests the wall within the configured re-test tolerance and closes back below it as a rejection. **Bullish PE wall** is the mirror image: price moves away above the wall, then tests within tolerance and closes back above it.
 - The first wall touch and the initial breakdown/bounce are never entry events. The re-test candle close is the trigger price; the existing `entry_zone_offset_pts` remains the entry-zone convention.
-- A qualified entry continues through `apply_per_type_levels`, the existing R:R gate, and cooldown. Cooldown suppresses emission but never suppresses bias/filter advancement or telemetry.
+- A `QUALIFIED` decision is provisional. The filter does not consume the wall until the engine acknowledges that the final signal passed cooldown, detector priority, per-type levels, and R:R. Cooldown or priority suppression clears the pending decision, retains `RETEST_READY`, and requires a fresh later re-test; R:R rejection expires the wall. Cooldown never suppresses bias/filter advancement or telemetry.
 
 ### System architecture and data flow
 
@@ -79,10 +81,10 @@ OIFetcher + closed candle
 
 | File | Responsibility after approval |
 |---|---|
-| `models.py` | Add immutable bias, filter-decision, and telemetry contracts; keep new fields optional for compatibility. |
+| `models.py` | Add immutable bias, filter-decision, acknowledgement, and telemetry contracts; keep new fields optional for compatibility. |
 | `detectors/oi_wall.py` | Detect wall candidates, maintain wall identity/persistence, calculate relative percentile, and build a signal only from an approved entry decision. It must not emit a live signal directly from the first touch. |
 | `detectors/oi_wall_entry.py` | New stateful, deterministic re-test filter. Own favourable-excursion tracking, re-test confirmation, consumed/expired state, and rejection reason. No Supabase or broker imports. |
-| `engine.py` | Advance the bias detector and entry filter on every candle; gate only final emission; retain existing risk-level and R:R behavior. Expose the latest wall context to the collector without making the collector infer trading state. |
+| `engine.py` | Advance the bias detector and entry filter on every candle; acknowledge only the final outcome after cooldown/priority/risk gates; retain existing risk-level and R:R behavior. Expose the latest wall context to the collector without making the collector infer trading state. |
 | `config.py` / `config_profiles.py` | Add profile-backed persistence and re-test parameters with the defaults specified below. Existing wall thresholds and stop settings remain unchanged. |
 | `storage.py` | Persist wall telemetry on `ares_signals` and `trade_analytics` using the normalized serialization contract. Preserve exception suppression and async executor behavior. |
 | `ml_signal/collector.py` | Accept optional per-cycle wall context and write it even when no trade signal is emitted. Do not add API calls or change existing feature calculations. |
@@ -112,14 +114,18 @@ class OIWallBias:
     last_seen: datetime
     persistence_snapshots: int
     persistence_duration_seconds: float
-    state: str                            # TRACKING | PERSISTENT | RETEST_READY | EXPIRED | CONSUMED
+    state: str                            # TRACKING | PERSISTENT | INTERACTED | RETEST_READY | EXPIRED | CONSUMED
+    initial_interaction_timestamp: Optional[datetime]
+    initial_interaction_price: Optional[float]
+    favourable_excursion_pts: float
     reasons: Tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class OIWallEntryDecision:
-    status: str                           # WAITING | QUALIFIED | EXPIRED | CONSUMED
-    wall_key: str
+    status: str                           # NO_WALL | WAITING | QUALIFIED | EXPIRED | CONSUMED
+    wall_key: Optional[str]
+    decision_id: Optional[str]
     trigger_price: Optional[float]
     retest_timestamp: Optional[datetime]
     rejection_reason: Optional[str]
@@ -130,6 +136,9 @@ class OIWallEntryDecision:
 class OIWallTelemetry:
     bias: Optional[OIWallBias]
     entry_status: str
+    initial_interaction_timestamp: Optional[datetime]
+    initial_interaction_price: Optional[float]
+    favourable_excursion_pts: Optional[float]
     retest_timestamp: Optional[datetime]
     reference_price: Optional[float]
     opening_range: Optional[Dict[str, Optional[float]]]
@@ -155,6 +164,12 @@ OIWallEntryFilter.update(
     levels: List[ResistanceLevel],
 ) -> OIWallEntryDecision
 
+OIWallEntryFilter.acknowledge(
+    self,
+    decision: OIWallEntryDecision,
+    outcome: str,  # EMITTED | SUPPRESSED_BY_COOLDOWN | SUPPRESSED_BY_PRIORITY | REJECTED_BY_RR
+) -> None
+
 OIWallDetector.build_signal(
     self,
     bias: OIWallBias,
@@ -174,6 +189,8 @@ MLCollector.snapshot(..., oi_wall_context: Optional[Dict[str, Any]] = None) -> N
 | Setting | Type | Phase 1 default | Contract |
 |---|---:|---:|---|
 | `oi_wall_persistence_snapshots` | `int` | `3` | Minimum consecutive qualifying snapshots before re-test qualification is allowed. Must be >= 1. |
+| `oi_wall_initial_interaction_distance_pts` | `float` | existing `oi_wall_test_distance` | Distance band that proves the first wall interaction. It is observation geometry, not a stop buffer. |
+| `oi_wall_min_excursion_pts` | `float` | existing `oi_wall_test_distance` | Minimum later favourable move from the wall strike before a re-test can arm. Must be measured on a later candle. |
 | `oi_wall_retest_distance_pts` | `float` | existing `oi_wall_test_distance` | Maximum wall-distance for the secondary re-test. Reuse the current test-distance default; do not widen stops. |
 | `oi_wall_retest_confirmation_candles` | `int` | `1` | One re-test candle must close back on the defended side of the wall. Phase 1 does not add a multi-candle tuning surface. |
 
@@ -195,6 +212,9 @@ Existing `oi_wall_min_oi`, `oi_wall_min_oi_change_pct`, confidence scoring, `ent
   "relative_percentile": 92.0,
   "persistence_snapshots": 3,
   "persistence_duration_seconds": 120.0,
+  "initial_interaction_timestamp": "2026-08-17T03:48:00Z",
+  "initial_interaction_price": 24098.0,
+  "favourable_excursion_pts": 35.0,
   "entry_status": "WAITING",
   "retest_timestamp": null,
   "reference_price": 24100.0,
@@ -215,6 +235,10 @@ Storage requirements:
 - `AnalyticsLogger.log_entry` nests the same payload under `trade_analytics.market_context["oi_wall"]` and retains existing reasons/OI/options-sizing fields.
 - `MLCollector.snapshot` writes the payload to `ml_collection.oi_wall_context` on every cycle with a tracked wall, including `WAITING`, `EXPIRED`, and `CONSUMED`; no wall means `NULL`.
 - All timestamps use the existing `to_utc_iso` path. No credentials, raw option-chain dumps, or broker response tokens may enter telemetry.
+
+The Discord formatter and watchlist formatter must have deterministic unit-test seams. A dry-run test fixture may render the sample payload without contacting a live webhook; live Discord delivery is verified separately with a test webhook only after implementation approval.
+
+Engine acknowledgement order is mandatory: (1) advance detector/filter, (2) if cooldown suppresses emission, acknowledge `SUPPRESSED_BY_COOLDOWN`, (3) if another detector wins, acknowledge `SUPPRESSED_BY_PRIORITY`, (4) apply per-type levels and R:R, acknowledging `REJECTED_BY_RR` on failure, and (5) acknowledge `EMITTED` only after the OI-wall signal is the final returned trade signal. No path may mark a wall consumed before step 5.
 
 ### 3.5 Discord Alert & Logging Specification
 
@@ -294,6 +318,7 @@ The system deterministically isolates two distinct failure classes:
 - Unit-test that a valid secondary re-test produces exactly one signal and that the same consumed wall cannot re-enter.
 - Assert existing per-type SL/T1/T2 values, fixed stop distance, R:R gate, cooldown, and non-OI detectors are unchanged.
 - Assert collector/storage payload equality, null handling, UTC timestamp normalization, and no extra broker/API call.
+- Assert Discord execution and watchlist payloads: no signal alert before final acknowledgement, watchlist output is opt-in, enriched wall fields render, and existing non-OI-wall alert fields remain unchanged. Use a mocked webhook/test channel; do not require a live webhook in the unit suite.
 - Replay the 18-trade production sample plus available tick/candle data before enabling live entries. Compare baseline vs Phase 1 on: entry count, SL-hit rate, T1 capture rate, median time-to-SL, average R:R, and P&L. A replay result is a release gate, not a claim of success in this ADR.
 
 ## 7. Definition of Done
