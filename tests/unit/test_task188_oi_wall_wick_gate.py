@@ -149,8 +149,15 @@ class TestConfirmationKept(unittest.TestCase):
         )
         bias3 = self.detector.update(spot=24075.0, full_chain=CE_WALL_CHAIN, candle=candle3, levels=[])
         decision3 = self.filter.update(bias=bias3, candle=candle3, levels=[])
-        self.assertEqual(decision3.status, "QUALIFIED")
-        signal = self.detector.build_signal(decision3, candle3, spot=24075.0, levels=[])
+        self.assertEqual(decision3.status, "WAITING")
+        candle4 = OHLCVCandle(
+            timestamp=t0 + timedelta(minutes=3),
+            open=24075.0, high=24076.0, low=24050.0, close=24055.0, volume=1000,
+        )
+        bias4 = self.detector.update(spot=24055.0, full_chain=CE_WALL_CHAIN, candle=candle4, levels=[])
+        decision4 = self.filter.update(bias=bias4, candle=candle4, levels=[])
+        self.assertEqual(decision4.status, "QUALIFIED")
+        signal = self.detector.build_signal(decision4, candle4, spot=24055.0, levels=[])
         self.assertIsNotNone(signal, "confirmed shallow-wick candidate must fire")
         self.assertEqual(signal.option_type, "PE")
 

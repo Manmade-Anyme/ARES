@@ -157,7 +157,6 @@ class TestEngineOIWallEntry(unittest.TestCase):
         )
 
         # Force R:R rejection by emptying per_type_levels and returning inverted levels from detector
-        settings.per_type_levels = {}
         mock_signal = AresSignal(
             setup_type=SetupType.OI_WALL_REJECTION,
             direction=Direction.BEARISH,
@@ -176,7 +175,9 @@ class TestEngineOIWallEntry(unittest.TestCase):
 
         candle = self._make_candle(24075.0)
         atm = self._make_atm(24075.0)
-        signal = self.engine.tick(candle, [], atm, 0.0, [])
+        # Do not leave an instance override shadowing every later profile.
+        with patch.object(settings, "per_type_levels", {}):
+            signal = self.engine.tick(candle, [], atm, 0.0, [])
 
         self.assertIsNone(signal)
         self.engine.oi_wall_filter.acknowledge.assert_called_once_with(decision, "REJECTED_BY_RR")

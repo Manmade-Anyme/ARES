@@ -119,10 +119,13 @@ class TestOIWallEntryFilter(unittest.TestCase):
         candle5 = OHLCVCandle(timestamp=t4, open=24065.0, high=24088.0, low=24062.0, close=24078.0, volume=1000)
         bias5 = self._make_ce_bias(persistence=5)
         decision5 = self.filter.update(bias=bias5, candle=candle5, levels=[])
+        self.assertEqual(decision5.status, "WAITING")
+        confirmation = OHLCVCandle(timestamp=t4 + timedelta(minutes=1), open=24078.0, high=24080.0, low=24055.0, close=24060.0, volume=1000)
+        decision5 = self.filter.update(bias=bias5, candle=confirmation, levels=[])
         self.assertEqual(decision5.status, "QUALIFIED")
         self.assertEqual(self.filter.state, "QUALIFIED")
         self.assertIsNotNone(decision5.decision_id)
-        self.assertEqual(decision5.trigger_price, 24078.0)
+        self.assertEqual(decision5.trigger_price, 24060.0)
 
         # Acknowledge EMITTED -> transitions to CONSUMED
         ack_decision = self.filter.acknowledge(decision5, "EMITTED")
@@ -131,7 +134,7 @@ class TestOIWallEntryFilter(unittest.TestCase):
         self.assertIn("CE:24100", self.filter.consumed_wall_keys)
 
         # Subsequent candle on same wall key remains CONSUMED
-        t5 = self.t0 + timedelta(minutes=5)
+        t5 = self.t0 + timedelta(minutes=6)
         candle6 = OHLCVCandle(timestamp=t5, open=24075.0, high=24080.0, low=24060.0, close=24065.0, volume=1000)
         bias6 = self._make_ce_bias(persistence=6)
         decision6 = self.filter.update(bias=bias6, candle=candle6, levels=[])
@@ -164,6 +167,9 @@ class TestOIWallEntryFilter(unittest.TestCase):
         candle4 = OHLCVCandle(timestamp=t3, open=24045.0, high=24048.0, low=24018.0, close=24028.0, volume=1000)
         bias4 = self._make_pe_bias(persistence=4)
         decision4 = self.filter.update(bias=bias4, candle=candle4, levels=[])
+        self.assertEqual(decision4.status, "WAITING")
+        confirmation = OHLCVCandle(timestamp=t3 + timedelta(minutes=1), open=24028.0, high=24055.0, low=24025.0, close=24050.0, volume=1000)
+        decision4 = self.filter.update(bias=bias4, candle=confirmation, levels=[])
         self.assertEqual(decision4.status, "QUALIFIED")
         self.assertEqual(decision4.bias.direction, Direction.BULLISH)
 
@@ -177,7 +183,7 @@ class TestOIWallEntryFilter(unittest.TestCase):
 
         self.assertEqual(decision.status, "WAITING")
 
-    def test_retest_after_arming_candle_qualifies(self):
+    def test_retest_after_arming_candle_qualifies_after_follow_through(self):
         interaction = OHLCVCandle(timestamp=self.t0, open=24060.0, high=24085.0, low=24055.0, close=24075.0, volume=1000)
         self.filter.update(bias=self._make_ce_bias(persistence=1), candle=interaction, levels=[])
 
@@ -188,7 +194,9 @@ class TestOIWallEntryFilter(unittest.TestCase):
         retest_time = self.t0 + timedelta(minutes=2)
         retest_candle = OHLCVCandle(timestamp=retest_time, open=24080.0, high=24088.0, low=24075.0, close=24078.0, volume=1000)
         decision = self.filter.update(bias=self._make_ce_bias(persistence=4), candle=retest_candle, levels=[])
-
+        self.assertEqual(decision.status, "WAITING")
+        confirmation = OHLCVCandle(timestamp=retest_time + timedelta(minutes=1), open=24078.0, high=24080.0, low=24065.0, close=24070.0, volume=1000)
+        decision = self.filter.update(bias=self._make_ce_bias(persistence=5), candle=confirmation, levels=[])
         self.assertEqual(decision.status, "QUALIFIED")
 
     def test_vanished_active_wall_expires_before_no_wall(self):
@@ -236,6 +244,9 @@ class TestOIWallEntryFilter(unittest.TestCase):
         t3 = self.t0 + timedelta(minutes=3)
         candle4 = OHLCVCandle(timestamp=t3, open=24065.0, high=24088.0, low=24062.0, close=24078.0, volume=1000)
         qualified_decision = self.filter.update(bias=self._make_ce_bias(persistence=4), candle=candle4, levels=[])
+        self.assertEqual(qualified_decision.status, "WAITING")
+        confirmation = OHLCVCandle(timestamp=t3 + timedelta(minutes=1), open=24078.0, high=24080.0, low=24055.0, close=24060.0, volume=1000)
+        qualified_decision = self.filter.update(bias=self._make_ce_bias(persistence=5), candle=confirmation, levels=[])
         self.assertEqual(qualified_decision.status, "QUALIFIED")
 
         # Engine suppresses due to cooldown
@@ -257,7 +268,10 @@ class TestOIWallEntryFilter(unittest.TestCase):
         t3 = self.t0 + timedelta(minutes=3)
         candle4 = OHLCVCandle(timestamp=t3, open=24065.0, high=24088.0, low=24062.0, close=24078.0, volume=1000)
         qualified_decision = self.filter.update(bias=self._make_ce_bias(persistence=4), candle=candle4, levels=[])
-
+        self.assertEqual(qualified_decision.status, "WAITING")
+        confirmation = OHLCVCandle(timestamp=t3 + timedelta(minutes=1), open=24078.0, high=24080.0, low=24055.0, close=24060.0, volume=1000)
+        qualified_decision = self.filter.update(bias=self._make_ce_bias(persistence=5), candle=confirmation, levels=[])
+        self.assertEqual(qualified_decision.status, "QUALIFIED")
         # Engine rejects due to R:R
         ack = self.filter.acknowledge(qualified_decision, "REJECTED_BY_RR")
         self.assertEqual(ack.status, "EXPIRED")

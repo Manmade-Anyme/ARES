@@ -38,6 +38,7 @@ class OIWallEntryFilter:
         self.favourable_excursion_pts: float = 0.0
         self.retest_timestamp: Optional[datetime] = None
         self.retest_ready_timestamp: Optional[datetime] = None
+        self._retest_candidate: Optional[OHLCVCandle] = None
         self.rejection_reason: Optional[str] = None
         self._latest_bias: Optional[OIWallBias] = None
         self.latest_watchlist_event: Optional[OIWallBias] = None
@@ -49,6 +50,7 @@ class OIWallEntryFilter:
         self.favourable_excursion_pts = 0.0
         self.retest_timestamp = None
         self.retest_ready_timestamp = None
+        self._retest_candidate = None
         self.rejection_reason = None
         self.latest_watchlist_event = None
         self.state = "NO_WALL"
@@ -129,6 +131,12 @@ class OIWallEntryFilter:
 
         self._latest_bias = bias
 
+        # Reset geometry before any terminal-state return for a different wall.
+        if self.current_wall_key != bias.wall_key:
+            self._reset_candidate()
+            self.current_wall_key = bias.wall_key
+            self.state = "TRACKING"
+
         # Check if wall has already been consumed in this session
         if bias.wall_key in self.consumed_wall_keys:
             self.state = "CONSUMED"
@@ -146,20 +154,15 @@ class OIWallEntryFilter:
                 reference_price=bias.wall_strike,
             )
 
-        # If wall identity changed, reset tracking for new wall
-        if self.current_wall_key != bias.wall_key:
-            self._reset_candidate()
-            self.current_wall_key = bias.wall_key
-            self.state = "TRACKING"
-
         strike = bias.wall_strike
         is_bearish = (bias.direction == Direction.BEARISH)  # CE wall above spot
 
         # Invalidation check: wrong side close (breach)
         breached = (candle.close > strike) if is_bearish else (candle.close < strike)
-        if breached:
-            self.state = "EXPIRED"
-            self.rejection_reason = "Price closed beyond wall strike (breach)"
+        if self.state == "EXPIRED" or breached:
+            if self.state != "EXPIRED":
+                self.state = "EXPIRED"
+                self.rejection_reason = "Price closed beyond wall strike (breach)"
             telemetry = self._build_telemetry(bias, entry_status="EXPIRED", filter_state="EXPIRED", candle=candle, rejection_reason=self.rejection_reason)
             return OIWallEntryDecision(
                 status="EXPIRED",
@@ -225,9 +228,17 @@ class OIWallEntryFilter:
                     if is_bearish
                     else (candle.low <= strike + retest_dist)
                 )
-                if retested:
-                    defended_retest = (candle.close <= strike) if is_bearish else (candle.close >= strike)
-                    if defended_retest:
+                candidate = self._retest_candidate
+                if candidate is not None and candle.timestamp > candidate.timestamp:
+                    # Like the existing continuation gate, a touch only arms:
+                    # a later directional candle must prove follow-through.
+                    confirmed = (
+                        candle.close < candle.open and candle.close < candidate.low
+                        if is_bearish
+                        else candle.close > candle.open and candle.close > candidate.high
+                    )
+                    self._retest_candidate = None
+                    if confirmed:
                         decision_id = f"{bias.wall_key}:{int(candle.timestamp.timestamp())}"
                         self.retest_timestamp = candle.timestamp
                         self.state = "QUALIFIED"
@@ -243,21 +254,11 @@ class OIWallEntryFilter:
                             rejection_reason=None,
                             reference_price=strike,
                         )
-                    else:
-                        self.state = "EXPIRED"
-                        self.rejection_reason = "Price closed beyond wall during re-test"
-                        telemetry = self._build_telemetry(bias, entry_status="EXPIRED", filter_state="EXPIRED", candle=candle, rejection_reason=self.rejection_reason)
-                        return OIWallEntryDecision(
-                            status="EXPIRED",
-                            wall_key=bias.wall_key,
-                            decision_id=None,
-                            bias=bias,
-                            telemetry=telemetry,
-                            trigger_price=None,
-                            retest_timestamp=None,
-                            rejection_reason=self.rejection_reason,
-                            reference_price=strike,
-                        )
+
+                # A failed confirmation can arm a fresh defended re-test;
+                # repeated evaluations of the same candle cannot confirm it.
+                if retested and self._retest_candidate is None:
+                    self._retest_candidate = candle
 
         # Still waiting / tracking
         telemetry = self._build_telemetry(bias, entry_status="WAITING", filter_state=self.state, candle=candle)
@@ -311,6 +312,7 @@ class OIWallEntryFilter:
 
         elif outcome in ("SUPPRESSED_BY_COOLDOWN", "SUPPRESSED_BY_PRIORITY"):
             self.state = "RETEST_READY"
+            self._retest_candidate = None
             self.retest_timestamp = None
             self.retest_ready_timestamp = decision.retest_timestamp
             telemetry = OIWallTelemetry(
