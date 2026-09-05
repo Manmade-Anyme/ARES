@@ -1,7 +1,7 @@
 ---
 adr_id: "TASK-073"
 title: "OI-wall directional bias, delayed entry qualification, and telemetry"
-status: "proposed"
+status: "approved"
 date: "2026-09-05"
 author: "Software Architect Agent"
 applies_to: "ARES Core / Detectors / Engine / Storage / ML"
@@ -12,7 +12,7 @@ issue: "MANM-73 / 01a032c1-b430-700c-acc0-a3681a5c6c5e"
 
 ## 1. Status & Context
 
-- **Status**: Proposed; implementation is blocked until a human approves this ADR.
+- **Status**: Approved by the human merge of PR #102 on 2026-09-05 (`575df8c4f915117f861d9ccda6bbf45cd3a11b6b`). Implementation remains subject to the replay and human release gates below.
 - **Problem**: The OI-wall detector currently turns an early wall rejection into an order-ready `AresSignal`. The useful information is often directional, but the first entry is vulnerable to the opening-session pullback. The requested change improves entry quality without widening the existing stop.
 - **Observed failure mode**: The Phase 1 analysis reports 12 of 18 reviewed trades stopped out, with 8 later reaching T1 in the predicted direction after the initial shakeout. This is an entry-timing problem, not authorization to increase stop distance.
 - **Current coupling**:
@@ -337,6 +337,7 @@ The system deterministically isolates two distinct failure classes:
 - Assert `main.py` passes the engine's latest wall context into `MLCollector.snapshot()` for non-entry observations.
 - Assert Discord execution and watchlist payloads: no signal alert before final acknowledgement, watchlist output is opt-in, enriched wall fields render, and existing non-OI-wall alert fields remain unchanged. Use a mocked webhook/test channel; do not require a live webhook in the unit suite.
 - Replay the 18-trade production sample plus available tick/candle data before enabling live entries. Compare baseline vs Phase 1 on: entry count, SL-hit rate, T1 capture rate, median time-to-SL, average R:R, and P&L. A replay result is a release gate, not a claim of success in this ADR.
+- The replay audit and proposed repair contract are in `directives/adr/TASK-073_replay-evidence-remediation.md`. PR #103's initial replay at `346cfb6` is synthetic filter exercise evidence, not a valid production replay. The repair proposal does not waive the data-completeness or release gates.
 
 ## 7. Definition of Done
 
