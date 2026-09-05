@@ -5,6 +5,37 @@ from models import OIWallBias, Direction, OHLCVCandle
 from detectors.oi_wall_entry import OIWallEntryFilter
 from config import settings
 
+
+def _parse_replay_timestamp(value: str) -> datetime:
+    """Parse replay timestamps consistently on Python 3.10 and later."""
+    timestamp = value.replace("Z", "+00:00")
+    fraction_start = timestamp.find(".")
+    if fraction_start == -1:
+        return datetime.fromisoformat(timestamp)
+
+    fraction_start += 1
+    timezone_start = min(
+        (
+            position
+            for position in (
+                timestamp.find("+", fraction_start),
+                timestamp.find("-", fraction_start),
+            )
+            if position != -1
+        ),
+        default=len(timestamp),
+    )
+    fractional_seconds = timestamp[fraction_start:timezone_start]
+    if fractional_seconds.isdigit() and len(fractional_seconds) < 6:
+        timestamp = (
+            timestamp[:fraction_start]
+            + fractional_seconds.ljust(6, "0")
+            + timestamp[timezone_start:]
+        )
+
+    return datetime.fromisoformat(timestamp)
+
+
 def run_replay():
     fixture_path = "tests/fixtures/task073_18_trades_replay.json"
     if not os.path.exists(fixture_path):
@@ -54,7 +85,7 @@ def run_replay():
             if spot is None:
                 continue
             ts_str = pt["timestamp"]
-            dt_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            dt_ts = _parse_replay_timestamp(ts_str)
 
             bias = OIWallBias(
                 wall_key=f"{wall_opt}:{int(wall_p)}",
