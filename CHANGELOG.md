@@ -16,6 +16,11 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **Replay evidence contract (TASK-073)**: The offline replay runner now resolves
+  its fixture path independently of the current directory, emits structured
+  metric records, and rejects incomplete historical inputs instead of inventing
+  candles, wall persistence, risk geometry, or trade outcomes. The 18-trade
+  fixture now declares its provenance and missing chain/profile evidence.
 - **OI wall entry lifecycle regressions (TASK-073)**: A secondary re-test now requires a candle later than the `RETEST_READY` transition, and a vanished active wall emits one `EXPIRED` telemetry context before returning to `NO_WALL`.
 - **BE-after-T1 trade accounting (MANM-66)**: `STOPPED_OUT_AT_BE` exits now
   preserve the actual entry fill while recording the locked entry-to-T1 P&L in

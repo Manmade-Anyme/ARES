@@ -1,4 +1,47 @@
-[
+{
+  "schema_version": "task073.replay_fixture.v2",
+  "evidence_kind": "historical_replay",
+  "provenance": {
+    "source_export": "TASK-073 captured trajectory fixture",
+    "legacy_payload_sha256": "deb487329a255baec729fa1207fddf9a46acdde6bc57a2d8d0c6e37b1a2bc3bd",
+    "granularity": "timestamped spot plus aggregate feature snapshots",
+    "historical_acceptance": "incomplete"
+  },
+  "configuration": {
+    "baseline_revision": "575df8c4f915117f861d9ccda6bbf45cd3a11b6b",
+    "candidate_revision": "4eb21446b420228e918b4f78371dabdca926f980",
+    "profile": null,
+    "expiry_selection": null,
+    "timezone": "UTC",
+    "evaluation_horizon": "captured trajectory only"
+  },
+  "cohort_trade_ids": [
+    "239a53c3-dda2-458a-b9b6-6d68fd44ea11",
+    "68033857-3b6b-475a-9ded-fb7102ebf743",
+    "7d557363-6504-498a-8cd6-9d6fa7ff4c9c",
+    "e77f3ba9-0d59-49d0-9c66-712140de7580",
+    "b5d32700-3707-4ac7-83d6-daf3617c95e7",
+    "40440156-1b0c-46b8-8d0d-615781d4e7e5",
+    "7543d19b-89af-4aac-855a-d2a9973fdc5b",
+    "01b2b310-6eb0-4af8-aa56-ec7ccead7b76",
+    "2b73373a-d635-4797-a24e-dd8cab509dbe",
+    "88e974cf-6fb2-4634-89d7-876a8149bf52",
+    "2df73e65-b362-4ad2-b020-1e83b9805763",
+    "395a1411-afb5-4a52-a3ba-1c927f57f417",
+    "b0a98158-b7ec-4427-bbe0-967a8181c1b8",
+    "74f982a0-006f-483e-bfbe-0187a1899561",
+    "340b68e5-69ed-4f96-89c4-c41949c77a4d",
+    "6a4f4cf3-aa30-4215-b62c-962c45237c2a",
+    "26007dd6-c49b-4693-aa83-fd1e8f4d923c",
+    "6485b4d2-6bc7-44f8-902c-795bb2d29f44"
+  ],
+  "declared_gaps": [
+    "raw closed OHLCV candles are unavailable",
+    "strike-keyed CE/PE OI and OI-change history are unavailable",
+    "engine ATM/IV inputs and structural levels are unavailable",
+    "profile and expiry selection are unavailable"
+  ],
+  "trades": [
   {
     "trade_index": 1,
     "trade_id": "239a53c3-dda2-458a-b9b6-6d68fd44ea11",
@@ -7704,3 +7747,4 @@
     ]
   }
 ]
+}
