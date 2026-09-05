@@ -94,15 +94,21 @@ Fixed-policy proof comes from values, not a report sentence: for every emitted s
 
 ## 6. File assignments and executable acceptance checklist
 
+Superseding human direction on 2026-09-05 retired the 18-trade historical replay
+as a release gate because ARES has no equivalent historical replay requirement
+for breakout, continuation, exhaustion, or expiry-detector trade paths. The
+analysis below remains useful as an audit of why the previous replay artifact was
+invalid, but Code Generator should remove the replay runner and fixture from the
+release gate rather than repairing them for acceptance.
+
 Project Manager routes the following; Architect does not implement these files:
 
 | Owner through PM | Files / responsibility |
 |---|---|
-| Code Generator | `scripts/replay_task073.py`: input validation, offline engine/lifecycle replay, deterministic clock, structured metrics, safe CLI. Keep helpers here unless an existing utility already provides them. |
-| Code Generator / PM-routed data owner | `tests/fixtures/task073_18_trades_replay.json`: preserve recorded facts, add only verifiable exported fields/provenance, identify gaps. Never manufacture missing market data. |
-| Code Generator | `tests/unit/test_task073_replay.py`: public-entry-point and fixture/metric regression tests, isolated report output. |
-| Documentation | `reports/replays/task073_18_trades_replay_report.md`: regenerate from structured results; remove unsupported “avoided shakeouts” and success claims; reconcile build-log narrative with actual evidence. |
-| PR Reviewer + QA | Independently verify fidelity, unchanged risk, all six metric definitions and live-network isolation at the resulting SHA. |
+| Code Generator | Remove `scripts/replay_task073.py` and `tests/fixtures/task073_18_trades_replay.json` as release-gate artifacts; keep any future diagnostics separate from acceptance evidence. |
+| Code Generator | Cover TASK-073 with focused unit and engine integration tests against existing detector/risk/cooldown/priority/acknowledgement behavior. |
+| Documentation | Delete `reports/replays/task073_18_trades_replay_report.md`; do not replace it with a success report until a separately approved evidence plan exists. |
+| PR Reviewer + QA | Independently verify unchanged risk, existing detector behavior, entry-filter regression coverage, and live-network isolation at the resulting SHA. |
 
 Acceptance tests must check behavior and values, not only report headings:
 

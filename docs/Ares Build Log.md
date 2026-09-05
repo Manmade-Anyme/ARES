@@ -904,3 +904,19 @@ Implemented the decoupled stateful entry filter architecture defined in ADR-073 
 - [x] Pass all unit tests (414/414 passed).
 - [ ] Open implementation PR and request user merge.
 
+---
+
+## 2026-09-06 00:08 · TASK-073 Historical Replay Gate Retired
+
+Human direction retired the TASK-073 historical replay gate after repository review found no equivalent historical replay runners or fixtures for breakout, continuation, exhaustion, or expiry-detector trade paths. The invalid 18-trade replay remains documented only as an audit finding, not acceptance evidence.
+
+**Decisions**
+- Skip the 18-trade historical replay requirement for MANM-73.
+- Validate the entry-filter repair through the same standard used elsewhere in ARES: focused unit tests and engine integration tests against existing detector, risk, cooldown, priority, acknowledgement, and telemetry behavior.
+- Remove the obsolete replay success report rather than regenerating another report from incomplete inputs.
+- Final entry-filter behavior now requires a defended re-test to arm a candidate, then a later directional confirmation candle: bearish CE confirmation must close below its own open and below the candidate low; bullish PE confirmation must close above its own open and above the candidate high. Flat candles and equality with the candidate extreme do not confirm.
+- Wall identity changes clear interaction/re-test geometry before consumed-wall checks, so alternating CE/PE walls do not share terminal state. Same-wall `EXPIRED` decisions preserve their status and rejection reason across later evaluations.
+
+**TODOs**
+- [x] Code Generator removed replay runner/fixture from release-gate scope.
+- [x] Documentation records the final entry-filter behavior after implementation lands.
