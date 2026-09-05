@@ -68,9 +68,10 @@ The index is optional if query plans show no benefit; JSON shape and null semant
 
 ## Discord notification contract
 
-- Zero Discord signal alerts are sent during `TRACKING`, `PERSISTENT`, or `RETEST_READY` states unless the optional observation watchlist channel is explicitly enabled.
+- Zero Discord signal alerts are sent during `TRACKING`, `PERSISTENT`, or `RETEST_READY` states unless `settings.oi_wall_enable_watchlist_alert` is True.
+- When `settings.oi_wall_enable_watchlist_alert` is True, `main.py` dispatches `alerts.send_watchlist_alert(bias, spot)` upon receiving `engine.latest_watchlist_event`, protected by a per-session latch.
 - On `QUALIFIED`, `OIWallDetector.build_signal` includes the wall strike, persistence count, and re-test reason in `reasons` and `oi_wall_context`.
-- `QUALIFIED` is provisional: `alerts.send_discord` fires only after an `EMITTED` acknowledgement. A watchlist alert may be sent for `PERSISTENT`/`RETEST_READY` only when the opt-in setting is enabled.
+- `QUALIFIED` is provisional: `alerts.send_discord` fires only after an `EMITTED` acknowledgement.
 - `alerts.py:format_signal` and `alerts.py:send_discord` render the wall context (`wall_strike`, `persistence_snapshots`, `oi_change_pct`) and structural stop distance without breaking field contracts for other detectors.
 - Active trade state transitions (`T1_HIT`, `T2_HIT`, `STOPPED_OUT_AT_BE`, `SL_HIT`) continue to be dispatched via `alerts.py:send_trade_update`.
 
@@ -79,7 +80,7 @@ The index is optional if query plans show no benefit; JSON shape and null semant
 - **Pre-Entry Failure**: If price closes beyond the wall level during re-test, the filter invalidates the candidate and returns `EXPIRED`. No signal is built, no order is placed.
 - **Post-Entry SL Hit**: If an active trade hits the 16-pt SL, `position_manager` exits at `SL_HIT`. The wall remains in `CONSUMED` state for the rest of the day.
 - **No Re-Entry**: In Phase 1, `OIWallEntryFilter` strictly prevents re-entry on any consumed wall key (`wall_option_type:strike`) in the same trading session.
-- **Cooldown**: Standard 15-minute cooldown activates on entry, preventing conflicting executions.
+- **Cooldown**: Configured profile cooldown (`settings.signal_cooldown_minutes`, 15m default / 20m expiry) activates on entry, preventing conflicting executions.
 - **Discord testability**: Unit tests render both the opt-in watchlist and final signal payload through a mocked webhook/test channel, asserting no live network call and preserving existing detector alert fields.
 
 ## Acceptance evidence required from implementation/QA

@@ -87,8 +87,9 @@ OIFetcher + closed candle
 | `detectors/oi_wall.py` | Detect wall candidates, maintain wall identity/persistence, calculate relative percentile, and build a signal only from an approved entry decision. It must not emit a live signal directly from the first touch. |
 | `detectors/oi_wall_entry.py` | New stateful, deterministic re-test filter. Own favourable-excursion tracking, re-test confirmation, consumed/expired state, and rejection reason. No Supabase or broker imports. |
 | `engine.py` | Advance the bias detector and entry filter on every candle; acknowledge only the final outcome after cooldown/priority/risk gates; retain existing risk-level and R:R behavior. Expose the latest wall context through a read-only property without making the collector infer trading state. |
-| `main.py` | Pass `engine.latest_oi_wall_context` into the existing `MLCollector.snapshot()` call on every cycle, after `engine.tick()` has updated it and without adding broker/database calls. |
-| `config.py` / `config_profiles.py` | Add profile-backed persistence and re-test parameters with the defaults specified below. Existing wall thresholds and stop settings remain unchanged. |
+| `main.py` | Pass `engine.latest_oi_wall_context` into the existing `MLCollector.snapshot()` call on every cycle after `engine.tick()`. When `settings.oi_wall_enable_watchlist_alert` is True and `engine.latest_watchlist_event` is present, dispatch `alerts.send_watchlist_alert()`. |
+| `alerts.py` | Define `send_watchlist_alert(bias: OIWallBias, spot: float)` with dry-run test seams, render enriched wall context in `send_discord`, and preserve existing alert contracts. |
+| `config.py` / `config_profiles.py` | Add profile-backed persistence and re-test parameters with the defaults specified below, plus the opt-in `oi_wall_enable_watchlist_alert` setting. Existing wall thresholds and stop settings remain unchanged. |
 | `storage.py` | Persist wall telemetry on `ares_signals` and `trade_analytics` using the normalized serialization contract. Preserve exception suppression and async executor behavior. |
 | `ml_signal/collector.py` | Accept optional per-cycle wall context and write it even when no trade signal is emitted. Do not add API calls or change existing feature calculations. |
 | `ml_signal/schema.sql` | Document the new `ml_collection.oi_wall_context` JSONB column and indexes if required. |
@@ -127,7 +128,9 @@ class OIWallBias:
 @dataclass(frozen=True)
 class OIWallTelemetry:
     bias: Optional[OIWallBias]
-    entry_status: str
+    entry_status: str                     # NO_WALL | WAITING | QUALIFIED | EXPIRED | CONSUMED
+    filter_state: Optional[str]           # TRACKING | PERSISTENT | INTERACTED | RETEST_READY | QUALIFIED | CONSUMED | EXPIRED | NO_WALL
+    rejection_reason: Optional[str]       # Specific rejection/expiration reason or None
     initial_interaction_timestamp: Optional[datetime]
     initial_interaction_price: Optional[float]
     favourable_excursion_pts: Optional[float]
@@ -199,6 +202,7 @@ MLCollector.snapshot(..., oi_wall_context: Optional[Dict[str, Any]] = None) -> N
 | `oi_wall_min_excursion_pts` | `float` | existing `oi_wall_test_distance` | Minimum later favourable move from the wall strike before a re-test can arm. Must be measured on a later candle. |
 | `oi_wall_retest_distance_pts` | `float` | existing `oi_wall_test_distance` | Maximum wall-distance for the secondary re-test. Reuse the current test-distance default; do not widen stops. |
 | `oi_wall_retest_confirmation_candles` | `int` | `1` | One re-test candle must close back on the defended side of the wall. Phase 1 does not add a multi-candle tuning surface. |
+| `oi_wall_enable_watchlist_alert` | `bool` | `False` | Opt-in toggle to send Discord watchlist heads-up on transition to `RETEST_READY`. Off by default. |
 
 Existing `oi_wall_min_oi`, `oi_wall_min_oi_change_pct`, confidence scoring, `entry_zone_offset_pts`, per-type stop settings, `target_*`, and `signal_cooldown_minutes` retain their current profile values.
 
@@ -222,6 +226,8 @@ Existing `oi_wall_min_oi`, `oi_wall_min_oi_change_pct`, confidence scoring, `ent
   "initial_interaction_price": 24098.0,
   "favourable_excursion_pts": 35.0,
   "entry_status": "WAITING",
+  "filter_state": "RETEST_READY",
+  "rejection_reason": null,
   "retest_timestamp": null,
   "reference_price": 24100.0,
   "opening_range": {
@@ -271,8 +277,8 @@ Discord notifications maintain ARES standard embed styling while making the two-
        - Secondary pullback re-test rejection holding defended side.
        - Structural SL buffer relation to wall strike.
 
-2. **Watchlist / Heads-Up Alert (Configurable, Off by Default)**:
-   Optional lightweight heads-up when `OIWallBias` reaches `PERSISTENT` / `RETEST_READY`, keeping manual traders informed of developing morning structure without issuing an order or triggering cooldown:
+2. **Watchlist / Heads-Up Alert (Opt-in via `oi_wall_enable_watchlist_alert`)**:
+   When `settings.oi_wall_enable_watchlist_alert` is set to `True` (default `False`), `main.py` checks `engine.latest_watchlist_event` following `engine.tick()`. If a new wall reaches `RETEST_READY`, `main.py` dispatches `await alerts.send_watchlist_alert(event, spot)` to the configured webhook. A session-level deduplication latch ensures each `wall_key` emits at most one watchlist notification per session, keeping manual traders informed of developing morning structure without issuing an order or triggering cooldown:
    - **Header**: `🛡️ 🟡 #{wall_key} SETUP WATCH: OI_WALL_PERSISTENT ({direction})`
    - **Body**: Wall strike, size, persistence duration, and guidance: *"Awaiting pullback re-test near {wall_strike}. Do NOT chase breakdown."*
 
@@ -297,7 +303,7 @@ The system deterministically isolates two distinct failure classes:
    - **Stop-Loss Execution**: If the market absorbs the wall after entry and spot moves 16 points against the position, `position_manager` exits immediately at the fixed 16-pt SL (`SL_HIT`).
    - **Discord Notification**: `alerts.send_trade_update` broadcasts: `🛑 Stop Loss Hit at {price}. Trade Closed (-16.0 pts)`.
    - **Single-Entry Wall Consumption Policy**: Once a signal qualifies, the filter transitions the wall to `CONSUMED`. In Phase 1, **no re-entry is permitted on the same wall identity** during that session. This eliminates multi-stop churn on a broken or compromised strike.
-   - **Engine Cooldown**: Standard 15-minute engine-wide cooldown (`signal_cooldown_minutes = 15`) engages upon entry, suppressing immediate re-triggers and enforcing trading discipline.
+   - **Engine Cooldown**: Configured profile cooldown (`settings.signal_cooldown_minutes`, 15m default profile / 20m expiry profile) engages upon entry, suppressing immediate re-triggers and enforcing trading discipline.
    - **Telemetry Audit**: Full entry-to-exit lifecycle with wall persistence snapshots and opening range context is recorded to `trade_analytics` for post-session postmortem and model retraining.
 
 ## 4. Alternatives Considered
