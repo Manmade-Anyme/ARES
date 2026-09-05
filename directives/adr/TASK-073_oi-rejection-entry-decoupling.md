@@ -315,12 +315,13 @@ The system deterministically isolates two distinct failure classes:
 3. **Keep detector output as an order-ready `AresSignal` and filter in storage/alerts** — rejected. The order decision already occurs in `AresEngine`; downstream filtering cannot prevent execution or cooldown mutation.
 4. **Use ML as the entry gate in Phase 1** — rejected. It adds model/version and training-data dependencies before the deterministic signal path is measurable. ML telemetry remains observational.
 5. **Use VWAP/opening-range levels as alternate mandatory gates now** — deferred. The context is valuable for audit, but a uniform session-level contract and replay evidence are not yet established. Wall re-test is the smallest deterministic Phase 1 gate.
+6. **Hydrate consumed wall keys across process restarts via DB/Redis** — deferred. Consistent with all ARES engine state (candle buffers, VWAP, detector state), filter lifecycle is in-memory for the session process. Mid-session restarts re-accumulate buffers from scratch. Cross-restart state hydration is out of scope for Phase 1 and deferred to dedicated infrastructure tasks.
 
 ## 5. Performance, Reliability, and Security
 
 - The detector/filter operate on already-fetched candle and chain data. No additional Dhan calls are permitted.
 - Wall percentile is O(number of chain strikes) per evaluation, bounded by the existing option-chain size. Do not sort or serialize the raw chain for telemetry.
-- Persistence is in-memory and reset on process/session reset; durable audit comes from ML snapshots and emitted signal/trade rows. Database writes remain executor-backed/best-effort.
+- Persistence and consumed-wall latches are in-memory per process session lifecycle, consistent with existing ARES candle buffers, VWAP, and detector state. Durable audit comes from ML snapshots and emitted signal/trade rows. Database writes remain executor-backed/best-effort.
 - The engine must still call the detector and filter on every candle during cooldown and higher-priority detector emission. Only final signal emission is gated.
 - Payloads are bounded JSON with numeric/string fields only. Apply existing Supabase RLS/credential handling; never log secrets or raw broker payloads.
 - Schema migration must be additive and nullable so old rows, old collectors, and rollback to pre-Phase-1 code remain readable.
