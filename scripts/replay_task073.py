@@ -32,7 +32,12 @@ METRIC_NAMES = (
 
 def _parse_replay_timestamp(value: str) -> datetime:
     """Parse an ISO timestamp on supported Python versions."""
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        # Python 3.10 rejects fractional seconds with fewer than six digits.
+        return datetime.strptime(normalized, "%Y-%m-%dT%H:%M:%S.%f%z")
 
 
 def _metric(
