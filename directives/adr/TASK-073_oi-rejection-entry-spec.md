@@ -50,6 +50,13 @@ CREATE INDEX IF NOT EXISTS idx_ml_collection_oi_wall_strike
 
 The index is optional if query plans show no benefit; JSON shape and null semantics are mandatory. `trade_analytics.market_context` already accepts the nested payload and needs no new column.
 
+## Discord notification contract
+
+- Zero Discord signal alerts are sent during `TRACKING`, `PERSISTENT`, or `RETEST_READY` states unless the optional observation watchlist channel is explicitly enabled.
+- On `QUALIFIED`, `OIWallDetector.build_signal` includes the wall strike, persistence count, and re-test reason in `reasons` and `oi_wall_context`.
+- `alerts.py:format_signal` and `alerts.py:send_discord` render the wall context (`wall_strike`, `persistence_snapshots`, `oi_change_pct`) and structural stop distance without breaking field contracts for other detectors.
+- Active trade state transitions (`T1_HIT`, `T2_HIT`, `STOPPED_OUT_AT_BE`, `SL_HIT`) continue to be dispatched via `alerts.py:send_trade_update`.
+
 ## Acceptance evidence required from implementation/QA
 
 - Unit tests for every state transition and both direction mirrors.

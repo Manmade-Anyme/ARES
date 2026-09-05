@@ -216,6 +216,43 @@ Storage requirements:
 - `MLCollector.snapshot` writes the payload to `ml_collection.oi_wall_context` on every cycle with a tracked wall, including `WAITING`, `EXPIRED`, and `CONSUMED`; no wall means `NULL`.
 - All timestamps use the existing `to_utc_iso` path. No credentials, raw option-chain dumps, or broker response tokens may enter telemetry.
 
+### 3.5 Discord Alert & Logging Specification
+
+Discord notifications maintain ARES standard embed styling while making the two-phase lifecycle fully transparent:
+
+1. **Signal Detected Alert (`send_discord`)**:
+   Emitted ONLY when secondary re-test confirmation qualifies (`QUALIFIED` -> `CONSUMED`). Embed title, color, and structure remain consistent with existing detectors:
+   - **Embed Color**: Green (`#2ecc71` / `3066993`) for Bullish / CE, Red (`#e74c3c` / `15158332`) for Bearish / PE.
+   - **Header**: `🚨 🐻 🔴 #{signal_id} SIGNAL DETECTED: OI_WALL_REJECTION (BEARISH)`
+   - **Fields**:
+     * 🕒 **Time**: `{timestamp} IST`
+     * 📍 **Spot**: `{spot:.2f}` (inline)
+     * ⚡ **Trade**: `{strike} {option_type}` (inline)
+     * ⭐ **Confidence**: `{confidence}` (inline)
+     * ✅ **Entry**: `{entry_min:.2f} - {entry_max:.2f}` (Secondary re-test close) (inline)
+     * 🛑 **SL**: `{stop_loss:.2f} (Spot Ref)` (+16 pts from trigger, shielded by wall) (inline)
+     * 🎯 **Target**: `T1={target_1:.2f} | T2={target_2:.2f}` (inline)
+     * 🛡️ **Wall Context**: `{wall_strike} {wall_option_type} ({wall_oi_lakhs:.1f}L contracts, +{oi_change_pct:.1f}%) | {persistence_snapshots}/3 snapshots persistent` (inline: false)
+     * 📐 **Option Sizing Calculator**: Suggested lots, premium, option SL/target, delta.
+     * 🤖 **ML Prediction**: Model probability & version.
+     * 📝 **Reasons**: Bullet list detailing:
+       - Wall magnitude and active growth.
+       - Confirmed 3+ snapshot persistence without shift.
+       - Secondary pullback re-test rejection holding defended side.
+       - Structural SL buffer relation to wall strike.
+
+2. **Watchlist / Heads-Up Alert (Configurable, Off by Default)**:
+   Optional lightweight heads-up when `OIWallBias` reaches `PERSISTENT` / `RETEST_READY`, keeping manual traders informed of developing morning structure without issuing an order or triggering cooldown:
+   - **Header**: `🛡️ 🟡 #{wall_key} SETUP WATCH: OI_WALL_PERSISTENT ({direction})`
+   - **Body**: Wall strike, size, persistence duration, and guidance: *"Awaiting pullback re-test near {wall_strike}. Do NOT chase breakdown."*
+
+3. **Trade Lifecycle Updates (`send_trade_update`)**:
+   Standard trade progress updates continue seamlessly:
+   - `T1_HIT`: Target 1 Reached! Stop Loss trailed to Entry.
+   - `T2_HIT`: Target 2 Reached! Trade Closed with Full Profit.
+   - `STOPPED_OUT_AT_BE`: Trailing Stop Loss Hit at Entry. T1 Profit Locked; Trade Closed.
+   - `SL_HIT`: Stop Loss Hit. Trade Closed (-16 pts).
+
 ## 4. Alternatives Considered
 
 1. **Widen the stop** — rejected. It changes the risk budget and does not address the observed premature entry; the issue explicitly keeps SL unchanged.
