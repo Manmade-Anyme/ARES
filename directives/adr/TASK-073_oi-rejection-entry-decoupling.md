@@ -268,7 +268,7 @@ Discord notifications maintain ARES standard embed styling while making the two-
      * ⚡ **Trade**: `{strike} {option_type}` (inline)
      * ⭐ **Confidence**: `{confidence}` (inline)
      * ✅ **Entry**: `{entry_min:.2f} - {entry_max:.2f}` (Secondary re-test close) (inline)
-     * 🛑 **SL**: `{stop_loss:.2f} (Spot Ref)` (+16 pts from trigger, shielded by wall) (inline)
+     * 🛑 **SL**: `{stop_loss:.2f} (Spot Ref)` (Fixed 16 pts from trigger; relation to wall strike rendered dynamically) (inline)
      * 🎯 **Target**: `T1={target_1:.2f} | T2={target_2:.2f}` (inline)
      * 🛡️ **Wall Context**: `{wall_strike} {wall_option_type} ({wall_oi_lakhs:.1f}L contracts, +{oi_change_pct:.1f}%) | {persistence_snapshots}/3 snapshots persistent` (inline: false)
      * 📐 **Option Sizing Calculator**: Suggested lots, premium, option SL/target, delta.
