@@ -111,6 +111,7 @@ class MLCollector:
         is_expiry: bool = False,
         dte: Optional[int] = None,
         timestamp: Optional[datetime] = None,
+        oi_wall_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         candle_dict = self._candle_to_dict(candle)
         atm_ce_dict = self._option_row_to_dict(atm.ce)
@@ -237,6 +238,7 @@ class MLCollector:
             "detector_scores": json.dumps(detector_scores),
             "raw_candle": json.dumps(candle_dict),
             "raw_atm_oi": json.dumps({"ce": atm_ce_dict, "pe": atm_pe_dict}),
+            "oi_wall_context": oi_wall_context,
         }
 
         self._total_snapshots += 1

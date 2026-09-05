@@ -96,7 +96,8 @@ class Storage:
                 "strike": signal.strike_to_trade,
                 "option_type": signal.option_type,
                 "reasons": reasons,  # Supabase handles list -> jsonb serialization
-                "timestamp": to_utc_iso(signal.timestamp)
+                "timestamp": to_utc_iso(signal.timestamp),
+                "oi_wall_context": getattr(signal, "oi_wall_context", None),
             }
             # Execute the insert and capture the generated row id so trade
             # analytics can join back to this signal (TASK-172, audit item 17:
@@ -186,6 +187,10 @@ class AnalyticsLogger:
                 "premium": signal.option_premium,
                 "risk_pct": signal.risk_pct
             }
+
+        # Add OI Wall Telemetry Context (TASK-073)
+        if getattr(signal, "oi_wall_context", None) is not None:
+            market_context["oi_wall"] = signal.oi_wall_context
 
         data = {
             "id": trade_id,

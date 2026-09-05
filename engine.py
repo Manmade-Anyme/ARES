@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from statistics import mean
 from typing import Optional, List, Dict, Any
 
-from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction
+from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction, SetupType, OIWallBias
 from config import settings
 
 
@@ -38,13 +38,14 @@ def _resolve_target_2(entry, sign, target_1, lv, levels):
 
 from detectors.breakout import FailedBreakoutDetector
 from detectors.oi_wall import OIWallDetector
+from detectors.oi_wall_entry import OIWallEntryFilter
 from detectors.exhaustion import ExhaustionDetector
 from detectors.continuation import TrendContinuationDetector
 
 
 class AresEngine:
     """
-    AresEngine orchestrates the three core ARES detectors on every cycle tick.
+    AresEngine orchestrates the core ARES detectors on every cycle tick.
     
     It maintains rolling buffers for volume and IV, and strictly enforces a signal cooldown
     period to prevent spam during choppy market conditions.
@@ -58,6 +59,7 @@ class AresEngine:
         """
         self.breakout_detector = FailedBreakoutDetector()
         self.oi_wall_detector = OIWallDetector()
+        self.oi_wall_filter = OIWallEntryFilter()
         self.continuation_detector = TrendContinuationDetector()
         self.exhaustion_detector = ExhaustionDetector()
         
@@ -65,6 +67,17 @@ class AresEngine:
         self.iv_buffer: deque = deque(maxlen=settings.iv_buffer_size)
 
         self.last_signal_time: Optional[datetime] = None
+        self._latest_oi_wall_context: Optional[Dict[str, Any]] = None
+
+    @property
+    def latest_oi_wall_context(self) -> Optional[Dict[str, Any]]:
+        """Latest serialized OI wall context for ML collector and audit."""
+        return self._latest_oi_wall_context
+
+    @property
+    def latest_watchlist_event(self) -> Optional[OIWallBias]:
+        """Latest watchlist event emitted when an OI wall becomes RETEST_READY."""
+        return self.oi_wall_filter.latest_watchlist_event
 
     def tick(
         self,
@@ -126,69 +139,91 @@ class AresEngine:
         else:
             iv_prev = self.iv_buffer[-1]
 
-        # 5a. Advance the stateful OI wall detector on EVERY candle (TASK-188).
-        # It pairs a candidate candle with the *next* candle's confirmation, so
-        # any skipped candle silently breaks that pairing — and worse, leaves a
-        # stale candidate to be confirmed against a much later candle. Neither
-        # the cooldown nor a higher-priority detector may skip it, so it runs
-        # before both. Only signal *emission* is gated, just below.
-        oi_wall_signal = self.oi_wall_detector.update(
+        # 5a. Advance the stateful OI wall detector and entry filter on EVERY candle (TASK-073).
+        # It updates persistence, tracking, and qualification regardless of cooldown
+        # or detector priority. Only signal emission is gated below.
+        oi_wall_bias = self.oi_wall_detector.update(
             spot=atm.spot_price,
             full_chain=full_chain,
             candle=candle,
-            levels=levels
+            levels=levels,
         )
+        if isinstance(oi_wall_bias, OIWallBias):
+            oi_wall_decision = self.oi_wall_filter.update(
+                bias=oi_wall_bias,
+                candle=candle,
+                levels=levels,
+            )
+            self._latest_oi_wall_context = (
+                oi_wall_decision.telemetry.to_dict()
+                if oi_wall_decision.status != "NO_WALL"
+                else None
+            )
+
+            oi_wall_candidate: Optional[AresSignal] = None
+            if oi_wall_decision.status == "QUALIFIED":
+                oi_wall_candidate = self.oi_wall_detector.build_signal(
+                    decision=oi_wall_decision,
+                    candle=candle,
+                    spot=atm.spot_price,
+                    levels=levels,
+                )
+        else:
+            oi_wall_decision = self.oi_wall_filter.update(
+                bias=None,
+                candle=candle,
+                levels=levels,
+            )
+            self._latest_oi_wall_context = None
+            oi_wall_candidate = oi_wall_bias
 
         if in_cooldown:
+            if oi_wall_decision.status == "QUALIFIED":
+                ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "SUPPRESSED_BY_COOLDOWN")
+                self._latest_oi_wall_context = ack.telemetry.to_dict()
             return None
 
         # 5. Run detectors in priority order
-        # We use 'or' to short-circuit: if a higher-priority detector returns a signal,
-        # the subsequent ones won't execute.
-        signal = (
-            self.breakout_detector.update(
-                candle=candle,
-                avg_volume=avg_volume,
-                iv_change_pct=iv_change_pct,
-                atm_ce_oi=atm.ce.oi,
-                atm_ce_oi_prev=atm.ce.oi_prev,
-                atm_pe_oi=atm.pe.oi,
-                atm_pe_oi_prev=atm.pe.oi_prev,
-                levels=levels
-            )
-            or
-            oi_wall_signal
-            or
-            (
-                self.continuation_detector.update(
-                    candle=candle,
-                    avg_volume=avg_volume,
-                    levels=levels,
-                    pdh=pdh,
-                    pdl=pdl
-                )
-                if settings.continuation_enabled else None
-            )
-            or
-            self.exhaustion_detector.update(
-                candle=candle,
-                iv_current=atm.ce.iv,
-                iv_prev=iv_prev,
-                levels=levels
-            )
+        breakout_signal = self.breakout_detector.update(
+            candle=candle,
+            avg_volume=avg_volume,
+            iv_change_pct=iv_change_pct,
+            atm_ce_oi=atm.ce.oi,
+            atm_ce_oi_prev=atm.ce.oi_prev,
+            atm_pe_oi=atm.pe.oi,
+            atm_pe_oi_prev=atm.pe.oi_prev,
+            levels=levels,
         )
 
-        # 6. Apply the risk:reward gate — the only remaining protective filter.
-        # The observation-only gate (exhaustion/continuation alert-only modes),
-        # the trend-regime filter, the flat-market speed filter and the
-        # anti-IV-crush filter were all removed (TASK-182): they silenced the
-        # system in trending sessions by turning tradeable setups into
-        # observation-only alerts or suppressing them outright. Every fired
-        # setup is now a live trade unless its risk:reward is degenerate.
-        # 5b. Per-setup-type SL/T1/T2 policy (TASK-185). Replaces structural SL
-        # and T1 with fixed per-type distances and sets the T2 fallback, keyed
-        # by setup type from the active profile. Runs BEFORE the R:R gate so the
-        # gate evaluates the final, per-type levels.
+        if breakout_signal:
+            if oi_wall_decision.status == "QUALIFIED":
+                ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "SUPPRESSED_BY_PRIORITY")
+                self._latest_oi_wall_context = ack.telemetry.to_dict()
+            signal = breakout_signal
+        elif oi_wall_candidate:
+            signal = oi_wall_candidate
+        else:
+            signal = (
+                (
+                    self.continuation_detector.update(
+                        candle=candle,
+                        avg_volume=avg_volume,
+                        levels=levels,
+                        pdh=pdh,
+                        pdl=pdl,
+                    )
+                    if settings.continuation_enabled
+                    else None
+                )
+                or self.exhaustion_detector.update(
+                    candle=candle,
+                    iv_current=atm.ce.iv,
+                    iv_prev=iv_prev,
+                    levels=levels,
+                )
+            )
+
+        # 5b. Per-setup-type SL/T1/T2 policy (TASK-185).
         if signal:
             apply_per_type_levels(signal, settings, levels)
 
@@ -200,13 +235,18 @@ class AresEngine:
             if risk <= 0 or (reward / risk) < settings.min_rr_ratio:
                 rr = (reward / risk) if risk > 0 else 0.0
                 print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: R:R {rr:.2f} below minimum {settings.min_rr_ratio:.2f} (risk {risk:.1f} pts vs reward {reward:.1f} pts).")
+                if signal.setup_type == SetupType.OI_WALL_REJECTION and oi_wall_decision.status == "QUALIFIED":
+                    ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "REJECTED_BY_RR")
+                    self._latest_oi_wall_context = ack.telemetry.to_dict()
                 signal = None
 
-        # 6b. Flat-market annotation (TASK-182 follow-up). NOT a gate: if the
-        # rolling window range is below the threshold, append an informational
-        # reason so the alert flags a consolidating market — the signal still
-        # trades. This is the old speed filter's condition, reused as a warning
-        # instead of a suppressor.
+        # Acknowledge emission for OI wall setup
+        if signal and signal.setup_type == SetupType.OI_WALL_REJECTION and oi_wall_decision.status == "QUALIFIED":
+            ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "EMITTED")
+            self._latest_oi_wall_context = ack.telemetry.to_dict()
+            signal.oi_wall_context = ack.telemetry.to_dict()
+
+        # 6b. Flat-market annotation (TASK-182 follow-up).
         if signal:
             window = settings.speed_filter_window_candles
             if len(self.candle_buffer) >= window:

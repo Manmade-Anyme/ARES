@@ -1,6 +1,6 @@
 import httpx
 from datetime import datetime, timezone, timedelta
-from models import AresSignal
+from models import AresSignal, OIWallBias
 from config import settings, detector_names, SESSION_DISPLAY
 
 def format_signal(signal: AresSignal, spot: float) -> str:
@@ -66,6 +66,18 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
     emoji = "🚨 🐂 🟢" if is_bullish else "🚨 🐻 🔴"
     title = f"{emoji} #{getattr(signal, 'signal_id', '0000')} SIGNAL DETECTED: {signal.setup_type.value} ({signal.direction.value})"
 
+    sl_val = getattr(signal, "stop_loss", 0.0)
+    sl_value = f"**{sl_val:.2f}** (Spot Ref)" if isinstance(sl_val, (int, float)) else f"**{sl_val}** (Spot Ref)"
+    oi_ctx = getattr(signal, "oi_wall_context", None)
+    if (
+        isinstance(oi_ctx, dict)
+        and isinstance(oi_ctx.get("wall_strike"), (int, float))
+        and isinstance(sl_val, (int, float))
+    ):
+        w_strike = float(oi_ctx["wall_strike"])
+        sl_diff = abs(sl_val - w_strike)
+        sl_value = f"**{sl_val:.2f}** (Spot Ref, {sl_diff:.1f} pts from wall {w_strike:.0f})"
+
     # Base fields
     fields = [
         {"name": "🕒 Time", "value": f"{now_ist} IST", "inline": False},
@@ -73,9 +85,25 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         {"name": "⚡ Trade", "value": f"**{signal.strike_to_trade} {signal.option_type}**", "inline": True},
         {"name": "⭐ Confidence", "value": f"**{signal.confidence}**", "inline": True},
         {"name": "✅ Entry", "value": f"**{signal.entry_zone[0]:.2f} - {signal.entry_zone[1]:.2f}**", "inline": True},
-        {"name": "🛑 SL", "value": f"**{signal.stop_loss:.2f}** (Spot Ref)", "inline": True},
+        {"name": "🛑 SL", "value": sl_value, "inline": True},
         {"name": "🎯 Target", "value": f"**T1={signal.target_1:.2f} | T2={signal.target_2:.2f}**", "inline": True}
     ]
+
+    # OI Wall Context
+    if (
+        isinstance(oi_ctx, dict)
+        and isinstance(oi_ctx.get("wall_strike"), (int, float))
+    ):
+        w_strike = float(oi_ctx["wall_strike"])
+        w_opt = str(oi_ctx.get("wall_option_type", ""))
+        raw_oi = oi_ctx.get("wall_oi")
+        w_oi = (float(raw_oi) if isinstance(raw_oi, (int, float)) else 0.0) / 100000.0
+        raw_change = oi_ctx.get("wall_oi_change_pct")
+        w_change = float(raw_change) if isinstance(raw_change, (int, float)) else 0.0
+        raw_snaps = oi_ctx.get("persistence_snapshots")
+        snaps = int(raw_snaps) if isinstance(raw_snaps, (int, float)) else 0
+        wall_text = f"**{w_strike:.0f} {w_opt}** ({w_oi:.1f}L contracts, +{w_change:.1f}%) | {snaps}/3 snapshots persistent"
+        fields.append({"name": "🛡️ Wall Context", "value": wall_text, "inline": False})
 
     # Sizing fields
     if getattr(signal, "suggested_lots", None) is not None:
@@ -111,6 +139,61 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
             response.raise_for_status()
         except Exception as e:
             print(f"[-] Discord signal alert failed: {type(e).__name__} - {e}")
+
+
+def format_watchlist_alert(bias: OIWallBias, spot: float) -> str:
+    """
+    Formats the watchlist alert text for console or dry-run testing.
+    """
+    wall_oi_lakhs = bias.wall_oi / 100000.0
+    return (
+        f"🛡️ 🟡 #{bias.wall_key} SETUP WATCH: OI_WALL_PERSISTENT ({bias.direction.value})\n"
+        f"Spot: {spot:.2f} | Wall: {bias.wall_strike:.0f} {bias.wall_option_type} "
+        f"({wall_oi_lakhs:.1f}L, +{bias.wall_oi_change_pct:.1f}%) | "
+        f"Persistence: {bias.persistence_snapshots} snapshots\n"
+        f"Guidance: Awaiting pullback re-test near {bias.wall_strike:.0f}. Do NOT chase breakdown/bounce."
+    )
+
+
+async def send_watchlist_alert(bias: OIWallBias, spot: float) -> None:
+    """
+    Sends an informational heads-up alert to Discord when a qualifying OI wall
+    reaches RETEST_READY. Gated by settings.oi_wall_enable_watchlist_alert.
+    """
+    if not settings.oi_wall_enable_watchlist_alert or not settings.discord_webhook_url:
+        return
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
+
+    wall_oi_lakhs = bias.wall_oi / 100000.0
+    direction_desc = bias.direction.value
+    header = f"🛡️ 🟡 #{bias.wall_key} SETUP WATCH: OI_WALL_PERSISTENT ({direction_desc})"
+
+    fields = [
+        {"name": "🕒 Time", "value": f"{now_ist} IST", "inline": True},
+        {"name": "📍 Current Spot", "value": f"**{spot:.2f}**", "inline": True},
+        {"name": "🛡️ Wall Barrier", "value": f"**{bias.wall_strike:.0f} {bias.wall_option_type}** ({wall_oi_lakhs:.1f}L contracts, +{bias.wall_oi_change_pct:.1f}%)", "inline": False},
+        {"name": "⏱️ Persistence", "value": f"{bias.persistence_snapshots} evaluations ({bias.persistence_duration_seconds:.0f}s duration)", "inline": True},
+        {"name": "💡 Trader Guidance", "value": f"Awaiting pullback re-test near **{bias.wall_strike:.0f}**. Do NOT chase breakdown/bounce.", "inline": False},
+    ]
+
+    payload = {
+        "embeds": [
+            {
+                "title": header,
+                "color": 16776960,  # Yellow / Amber
+                "fields": fields,
+                "footer": {"text": "ARES Trading System • Watchlist Observation"}
+            }
+        ]
+    }
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            await client.post(settings.discord_webhook_url, json=payload)
+        except Exception as e:
+            print(f"[-] Alerts: Failed to send watchlist alert: {e}")
 
 async def send_startup_alert(
     pdh: float,

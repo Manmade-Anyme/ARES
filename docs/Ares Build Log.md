@@ -868,3 +868,39 @@ Fixed a fatal pydantic `ValidationError: discord_webhook_url: Field required` wh
 **TODOs**
 - [x] Merge PR #71 and perform local branch merge verification and cleanup.
 
+---
+
+## 2026-09-05 13:40 · TASK-073 OI Wall Entry Decoupling Directives
+
+Merged documentation directives for MANM-73/TASK-073 define a proposed two-phase OI-wall flow: directional wall bias first, delayed entry qualification second, and unchanged central risk construction after qualification. The vault note [[TASK-073 OI Wall Entry Decoupling Design]] now mirrors the ADR and implementation spec from PR #102.
+
+**Decisions**
+- Keep the initial OI-wall rejection as tracking-only `OIWallBias`; it must not create an order, start cooldown, or apply SL/T1/T2.
+- Require three same-wall qualifying snapshots, favourable excursion, and a secondary defended-side re-test before building an `AresSignal`.
+- Persist bounded `oi_wall_context` telemetry for signal, trade analytics, and ML collection paths, including non-entry states.
+- Treat replay of the 18 reviewed trades as a release gate before live enablement.
+
+**TODOs**
+- [x] Human-review and approve the proposed ADR before routing implementation.
+- [x] Merge PR #102.
+
+---
+
+## 2026-09-05 16:50 · TASK-073 Decoupled OI Wall Entry Filter Implementation
+
+Implemented the decoupled stateful entry filter architecture defined in ADR-073 (PR #102) to eliminate premature 2nd-candle whipsaws while strictly preserving the existing central stop-loss and risk framework.
+
+**Decisions**
+- Implemented `OIWallEntryFilter` state machine (`TRACKING` -> `PERSISTENT` -> `INTERACTED` -> `RETEST_READY` -> `QUALIFIED` -> `CONSUMED`/`EXPIRED`) in `detectors/oi_wall_entry.py`.
+- Refactored `OIWallDetector.update()` to return `Optional[OIWallBias]`, keeping detector state lightweight and isolated.
+- Wired `engine.py` to route `OIWallBias` through `OIWallEntryFilter.process()` to emit `AresSignal` only upon full confirmation. Handled deterministic acknowledgement order and cooldown resets.
+- Added opt-in `send_watchlist_alert` Discord alerts on initial persistence/interaction to give pre-trade situational awareness.
+- Formatted `send_discord()` alerts with comprehensive wall telemetry (wall price, excursion, distance to wall, dynamic stop relation).
+- Added `oi_wall_context` telemetry propagation across `AresSignal`, `Storage.log_signal`, `AnalyticsLogger.log_entry`, and `ml_signal.collector.snapshot()`.
+- Added migration `migrations/2026-09-05-task073-oi-wall-entry-telemetry.sql` and updated `schema.sql` / `ml_signal/schema.sql`.
+- Added new test suites `test_task073_oi_wall_entry.py` and `test_engine_oi_wall_entry.py`. Full unit test suite passes (414 passed).
+
+**TODOs**
+- [x] Pass all unit tests (414/414 passed).
+- [ ] Open implementation PR and request user merge.
+

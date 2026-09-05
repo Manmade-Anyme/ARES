@@ -2,8 +2,8 @@ import unittest
 from unittest.mock import patch, AsyncMock, MagicMock
 from datetime import datetime, timezone, timedelta
 import httpx
-from models import AresSignal, SetupType, Direction
-from alerts import format_signal, send_discord, send_startup_alert, send_error_alert, send_trade_update
+from models import AresSignal, SetupType, Direction, OIWallBias
+from alerts import format_signal, send_discord, send_startup_alert, send_error_alert, send_trade_update, send_watchlist_alert
 
 class TestAlerts(unittest.IsolatedAsyncioTestCase):
 
@@ -292,11 +292,118 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         mock_client.post.assert_called_once()
 
     @patch('alerts.settings')
-    async def test_send_startup_alert_no_webhook(self, mock_settings):
-        mock_settings.discord_webhook_url = ""
+    async def test_send_watchlist_alert_gated(self, mock_settings):
+        # When disabled, should not make any HTTP call
+        mock_settings.oi_wall_enable_watchlist_alert = False
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        bias = OIWallBias(
+            wall_key="CE:24100",
+            wall_strike=24100.0,
+            wall_option_type="CE",
+            direction=Direction.BEARISH,
+            trade_option_type="PE",
+            wall_oi=5000000,
+            wall_oi_change_pct=10.0,
+            relative_percentile=90.0,
+            first_seen=datetime.now(),
+            last_seen=datetime.now(),
+            persistence_snapshots=3,
+            persistence_duration_seconds=120.0,
+            state="RETEST_READY",
+            initial_interaction_timestamp=datetime.now(),
+            initial_interaction_price=24080.0,
+            favourable_excursion_pts=25.0,
+            reasons=(),
+        )
         with patch('httpx.AsyncClient') as mock_client:
-            await send_startup_alert(pdh=24000.0, pdl=23900.0, ml_active=False)
+            await send_watchlist_alert(bias, spot=24075.0)
             mock_client.assert_not_called()
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_send_watchlist_alert_success(self, mock_client_class, mock_settings):
+        mock_settings.oi_wall_enable_watchlist_alert = True
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        bias = OIWallBias(
+            wall_key="CE:24100",
+            wall_strike=24100.0,
+            wall_option_type="CE",
+            direction=Direction.BEARISH,
+            trade_option_type="PE",
+            wall_oi=5000000,
+            wall_oi_change_pct=10.0,
+            relative_percentile=90.0,
+            first_seen=datetime.now(),
+            last_seen=datetime.now(),
+            persistence_snapshots=3,
+            persistence_duration_seconds=120.0,
+            state="RETEST_READY",
+            initial_interaction_timestamp=datetime.now(),
+            initial_interaction_price=24080.0,
+            favourable_excursion_pts=25.0,
+            reasons=(),
+        )
+        await send_watchlist_alert(bias, spot=24075.0)
+        mock_client.post.assert_called_once()
+        payload = mock_client.post.call_args.kwargs["json"]
+        embed = payload["embeds"][0]
+        self.assertIn("SETUP WATCH: OI_WALL_PERSISTENT", embed["title"])
+        field_names = [f["name"] for f in embed["fields"]]
+        self.assertIn("🛡️ Wall Barrier", field_names)
+        self.assertIn("⏱️ Persistence", field_names)
+        self.assertIn("💡 Trader Guidance", field_names)
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_send_discord_with_oi_wall_context(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        signal = AresSignal(
+            setup_type=SetupType.OI_WALL_REJECTION,
+            direction=Direction.BEARISH,
+            trigger_price=24075.0,
+            entry_zone=(24070.0, 24080.0),
+            stop_loss=24091.0,  # 9 pts from 24100 wall
+            target_1=24040.0,
+            target_2=24000.0,
+            confidence="HIGH",
+            reasons=["Wall defended"],
+            timestamp=datetime.now(),
+            strike_to_trade=24050,
+            option_type="PE",
+            signal_id="7301",
+            oi_wall_context={
+                "wall_key": "CE:24100",
+                "wall_strike": 24100.0,
+                "wall_option_type": "CE",
+                "wall_oi": 5000000,
+                "wall_oi_change_pct": 12.5,
+                "persistence_snapshots": 3,
+                "entry_status": "QUALIFIED",
+            }
+        )
+        await send_discord(signal, spot=24075.0)
+        mock_client.post.assert_called_once()
+        payload = mock_client.post.call_args.kwargs["json"]
+        embed = payload["embeds"][0]
+        field_dict = {f["name"]: f["value"] for f in embed["fields"]}
+        self.assertIn("🛡️ Wall Context", field_dict)
+        self.assertIn("24100 CE", field_dict["🛡️ Wall Context"])
+        self.assertIn("50.0L contracts", field_dict["🛡️ Wall Context"])
+        self.assertIn("3/3 snapshots persistent", field_dict["🛡️ Wall Context"])
+        self.assertIn("9.0 pts from wall 24100", field_dict["🛑 SL"])
+
 
 if __name__ == '__main__':
     unittest.main()

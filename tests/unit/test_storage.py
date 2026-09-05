@@ -373,6 +373,39 @@ class TestSignalIdAndTimezones(unittest.IsolatedAsyncioTestCase):
         # Explicit offset string
         self.assertEqual(to_utc_iso("2026-07-02T14:12:00+05:30"), "2026-07-02T08:42:00+00:00")
 
+    async def test_log_signal_and_analytics_oi_wall_context(self):
+        """TASK-073: oi_wall_context persists to ares_signals and trade_analytics."""
+        wall_ctx = {
+            "wall_key": "CE:24100",
+            "wall_strike": 24100.0,
+            "wall_option_type": "CE",
+            "persistence_snapshots": 3,
+            "entry_status": "QUALIFIED",
+            "vwap": 24060.0,
+            "opening_range": None,
+        }
+        signal = self._make_signal()
+        signal.oi_wall_context = wall_ctx
+
+        # Test ares_signals logging
+        await self.storage.log_signal(signal, 24075.0)
+        signal_inserted = self.mock_client.insert_mock.call_args[0][0]
+        self.assertEqual(signal_inserted["oi_wall_context"], wall_ctx)
+
+        # Test trade_analytics logging
+        self.analytics.log_entry("trade-oi-wall", signal, 24075.0, None)
+        await asyncio.sleep(0.05)
+        analytics_inserted = self.mock_client.insert_mock.call_args[0][0]
+        self.assertEqual(analytics_inserted["market_context"]["oi_wall"], wall_ctx)
+
+    async def test_log_signal_null_oi_wall_context(self):
+        """Signals without oi_wall_context persist NULL."""
+        signal = self._make_signal()
+        signal.oi_wall_context = None
+        await self.storage.log_signal(signal, 24075.0)
+        signal_inserted = self.mock_client.insert_mock.call_args[0][0]
+        self.assertIsNone(signal_inserted["oi_wall_context"])
+
 
 
 # Clean up patch after class execution
