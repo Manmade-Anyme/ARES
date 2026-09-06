@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 from collections import deque
 from datetime import datetime, timedelta
 from statistics import mean
 from typing import Optional, List, Dict, Any
 
-from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction, SetupType, OIWallBias
+from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction, SetupType, OIWallBias, OIWallEntryDecision
 from config import settings
 
 
@@ -38,7 +40,7 @@ def _resolve_target_2(entry, sign, target_1, lv, levels):
 
 from detectors.breakout import FailedBreakoutDetector
 from detectors.oi_wall import OIWallDetector
-from detectors.oi_wall_entry import OIWallEntryFilter
+from detectors.oi_wall_entry import OIWallEntryFilter, OIWallEntryDecision
 from detectors.exhaustion import ExhaustionDetector
 from detectors.continuation import TrendContinuationDetector
 
