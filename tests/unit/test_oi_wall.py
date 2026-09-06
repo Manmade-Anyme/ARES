@@ -97,29 +97,20 @@ class TestOIWallDetector(unittest.TestCase):
         self.assertFalse(any("Aggressive active defending" in r for r in signal.reasons))
 
     @patch('detectors.oi_wall.settings')
-    def test_oi_wall_update_ce_rejection_confirmed(self, mock_settings):
+    def test_oi_wall_update_ce_wall_detected(self, mock_settings):
         mock_settings.oi_wall_min_oi = 4000000
         mock_settings.oi_wall_min_oi_change_pct = 5.0
-        mock_settings.oi_wall_approach_distance = 80.0
-        mock_settings.oi_wall_test_distance = 20.0
-        mock_settings.oi_wall_conviction_multiplier = 1.5
-        mock_settings.oi_wall_wick_min_range_pts = 2.0
-        mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.oi_wall_wick_rejection_ratio = 0.4
-        mock_settings.strike_interval = 50
-        mock_settings.entry_zone_offset_pts = 5.0
+        mock_settings.oi_wall_persistence_snapshots = 3
 
-        # Candle 1: candidate touch with a genuine upper-wick rejection
-        candle1 = OHLCVCandle(
+        candle = OHLCVCandle(
             timestamp=datetime.now(),
             open=24090.0,
-            high=24105.0,
+            high=24095.0,
             low=24080.0,
             close=24085.0,
-            volume=1000
+            volume=1000,
         )
         full_chain = [
-            # Matches closest CE wall above spot
             {
                 "strike": 24100,
                 "ce_oi": 5000000,
@@ -127,9 +118,8 @@ class TestOIWallDetector(unittest.TestCase):
                 "ce_oi_change_pct": 11.1,
                 "pe_oi": 100000,
                 "pe_oi_prev": 100000,
-                "pe_oi_change_pct": 0.0
+                "pe_oi_change_pct": 0.0,
             },
-            # Another CE wall further away
             {
                 "strike": 24150,
                 "ce_oi": 6000000,
@@ -137,143 +127,33 @@ class TestOIWallDetector(unittest.TestCase):
                 "ce_oi_change_pct": 20.0,
                 "pe_oi": 100000,
                 "pe_oi_prev": 100000,
-                "pe_oi_change_pct": 0.0
-            }
-        ]
-
-        # Candle 1 only forms a candidate; no signal yet.
-        signal1 = self.detector.update(spot=24080.0, full_chain=full_chain, candle=candle1, levels=[])
-        self.assertIsNone(signal1)
-
-        # Candle 2: confirms by closing below candle 1's low (24080.0)
-        candle2 = OHLCVCandle(
-            timestamp=datetime.now(), open=24078.0, high=24082.0, low=24065.0, close=24070.0, volume=1000
-        )
-        signal2 = self.detector.update(spot=24070.0, full_chain=full_chain, candle=candle2, levels=[])
-        self.assertIsNotNone(signal2)
-        self.assertEqual(signal2.direction, Direction.BEARISH)
-        # strike_to_trade is derived from spot at confirmation time (candle 2), not candle 1
-        self.assertEqual(signal2.strike_to_trade, 24050)
-
-    @patch('detectors.oi_wall.settings')
-    def test_oi_wall_update_ce_rejection_not_confirmed(self, mock_settings):
-        mock_settings.oi_wall_min_oi = 4000000
-        mock_settings.oi_wall_min_oi_change_pct = 5.0
-        mock_settings.oi_wall_approach_distance = 80.0
-        mock_settings.oi_wall_test_distance = 20.0
-        mock_settings.oi_wall_conviction_multiplier = 1.5
-        mock_settings.oi_wall_wick_min_range_pts = 2.0
-        mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.oi_wall_wick_rejection_ratio = 0.4
-        mock_settings.strike_interval = 50
-        mock_settings.entry_zone_offset_pts = 5.0
-
-        candle1 = OHLCVCandle(
-            timestamp=datetime.now(), open=24090.0, high=24105.0, low=24080.0, close=24085.0, volume=1000
-        )
-        full_chain = [
-            {
-                "strike": 24100,
-                "ce_oi": 5000000,
-                "ce_oi_prev": 4500000,
-                "ce_oi_change_pct": 11.1,
-                "pe_oi": 100000,
-                "pe_oi_prev": 100000,
-                "pe_oi_change_pct": 0.0
-            }
-        ]
-
-        signal1 = self.detector.update(spot=24080.0, full_chain=full_chain, candle=candle1, levels=[])
-        self.assertIsNone(signal1)
-
-        # Candle 2 does NOT close below candle 1's low (24080.0) -> setup fails to confirm
-        candle2 = OHLCVCandle(
-            timestamp=datetime.now(), open=24082.0, high=24090.0, low=24081.0, close=24088.0, volume=1000
-        )
-        signal2 = self.detector.update(spot=24085.0, full_chain=full_chain, candle=candle2, levels=[])
-        self.assertIsNone(signal2)
-
-        # And the pending setup must have expired: a 3rd candle that would have
-        # confirmed candle1 must NOT trigger a stale signal.
-        candle3 = OHLCVCandle(
-            timestamp=datetime.now(), open=24085.0, high=24086.0, low=24060.0, close=24065.0, volume=1000
-        )
-        signal3 = self.detector.update(spot=24065.0, full_chain=full_chain, candle=candle3, levels=[])
-        self.assertIsNone(signal3)
-
-    @patch('detectors.oi_wall.settings')
-    def test_oi_wall_update_pe_bounce_confirmed(self, mock_settings):
-        mock_settings.oi_wall_min_oi = 4000000
-        mock_settings.oi_wall_min_oi_change_pct = 5.0
-        mock_settings.oi_wall_approach_distance = 80.0
-        mock_settings.oi_wall_test_distance = 20.0
-        mock_settings.oi_wall_conviction_multiplier = 1.5
-        mock_settings.oi_wall_wick_min_range_pts = 2.0
-        mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.oi_wall_wick_rejection_ratio = 0.4
-        mock_settings.strike_interval = 50
-        mock_settings.entry_zone_offset_pts = 5.0
-
-        # Candle 1: candidate touch with a genuine lower-wick rejection (bounce)
-        candle1 = OHLCVCandle(
-            timestamp=datetime.now(),
-            open=24010.0,
-            high=24025.0,
-            low=23995.0,
-            close=24015.0,
-            volume=1000
-        )
-        full_chain = [
-            # Matches closest PE wall below spot
-            {
-                "strike": 24000,
-                "ce_oi": 100000,
-                "ce_oi_prev": 100000,
-                "ce_oi_change_pct": 0.0,
-                "pe_oi": 5000000,
-                "pe_oi_prev": 4500000,
-                "pe_oi_change_pct": 11.1
+                "pe_oi_change_pct": 0.0,
             },
-            # Another PE wall further away
-            {
-                "strike": 23950,
-                "ce_oi": 100000,
-                "ce_oi_prev": 100000,
-                "ce_oi_change_pct": 0.0,
-                "pe_oi": 6000000,
-                "pe_oi_prev": 5000000,
-                "pe_oi_change_pct": 20.0
-            }
         ]
 
-        signal1 = self.detector.update(spot=24020.0, full_chain=full_chain, candle=candle1, levels=[])
-        self.assertIsNone(signal1)
-
-        # Candle 2: confirms by closing above candle 1's high (24025.0)
-        candle2 = OHLCVCandle(
-            timestamp=datetime.now(), open=24026.0, high=24040.0, low=24024.0, close=24035.0, volume=1000
-        )
-        signal2 = self.detector.update(spot=24030.0, full_chain=full_chain, candle=candle2, levels=[])
-        self.assertIsNotNone(signal2)
-        self.assertEqual(signal2.direction, Direction.BULLISH)
-        # strike_to_trade is derived from spot at confirmation time (candle 2), not candle 1
-        self.assertEqual(signal2.strike_to_trade, 24050)
+        bias = self.detector.update(spot=24080.0, full_chain=full_chain, candle=candle, levels=[])
+        self.assertIsNotNone(bias)
+        self.assertEqual(bias.wall_strike, 24100.0)
+        self.assertEqual(bias.wall_option_type, "CE")
+        self.assertEqual(bias.direction, Direction.BEARISH)
+        self.assertEqual(bias.trade_option_type, "PE")
+        self.assertEqual(bias.wall_oi, 5000000)
+        self.assertEqual(bias.persistence_snapshots, 1)
+        self.assertEqual(bias.state, "TRACKING")
 
     @patch('detectors.oi_wall.settings')
-    def test_oi_wall_update_pe_bounce_not_confirmed(self, mock_settings):
+    def test_oi_wall_update_pe_wall_detected(self, mock_settings):
         mock_settings.oi_wall_min_oi = 4000000
         mock_settings.oi_wall_min_oi_change_pct = 5.0
-        mock_settings.oi_wall_approach_distance = 80.0
-        mock_settings.oi_wall_test_distance = 20.0
-        mock_settings.oi_wall_conviction_multiplier = 1.5
-        mock_settings.oi_wall_wick_min_range_pts = 2.0
-        mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.oi_wall_wick_rejection_ratio = 0.4
-        mock_settings.strike_interval = 50
-        mock_settings.entry_zone_offset_pts = 5.0
+        mock_settings.oi_wall_persistence_snapshots = 3
 
-        candle1 = OHLCVCandle(
-            timestamp=datetime.now(), open=24010.0, high=24025.0, low=23995.0, close=24015.0, volume=1000
+        candle = OHLCVCandle(
+            timestamp=datetime.now(),
+            open=24020.0,
+            high=24025.0,
+            low=24010.0,
+            close=24015.0,
+            volume=1000,
         )
         full_chain = [
             {
@@ -283,39 +163,25 @@ class TestOIWallDetector(unittest.TestCase):
                 "ce_oi_change_pct": 0.0,
                 "pe_oi": 5000000,
                 "pe_oi_prev": 4500000,
-                "pe_oi_change_pct": 11.1
+                "pe_oi_change_pct": 11.1,
             }
         ]
 
-        signal1 = self.detector.update(spot=24020.0, full_chain=full_chain, candle=candle1, levels=[])
-        self.assertIsNone(signal1)
-
-        # Candle 2 does NOT close above candle 1's high (24025.0) -> setup fails to confirm
-        candle2 = OHLCVCandle(
-            timestamp=datetime.now(), open=24016.0, high=24024.0, low=24010.0, close=24012.0, volume=1000
-        )
-        signal2 = self.detector.update(spot=24015.0, full_chain=full_chain, candle=candle2, levels=[])
-        self.assertIsNone(signal2)
+        bias = self.detector.update(spot=24020.0, full_chain=full_chain, candle=candle, levels=[])
+        self.assertIsNotNone(bias)
+        self.assertEqual(bias.wall_strike, 24000.0)
+        self.assertEqual(bias.wall_option_type, "PE")
+        self.assertEqual(bias.direction, Direction.BULLISH)
+        self.assertEqual(bias.trade_option_type, "CE")
+        self.assertEqual(bias.wall_oi, 5000000)
+        self.assertEqual(bias.persistence_snapshots, 1)
+        self.assertEqual(bias.state, "TRACKING")
 
     @patch('detectors.oi_wall.settings')
-    def test_oi_wall_update_shallow_wick_touch_is_a_candidate(self, mock_settings):
-        """TASK-188 inverted the old wick gate.
-
-        This case previously asserted that a 33%-wick touch stored no candidate.
-        Replaying the closed OI-wall book showed the >=40% wick gate blocked all
-        four T2 winners (wicks 19.0%, 24.4%, 37.1%, 21.6%) while admitting only
-        losers, so wick depth no longer vetoes a setup — it only scores it.
-        """
+    def test_oi_wall_update_persistence_increments_to_persistent(self, mock_settings):
         mock_settings.oi_wall_min_oi = 4000000
         mock_settings.oi_wall_min_oi_change_pct = 5.0
-        mock_settings.oi_wall_approach_distance = 80.0
-        mock_settings.oi_wall_test_distance = 20.0
-        mock_settings.oi_wall_conviction_multiplier = 1.5
-        mock_settings.oi_wall_wick_min_range_pts = 2.0
-        mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.oi_wall_wick_rejection_ratio = 0.4
-        mock_settings.strike_interval = 50
-        mock_settings.entry_zone_offset_pts = 5.0
+        mock_settings.oi_wall_persistence_snapshots = 3
 
         full_chain = [
             {
@@ -325,88 +191,92 @@ class TestOIWallDetector(unittest.TestCase):
                 "ce_oi_change_pct": 11.1,
                 "pe_oi": 100000,
                 "pe_oi_prev": 100000,
-                "pe_oi_change_pct": 0.0
+                "pe_oi_change_pct": 0.0,
             }
         ]
+        candle1 = OHLCVCandle(timestamp=datetime.now(), open=24075.0, high=24080.0, low=24070.0, close=24075.0, volume=1000)
+        candle2 = OHLCVCandle(timestamp=datetime.now(), open=24075.0, high=24082.0, low=24072.0, close=24078.0, volume=1000)
+        candle3 = OHLCVCandle(timestamp=datetime.now(), open=24078.0, high=24085.0, low=24074.0, close=24080.0, volume=1000)
 
-        # Candle closes red and touches the wall (high=24081 >= strike - test_distance=24080)
-        # with a shallow 33% upper wick. It is a valid candidate now.
-        candle = OHLCVCandle(
-            timestamp=datetime.now(), open=24075.0, high=24081.0, low=24063.0, close=24065.0, volume=1000
-        )
-        signal = self.detector.update(spot=24080.0, full_chain=full_chain, candle=candle, levels=[])
-        self.assertIsNone(signal, "candidate candle itself never emits a signal")
-        self.assertIsNotNone(self.detector.pending_setup)
+        bias1 = self.detector.update(spot=24075.0, full_chain=full_chain, candle=candle1, levels=[])
+        self.assertEqual(bias1.persistence_snapshots, 1)
+        self.assertEqual(bias1.state, "TRACKING")
 
-        # The next candle closes below the candidate's low (24063) -> confirmed.
-        candle_next = OHLCVCandle(
-            timestamp=datetime.now(), open=24060.0, high=24062.0, low=24040.0, close=24045.0, volume=1000
-        )
-        signal_next = self.detector.update(spot=24045.0, full_chain=full_chain, candle=candle_next, levels=[])
-        self.assertIsNotNone(signal_next)
-        self.assertEqual(signal_next.option_type, "PE")
+        bias2 = self.detector.update(spot=24078.0, full_chain=full_chain, candle=candle2, levels=[])
+        self.assertEqual(bias2.persistence_snapshots, 2)
+        self.assertEqual(bias2.state, "TRACKING")
+
+        bias3 = self.detector.update(spot=24080.0, full_chain=full_chain, candle=candle3, levels=[])
+        self.assertEqual(bias3.persistence_snapshots, 3)
+        self.assertEqual(bias3.state, "PERSISTENT")
 
     @patch('detectors.oi_wall.settings')
-    def test_oi_wall_update_no_signal_conditions(self, mock_settings):
+    def test_oi_wall_update_wall_identity_change_resets_persistence(self, mock_settings):
         mock_settings.oi_wall_min_oi = 4000000
         mock_settings.oi_wall_min_oi_change_pct = 5.0
-        mock_settings.oi_wall_approach_distance = 80.0
-        mock_settings.oi_wall_test_distance = 20.0
-        mock_settings.oi_wall_conviction_multiplier = 1.5
-        mock_settings.oi_wall_wick_min_range_pts = 2.0
-        mock_settings.structural_target_min_distance_pts = 20.0
-        mock_settings.oi_wall_wick_rejection_ratio = 0.4
-        mock_settings.strike_interval = 50
-        mock_settings.entry_zone_offset_pts = 5.0
+        mock_settings.oi_wall_persistence_snapshots = 3
 
-        candle = OHLCVCandle(
-            timestamp=datetime.now(), open=24090.0, high=24105.0, low=24080.0, close=24085.0, volume=1000
-        )
-
-        # No walls matching min OI
-        full_chain = [
-            {
-                "strike": 24100,
-                "ce_oi": 1000000,  # Below min_oi
-                "ce_oi_prev": 1000000,
-                "ce_oi_change_pct": 0.0,
-                "pe_oi": 1000000,
-                "pe_oi_prev": 1000000,
-                "pe_oi_change_pct": 0.0
-            }
+        chain1 = [
+            {"strike": 24100, "ce_oi": 5000000, "ce_oi_prev": 4500000, "ce_oi_change_pct": 11.1, "pe_oi": 100000, "pe_oi_prev": 100000, "pe_oi_change_pct": 0.0}
         ]
-        self.assertIsNone(OIWallDetector().update(spot=24080.0, full_chain=full_chain, candle=candle, levels=[]))
+        chain2 = [
+            {"strike": 24150, "ce_oi": 7000000, "ce_oi_prev": 6000000, "ce_oi_change_pct": 16.6, "pe_oi": 100000, "pe_oi_prev": 100000, "pe_oi_change_pct": 0.0}
+        ]
+        candle = OHLCVCandle(timestamp=datetime.now(), open=24075.0, high=24080.0, low=24070.0, close=24075.0, volume=1000)
 
-        # Wall matches, but too far (spot distance > approach distance)
-        full_chain[0]["ce_oi"] = 5000000
-        full_chain[0]["ce_oi_change_pct"] = 10.0
-        # Spot is 24000. CE wall 24100 is 100 pts away (> 80.0 approach distance)
-        self.assertIsNone(OIWallDetector().update(spot=24000.0, full_chain=full_chain, candle=candle, levels=[]))
+        bias1 = self.detector.update(spot=24075.0, full_chain=chain1, candle=candle, levels=[])
+        self.assertEqual(bias1.wall_strike, 24100.0)
+        self.assertEqual(bias1.persistence_snapshots, 1)
 
-        # Wall matches and approaches, but not tested (candle.high < strike - test_distance)
-        # Spot = 24080, strike = 24100. Candle high = 24075 (less than 24100 - 20 = 24080)
-        candle_not_tested = OHLCVCandle(
-            timestamp=datetime.now(), open=24070.0, high=24075.0, low=24060.0, close=24072.0, volume=1000
-        )
-        self.assertIsNone(OIWallDetector().update(spot=24080.0, full_chain=full_chain, candle=candle_not_tested, levels=[]))
+        bias2 = self.detector.update(spot=24075.0, full_chain=chain1, candle=candle, levels=[])
+        self.assertEqual(bias2.persistence_snapshots, 2)
 
-        # Wall matches, approaches, tested, but not rejected (candle.close >= candle.open)
-        candle_not_rejected = OHLCVCandle(
-            timestamp=datetime.now(), open=24080.0, high=24105.0, low=24075.0, close=24085.0, volume=1000
-        )
-        self.assertIsNone(OIWallDetector().update(spot=24080.0, full_chain=full_chain, candle=candle_not_rejected, levels=[]))
+        # Shift to 24150 wall
+        bias3 = self.detector.update(spot=24075.0, full_chain=chain2, candle=candle, levels=[])
+        self.assertEqual(bias3.wall_strike, 24150.0)
+        self.assertEqual(bias3.persistence_snapshots, 1)
+        self.assertEqual(bias3.state, "TRACKING")
 
-        # NOTE (TASK-188): the "writers covered (ce_oi < ce_oi_prev)" case was
-        # dropped along with the writers_holding check. It was dead code — the
-        # wall-selection gate already requires ce_oi_change_pct > 5%, which
-        # implies ce_oi > ce_oi_prev, and a zero ce_oi_prev forces change_pct to
-        # 0.0 in OIFetcher so the wall fails selection anyway. The fixture it
-        # relied on (OI down 17% while change_pct reads +10%) cannot occur in
-        # real chain data.
+    @patch('detectors.oi_wall.settings')
+    def test_oi_wall_update_no_qualifying_wall_returns_none(self, mock_settings):
+        mock_settings.oi_wall_min_oi = 4000000
+        mock_settings.oi_wall_min_oi_change_pct = 5.0
+        mock_settings.oi_wall_persistence_snapshots = 3
 
-    # NOTE (TASK-185): the oi_wall structural target-selection + fixed-points
-    # fallback tests were removed. SL/T1/T2 are now set centrally by
-    # engine.apply_per_type_levels (see tests/unit/test_per_type_levels.py).
+        candle = OHLCVCandle(timestamp=datetime.now(), open=24075.0, high=24080.0, low=24070.0, close=24075.0, volume=1000)
+
+        # Empty chain
+        self.assertIsNone(self.detector.update(spot=24075.0, full_chain=[], candle=candle, levels=[]))
+
+        # Chain with OI below threshold
+        chain_low_oi = [
+            {"strike": 24100, "ce_oi": 2000000, "ce_oi_prev": 1900000, "ce_oi_change_pct": 10.0, "pe_oi": 100000, "pe_oi_prev": 100000, "pe_oi_change_pct": 0.0}
+        ]
+        self.assertIsNone(self.detector.update(spot=24075.0, full_chain=chain_low_oi, candle=candle, levels=[]))
+
+        # Chain with OI change pct below threshold
+        chain_low_change = [
+            {"strike": 24100, "ce_oi": 5000000, "ce_oi_prev": 4900000, "ce_oi_change_pct": 2.0, "pe_oi": 100000, "pe_oi_prev": 100000, "pe_oi_change_pct": 0.0}
+        ]
+        self.assertIsNone(self.detector.update(spot=24075.0, full_chain=chain_low_change, candle=candle, levels=[]))
+
+    @patch('detectors.oi_wall.settings')
+    def test_oi_wall_update_relative_percentile(self, mock_settings):
+        mock_settings.oi_wall_min_oi = 4000000
+        mock_settings.oi_wall_min_oi_change_pct = 5.0
+        mock_settings.oi_wall_persistence_snapshots = 3
+
+        candle = OHLCVCandle(timestamp=datetime.now(), open=24075.0, high=24080.0, low=24070.0, close=24075.0, volume=1000)
+        full_chain = [
+            {"strike": 24100, "ce_oi": 5000000, "ce_oi_prev": 4500000, "ce_oi_change_pct": 11.1, "pe_oi": 100000, "pe_oi_prev": 100000, "pe_oi_change_pct": 0.0},
+            {"strike": 24150, "ce_oi": 3000000, "ce_oi_prev": 3000000, "ce_oi_change_pct": 0.0, "pe_oi": 100000, "pe_oi_prev": 100000, "pe_oi_change_pct": 0.0},
+            {"strike": 24200, "ce_oi": 2000000, "ce_oi_prev": 2000000, "ce_oi_change_pct": 0.0, "pe_oi": 100000, "pe_oi_prev": 100000, "pe_oi_change_pct": 0.0},
+            {"strike": 24250, "ce_oi": 10000000, "ce_oi_prev": 9000000, "ce_oi_change_pct": 11.1, "pe_oi": 100000, "pe_oi_prev": 100000, "pe_oi_change_pct": 0.0},
+        ]
+        # Same-side non-zero strikes: 24100 (5M), 24150 (3M), 24200 (2M), 24250 (10M). Total 4.
+        # Nearest qualifying is 24100 (5M). Strikes <= 5M: 24100, 24150, 24200 -> 3/4 = 75.0%
+        bias = self.detector.update(spot=24075.0, full_chain=full_chain, candle=candle, levels=[])
+        self.assertEqual(bias.relative_percentile, 75.0)
 
 
 if __name__ == '__main__':

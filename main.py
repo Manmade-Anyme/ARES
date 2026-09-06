@@ -11,7 +11,7 @@ from position_manager import PositionManager
 from config import settings, detector_names, SESSION_DISPLAY
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple, days_to_expiry
-from alerts import send_discord, send_startup_alert, send_error_alert
+from alerts import send_discord, send_startup_alert, send_error_alert, send_watchlist_alert
 from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
 from ml_signal.predictor import SignalPredictor
@@ -247,6 +247,13 @@ async def run():
             # Run the engine
             signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
 
+            # Watchlist alert when engine flags a new persistent/retest-ready wall
+            if engine.latest_watchlist_event:
+                try:
+                    await send_watchlist_alert(engine.latest_watchlist_event, spot)
+                except Exception as wl_err:
+                    print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Watchlist alert failed: {wl_err}{RESET}")
+
             # Terminal UI: Track Warmup State
             buffer_len = len(engine.candle_buffer)
             if buffer_len == settings.candle_buffer_size and not buffers_full_printed:
@@ -335,6 +342,7 @@ async def run():
                 is_expiry=is_expiry,
                 dte=days_to_expiry(expiry_date),
                 timestamp=now,
+                oi_wall_context=engine.latest_oi_wall_context,
             )
 
             # Update active trades with new spot price. Candle high/low enable

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 import random
 
 def confidence_from_score(score: int, max_score: int) -> str:
@@ -138,3 +138,94 @@ class AresSignal:
     option_delta: Optional[float] = None
     option_premium: Optional[float] = None
     risk_pct: Optional[float] = None
+    oi_wall_context: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class OIWallBias:
+    """
+    Directional bias and persistent state identified by OIWallDetector.
+    Observation only — does not create trade signals directly.
+    """
+    wall_key: str                         # stable key: f"{wall_option_type}:{int(strike)}"
+    wall_strike: float
+    wall_option_type: str                 # "CE" or "PE"
+    direction: Direction                  # CE wall -> BEARISH; PE wall -> BULLISH
+    trade_option_type: str                # CE for bullish, PE for bearish
+    wall_oi: int
+    wall_oi_change_pct: float
+    relative_percentile: Optional[float] # 0..100 among non-zero same-side strikes
+    first_seen: datetime
+    last_seen: datetime
+    persistence_snapshots: int
+    persistence_duration_seconds: float
+    state: str                            # TRACKING | PERSISTENT | INTERACTED | RETEST_READY | EXPIRED | CONSUMED
+    initial_interaction_timestamp: Optional[datetime]
+    initial_interaction_price: Optional[float]
+    favourable_excursion_pts: float
+    reasons: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OIWallTelemetry:
+    """
+    Normalized telemetry contract for Supabase persistence and ML collection.
+    """
+    bias: Optional[OIWallBias]
+    entry_status: str                     # NO_WALL | WAITING | QUALIFIED | EXPIRED | CONSUMED
+    filter_state: Optional[str]           # TRACKING | PERSISTENT | INTERACTED | RETEST_READY | QUALIFIED | CONSUMED | EXPIRED | NO_WALL
+    rejection_reason: Optional[str]       # Specific rejection/expiration reason or None
+    initial_interaction_timestamp: Optional[datetime]
+    initial_interaction_price: Optional[float]
+    favourable_excursion_pts: Optional[float]
+    retest_timestamp: Optional[datetime]
+    reference_price: Optional[float]
+    vwap: Optional[float]                 # Intraday VWAP from candle context when available
+    opening_range: Optional[Dict[str, Optional[float]]]
+    expired_wall: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        if self.bias is None or self.entry_status == "NO_WALL":
+            return {}
+        from storage import to_utc_iso
+        d = {
+            "wall_key": self.bias.wall_key,
+            "wall_strike": self.bias.wall_strike,
+            "wall_option_type": self.bias.wall_option_type,
+            "direction": self.bias.direction.value,
+            "trade_option_type": self.bias.trade_option_type,
+            "wall_oi": self.bias.wall_oi,
+            "wall_oi_change_pct": self.bias.wall_oi_change_pct,
+            "relative_percentile": self.bias.relative_percentile,
+            "persistence_snapshots": self.bias.persistence_snapshots,
+            "persistence_duration_seconds": self.bias.persistence_duration_seconds,
+            "initial_interaction_timestamp": to_utc_iso(self.initial_interaction_timestamp) if self.initial_interaction_timestamp else None,
+            "initial_interaction_price": self.initial_interaction_price,
+            "favourable_excursion_pts": self.favourable_excursion_pts,
+            "entry_status": self.entry_status,
+            "filter_state": self.filter_state,
+            "rejection_reason": self.rejection_reason,
+            "retest_timestamp": to_utc_iso(self.retest_timestamp) if self.retest_timestamp else None,
+            "reference_price": self.reference_price,
+            "vwap": self.vwap,
+            "opening_range": self.opening_range,
+        }
+        if self.expired_wall is not None:
+            d["expired_wall"] = self.expired_wall
+        return d
+
+
+@dataclass(frozen=True)
+class OIWallEntryDecision:
+    """
+    Deterministic entry filter evaluation returned on every candle.
+    """
+    status: str                           # NO_WALL | WAITING | QUALIFIED | EXPIRED | CONSUMED
+    wall_key: Optional[str]
+    decision_id: Optional[str]
+    bias: Optional[OIWallBias]             # latest filter-owned bias state
+    telemetry: OIWallTelemetry             # same-cycle state for engine/main/collector
+    trigger_price: Optional[float]
+    retest_timestamp: Optional[datetime]
+    rejection_reason: Optional[str]
+    reference_price: Optional[float]

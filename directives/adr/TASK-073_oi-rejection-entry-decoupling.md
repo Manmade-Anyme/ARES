@@ -1,7 +1,7 @@
 ---
 adr_id: "TASK-073"
 title: "OI-wall directional bias, delayed entry qualification, and telemetry"
-status: "proposed"
+status: "approved"
 date: "2026-09-05"
 author: "Software Architect Agent"
 applies_to: "ARES Core / Detectors / Engine / Storage / ML"
@@ -12,7 +12,7 @@ issue: "MANM-73 / 01a032c1-b430-700c-acc0-a3681a5c6c5e"
 
 ## 1. Status & Context
 
-- **Status**: Proposed; implementation is blocked until a human approves this ADR.
+- **Status**: Approved by the human merge of PR #102 on 2026-09-05 (`575df8c4f915117f861d9ccda6bbf45cd3a11b6b`). Implementation remains subject to the replay and human release gates below.
 - **Problem**: The OI-wall detector currently turns an early wall rejection into an order-ready `AresSignal`. The useful information is often directional, but the first entry is vulnerable to the opening-session pullback. The requested change improves entry quality without widening the existing stop.
 - **Observed failure mode**: The Phase 1 analysis reports 12 of 18 reviewed trades stopped out, with 8 later reaching T1 in the predicted direction after the initial shakeout. This is an entry-timing problem, not authorization to increase stop distance.
 - **Current coupling**:
@@ -336,7 +336,9 @@ The system deterministically isolates two distinct failure classes:
 - Assert collector/storage payload equality, null handling, UTC timestamp normalization, and no extra broker/API call.
 - Assert `main.py` passes the engine's latest wall context into `MLCollector.snapshot()` for non-entry observations.
 - Assert Discord execution and watchlist payloads: no signal alert before final acknowledgement, watchlist output is opt-in, enriched wall fields render, and existing non-OI-wall alert fields remain unchanged. Use a mocked webhook/test channel; do not require a live webhook in the unit suite.
-- Replay the 18-trade production sample plus available tick/candle data before enabling live entries. Compare baseline vs Phase 1 on: entry count, SL-hit rate, T1 capture rate, median time-to-SL, average R:R, and P&L. A replay result is a release gate, not a claim of success in this ADR.
+- The 18-trade historical replay gate is skipped by human direction because the repository has no comparable historical replay runners or fixtures for breakout, continuation, exhaustion, or expiry-detector trade paths, and the available TASK-073 replay inputs cannot support faithful historical acceptance evidence without complete closed-OHLCV, strike-chain, profile, and expiry data.
+- Validate the entry changes the same way as the rest of ARES: focused unit tests and engine integration tests against existing detector, risk, cooldown, priority, acknowledgement, and telemetry logic. Keep any replay-like diagnostics clearly labelled as synthetic or incomplete; they are not release acceptance evidence.
+- The replay audit and proposed repair contract are in `directives/adr/TASK-073_replay-evidence-remediation.md`. PR #103's initial replay at `346cfb6` is synthetic filter exercise evidence, not a valid production replay. The human-directed skip retires the replay gate; it does not approve synthetic success claims or bypass the standard regression suite.
 
 ## 7. Definition of Done
 
@@ -345,7 +347,7 @@ The system deterministically isolates two distinct failure classes:
 - Wall context is recorded for pending, rejected, qualified, and consumed states without blocking the loop.
 - Existing stop policy and non-OI detector behavior pass regression tests.
 - The additive migration is applied in the target environment and old rows remain readable.
-- Replay evidence is attached to the implementation/QA handoff; live rollout is disabled until the replay acceptance thresholds are agreed.
+- Historical replay evidence is no longer required for this issue after human direction to skip it when no comparable replay exists for other trade types. Implementation/QA handoff must instead attach unit and engine integration evidence proving unchanged central risk, existing detector behavior, and the TASK-073 entry-filter fixes.
 
 ## 8. Implementation Gate
 

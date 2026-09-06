@@ -11,4 +11,5 @@
 | TASK-009 | 2026-06-25 | ML Data Collection Pipeline | Approved |
 | TASK-177 | 2026-07-06 | Trend-Continuation Detector | Approved |
 | MANM-93 | 2026-08-31 | Dhan Redis API Removal & Local/Supabase State Architecture | Proposed |
-| TASK-073 | 2026-09-05 | OI-wall directional bias, delayed entry qualification, and telemetry | Proposed |
+| TASK-073 | 2026-09-05 | OI-wall directional bias, delayed entry qualification, and telemetry | Approved via PR #102; implementation under PR #103 review |
+| TASK-073-R1 | 2026-09-05 | Replay evidence audit and repair contract (`TASK-073_replay-evidence-remediation.md`) | Superseded by human replay-waiver direction; no runtime changes |

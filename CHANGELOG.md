@@ -16,6 +16,52 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **OI wall re-test timestamps and watchlist webhook failures (TASK-073 / PR #103)**:
+  Qualified OI-wall telemetry now records the armed re-test touch timestamp,
+  rather than the later confirmation-candle timestamp. Watchlist Discord
+  webhook responses now receive the same HTTP status validation as other alert
+  paths, so failed delivery is logged.
+- **OI wall nearest-wall selection & replacement telemetry persistence (TASK-073 / PR #103)**:
+  Candidate selection in `detectors/oi_wall.py` now strictly chooses the
+  qualifying strike closest to spot (`min abs(strike - spot)`), independent of
+  chain order. Inter-side selection is determined strictly by distance to spot
+  (`ce_dist <= pe_dist`), preventing stale tracked walls from overriding closer
+  opposite-side walls. In `engine.py` and `detectors/oi_wall_entry.py`, prior
+  wall expiration recorded during replacement is now embedded in
+  `latest_oi_wall_context["expired_wall"]` and exposed via
+  `engine.latest_expired_oi_wall_context` for audit and ML snapshot persistence.
+- **OI wall breach evaluation & transition candle processing (TASK-073 / PR #103)**:
+  Tracked walls now remain eligible during candidate scanning at exact equality
+  and breach, allowing `OIWallEntryFilter` to classify defended touches versus
+  breach invalidation (`Price closed beyond wall strike (breach)`). The detector
+  resets tracking on subsequent evaluations. Additionally, replacement walls are
+  now evaluated immediately on the transition candle (snapshot 1) without
+  dropping interaction context, recording prior wall expiration on
+  `latest_expired_decision`.
+- **OI wall shift expiration (TASK-073 / PR #103)**: Tracked walls directly
+  replaced by another non-null bias (such as strike shifts) now emit an
+  authoritative `EXPIRED` decision on the transition candle with preserved
+  interaction and excursion telemetry, before the filter initializes and
+  tracks the replacement candidate.
+- **OI wall audit fixes (TASK-073 / PR #103)**: Wall identity changes now clear
+  candidate geometry before checking consumed walls, preventing alternating
+  CE/PE walls from sharing terminal state. A defended re-test only arms entry:
+  its next later candle must be bearish and close below the candidate low for
+  CE walls, or bullish and close above the candidate high for PE walls. Flat
+  candles cannot confirm; failed confirmations and cooldown/priority suppression
+  require a fresh re-test. Same-wall `EXPIRED` decisions preserve their status
+  and reason. Engine priority, cooldown, R:R, and fixed 16-point OI stops are
+  unchanged. Public filter and real-engine tests cover both directions/profiles.
+- **Historical replay waived (TASK-073)**: Per the human instruction and Project
+  Manager's 2026-09-05 routing, the 18-trade replay requirement is **SKIPPED**,
+  not passed. Removed the incomplete runner, fixture, runner-only tests and
+  unsupported performance report; these remain recoverable from Git history.
+  Existing historical studies are not reusable full-engine historical replay
+  runners for the other detectors. Acceptance uses unit and engine integration
+  tests; no profitability or avoided-loss claim is made. This supersedes the
+  replay gate in the original TASK-073 ADR/remediation plan only, not review,
+  QA, human merge approval, or deployment controls.
+- **OI wall entry lifecycle regressions (TASK-073)**: A secondary re-test now requires a candle later than the `RETEST_READY` transition, and a vanished active wall emits one `EXPIRED` telemetry context before returning to `NO_WALL`.
 - **BE-after-T1 trade accounting (MANM-66)**: `STOPPED_OUT_AT_BE` exits now
   preserve the actual entry fill while recording the locked entry-to-T1 P&L in
   `trade_analytics` and `ml_collection`. Discord alerts identify the locked T1

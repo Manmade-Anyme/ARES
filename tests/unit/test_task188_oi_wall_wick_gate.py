@@ -18,10 +18,11 @@ The wick ratio survives as a *confidence score* contributor
 Wick percentages below are the real candle geometry from the replayed trades.
 """
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from detectors.oi_wall import OIWallDetector
+from detectors.oi_wall_entry import OIWallEntryFilter
 from models import OHLCVCandle
 
 
@@ -64,6 +65,7 @@ class TestWickGateDropped(unittest.TestCase):
 
     def setUp(self):
         self.detector = OIWallDetector()
+        self.filter = OIWallEntryFilter()
 
     @patch('detectors.oi_wall.settings')
     def test_shallow_upper_wick_still_becomes_ce_candidate(self, mock_settings):
@@ -74,13 +76,10 @@ class TestWickGateDropped(unittest.TestCase):
             timestamp=datetime.now(),
             open=24075.0, high=24081.0, low=24063.0, close=24065.0, volume=1000,
         )
-        self.assertIsNone(
-            self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle, levels=[])
-        )
-        self.assertIsNotNone(
-            self.detector.pending_setup,
-            "shallow-wick wall touch must register a candidate once the wick gate is dropped",
-        )
+        bias = self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle, levels=[])
+        self.assertIsNotNone(bias)
+        decision = self.filter.update(bias=bias, candle=candle, levels=[])
+        self.assertEqual(self.filter.state, "INTERACTED")
 
     @patch('detectors.oi_wall.settings')
     def test_shallow_lower_wick_still_becomes_pe_candidate(self, mock_settings):
@@ -90,10 +89,10 @@ class TestWickGateDropped(unittest.TestCase):
             timestamp=datetime.now(),
             open=24025.0, high=24043.0, low=24019.0, close=24035.0, volume=1000,
         )
-        self.assertIsNone(
-            self.detector.update(spot=24020.0, full_chain=PE_WALL_CHAIN, candle=candle, levels=[])
-        )
-        self.assertIsNotNone(self.detector.pending_setup)
+        bias = self.detector.update(spot=24020.0, full_chain=PE_WALL_CHAIN, candle=candle, levels=[])
+        self.assertIsNotNone(bias)
+        decision = self.filter.update(bias=bias, candle=candle, levels=[])
+        self.assertEqual(self.filter.state, "INTERACTED")
 
     @patch('detectors.oi_wall.settings')
     def test_zero_wick_touch_still_becomes_candidate(self, mock_settings):
@@ -104,8 +103,10 @@ class TestWickGateDropped(unittest.TestCase):
             timestamp=datetime.now(),
             open=24085.0, high=24085.0, low=24065.0, close=24065.0, volume=1000,
         )
-        self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle, levels=[])
-        self.assertIsNotNone(self.detector.pending_setup)
+        bias = self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle, levels=[])
+        self.assertIsNotNone(bias)
+        decision = self.filter.update(bias=bias, candle=candle, levels=[])
+        self.assertEqual(self.filter.state, "INTERACTED")
 
 
 class TestConfirmationKept(unittest.TestCase):
@@ -113,43 +114,78 @@ class TestConfirmationKept(unittest.TestCase):
 
     def setUp(self):
         self.detector = OIWallDetector()
+        self.filter = OIWallEntryFilter()
 
+    @patch('detectors.oi_wall_entry.settings')
     @patch('detectors.oi_wall.settings')
-    def test_shallow_wick_candidate_fires_only_after_confirmation(self, mock_settings):
-        _settings(mock_settings)
+    def test_shallow_wick_candidate_fires_only_after_confirmation(self, mock_oi_settings, mock_entry_settings):
+        _settings(mock_oi_settings)
+        _settings(mock_entry_settings)
+        mock_entry_settings.oi_wall_persistence_snapshots = 1
+        mock_entry_settings.oi_wall_min_excursion_pts = 10.0
+        mock_entry_settings.oi_wall_retest_distance_pts = 20.0
+        t0 = datetime.now()
         candle1 = OHLCVCandle(
-            timestamp=datetime.now(),
+            timestamp=t0,
             open=24075.0, high=24081.0, low=24063.0, close=24065.0, volume=1000,
         )
-        self.assertIsNone(
-            self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle1, levels=[])
-        )
-        # Closes below candle1.low (24063) -> confirmed.
+        bias1 = self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle1, levels=[])
+        decision1 = self.filter.update(bias=bias1, candle=candle1, levels=[])
+        self.assertEqual(self.filter.state, "INTERACTED")
+
+        # Excursion candle (low 24050 is 50 pts away from 24100 -> RETEST_READY)
         candle2 = OHLCVCandle(
-            timestamp=datetime.now(),
+            timestamp=t0 + timedelta(minutes=1),
             open=24064.0, high=24066.0, low=24050.0, close=24055.0, volume=1000,
         )
-        signal = self.detector.update(spot=24055.0, full_chain=CE_WALL_CHAIN, candle=candle2, levels=[])
+        bias2 = self.detector.update(spot=24055.0, full_chain=CE_WALL_CHAIN, candle=candle2, levels=[])
+        decision2 = self.filter.update(bias=bias2, candle=candle2, levels=[])
+        self.assertEqual(self.filter.state, "RETEST_READY")
+
+        # Re-test candle tests wall and defends: high 24085 (within 20 pts of 24100), close 24075 (<= 24100)
+        candle3 = OHLCVCandle(
+            timestamp=t0 + timedelta(minutes=2),
+            open=24060.0, high=24085.0, low=24058.0, close=24075.0, volume=1000,
+        )
+        bias3 = self.detector.update(spot=24075.0, full_chain=CE_WALL_CHAIN, candle=candle3, levels=[])
+        decision3 = self.filter.update(bias=bias3, candle=candle3, levels=[])
+        self.assertEqual(decision3.status, "WAITING")
+        candle4 = OHLCVCandle(
+            timestamp=t0 + timedelta(minutes=3),
+            open=24075.0, high=24076.0, low=24050.0, close=24055.0, volume=1000,
+        )
+        bias4 = self.detector.update(spot=24055.0, full_chain=CE_WALL_CHAIN, candle=candle4, levels=[])
+        decision4 = self.filter.update(bias=bias4, candle=candle4, levels=[])
+        self.assertEqual(decision4.status, "QUALIFIED")
+        signal = self.detector.build_signal(decision4, candle4, spot=24055.0, levels=[])
         self.assertIsNotNone(signal, "confirmed shallow-wick candidate must fire")
         self.assertEqual(signal.option_type, "PE")
 
+    @patch('detectors.oi_wall_entry.settings')
     @patch('detectors.oi_wall.settings')
-    def test_unconfirmed_shallow_wick_candidate_does_not_fire(self, mock_settings):
-        _settings(mock_settings)
+    def test_unconfirmed_shallow_wick_candidate_does_not_fire(self, mock_oi_settings, mock_entry_settings):
+        _settings(mock_oi_settings)
+        _settings(mock_entry_settings)
+        mock_entry_settings.oi_wall_persistence_snapshots = 1
+        mock_entry_settings.oi_wall_min_excursion_pts = 10.0
+        mock_entry_settings.oi_wall_retest_distance_pts = 20.0
+        t0 = datetime.now()
         candle1 = OHLCVCandle(
-            timestamp=datetime.now(),
+            timestamp=t0,
             open=24075.0, high=24081.0, low=24063.0, close=24065.0, volume=1000,
         )
-        self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle1, levels=[])
-        # Closes back above candle1.low -> not confirmed, candidate expires.
+        bias1 = self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle1, levels=[])
+        decision1 = self.filter.update(bias=bias1, candle=candle1, levels=[])
+        self.assertEqual(self.filter.state, "INTERACTED")
+
+        # Re-test candle with spot still below wall (24095), but close reaches 24105 > strike 24100 -> breach -> EXPIRED
         candle2 = OHLCVCandle(
-            timestamp=datetime.now(),
-            open=24066.0, high=24075.0, low=24064.0, close=24070.0, volume=1000,
+            timestamp=t0 + timedelta(minutes=1),
+            open=24090.0, high=24110.0, low=24080.0, close=24105.0, volume=1000,
         )
-        self.assertIsNone(
-            self.detector.update(spot=24070.0, full_chain=CE_WALL_CHAIN, candle=candle2, levels=[])
-        )
-        self.assertIsNone(self.detector.pending_setup, "unconfirmed candidate must expire")
+        bias2 = self.detector.update(spot=24095.0, full_chain=CE_WALL_CHAIN, candle=candle2, levels=[])
+        decision2 = self.filter.update(bias=bias2, candle=candle2, levels=[])
+        self.assertEqual(decision2.status, "EXPIRED")
 
 
 class TestWritersHoldingRemoved(unittest.TestCase):
@@ -161,12 +197,14 @@ class TestWritersHoldingRemoved(unittest.TestCase):
     def test_candidate_forms_without_writers_holding_check(self, mock_settings):
         _settings(mock_settings)
         detector = OIWallDetector()
+        entry_filter = OIWallEntryFilter()
         candle = OHLCVCandle(
             timestamp=datetime.now(),
             open=24075.0, high=24081.0, low=24063.0, close=24065.0, volume=1000,
         )
-        detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle, levels=[])
-        self.assertIsNotNone(detector.pending_setup)
+        bias = detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle, levels=[])
+        decision = entry_filter.update(bias=bias, candle=candle, levels=[])
+        self.assertEqual(entry_filter.state, "INTERACTED")
 
     @patch('detectors.oi_wall.settings')
     def test_defended_reason_not_asserted_unconditionally(self, mock_settings):

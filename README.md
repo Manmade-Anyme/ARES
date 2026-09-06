@@ -132,14 +132,28 @@ ARES evaluates four distinct market phenomena in strict **short-circuit priority
 ### 2. 🧱 OI Wall Rejection (High Priority)
 
 * **Logic:** Identifies structural rejection at strikes with massive fresh Open Interest.
-* **Confirmation:** Stateful two-candle confirmation. A candle only becomes a candidate if it tests the wall with a genuine wick rejection ($\ge 40\%$ of candle range). The signal fires only once the following candle confirms by closing beyond the candidate candle's high/low; an unconfirmed candidate expires after one follow-up candle.
-* **Dynamic Targets:** Profit targets (T1/T2) are calculated dynamically based on structural support/resistance levels from PDH/PDL and option chain walls, ensuring a minimum 20-point target proximity filter and deterministic proximity-based target sorting (T1 is guaranteed to be the closer target).
+* **Bias versus entry (TASK-073):** `OIWallDetector.update()` identifies the wall and tracks consecutive-snapshot persistence; it does not emit a trade. `OIWallEntryFilter` requires initial interaction, sufficient persistence and a later favourable excursion before `RETEST_READY`. A secondary re-test must occur on a later candle than that transition.
+* **Confirmation:** A defended re-test arms a candidate. Its next later candle must close **below both its own open and the candidate low for a CE wall** (bearish), or **above both its own open and the candidate high for a PE wall** (bullish). Flat candles and equality with the candidate extreme do not confirm. Failed confirmation clears that candidate; a fresh defended touch may re-arm it. Wick rejection remains a confidence contributor, not a hard entry gate.
+* **State isolation:** Changing wall identity clears interaction/re-test geometry before checking session-consumed keys. An emitted wall cannot fire again in that session. Cooldown/priority suppression requires a fresh re-test. Breach or R:R expiration retains `EXPIRED` and its reason for subsequent evaluations of that same active wall. A disappearing active wall emits one `EXPIRED` context before `NO_WALL`.
+* **Risk policy:** The existing engine retains detector priority, cooldown and R:R checks. Central per-type levels set the initial stop to **16 spot points**, T1 to **25 points**, and T2 to the nearest eligible structural level beyond T1 or the **40-point** fallback. This entry-filter change does not widen stops or alter position-management rules.
 * **Dynamic Scoring (4-Point Matrix):**
   * `Wall Magnitude`: Size of the OI wall compared to thresholds.
   * `Active OI Building`: Net positive intraday OI build-up at the wall.
   * `Strike Penetration`: Extent to which price penetrated the strike before rejecting.
   * `Intraday Wick Rejection`: Technical wick signature showing immediate rejection.
 * **Confidence Rating:** Sets confidence to `HIGH` if the score is $\ge 2$, otherwise `MEDIUM`.
+
+**Validation and replay waiver (2026-09-05):** The human directed that historical
+replay be skipped if other trade types lack a reusable historical replay; Project
+Manager confirmed the waiver for TASK-073. Existing candle studies/recorded-trade
+analyses are not complete engine/OI replay fixtures for the other detectors.
+The 18-trade requirement is **SKIPPED, not PASS**. The incomplete TASK-073 runner,
+fixture, runner-only tests and unsupported report were retired (recoverable from
+Git history). Unit and real-engine integration tests now validate the entry
+behavior, including both profiles and CE/PE directions; they do not establish
+profitability or avoided stop-outs. This waiver supersedes only the replay gate
+in the TASK-073 ADR/remediation plan. Review, QA, human merge approval and
+deployment controls remain required.
 
 ---
 

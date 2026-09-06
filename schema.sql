@@ -25,6 +25,7 @@ CREATE TABLE ares_signals (
   strike integer,
   option_type text,
   reasons jsonb,
+  oi_wall_context jsonb, -- TASK-073: decoupled entry telemetry (NULL for non-OI-wall)
   timestamp timestamptz,
   created_at timestamptz default now()
 );

@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS ml_collection (
   -- Raw market snapshot for repro
   raw_candle jsonb,
   raw_atm_oi jsonb,
+  oi_wall_context jsonb, -- TASK-073: per-cycle wall context (NULL if no wall)
 
   created_at timestamptz default now()
 );
@@ -84,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_collection_timestamp ON ml_collection (timesta
 CREATE INDEX IF NOT EXISTS idx_ml_collection_signal ON ml_collection (signal_id);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_trade ON ml_collection (trade_id);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_outcome ON ml_collection (trade_outcome);
+CREATE INDEX IF NOT EXISTS idx_ml_collection_oi_wall_strike ON ml_collection ((oi_wall_context ->> 'wall_strike'));
 
 -- If you encounter RLS errors (Code 42501), run:
 -- ALTER TABLE ml_predictions DISABLE ROW LEVEL SECURITY;
