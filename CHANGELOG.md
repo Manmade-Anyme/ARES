@@ -16,6 +16,11 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **OI wall re-test timestamps and watchlist webhook failures (TASK-073 / PR #103)**:
+  Qualified OI-wall telemetry now records the armed re-test touch timestamp,
+  rather than the later confirmation-candle timestamp. Watchlist Discord
+  webhook responses now receive the same HTTP status validation as other alert
+  paths, so failed delivery is logged.
 - **OI wall nearest-wall selection & replacement telemetry persistence (TASK-073 / PR #103)**:
   Candidate selection in `detectors/oi_wall.py` now strictly chooses the
   qualifying strike closest to spot (`min abs(strike - spot)`), independent of

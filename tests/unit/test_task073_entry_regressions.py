@@ -163,6 +163,10 @@ def test_defended_retest_waits_for_later_confirmation(profile, side):
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
     decisions = [update(detector, entry_filter, side, i, p) for i, p in enumerate(GEOMETRY)]
     assert [decision.status for decision in decisions] == ["WAITING"] * 4 + ["QUALIFIED"]
+    assert (
+        decisions[-1].retest_timestamp,
+        decisions[-1].telemetry.retest_timestamp,
+    ) == (candle(side, 3, GEOMETRY[3]).timestamp,) * 2
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])

@@ -351,6 +351,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         )
         await send_watchlist_alert(bias, spot=24075.0)
         mock_client.post.assert_called_once()
+        mock_response.raise_for_status.assert_called_once()
         payload = mock_client.post.call_args.kwargs["json"]
         embed = payload["embeds"][0]
         self.assertIn("SETUP WATCH: OI_WALL_PERSISTENT", embed["title"])

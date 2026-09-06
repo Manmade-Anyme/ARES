@@ -269,7 +269,7 @@ class OIWallEntryFilter:
                     self._retest_candidate = None
                     if confirmed:
                         decision_id = f"{bias.wall_key}:{int(candle.timestamp.timestamp())}"
-                        self.retest_timestamp = candle.timestamp
+                        self.retest_timestamp = candidate.timestamp
                         self.state = "QUALIFIED"
                         telemetry = self._build_telemetry(bias, entry_status="QUALIFIED", filter_state="QUALIFIED", candle=candle)
                         return OIWallEntryDecision(
@@ -279,7 +279,7 @@ class OIWallEntryFilter:
                             bias=bias,
                             telemetry=telemetry,
                             trigger_price=candle.close,
-                            retest_timestamp=candle.timestamp,
+                            retest_timestamp=candidate.timestamp,
                             rejection_reason=None,
                             reference_price=strike,
                         )

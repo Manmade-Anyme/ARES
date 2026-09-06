@@ -191,7 +191,8 @@ async def send_watchlist_alert(bias: OIWallBias, spot: float) -> None:
 
     async with httpx.AsyncClient(timeout=5.0) as client:
         try:
-            await client.post(settings.discord_webhook_url, json=payload)
+            response = await client.post(settings.discord_webhook_url, json=payload)
+            response.raise_for_status()
         except Exception as e:
             print(f"[-] Alerts: Failed to send watchlist alert: {e}")
 
