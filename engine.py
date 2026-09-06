@@ -86,6 +86,13 @@ class AresEngine:
         """Latest decision that has expired/invalidated."""
         return self.oi_wall_filter.latest_expired_decision
 
+    @property
+    def latest_expired_oi_wall_context(self) -> Optional[Dict[str, Any]]:
+        """Latest serialized telemetry for a decision expired during replacement or transition."""
+        if self.oi_wall_filter.latest_expired_decision:
+            return self.oi_wall_filter.latest_expired_decision.telemetry.to_dict()
+        return None
+
     def tick(
         self,
         candle: OHLCVCandle,
@@ -161,11 +168,18 @@ class AresEngine:
                 candle=candle,
                 levels=levels,
             )
-            self._latest_oi_wall_context = (
+            ctx = (
                 oi_wall_decision.telemetry.to_dict()
                 if oi_wall_decision.status != "NO_WALL"
                 else None
             )
+            if self.oi_wall_filter.latest_expired_decision is not None:
+                expired_dict = self.oi_wall_filter.latest_expired_decision.telemetry.to_dict()
+                if ctx is not None:
+                    ctx.setdefault("expired_wall", expired_dict)
+                else:
+                    ctx = expired_dict
+            self._latest_oi_wall_context = ctx
 
             oi_wall_candidate: Optional[AresSignal] = None
             if oi_wall_decision.status == "QUALIFIED":

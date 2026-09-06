@@ -182,12 +182,13 @@ class OIWallTelemetry:
     reference_price: Optional[float]
     vwap: Optional[float]                 # Intraday VWAP from candle context when available
     opening_range: Optional[Dict[str, Optional[float]]]
+    expired_wall: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         if self.bias is None or self.entry_status == "NO_WALL":
             return {}
         from storage import to_utc_iso
-        return {
+        d = {
             "wall_key": self.bias.wall_key,
             "wall_strike": self.bias.wall_strike,
             "wall_option_type": self.bias.wall_option_type,
@@ -209,6 +210,9 @@ class OIWallTelemetry:
             "vwap": self.vwap,
             "opening_range": self.opening_range,
         }
+        if self.expired_wall is not None:
+            d["expired_wall"] = self.expired_wall
+        return d
 
 
 @dataclass(frozen=True)

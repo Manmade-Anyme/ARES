@@ -16,6 +16,15 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **OI wall nearest-wall selection & replacement telemetry persistence (TASK-073 / PR #103)**:
+  Candidate selection in `detectors/oi_wall.py` now strictly chooses the
+  qualifying strike closest to spot (`min abs(strike - spot)`), independent of
+  chain order. Inter-side selection is determined strictly by distance to spot
+  (`ce_dist <= pe_dist`), preventing stale tracked walls from overriding closer
+  opposite-side walls. In `engine.py` and `detectors/oi_wall_entry.py`, prior
+  wall expiration recorded during replacement is now embedded in
+  `latest_oi_wall_context["expired_wall"]` and exposed via
+  `engine.latest_expired_oi_wall_context` for audit and ML snapshot persistence.
 - **OI wall breach evaluation & transition candle processing (TASK-073 / PR #103)**:
   Tracked walls now remain eligible during candidate scanning at exact equality
   and breach, allowing `OIWallEntryFilter` to classify defended touches versus

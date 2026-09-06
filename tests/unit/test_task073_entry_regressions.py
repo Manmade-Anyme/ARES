@@ -257,3 +257,103 @@ def test_real_engine_confirmation_keeps_central_risk_policy(profile, side):
             abs(signal.target_1 - signal.trigger_price), abs(signal.target_2 - signal.trigger_price)) == (
         SetupType.OI_WALL_REJECTION, 16.0, 25.0, 40.0,
     )
+
+
+def test_nearest_wall_selected_across_sides_when_spot_closer_to_opposite_side(profile):
+    detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
+    # Step 1: Track CE:24100 when spot is 24080 (ce_dist = 20)
+    c1 = OHLCVCandle(
+        timestamp=datetime(2026, 9, 5, 9, 30),
+        open=24075.0, high=24085.0, low=24070.0, close=24080.0, volume=1000,
+    )
+    ch1 = [
+        {"strike": 24100, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0},
+    ]
+    bias1 = detector.update(c1.close, ch1, c1, [])
+    decision1 = entry_filter.update(bias1, c1, [])
+    assert detector.current_wall_key == "CE:24100"
+    assert decision1.wall_key == "CE:24100"
+
+    # Step 2: Spot falls to 24010.
+    # Now both CE:24100 (dist 90) and PE:24000 (dist 10) qualify.
+    c2 = OHLCVCandle(
+        timestamp=datetime(2026, 9, 5, 9, 31),
+        open=24020.0, high=24025.0, low=24005.0, close=24010.0, volume=1000,
+    )
+    ch2 = [
+        {"strike": 24100, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0},
+        {"strike": 24000, "ce_oi": 100000, "ce_oi_change_pct": 0.0, "pe_oi": 20000000, "pe_oi_change_pct": 25.0},
+    ]
+    bias2 = detector.update(c2.close, ch2, c2, [])
+    # Distance to PE:24000 is 10, distance to CE:24100 is 90 -> PE:24000 must be selected
+    assert bias2 is not None
+    assert bias2.wall_key == "PE:24000"
+    decision2 = entry_filter.update(bias2, c2, [])
+    assert decision2.wall_key == "PE:24000"
+    assert entry_filter.latest_expired_decision is not None
+    assert entry_filter.latest_expired_decision.wall_key == "CE:24100"
+    assert entry_filter.latest_expired_decision.status == "EXPIRED"
+
+
+def test_replacement_selection_independent_of_chain_order(profile):
+    c = OHLCVCandle(
+        timestamp=datetime(2026, 9, 5, 9, 30),
+        open=24075.0, high=24085.0, low=24070.0, close=24080.0, volume=1000,
+    )
+    # Qualifying CE strikes at 24300 (dist 220) and 24200 (dist 120)
+    row_24300 = {"strike": 24300, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0}
+    row_24200 = {"strike": 24200, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0}
+
+    # Order 1: 24300 first, 24200 second
+    detector1 = OIWallDetector()
+    bias1 = detector1.update(c.close, [row_24300, row_24200], c, [])
+    assert bias1 is not None
+    assert bias1.wall_key == "CE:24200"
+
+    # Order 2: 24200 first, 24300 second
+    detector2 = OIWallDetector()
+    bias2 = detector2.update(c.close, [row_24200, row_24300], c, [])
+    assert bias2 is not None
+    assert bias2.wall_key == "CE:24200"
+
+
+def test_engine_persists_expired_wall_telemetry_on_replacement(profile):
+    engine = AresEngine()
+    # Candle 1: Track CE:24100
+    c1 = OHLCVCandle(
+        timestamp=datetime(2026, 9, 5, 9, 30),
+        open=24075.0, high=24085.0, low=24070.0, close=24080.0, volume=1000,
+    )
+    ch1 = [
+        {"strike": 24100, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0},
+    ]
+    atm1 = ATMStrikes(c1.close, *[OptionRow(24100, opt, 100.0, 12.0, 100000, 100000, 0.0) for opt in ("CE", "PE")])
+    engine.tick(c1, ch1, atm1, 0.0, [])
+    assert engine.latest_oi_wall_context is not None
+    assert engine.latest_oi_wall_context["wall_key"] == "CE:24100"
+    assert engine.latest_oi_wall_context.get("expired_wall") is None
+
+    # Candle 2: Wall shifts to PE:24000
+    c2 = OHLCVCandle(
+        timestamp=datetime(2026, 9, 5, 9, 31),
+        open=24020.0, high=24025.0, low=24005.0, close=24010.0, volume=1000,
+    )
+    ch2 = [
+        {"strike": 24100, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0},
+        {"strike": 24000, "ce_oi": 100000, "ce_oi_change_pct": 0.0, "pe_oi": 20000000, "pe_oi_change_pct": 25.0},
+    ]
+    atm2 = ATMStrikes(c2.close, *[OptionRow(24000, opt, 100.0, 12.0, 100000, 100000, 0.0) for opt in ("CE", "PE")])
+    engine.tick(c2, ch2, atm2, 0.0, [])
+
+    ctx = engine.latest_oi_wall_context
+    assert ctx is not None
+    assert ctx["wall_key"] == "PE:24000"
+    assert "expired_wall" in ctx
+    expired = ctx["expired_wall"]
+    assert expired["wall_key"] == "CE:24100"
+    assert expired["entry_status"] == "EXPIRED"
+    assert "replaced" in expired["rejection_reason"].lower()
+
+    assert engine.latest_expired_decision is not None
+    assert engine.latest_expired_decision.wall_key == "CE:24100"
+    assert engine.latest_expired_oi_wall_context == expired

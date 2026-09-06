@@ -63,9 +63,12 @@ class OIWallEntryFilter:
         filter_state: str,
         candle: OHLCVCandle,
         rejection_reason: Optional[str] = None,
+        expired_wall: Optional[Dict[str, Any]] = None,
     ) -> OIWallTelemetry:
         raw_vwap = getattr(candle, "vwap", None)
         vwap = float(raw_vwap) if isinstance(raw_vwap, (int, float)) and raw_vwap > 0 else None
+        if expired_wall is None and self.latest_expired_decision is not None:
+            expired_wall = self.latest_expired_decision.telemetry.to_dict()
         return OIWallTelemetry(
             bias=bias,
             entry_status=entry_status,
@@ -78,6 +81,7 @@ class OIWallEntryFilter:
             reference_price=bias.wall_strike if bias else None,
             vwap=vwap,
             opening_range=None,
+            expired_wall=expired_wall,
         )
 
     def update(
