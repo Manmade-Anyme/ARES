@@ -85,10 +85,10 @@ def test_return_to_consumed_wall_clears_other_wall_geometry(profile, side):
     other = "PE" if side == "CE" else "CE"
     for index, prices in enumerate(GEOMETRY[:4]):
         update(detector, entry_filter, other, 5 + index, prices)
-    expired = update(detector, entry_filter, side, 9, GEOMETRY[0])
-    assert expired.status == "EXPIRED"
-    assert expired.wall_key == f"{other}:24100"
-    decision = update(detector, entry_filter, side, 10, GEOMETRY[0])
+    decision = update(detector, entry_filter, side, 9, GEOMETRY[0])
+    assert entry_filter.latest_expired_decision is not None
+    assert entry_filter.latest_expired_decision.status == "EXPIRED"
+    assert entry_filter.latest_expired_decision.wall_key == f"{other}:24100"
     assert decision.status == "CONSUMED"
     assert (
         decision.telemetry.initial_interaction_timestamp,
@@ -104,17 +104,58 @@ def test_tracked_wall_emits_expiration_on_replacement_wall(profile, side):
         update(detector, entry_filter, side, index, prices)
     assert entry_filter.state == "RETEST_READY"
     other = "PE" if side == "CE" else "CE"
-    expired = update(detector, entry_filter, other, 3, GEOMETRY[0])
+    decision = update(detector, entry_filter, other, 3, GEOMETRY[0])
+    expired = entry_filter.latest_expired_decision
+    assert expired is not None
     assert expired.status == "EXPIRED"
     assert expired.wall_key == f"{side}:24100"
     assert expired.telemetry.filter_state == "EXPIRED"
     assert expired.telemetry.initial_interaction_timestamp is not None
     assert expired.telemetry.favourable_excursion_pts == 55.0
     assert "replaced" in expired.rejection_reason.lower()
+    assert decision.status == "WAITING"
+    assert decision.wall_key == f"{other}:24100"
+    assert entry_filter.state == "INTERACTED"
     next_decision = update(detector, entry_filter, other, 4, GEOMETRY[0])
     assert next_decision.status == "WAITING"
     assert next_decision.wall_key == f"{other}:24100"
+
+
+@pytest.mark.parametrize("side", ["CE", "PE"])
+def test_tracked_wall_at_exact_equality_evaluated_as_defended(profile, side):
+    detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
+    # Step 1: Establish tracking on candle 0 away from the wall strike
+    update(detector, entry_filter, side, 0, GEOMETRY[0])
+    assert detector.current_wall_key == f"{side}:24100"
     assert entry_filter.state == "INTERACTED"
+
+    # Step 2: Price reaches exact equality at strike (offset 0: close == strike)
+    equality_decision = update(detector, entry_filter, side, 1, (-10, 0, -15, 0))
+    assert detector.current_wall_key == f"{side}:24100"
+    assert equality_decision.status == "WAITING"
+    assert equality_decision.wall_key == f"{side}:24100"
+    assert equality_decision.telemetry.filter_state == "INTERACTED"
+    assert entry_filter.state == "INTERACTED"
+
+
+@pytest.mark.parametrize("side", ["CE", "PE"])
+def test_tracked_wall_breach_evaluates_and_resets_detector(profile, side):
+    detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
+    # Step 1: Establish tracking on candle 0
+    update(detector, entry_filter, side, 0, GEOMETRY[0])
+    assert detector.current_wall_key == f"{side}:24100"
+
+    # Step 2: Price closes beyond strike (breach: close offset +5)
+    breach_decision = update(detector, entry_filter, side, 1, (-5, 10, -5, 5))
+    assert breach_decision.status == "EXPIRED"
+    assert breach_decision.wall_key == f"{side}:24100"
+    assert "breach" in breach_decision.rejection_reason.lower()
+    assert detector.current_wall_key is None
+
+    # Step 3: Next candle - detector does not force breached strike
+    c3 = candle(side, 2, (-5, 10, -5, 5))
+    bias3 = detector.update(c3.close, chain(side), c3, [])
+    assert bias3 is None or bias3.wall_key != f"{side}:24100"
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])

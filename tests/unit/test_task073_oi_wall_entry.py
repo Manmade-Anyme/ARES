@@ -283,22 +283,23 @@ class TestOIWallEntryFilter(unittest.TestCase):
         self.filter.update(bias=self._make_ce_bias(strike=24100.0, persistence=1), candle=candle1, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
 
-        # Shift to 24150 CE: prior wall expires first
+        # Shift to 24150 CE on transition candle:
+        # Prior wall expiration is recorded on latest_expired_decision,
+        # and replacement wall is evaluated on its first candle without dropping context.
         t1 = self.t0 + timedelta(minutes=1)
-        candle2 = OHLCVCandle(timestamp=t1, open=24075.0, high=24080.0, low=24070.0, close=24075.0, volume=1000)
+        candle2 = OHLCVCandle(timestamp=t1, open=24075.0, high=24135.0, low=24070.0, close=24125.0, volume=1000)
         decision2 = self.filter.update(bias=self._make_ce_bias(strike=24150.0, persistence=1), candle=candle2, levels=[])
-        self.assertEqual(decision2.status, "EXPIRED")
-        self.assertEqual(decision2.wall_key, "CE:24100")
-        self.assertEqual(self.filter.state, "EXPIRED")
-        self.assertIn("replaced", decision2.rejection_reason.lower())
+        # Prior wall expired recorded
+        self.assertIsNotNone(self.filter.latest_expired_decision)
+        self.assertEqual(self.filter.latest_expired_decision.status, "EXPIRED")
+        self.assertEqual(self.filter.latest_expired_decision.wall_key, "CE:24100")
+        self.assertIn("replaced", self.filter.latest_expired_decision.rejection_reason.lower())
 
-        # Next candle: replacement wall begins tracking cleanly
-        t2 = self.t0 + timedelta(minutes=2)
-        candle3 = OHLCVCandle(timestamp=t2, open=24075.0, high=24080.0, low=24070.0, close=24075.0, volume=1000)
-        decision3 = self.filter.update(bias=self._make_ce_bias(strike=24150.0, persistence=2), candle=candle3, levels=[])
-        self.assertEqual(decision3.status, "WAITING")
-        self.assertEqual(self.filter.state, "TRACKING")
-        self.assertIsNone(self.filter.initial_interaction_timestamp)
+        # Replacement wall evaluated on snapshot 1 (high 24135 >= 24150 - 20 -> INTERACTED)
+        self.assertEqual(decision2.status, "WAITING")
+        self.assertEqual(decision2.wall_key, "CE:24150")
+        self.assertEqual(self.filter.state, "INTERACTED")
+        self.assertEqual(self.filter.initial_interaction_timestamp, t1)
         self.assertEqual(self.filter.current_wall_key, "CE:24150")
 
 

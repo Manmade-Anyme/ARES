@@ -68,29 +68,54 @@ class OIWallDetector:
         for row in full_chain:
             strike = float(row["strike"])
 
-            # CE Walls (Resistance, above spot)
-            if strike > spot:
+            # CE Walls (Resistance, above spot, or actively tracked CE wall)
+            is_tracked_ce = (
+                self.current_wall_key is not None
+                and self.current_wall_key == f"CE:{int(strike)}"
+            )
+            if strike > spot or is_tracked_ce:
                 ce_oi = row["ce_oi"]
                 ce_oi_change_pct = row["ce_oi_change_pct"]
                 if ce_oi > min_oi and ce_oi_change_pct > min_oi_change:
-                    if nearest_ce_wall is None or strike < float(nearest_ce_wall["strike"]):
+                    if nearest_ce_wall is None:
                         nearest_ce_wall = row
+                    elif is_tracked_ce:
+                        nearest_ce_wall = row
+                    elif not (self.current_wall_key and self.current_wall_key.startswith("CE:")):
+                        if strike < float(nearest_ce_wall["strike"]):
+                            nearest_ce_wall = row
 
-            # PE Walls (Support, below spot)
-            elif strike < spot:
+            # PE Walls (Support, below spot, or actively tracked PE wall)
+            is_tracked_pe = (
+                self.current_wall_key is not None
+                and self.current_wall_key == f"PE:{int(strike)}"
+            )
+            if strike < spot or is_tracked_pe:
                 pe_oi = row["pe_oi"]
                 pe_oi_change_pct = row["pe_oi_change_pct"]
                 if pe_oi > min_oi and pe_oi_change_pct > min_oi_change:
-                    if nearest_pe_wall is None or strike > float(nearest_pe_wall["strike"]):
+                    if nearest_pe_wall is None:
                         nearest_pe_wall = row
+                    elif is_tracked_pe:
+                        nearest_pe_wall = row
+                    elif not (self.current_wall_key and self.current_wall_key.startswith("PE:")):
+                        if strike > float(nearest_pe_wall["strike"]):
+                            nearest_pe_wall = row
 
         # Pick the nearest qualifying wall to spot
         selected_wall = None
         wall_option_type = None
         if nearest_ce_wall and nearest_pe_wall:
-            ce_dist = float(nearest_ce_wall["strike"]) - spot
-            pe_dist = spot - float(nearest_pe_wall["strike"])
-            if ce_dist <= pe_dist:
+            ce_dist = abs(float(nearest_ce_wall["strike"]) - spot)
+            pe_dist = abs(spot - float(nearest_pe_wall["strike"]))
+            # If one is the actively tracked wall, prioritize it for evaluation
+            if self.current_wall_key == f"CE:{int(float(nearest_ce_wall['strike']))}":
+                selected_wall = nearest_ce_wall
+                wall_option_type = "CE"
+            elif self.current_wall_key == f"PE:{int(float(nearest_pe_wall['strike']))}":
+                selected_wall = nearest_pe_wall
+                wall_option_type = "PE"
+            elif ce_dist <= pe_dist:
                 selected_wall = nearest_ce_wall
                 wall_option_type = "CE"
             else:
@@ -129,6 +154,8 @@ class OIWallDetector:
             relative_percentile = None
 
         # Persistence tracking
+        breached = (spot > strike) if wall_option_type == "CE" else (spot < strike)
+
         if self.current_wall_key == wall_key:
             self.persistence_snapshots += 1
             self.last_seen = candle.timestamp
@@ -148,7 +175,7 @@ class OIWallDetector:
             f"Persistence: {self.persistence_snapshots} snapshot(s)",
         )
 
-        return OIWallBias(
+        bias = OIWallBias(
             wall_key=wall_key,
             wall_strike=strike,
             wall_option_type=wall_option_type,
@@ -167,6 +194,14 @@ class OIWallDetector:
             favourable_excursion_pts=0.0,
             reasons=reasons,
         )
+
+        if breached:
+            self.current_wall_key = None
+            self.persistence_snapshots = 0
+            self.first_seen = None
+            self.last_seen = None
+
+        return bias
 
     def _evaluate_confidence(
         self,

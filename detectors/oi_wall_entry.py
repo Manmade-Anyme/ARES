@@ -42,6 +42,7 @@ class OIWallEntryFilter:
         self.rejection_reason: Optional[str] = None
         self._latest_bias: Optional[OIWallBias] = None
         self.latest_watchlist_event: Optional[OIWallBias] = None
+        self.latest_expired_decision: Optional[OIWallEntryDecision] = None
         self._watchlist_emitted_keys: Set[str] = set()
 
     def _reset_candidate(self) -> None:
@@ -86,6 +87,7 @@ class OIWallEntryFilter:
         levels: List[ResistanceLevel],
     ) -> OIWallEntryDecision:
         self.latest_watchlist_event = None
+        self.latest_expired_decision = None
 
         if bias is None:
             if self.state not in ("NO_WALL", "CONSUMED", "EXPIRED") and self._latest_bias:
@@ -130,25 +132,19 @@ class OIWallEntryFilter:
             )
 
         # If wall identity changed while a previous wall was actively tracked,
-        # emit EXPIRED for the prior wall before tracking the replacement candidate.
+        # record EXPIRED decision for the prior wall and initialize + evaluate the replacement.
         if self.current_wall_key != bias.wall_key:
             if self.state not in ("NO_WALL", "CONSUMED", "EXPIRED") and self._latest_bias:
                 previous_bias = self._latest_bias
-                self.state = "EXPIRED"
-                self.rejection_reason = "Wall replaced by another qualifying strike"
+                reason = "Wall replaced by another qualifying strike"
                 telemetry = self._build_telemetry(
                     previous_bias,
                     entry_status="EXPIRED",
                     filter_state="EXPIRED",
                     candle=candle,
-                    rejection_reason=self.rejection_reason,
+                    rejection_reason=reason,
                 )
-                self._reset_candidate()
-                self.state = "EXPIRED"
-                self.rejection_reason = "Wall replaced by another qualifying strike"
-                self.current_wall_key = None
-                self._latest_bias = None
-                return OIWallEntryDecision(
+                self.latest_expired_decision = OIWallEntryDecision(
                     status="EXPIRED",
                     wall_key=previous_bias.wall_key,
                     decision_id=None,
@@ -156,7 +152,7 @@ class OIWallEntryFilter:
                     telemetry=telemetry,
                     trigger_price=None,
                     retest_timestamp=None,
-                    rejection_reason=self.rejection_reason,
+                    rejection_reason=reason,
                     reference_price=previous_bias.wall_strike,
                 )
 

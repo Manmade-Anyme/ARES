@@ -16,6 +16,14 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **OI wall breach evaluation & transition candle processing (TASK-073 / PR #103)**:
+  Tracked walls now remain eligible during candidate scanning at exact equality
+  and breach, allowing `OIWallEntryFilter` to classify defended touches versus
+  breach invalidation (`Price closed beyond wall strike (breach)`). The detector
+  resets tracking on subsequent evaluations. Additionally, replacement walls are
+  now evaluated immediately on the transition candle (snapshot 1) without
+  dropping interaction context, recording prior wall expiration on
+  `latest_expired_decision`.
 - **OI wall shift expiration (TASK-073 / PR #103)**: Tracked walls directly
   replaced by another non-null bias (such as strike shifts) now emit an
   authoritative `EXPIRED` decision on the transition candle with preserved

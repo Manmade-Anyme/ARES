@@ -79,6 +79,11 @@ class AresEngine:
         """Latest watchlist event emitted when an OI wall becomes RETEST_READY."""
         return self.oi_wall_filter.latest_watchlist_event
 
+    @property
+    def latest_expired_decision(self) -> Optional[OIWallEntryDecision]:
+        """Latest decision that has expired/invalidated."""
+        return self.oi_wall_filter.latest_expired_decision
+
     def tick(
         self,
         candle: OHLCVCandle,
