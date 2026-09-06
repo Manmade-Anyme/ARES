@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta
+from typing import get_type_hints
 from unittest.mock import MagicMock, patch
 
 from config import settings
@@ -16,6 +17,11 @@ class TestEngineOIWallEntry(unittest.TestCase):
 
     def tearDown(self):
         settings.apply_profile(NON_EXPIRY_CONFIG)
+
+    def test_latest_expired_decision_annotation_resolves(self):
+        hints = get_type_hints(AresEngine.latest_expired_decision.fget)
+
+        self.assertEqual(hints["return"], OIWallEntryDecision | None)
 
     def _make_candle(self, close=24050.0):
         candle = MagicMock(spec=OHLCVCandle)
