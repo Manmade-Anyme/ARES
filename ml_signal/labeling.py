@@ -11,6 +11,9 @@ def classify_ares_outcome(result_state: str, t1_is_win: bool = True) -> Optional
     if result_state in ("T1_HIT", "STOPPED_OUT_AT_BE"):
         return 1 if t1_is_win else 0
     if result_state in ("SL_HIT", "STOPPED_OUT", "TIME_STOP"):
+        # Note: TIME_STOP is retained strictly as a legacy loss (0) for historical
+        # ml_collection records during offline retraining. No new TIME_STOP
+        # outcomes are emitted by live runtime trades.
         return 0
     return None
 

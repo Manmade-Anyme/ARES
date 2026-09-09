@@ -68,7 +68,7 @@ def test_label_from_ares_outcome():
     assert df_loss.iloc[2]["label"] == 0
     assert df_loss.iloc[2]["outcome"] == "T1_HIT"
     
-    # TIME_STOP -> loss
+    # TIME_STOP -> loss (retained for historical data)
     assert df_loss.iloc[3]["label"] == 0
     assert df_loss.iloc[3]["outcome"] == "TIME_STOP"
 
@@ -118,3 +118,7 @@ def test_build_real_outcome_frame_regression():
 
 def test_stopped_out_at_be_keeps_the_existing_t1_win_label():
     assert classify_ares_outcome("STOPPED_OUT_AT_BE") == 1
+
+
+def test_legacy_time_stop_is_mapped_as_loss_for_retraining():
+    assert classify_ares_outcome("TIME_STOP") == 0

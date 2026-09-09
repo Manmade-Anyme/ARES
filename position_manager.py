@@ -105,33 +105,6 @@ class PositionManager:
         except Exception as e:
             print(f"Failed to log trade to Analytics: {e}")
 
-    def _apply_time_stop(self, trade: Dict[str, Any]) -> None:
-        """
-        Time-stop (TASK-171): an OPEN trade that hasn't reached T1 within
-        `time_stop_minutes` gets its SL tightened to entry (risk-free). The
-        trade stays alive — if momentum resumes it can still run to T1/T2 —
-        but a no-progress drift now exits near breakeven instead of full SL.
-        Exits caused by this tightening are labeled TIME_STOP, not T1_HIT.
-        """
-        created_at_str = trade.get("created_at")
-        if not created_at_str or trade["state"] != "OPEN":
-            return
-        try:
-            created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-            age_minutes = (datetime.now(timezone.utc) - created_at).total_seconds() / 60.0
-        except Exception:
-            return
-        if age_minutes < settings.time_stop_minutes:
-            return
-
-        entry = trade["entry_price"]
-        if trade["direction"] == "BULLISH" and trade["stop_loss"] < entry:
-            trade["stop_loss"] = entry
-            trade["_time_stopped"] = True
-        elif trade["direction"] == "BEARISH" and trade["stop_loss"] > entry:
-            trade["stop_loss"] = entry
-            trade["_time_stopped"] = True
-
     async def update_trades(
         self,
         spot_price: float,
@@ -169,8 +142,6 @@ class PositionManager:
             if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
                 continue
 
-            self._apply_time_stop(trade)
-
             state_changed = False
             update_type = None
             event_price = spot_price
@@ -188,7 +159,6 @@ class PositionManager:
                 elif trade["state"] == "OPEN" and high >= trade["target_1"]:
                     trade["state"] = "T1_HIT"
                     trade["stop_loss"] = trade["entry_price"]
-                    trade.pop("_time_stopped", None)  # Real T1: no longer a time-stop exit
                     state_changed = True
                     update_type = "T1_HIT"
                     event_price = trade["target_1"]
@@ -197,9 +167,7 @@ class PositionManager:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     event_price = trade["stop_loss"]
-                    if trade.get("_time_stopped"):
-                        update_type = "TIME_STOP"  # Breakeven exit forced by time-stop, not a T1 win
-                    elif trade["stop_loss"] == trade["entry_price"]:
+                    if trade["stop_loss"] == trade["entry_price"]:
                         update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
                     else:
                         update_type = "SL_HIT"
@@ -214,7 +182,6 @@ class PositionManager:
                 elif trade["state"] == "OPEN" and low <= trade["target_1"]:
                     trade["state"] = "T1_HIT"
                     trade["stop_loss"] = trade["entry_price"]
-                    trade.pop("_time_stopped", None)  # Real T1: no longer a time-stop exit
                     state_changed = True
                     update_type = "T1_HIT"
                     event_price = trade["target_1"]
@@ -223,9 +190,7 @@ class PositionManager:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     event_price = trade["stop_loss"]
-                    if trade.get("_time_stopped"):
-                        update_type = "TIME_STOP"  # Breakeven exit forced by time-stop, not a T1 win
-                    elif trade["stop_loss"] == trade["entry_price"]:
+                    if trade["stop_loss"] == trade["entry_price"]:
                         update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
                     else:
                         update_type = "SL_HIT"

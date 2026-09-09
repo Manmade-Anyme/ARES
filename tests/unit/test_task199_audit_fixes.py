@@ -132,7 +132,6 @@ UNTRAILED = {"state": "ACTIVE", "stop_loss": 23950.0, "entry_price": 24000.0}
         ("T2_HIT", TRAILED, "Target 2 Reached! Trade Closed with Full Profit."),
         ("STOPPED_OUT_AT_BE", TRAILED,
          "Trailing Stop Loss Hit at Entry. T1 Profit Locked; Trade Closed."),
-        ("TIME_STOP", TRAILED, "Time-Stop: SL Trailed to Entry Hit. Trade Closed."),
         # Legacy pre-TASK-198 rows: SL_HIT still has to describe both shapes.
         ("SL_HIT", TRAILED, "Trailing Stop Loss Hit at Entry. Trade Closed."),
         ("SL_HIT", UNTRAILED, "Stop Loss Hit. Trade Closed."),

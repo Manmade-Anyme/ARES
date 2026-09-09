@@ -259,7 +259,7 @@ class AnalyticsLogger:
                 score = 2
             elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE"):
                 score = 1
-            elif final_state in ("SL_HIT", "TIME_STOP", "STOPPED_OUT"):
+            elif final_state in ("SL_HIT", "STOPPED_OUT"):
                 score = 0
 
             update_data = {
