@@ -74,7 +74,7 @@ We will completely remove the automatic, timer-driven break-even stop feature fr
 ### Observability
 - **Alerts**: Remove `TIME_STOP` from alert definitions. Existing alerts for other exit types remain unchanged.
 - **Scoring**: Remove `TIME_STOP` from trade scoring logic. Scoring will no longer penalize or reward based on this exit type.
-- **ML Labeling**: Remove `TIME_STOP` from ML label generation. Historical labels remain unchanged; new labels will not include this category.
+- **ML Labeling**: Remove `TIME_STOP` from live runtime trade outcome generation. Historical records in `ml_collection` retain `TIME_STOP` mapped to `0` (loss) in `classify_ares_outcome` to ensure negative examples are preserved during offline retraining without introducing label bias.
 
 ### Rollback Strategy
 - If the removal causes unexpected issues, the feature can be restored by reverting code changes and re-adding `time_stop_minutes` to configuration surfaces.
