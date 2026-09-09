@@ -10,7 +10,7 @@ def classify_ares_outcome(result_state: str, t1_is_win: bool = True) -> Optional
         return 1
     if result_state in ("T1_HIT", "STOPPED_OUT_AT_BE"):
         return 1 if t1_is_win else 0
-    if result_state in ("SL_HIT", "STOPPED_OUT", "TIME_STOP"):
+    if result_state in ("SL_HIT", "STOPPED_OUT"):
         return 0
     return None
 

@@ -32,15 +32,6 @@ def test_label_from_ares_outcome():
             "oi_data": {}
         },
         {
-            "entry_timestamp": "2026-07-30T10:15:00Z",
-            "entry_price": 24030.0,
-            "setup_type": "CONTINUATION",
-            "direction": "LONG",
-            "result_state": "TIME_STOP",
-            "market_context": {},
-            "oi_data": {}
-        },
-        {
             "entry_timestamp": "2026-07-30T10:20:00Z",
             "entry_price": 24040.0,
             "setup_type": "CONTINUATION",
@@ -51,10 +42,10 @@ def test_label_from_ares_outcome():
         }
     ]
 
-    # Testing with t1_is_win=False (so T1_HIT and TIME_STOP count as losses/0)
+    # Testing with t1_is_win=False (so T1_HIT counts as loss/0)
     df_loss = label_from_ares_outcome(records, t1_is_win=False)
     
-    assert len(df_loss) == 4
+    assert len(df_loss) == 3
     
     # T2_HIT -> win
     assert df_loss.iloc[0]["label"] == 1
@@ -67,15 +58,10 @@ def test_label_from_ares_outcome():
     # T1_HIT -> loss
     assert df_loss.iloc[2]["label"] == 0
     assert df_loss.iloc[2]["outcome"] == "T1_HIT"
-    
-    # TIME_STOP -> loss
-    assert df_loss.iloc[3]["label"] == 0
-    assert df_loss.iloc[3]["outcome"] == "TIME_STOP"
 
     # Testing with t1_is_win=True (now the DEFAULT)
     df_t1_win = label_from_ares_outcome(records)
     assert df_t1_win.iloc[2]["label"] == 1  # T1_HIT is win
-    assert df_t1_win.iloc[3]["label"] == 0  # TIME_STOP is still loss
 
 def test_build_real_outcome_frame_regression():
     from ml_signal.dataset import build_real_outcome_frame

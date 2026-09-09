@@ -125,7 +125,6 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
     @patch('position_manager.settings')
     async def test_previous_day_trade_continues_to_exit(self, mock_settings, mock_send_trade_update):
         """A previous-day OPEN trade must keep being evaluated until T1/T2/SL."""
-        mock_settings.time_stop_minutes = 45
         yesterday_str = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         self.mock_client.execute_mock.return_value.data = [{
             "id": "trade-carryover",
@@ -282,12 +281,12 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
-    async def test_time_stop_tightens_open_trade_to_breakeven(self, mock_settings, mock_send_trade_update):
-        """TASK-171: OPEN trade with no T1 progress after time_stop_minutes gets SL moved to entry."""
-        mock_settings.time_stop_minutes = 45
-        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=46)).isoformat()
+    async def test_bullish_trade_beyond_old_thresholds_keeps_original_sl(self, mock_settings, mock_send_trade_update):
+        """Regression: a BULLISH OPEN trade older than old 30/45-min time-stop
+        thresholds must keep its original SL — no tightening to breakeven."""
+        old_ts = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
         trade = {
-            "id": "trade-stale",
+            "id": "trade-old-bull",
             "setup_type": "OI_WALL_REJECTION",
             "direction": "BULLISH",
             "entry_price": 24000.0,
@@ -295,49 +294,58 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             "target_1": 24050.0,
             "target_2": 24100.0,
             "state": "OPEN",
-            "created_at": stale_ts,
+            "created_at": old_ts,
         }
         pm = PositionManager()
         pm.active_trades = [trade]
 
-        # Price drifting, no SL/T1 touch: time-stop should tighten SL to entry
-        events = await pm.update_trades(24010.0)
-        self.assertEqual(trade["stop_loss"], 24000.0)
+        # Neutral price: no T1/SL touch — SL must stay at original level
+        await pm.update_trades(24010.0)
+        self.assertEqual(trade["stop_loss"], 23975.0)
         self.assertEqual(trade["state"], "OPEN")
 
-        # Tightened breakeven hit -> exits as TIME_STOP, not a fake T1 win
-        # (fill-at-level: exit reported at the tightened stop, i.e. entry)
+        # Price drops through original SL — must exit as regular SL_HIT
+        mock_send_trade_update.reset_mock()
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
-            events = await pm.update_trades(23999.0)
+            events = await pm.update_trades(23970.0)
             self.assertEqual(trade["state"], "CLOSED")
-            self.assertIn(("trade-stale", "TIME_STOP"), events)
-            mock_send_trade_update.assert_called_with(trade, 24000.0, "TIME_STOP")
-            mock_log_exit.assert_called_once_with("trade-stale", 24000.0, "TIME_STOP")
+            self.assertIn(("trade-old-bull", "SL_HIT"), events)
+            mock_send_trade_update.assert_called_with(trade, 23975.0, "SL_HIT")
+            mock_log_exit.assert_called_once_with("trade-old-bull", 23975.0, "SL_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
-    async def test_time_stop_ignores_fresh_trades_and_bearish_tighten(self, mock_settings, mock_send_trade_update):
-        mock_settings.time_stop_minutes = 45
-        fresh_ts = datetime.now(timezone.utc).isoformat()
-        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
-        fresh = {
-            "id": "trade-fresh", "setup_type": "OI_WALL_REJECTION",
-            "direction": "BULLISH", "entry_price": 24000.0, "stop_loss": 23975.0,
-            "target_1": 24050.0, "target_2": 24100.0, "state": "OPEN",
-            "created_at": fresh_ts,
-        }
-        stale_bear = {
-            "id": "trade-stale-bear", "setup_type": "EXHAUSTION_REVERSAL",
-            "direction": "BEARISH", "entry_price": 24000.0, "stop_loss": 24025.0,
-            "target_1": 23950.0, "target_2": 23900.0, "state": "OPEN",
-            "created_at": stale_ts,
+    async def test_bearish_trade_beyond_old_thresholds_keeps_original_sl(self, mock_settings, mock_send_trade_update):
+        """Regression: a BEARISH OPEN trade older than old 30/45-min time-stop
+        thresholds must keep its original SL — no tightening to breakeven."""
+        old_ts = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
+        trade = {
+            "id": "trade-old-bear",
+            "setup_type": "EXHAUSTION_REVERSAL",
+            "direction": "BEARISH",
+            "entry_price": 24000.0,
+            "stop_loss": 24025.0,
+            "target_1": 23950.0,
+            "target_2": 23900.0,
+            "state": "OPEN",
+            "created_at": old_ts,
         }
         pm = PositionManager()
-        pm.active_trades = [fresh, stale_bear]
+        pm.active_trades = [trade]
 
-        await pm.update_trades(24005.0)
-        self.assertEqual(fresh["stop_loss"], 23975.0)      # untouched
-        self.assertEqual(stale_bear["stop_loss"], 24000.0)  # tightened to entry
+        # Neutral price: no T1/SL touch — SL must stay at original level
+        await pm.update_trades(23990.0)
+        self.assertEqual(trade["stop_loss"], 24025.0)
+        self.assertEqual(trade["state"], "OPEN")
+
+        # Price rises through original SL — must exit as regular SL_HIT
+        mock_send_trade_update.reset_mock()
+        with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
+            events = await pm.update_trades(24030.0)
+            self.assertEqual(trade["state"], "CLOSED")
+            self.assertIn(("trade-old-bear", "SL_HIT"), events)
+            mock_send_trade_update.assert_called_with(trade, 24025.0, "SL_HIT")
+            mock_log_exit.assert_called_once_with("trade-old-bear", 24025.0, "SL_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')

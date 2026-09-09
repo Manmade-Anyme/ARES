@@ -144,7 +144,6 @@ class TuningConfig:
     # silenced the system in trending sessions by neutering tradeable setups
     # into observation-only alerts or suppressing them outright.
     min_rr_ratio: float = 1.0
-    time_stop_minutes: int = 45
 
     # Cadence for tick-driven exit checks against the WebSocket feed between
     # the 60s REST poll cycles (TASK-173 audit item 18).
@@ -222,9 +221,8 @@ NON_EXPIRY_CONFIG = TuningConfig(
 EXPIRY_CONFIG = TuningConfig(
     signal_cooldown_minutes=20,
 
-    # Trade quality gates — faster time-stop on expiry (moves die quicker)
+    # Trade quality gates
     min_rr_ratio=1.0,
-    time_stop_minutes=30,
 
     # Breakout — faster confirmation, stricter filters
     breakout_confirmation_candles=2,
