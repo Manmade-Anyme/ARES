@@ -34,6 +34,7 @@ from ml_signal.train_offline import (
     _native_shap_values,
     _offline_report_paths,
     _print_shap_summary,
+    _sharpe_metrics,
     _shap_metrics,
 )
 from ml_signal.config import MLConfig
@@ -195,6 +196,38 @@ class TestRunTrainingSmallDataGuard(unittest.TestCase):
         model, metrics = run_training(df, ["f1", "f2"], min_samples=1000)  # below threshold -> provisional
         self.assertIsNotNone(model)
         self.assertIn("auc_roc", metrics)
+
+
+class TestSharpeMetrics(unittest.TestCase):
+    def test_annualizes_daily_pnl_without_becoming_a_feature(self):
+        df = pd.DataFrame({
+            "timestamp": [
+                "2026-08-03T04:00:00+00:00",  # 09:30 IST
+                "2026-08-03T05:00:00+00:00",  # same day
+                "2026-08-04T04:00:00+00:00",
+                "2026-08-05T04:00:00+00:00",
+            ],
+            "pnl_points": [10.0, -2.0, -4.0, 8.0],
+            "label": [1, 0, 0, 1],
+            "alpha": [1.0, 2.0, 3.0, 4.0],
+        })
+        metrics = _sharpe_metrics(df)
+        # Daily P&L is [8, -4, 8], so mean/std is 0.57735.
+        self.assertEqual(metrics["sharpe_status"], "computed")
+        self.assertEqual(metrics["sharpe_days"], 3)
+        self.assertEqual(metrics["sharpe_trades"], 4)
+        self.assertAlmostEqual(metrics["sharpe_daily"], 0.57735, places=5)
+        self.assertAlmostEqual(metrics["sharpe_annualized"], 9.165151, places=5)
+        self.assertNotIn("pnl_points", feature_columns(df))
+
+    def test_requires_two_distinct_trading_days(self):
+        df = pd.DataFrame({
+            "timestamp": ["2026-08-03T04:00:00+00:00"],
+            "pnl_points": [10.0],
+        })
+        metrics = _sharpe_metrics(df)
+        self.assertEqual(metrics["sharpe_status"], "insufficient_days")
+        self.assertIsNone(metrics["sharpe_annualized"])
 
 
 class TestDetectorScoresFeature(unittest.TestCase):

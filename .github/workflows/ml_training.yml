@@ -51,6 +51,42 @@ jobs:
             echo "[-] No training metrics report was produced." >> $GITHUB_STEP_SUMMARY
           fi
 
+      - name: Post weekly ML report to Discord
+        if: success()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          METRICS_PATH: reports/ml/task183_offline_metrics.json
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::DISCORD_WEBHOOK_URL not set — skipping weekly ML report"
+            exit 0
+          fi
+          if [ ! -f "$METRICS_PATH" ]; then
+            echo "::warning::Training metrics missing — skipping weekly ML report"
+            exit 0
+          fi
+
+          VERSION="$(jq -r '.model_version // "unknown"' "$METRICS_PATH")"
+          SHAP_PLOT="reports/ml/${VERSION}_shap_summary.png"
+          SHARPE="$(jq -r 'if .sharpe_status == "computed" then (.sharpe_annualized | tostring) else "n/a" end' "$METRICS_PATH")"
+          SHARPE_DETAIL="$(jq -r 'if .sharpe_status == "computed" then "\(.sharpe_days) days, \(.sharpe_trades) trades, \(.sharpe_window_start) to \(.sharpe_window_end)" else .sharpe_status end' "$METRICS_PATH")"
+          CONTENT="📊 **ARES weekly ML report — ${VERSION}**
+          Sharpe (annualized): **${SHARPE}**
+          Basis: daily NIFTY spot P&L points, zero risk-free rate
+          Window: ${SHARPE_DETAIL}
+          AUC: $(jq -r '.auc_roc // "n/a"' "$METRICS_PATH") | SHAP: $(jq -r '.shap_status // "n/a"' "$METRICS_PATH")"
+
+          if [ -f "$SHAP_PLOT" ]; then
+            PAYLOAD="$(jq -n --arg content "$CONTENT" --arg image "attachment://$(basename "$SHAP_PLOT")" '{content: $content, embeds: [{image: {url: $image}}]}')"
+            curl -sS --fail-with-body -X POST \
+              -F "payload_json=$PAYLOAD" \
+              -F "files[0]=@${SHAP_PLOT};type=image/png" \
+              "$WEBHOOK"
+          else
+            jq -n --arg content "$CONTENT" '{content: $content}' \
+              | curl -sS --fail-with-body -X POST -H 'Content-Type: application/json' -d @- "$WEBHOOK"
+          fi
+
       - name: Commit and push updated model artifact to main
         if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
         run: |

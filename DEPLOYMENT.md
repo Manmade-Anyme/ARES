@@ -94,6 +94,7 @@ not set the other, and they are stored in different places entirely:
 | `FLY_API_TOKEN` | **GitHub repo secret** | the `deploy` job, to authenticate `flyctl` |
 | `SUPABASE_URL` | **GitHub repo secret** | the `train` job in `ml_training.yml`, for offline model training |
 | `SUPABASE_KEY` | **GitHub repo secret** | the `train` job in `ml_training.yml`, for offline model training |
+| `DISCORD_WEBHOOK_URL` | **GitHub repo secret** | the weekly ML report, including the Sharpe diagnostic and SHAP chart |
 
 Set both repo secrets:
 
@@ -105,9 +106,13 @@ fly tokens create deploy -a ares-xzy-gq -x 8760h \
 # same webhook value as the Fly secret, piped so it never lands in shell history
 grep '^DISCORD_HEALTH_WEBHOOK_URL=' .env | cut -d= -f2- \
   | gh secret set DISCORD_HEALTH_WEBHOOK_URL -R <owner>/ARES
+
+# weekly ML report and attached SHAP chart
+grep '^DISCORD_WEBHOOK_URL=' .env | cut -d= -f2- \
+  | gh secret set DISCORD_WEBHOOK_URL -R <owner>/ARES
 ```
 
-Verify with `gh secret list -R <owner>/ARES` — both must appear.
+Verify with `gh secret list -R <owner>/ARES` — all three must appear.
 
 > **If `DISCORD_HEALTH_WEBHOOK_URL` is missing from the repo secrets, failed
 > deploys alert nobody.** The `notify` job skips with only a `::warning::`

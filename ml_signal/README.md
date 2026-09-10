@@ -112,7 +112,10 @@ Training writes the model under `ml_signal/models/`, a canonical report at
 `reports/ml/task183_offline_metrics.json`, a versioned report at
 `reports/ml/v{n}_offline_metrics.json`, and (when SHAP is available) a
 headless 150-DPI bar chart at `reports/ml/v{n}_shap_summary.png`. Reports
-include the model version and stable SHAP status/backend/output-unit fields;
+include the model version, stable SHAP status/backend/output-unit fields, and
+an annualized Sharpe diagnostic computed from daily realized NIFTY spot P&L at
+a zero risk-free rate. The Sharpe diagnostic reports its date window and trade
+count; it is not a capital-return or after-cost Sharpe.
 SHAP values are mean absolute contributions in raw-margin/log-odds units, with
 the top 15 features retained.
 

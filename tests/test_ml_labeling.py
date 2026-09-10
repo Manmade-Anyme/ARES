@@ -111,6 +111,8 @@ def test_build_real_outcome_frame_regression():
     df = build_real_outcome_frame(rows, t1_is_win=True)
     assert len(df) == 2
     assert "label" in df.columns
+    assert "pnl_points" in df.columns
+    assert "pnl_points" not in __import__("ml_signal.dataset", fromlist=["feature_columns"]).feature_columns(df)
     assert df.iloc[0]["label"] == 1
     assert df.iloc[1]["label"] == 0
     assert "candle_features__f1" in df.columns

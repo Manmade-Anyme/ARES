@@ -57,3 +57,9 @@ def test_ml_workflow_structure():
     assert "reports/ml/" in content
     assert "retention-days: 30" in content
     assert "$GITHUB_STEP_SUMMARY" in content
+
+    # Weekly report carries performance and the generated SHAP chart to Discord.
+    assert "Post weekly ML report to Discord" in content
+    assert "secrets.DISCORD_WEBHOOK_URL" in content
+    assert "sharpe_annualized" in content
+    assert "shap_summary.png" in content
