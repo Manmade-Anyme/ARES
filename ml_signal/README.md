@@ -113,9 +113,12 @@ Training writes the model under `ml_signal/models/`, a canonical report at
 `reports/ml/v{n}_offline_metrics.json`, and (when SHAP is available) a
 headless 150-DPI bar chart at `reports/ml/v{n}_shap_summary.png`. Reports
 include the model version, stable SHAP status/backend/output-unit fields, and
-an annualized Sharpe diagnostic computed from daily realized NIFTY spot P&L at
-a zero risk-free rate. The Sharpe diagnostic reports its date window and trade
-count; it is not a capital-return or after-cost Sharpe.
+an annualized active-trading-day Sharpe diagnostic computed from realized NIFTY
+spot P&L at a zero risk-free rate. The diagnostic includes only days with a
+closed trade, reports its date window and trade count, and is not a
+capital-return or after-cost Sharpe. The weekly Discord report uses only files
+created by the current successful training run; notification delivery is
+best-effort and does not block artifact publication or deployment.
 SHAP values are mean absolute contributions in raw-margin/log-odds units, with
 the top 15 features retained.
 

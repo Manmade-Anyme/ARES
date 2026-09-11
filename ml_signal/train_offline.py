@@ -132,7 +132,8 @@ def _sharpe_metrics(df: pd.DataFrame, periods_per_year: int = 252) -> Dict[str, 
         "sharpe_window_start": None,
         "sharpe_window_end": None,
         "sharpe_total_pnl_points": 0.0,
-        "sharpe_pnl_unit": "daily NIFTY spot P&L points",
+        "sharpe_pnl_unit": "active-trading-day NIFTY spot P&L points",
+        "sharpe_day_basis": "active_trading_days",
         "sharpe_risk_free_rate": 0.0,
     }
     if "timestamp" not in df or "pnl_points" not in df:
@@ -439,7 +440,7 @@ def run_training(
 
 def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     """Read-only, paginated pull of ml_collection ordered by timestamp asc."""
-    cols = "timestamp,raw_candle,trade_outcome," + ",".join([
+    cols = "timestamp,raw_candle,trade_outcome,trade_pnl," + ",".join([
         "candle_features", "volume_features", "iv_features", "oi_features",
         "greek_features", "structure_features", "meta_features",
         "detector_scores",   # TASK-4e: one-hot setup-detector dict

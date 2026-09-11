@@ -36,8 +36,11 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          METRICS_PATH: reports/ml/task183_offline_metrics.json
         run: |
+          rm -f "$METRICS_PATH"
           python -m ml_signal.train_offline
+          test -f "$METRICS_PATH"
 
       - name: Publish metrics to Job Summary
         if: always()
@@ -53,6 +56,7 @@ jobs:
 
       - name: Post weekly ML report to Discord
         if: success()
+        continue-on-error: true
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
           METRICS_PATH: reports/ml/task183_offline_metrics.json
@@ -72,7 +76,7 @@ jobs:
           SHARPE_DETAIL="$(jq -r 'if .sharpe_status == "computed" then "\(.sharpe_days) days, \(.sharpe_trades) trades, \(.sharpe_window_start) to \(.sharpe_window_end)" else .sharpe_status end' "$METRICS_PATH")"
           CONTENT="📊 **ARES weekly ML report — ${VERSION}**
           Sharpe (annualized): **${SHARPE}**
-          Basis: daily NIFTY spot P&L points, zero risk-free rate
+          Basis: active-trading-day NIFTY spot P&L points, zero risk-free rate
           Window: ${SHARPE_DETAIL}
           AUC: $(jq -r '.auc_roc // "n/a"' "$METRICS_PATH") | SHAP: $(jq -r '.shap_status // "n/a"' "$METRICS_PATH")"
 

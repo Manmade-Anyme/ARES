@@ -63,3 +63,6 @@ def test_ml_workflow_structure():
     assert "secrets.DISCORD_WEBHOOK_URL" in content
     assert "sharpe_annualized" in content
     assert "shap_summary.png" in content
+    assert 'rm -f "$METRICS_PATH"' in content
+    assert "continue-on-error: true" in content
+    assert "active-trading-day" in content

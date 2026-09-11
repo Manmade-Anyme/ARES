@@ -94,7 +94,7 @@ not set the other, and they are stored in different places entirely:
 | `FLY_API_TOKEN` | **GitHub repo secret** | the `deploy` job, to authenticate `flyctl` |
 | `SUPABASE_URL` | **GitHub repo secret** | the `train` job in `ml_training.yml`, for offline model training |
 | `SUPABASE_KEY` | **GitHub repo secret** | the `train` job in `ml_training.yml`, for offline model training |
-| `DISCORD_WEBHOOK_URL` | **GitHub repo secret** | the weekly ML report, including the Sharpe diagnostic and SHAP chart |
+| `DISCORD_WEBHOOK_URL` | **GitHub repo secret** | optional weekly ML report, including the Sharpe diagnostic and SHAP chart; failed delivery does not block training, artifact publication, or deployment |
 
 Set both repo secrets:
 

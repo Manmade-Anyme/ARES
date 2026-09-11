@@ -216,6 +216,8 @@ class TestSharpeMetrics(unittest.TestCase):
         self.assertEqual(metrics["sharpe_status"], "computed")
         self.assertEqual(metrics["sharpe_days"], 3)
         self.assertEqual(metrics["sharpe_trades"], 4)
+        self.assertEqual(metrics["sharpe_day_basis"], "active_trading_days")
+        self.assertIn("active-trading-day", metrics["sharpe_pnl_unit"])
         self.assertAlmostEqual(metrics["sharpe_daily"], 0.57735, places=5)
         self.assertAlmostEqual(metrics["sharpe_annualized"], 9.165151, places=5)
         self.assertNotIn("pnl_points", feature_columns(df))
@@ -299,6 +301,39 @@ class TestDetectorScoresFeature(unittest.TestCase):
         source = inspect.getsource(_fetch_ml_collection)
         self.assertIn("detector_scores", source,
                       "_fetch_ml_collection must list 'detector_scores' in its SELECT column string")
+        self.assertIn("trade_pnl", source,
+                      "_fetch_ml_collection must request realized P&L for the Sharpe diagnostic")
+
+    def test_fetch_requests_realized_pnl_from_supabase(self):
+        """The executed Supabase query includes realized P&L for Sharpe metrics."""
+        class Query:
+            def __init__(self):
+                self.selected_columns = None
+
+            def select(self, columns):
+                self.selected_columns = columns
+                return self
+
+            def order(self, _column):
+                return self
+
+            def range(self, _start, _end):
+                return self
+
+            def execute(self):
+                return types.SimpleNamespace(data=[])
+
+        query = Query()
+
+        class Supabase:
+            def table(self, table_name):
+                self.table_name = table_name
+                return query
+
+        supabase = Supabase()
+        self.assertEqual(_fetch_ml_collection(supabase), [])
+        self.assertEqual(supabase.table_name, "ml_collection")
+        self.assertIn("trade_pnl", query.selected_columns)
 
 
 def _training_frame(n=64, feature_names=None):
