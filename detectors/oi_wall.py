@@ -110,16 +110,12 @@ class OIWallDetector:
         interaction_dist = _setting_float("oi_wall_initial_interaction_distance_pts", 20.0)
         proximity_window = 2.0 * interaction_dist  # tracked wall still "reachable" from spot
 
-        tracked_ce = (
-            self.current_wall_key is not None
-            and self.current_wall_key.startswith("CE:")
-            and nearest_ce_wall is not None
+        tracked_ce = bool(
+            nearest_ce_wall
             and self.current_wall_key == f"CE:{int(float(nearest_ce_wall['strike']))}"
         )
-        tracked_pe = (
-            self.current_wall_key is not None
-            and self.current_wall_key.startswith("PE:")
-            and nearest_pe_wall is not None
+        tracked_pe = bool(
+            nearest_pe_wall
             and self.current_wall_key == f"PE:{int(float(nearest_pe_wall['strike']))}"
         )
 

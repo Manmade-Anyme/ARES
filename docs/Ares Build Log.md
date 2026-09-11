@@ -2,6 +2,26 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-11 · Preserve Tracked OI Wall Against Opposite-Side Displacement Mid-Retest (MANM-110)
+
+Fixed silent suppression of `OI_WALL_REJECTION` signals caused by premature wall displacement during retest approach.
+
+**Problem**
+- Since commit `f410bdd` (TASK-073 fix), `OIWallDetector.update()` relied on pure distance-based selection when both CE and PE walls qualified.
+- In live markets, as spot rallies toward a tracked CE wall (or drops toward a PE wall) for a retest, the opposite-side wall often becomes marginally closer to spot.
+- The detector emitted the opposite wall key, causing `OIWallEntryFilter` to mark the tracked wall `EXPIRED` and reset to `TRACKING` every candle. Consequently, `QUALIFIED` state never fired and Discord alerts were silenced.
+
+**Implementation Details**
+- `detectors/oi_wall.py`: Added proximity-gated tracked-wall priority in `update()`. When both CE and PE walls qualify, the currently tracked wall is preserved if spot remains within $2 \times \text{oi\_wall\_initial\_interaction\_distance\_pts}$ (default 40 pts).
+- The tracked wall correctly yields when spot moves beyond $2 \times$ the interaction distance, preserving legitimate cross-side switches (e.g. sharp rallies or selloffs). Same-side wall selection remains pure distance to retain order-independence.
+- Simplified boolean identity checks for `tracked_ce` and `tracked_pe`.
+
+**Verification**
+- Added parametrized unit regression tests in `tests/unit/test_task073_entry_regressions.py` covering both CE and PE directions for displacement protection during retest and yielding on large moves across non-expiry and expiry profiles (82 passing tests).
+- Full suite of 501 unit tests passing.
+
+---
+
 ## 2026-09-01 · BE-after-T1 PnL Accounting Repair (MANM-66)
 
 Documented the trade-accounting repair for `STOPPED_OUT_AT_BE` exits. The live

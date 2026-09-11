@@ -363,52 +363,79 @@ def test_engine_persists_expired_wall_telemetry_on_replacement(profile):
     assert engine.latest_expired_oi_wall_context == expired
 
 
-def test_tracked_wall_not_displaced_by_closer_opposite_side_during_retest(profile):
+@pytest.mark.parametrize("side", ["CE", "PE"])
+def test_tracked_wall_not_displaced_by_closer_opposite_side_during_retest(profile, side):
     """
     Regression: MANM-110.
 
-    Scenario: CE wall at 24100 is being tracked (price approaching for a retest).
-    A qualifying PE wall at 24075 is slightly closer to spot (24085) than the CE wall.
-    The CE wall must NOT be displaced — doing so would reset the entry filter state
+    Scenario: A wall is being tracked (price approaching for a retest).
+    A qualifying opposite-side wall appears slightly closer to spot than the tracked wall.
+    The tracked wall must NOT be displaced — doing so would reset the entry filter state
     machine and silently prevent OI_WALL_REJECTION signals from ever firing.
     """
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
 
-    # Step 1: Establish CE:24100 tracking — spot at 24060, ce_dist=40.
+    tracked_strike = 24100 if side == "CE" else 24000
+    competing_strike = 24075 if side == "CE" else 24025
+    expected_wall_key = f"{side}:{tracked_strike}"
+    opp_side = "PE" if side == "CE" else "CE"
+
+    # Step 1: Establish tracking — distance is 40 pts.
+    spot1 = 24060.0 if side == "CE" else 24040.0
     c1 = OHLCVCandle(
         timestamp=datetime(2026, 9, 5, 9, 30),
-        open=24055.0, high=24065.0, low=24050.0, close=24060.0, volume=1000,
+        open=spot1 - 5.0, high=spot1 + 5.0, low=spot1 - 10.0, close=spot1, volume=1000,
     )
     ch1 = [
-        {"strike": 24100, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0},
+        {
+            "strike": tracked_strike,
+            "ce_oi": 20000000 if side == "CE" else 100000,
+            "ce_oi_change_pct": 25.0 if side == "CE" else 0.0,
+            "pe_oi": 20000000 if side == "PE" else 100000,
+            "pe_oi_change_pct": 25.0 if side == "PE" else 0.0,
+        },
     ]
     bias1 = detector.update(c1.close, ch1, c1, [])
     entry_filter.update(bias1, c1, [])
-    assert detector.current_wall_key == "CE:24100"
+    assert detector.current_wall_key == expected_wall_key
 
-    # Step 2: Price rallies to 24085.  CE:24100 is 15 pts away (within 2× interaction_dist=40).
-    # A qualifying PE:24075 appears 10 pts below spot.
-    # The CE wall must survive.
+    # Step 2: Price moves towards tracked wall (dist = 15 pts, <= 2x interaction_dist=40).
+    # A qualifying opposite-side wall appears 10 pts from spot (closer than tracked wall).
+    # The tracked wall must survive.
+    spot2 = 24085.0 if side == "CE" else 24015.0
     c2 = OHLCVCandle(
         timestamp=datetime(2026, 9, 5, 9, 31),
-        open=24082.0, high=24090.0, low=24080.0, close=24085.0, volume=1000,
+        open=spot2 - 3.0, high=spot2 + 5.0, low=spot2 - 5.0, close=spot2, volume=1000,
     )
     ch2 = [
-        {"strike": 24100, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0},
-        {"strike": 24075, "ce_oi": 100000, "ce_oi_change_pct": 0.0, "pe_oi": 20000000, "pe_oi_change_pct": 25.0},
+        {
+            "strike": tracked_strike,
+            "ce_oi": 20000000 if side == "CE" else 100000,
+            "ce_oi_change_pct": 25.0 if side == "CE" else 0.0,
+            "pe_oi": 20000000 if side == "PE" else 100000,
+            "pe_oi_change_pct": 25.0 if side == "PE" else 0.0,
+        },
+        {
+            "strike": competing_strike,
+            "ce_oi": 20000000 if opp_side == "CE" else 100000,
+            "ce_oi_change_pct": 25.0 if opp_side == "CE" else 0.0,
+            "pe_oi": 20000000 if opp_side == "PE" else 100000,
+            "pe_oi_change_pct": 25.0 if opp_side == "PE" else 0.0,
+        },
     ]
     bias2 = detector.update(c2.close, ch2, c2, [])
-    assert bias2 is not None, "CE:24100 must still be emitted"
-    assert bias2.wall_key == "CE:24100", (
-        f"Tracked CE:24100 was displaced by {bias2.wall_key} — "
+    assert bias2 is not None, f"{expected_wall_key} must still be emitted"
+    assert bias2.wall_key == expected_wall_key, (
+        f"Tracked {expected_wall_key} was displaced by {bias2.wall_key} — "
         "this is the MANM-110 regression: mid-retest displacement resets filter state"
     )
     decision2 = entry_filter.update(bias2, c2, [])
-    assert decision2.wall_key == "CE:24100"
+    assert decision2.wall_key == expected_wall_key
     assert entry_filter.latest_expired_decision is None, "No expiry should occur for a stable tracked wall"
 
 
-def test_tracked_wall_yields_to_opposite_side_when_spot_moves_far(profile):
+@pytest.mark.parametrize("side", ["CE", "PE"])
+def test_tracked_wall_yields_to_opposite_side_when_spot_moves_far(profile, side):
     """
     Regression guard: when spot moves far beyond the tracked wall's proximity window,
     the closer opposite-side wall correctly takes over (the legitimate cross-side switch
@@ -416,32 +443,62 @@ def test_tracked_wall_yields_to_opposite_side_when_spot_moves_far(profile):
     """
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
 
-    # Step 1: Track CE:24100, spot at 24080 (ce_dist=20).
+    tracked_strike = 24100 if side == "CE" else 24000
+    competing_strike = 24000 if side == "CE" else 24100
+    expected_wall_key = f"{side}:{tracked_strike}"
+    opp_side = "PE" if side == "CE" else "CE"
+    opp_wall_key = f"{opp_side}:{competing_strike}"
+
+    # Step 1: Track wall with spot 20 pts away.
+    spot1 = 24080.0 if side == "CE" else 24020.0
     c1 = OHLCVCandle(
         timestamp=datetime(2026, 9, 5, 9, 30),
-        open=24075.0, high=24085.0, low=24070.0, close=24080.0, volume=1000,
+        open=spot1 - 5.0, high=spot1 + 5.0, low=spot1 - 10.0, close=spot1, volume=1000,
     )
     ch1 = [
-        {"strike": 24100, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0},
+        {
+            "strike": tracked_strike,
+            "ce_oi": 20000000 if side == "CE" else 100000,
+            "ce_oi_change_pct": 25.0 if side == "CE" else 0.0,
+            "pe_oi": 20000000 if side == "PE" else 100000,
+            "pe_oi_change_pct": 25.0 if side == "PE" else 0.0,
+        },
     ]
     bias1 = detector.update(c1.close, ch1, c1, [])
     entry_filter.update(bias1, c1, [])
-    assert detector.current_wall_key == "CE:24100"
+    assert detector.current_wall_key == expected_wall_key
 
-    # Step 2: Spot crashes to 24010.  CE:24100 is 90 pts away (>> 2× interaction_dist=40).
-    # PE:24000 is 10 pts below spot — clearly the more relevant wall.
+    # Step 2: Spot moves far (90 pts away, >> 2x interaction_dist=40).
+    # Opposite-side wall is 10 pts away — clearly the more relevant wall.
+    spot2 = 24010.0 if side == "CE" else 24090.0
     c2 = OHLCVCandle(
         timestamp=datetime(2026, 9, 5, 9, 31),
-        open=24020.0, high=24025.0, low=24005.0, close=24010.0, volume=1000,
+        open=spot2 + 10.0 if side == "CE" else spot2 - 10.0,
+        high=spot2 + 15.0 if side == "CE" else spot2 + 5.0,
+        low=spot2 - 5.0 if side == "CE" else spot2 - 15.0,
+        close=spot2,
+        volume=1000,
     )
     ch2 = [
-        {"strike": 24100, "ce_oi": 20000000, "ce_oi_change_pct": 25.0, "pe_oi": 100000, "pe_oi_change_pct": 0.0},
-        {"strike": 24000, "ce_oi": 100000, "ce_oi_change_pct": 0.0, "pe_oi": 20000000, "pe_oi_change_pct": 25.0},
+        {
+            "strike": tracked_strike,
+            "ce_oi": 20000000 if side == "CE" else 100000,
+            "ce_oi_change_pct": 25.0 if side == "CE" else 0.0,
+            "pe_oi": 20000000 if side == "PE" else 100000,
+            "pe_oi_change_pct": 25.0 if side == "PE" else 0.0,
+        },
+        {
+            "strike": competing_strike,
+            "ce_oi": 20000000 if opp_side == "CE" else 100000,
+            "ce_oi_change_pct": 25.0 if opp_side == "CE" else 0.0,
+            "pe_oi": 20000000 if opp_side == "PE" else 100000,
+            "pe_oi_change_pct": 25.0 if opp_side == "PE" else 0.0,
+        },
     ]
     bias2 = detector.update(c2.close, ch2, c2, [])
     assert bias2 is not None
-    assert bias2.wall_key == "PE:24000", "Tracked CE:24100 is 90 pts away — PE:24000 must win"
+    assert bias2.wall_key == opp_wall_key, f"Tracked {expected_wall_key} is 90 pts away — {opp_wall_key} must win"
     decision2 = entry_filter.update(bias2, c2, [])
-    assert decision2.wall_key == "PE:24000"
+    assert decision2.wall_key == opp_wall_key
     assert entry_filter.latest_expired_decision is not None
-    assert entry_filter.latest_expired_decision.wall_key == "CE:24100"
+    assert entry_filter.latest_expired_decision.wall_key == expected_wall_key
