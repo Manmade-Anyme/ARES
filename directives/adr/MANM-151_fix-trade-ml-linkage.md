@@ -20,7 +20,7 @@ Investigation into the ARES signal logging, position management, and ML collecti
    - `AresSignal.signal_id`: 4-digit randomly generated display string (e.g. `"4829"` via `f"{random.randint(0, 9999):04d}"`).
    - `active_trades.signal_id`: Stores the 4-digit `signal_id`.
 
-2. **Linkage Disconnect & Executor Race Condition (P1 Review Finding)**:
+2. **Linkage Disconnect & Executor Race Condition**:
    - In `MLCollector.snapshot` (`ml_signal/collector.py`), `signal_id` is set to `str(signal.db_id)` (the `ares_signals.id` BIGSERIAL primary key).
    - In `PositionManager.add_trade` (`position_manager.py`), `trade_data["signal_id"]` is initialized to `signal.signal_id` (the 4-digit display string).
    - When `AnalyticsLogger.log_entry` (`storage.py`) creates a row in `trade_analytics`, it sets `"signal_id": getattr(signal, "db_id", None)`.
@@ -37,7 +37,11 @@ Investigation into the ARES signal logging, position management, and ML collecti
    - If `trade_analytics.signal_id` is changed to store the 4-digit display code, `repair_be_after_t1` will fail or mistakenly match an unrelated signal whose serial `id` happens to equal the 4-digit integer value.
    - Preserving the exact database primary key (`ares_signals.id`) is mandatory for `repair_be_after_t1` to query `ares_signals.target_1` accurately.
 
-5. **User & PM Directive**:
+5. **Existing Unit Test Assertion Invariant Migration (Review Finding)**:
+   - Existing unit tests in `tests/unit/test_task194_ml_labels_and_oi_distribution.py` (lines 173-183) and `tests/unit/test_storage.py` (lines 335-354) assert the legacy behavior (storing `db_id` or `NULL`).
+   - Transitioning `signal_id` to store the 4-digit display string requires updating these existing test assertions alongside creating new unit tests, so `pytest` passes cleanly.
+
+6. **User & PM Directive**:
    - Per Project Manager and team instructions, linkage will utilize the **4-digit randomly generated trade/signal ID** (`AresSignal.signal_id`), which is synchronously available at signal creation, stored on `AresSignal`, passed into `active_trades`, and present across runtime alerts and telemetry.
 
 ---
@@ -98,8 +102,9 @@ Assign implementation of ticket **MANM-151** to the **Code Generator Agent** wit
    - Update `repair_be_after_t1` to extract `market_context ->> 'signal_db_id'` for `ares_signals` lookup, preventing misattribution or invalid lookup against `ares_signals.id`.
    - Add reconciliation support for `OPEN` trades in `trade_analytics` whose entry write raced `log_exit`.
 
-6. **`tests/unit/test_task151_trade_ml_linkage.py`**:
-   - Add unit and integration tests verifying:
+6. **Test Suite Migration & Expansion (`tests/unit/test_task194_ml_labels_and_oi_distribution.py`, `tests/unit/test_storage.py`, & `tests/unit/test_task151_trade_ml_linkage.py`)**:
+   - Update existing legacy test assertions in `tests/unit/test_task194_ml_labels_and_oi_distribution.py` (lines 173-183) and `tests/unit/test_storage.py` (lines 335-354) to expect `signal.signal_id` (4-digit string) instead of `db_id`.
+   - Add new unit and integration test file `tests/unit/test_task151_trade_ml_linkage.py` verifying:
      a) Column data type compatibility for 4-digit string IDs with leading zeros (e.g. `"0007"`).
      b) `repair_be_after_t1` correctly uses `market_context["signal_db_id"]` without misinterpreting 4-digit display strings as serial IDs.
      c) Fast-entry/exit race condition: `log_exit` successfully retries and updates `trade_analytics` and `ml_collection` when `log_entry` completes asynchronously.
@@ -115,7 +120,8 @@ Assign implementation of ticket **MANM-151** to the **Code Generator Agent** wit
 - [ ] `schema.sql` and `README.md` documentation updated to define `trade_analytics.signal_id text`.
 - [ ] `AnalyticsLogger.log_exit` retries when racing concurrent `log_entry` inserts.
 - [ ] `repair_be_after_t1` updated to use `market_context["signal_db_id"]` preserving database primary key lookups.
+- [ ] Existing tests in `test_task194_ml_labels_and_oi_distribution.py` and `test_storage.py` updated to reflect 4-digit `signal_id` invariant.
 - [ ] All 233 trades in `trade_analytics` are properly accounted for in `ml_collection`.
 - [ ] Orphaned trade UUID identified and reconciled via 4-digit `signal_id`.
-- [ ] Unit tests pass in `pytest`.
+- [ ] 100% of unit and integration tests pass in `pytest`.
 - [ ] No regression in signal generation or position management.
