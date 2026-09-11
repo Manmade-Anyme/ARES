@@ -120,7 +120,7 @@ def _sharpe_metrics(df: pd.DataFrame, periods_per_year: int = 252) -> Dict[str, 
 
     This is a weekly performance diagnostic, not a capital-return Sharpe:
     ARES records NIFTY spot points and does not yet persist capital deployed,
-    costs, or option fills. Grouping realized trade P&L by India trading date
+    costs, or option fills. Grouping realized trade P&L by its India exit date
     avoids annualising individual trade observations with unequal hold times.
     """
     metrics: Dict[str, object] = {
@@ -134,19 +134,27 @@ def _sharpe_metrics(df: pd.DataFrame, periods_per_year: int = 252) -> Dict[str, 
         "sharpe_total_pnl_points": 0.0,
         "sharpe_pnl_unit": "active-trading-day NIFTY spot P&L points",
         "sharpe_day_basis": "active_trading_days",
+        "sharpe_missing_exit_timestamps": 0,
         "sharpe_risk_free_rate": 0.0,
     }
-    if "timestamp" not in df or "pnl_points" not in df:
+    if "pnl_points" not in df:
+        return metrics
+    if "exit_timestamp" not in df:
+        metrics["sharpe_status"] = "missing_exit_timestamp"
         return metrics
 
     pnl = pd.to_numeric(df["pnl_points"], errors="coerce")
     # Supabase emits both whole-second and fractional-second ISO timestamps.
     # `mixed` preserves both shapes instead of coercing one form to NaT.
     timestamps = pd.to_datetime(
-        df["timestamp"], utc=True, errors="coerce", format="mixed",
+        df["exit_timestamp"], utc=True, errors="coerce", format="mixed",
     )
+    pnl_valid = pnl.notna() & np.isfinite(pnl)
+    metrics["sharpe_missing_exit_timestamps"] = int((pnl_valid & timestamps.isna()).sum())
     valid = pnl.notna() & timestamps.notna() & np.isfinite(pnl)
     if not valid.any():
+        if metrics["sharpe_missing_exit_timestamps"]:
+            metrics["sharpe_status"] = "missing_exit_timestamp"
         return metrics
 
     daily = pd.DataFrame({
@@ -440,7 +448,7 @@ def run_training(
 
 def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     """Read-only, paginated pull of ml_collection ordered by timestamp asc."""
-    cols = "timestamp,raw_candle,trade_outcome,trade_pnl," + ",".join([
+    cols = "timestamp,raw_candle,trade_id,trade_outcome,trade_pnl," + ",".join([
         "candle_features", "volume_features", "iv_features", "oi_features",
         "greek_features", "structure_features", "meta_features",
         "detector_scores",   # TASK-4e: one-hot setup-detector dict
@@ -461,6 +469,30 @@ def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
             break
         start += page
     return rows
+
+
+def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, str]:
+    """Read completed trade exit timestamps keyed by the ml_collection trade id."""
+    exits: Dict[str, str] = {}
+    start = 0
+    while True:
+        batch = (
+            supabase.table("trade_analytics")
+            .select("id,exit_timestamp")
+            .order("exit_timestamp")
+            .range(start, start + page - 1)
+            .execute()
+            .data or []
+        )
+        for trade in batch:
+            trade_id = trade.get("id")
+            exit_timestamp = trade.get("exit_timestamp")
+            if trade_id is not None and exit_timestamp is not None:
+                exits[str(trade_id)] = exit_timestamp
+        if len(batch) < page:
+            break
+        start += page
+    return exits
 
 
 def main() -> None:
@@ -494,6 +526,10 @@ def main() -> None:
     config = DEFAULT_CONFIG
     print(f"[*] Reading ml_collection (read-only)...")
     rows = _fetch_ml_collection(supabase)
+    exit_timestamps = _fetch_trade_exit_timestamps(supabase)
+    for row in rows:
+        trade_id = row.get("trade_id")
+        row["exit_timestamp"] = exit_timestamps.get(str(trade_id)) if trade_id else None
     
     from ml_signal.dataset import build_real_outcome_frame
     print(f"[*] {len(rows)} rows fetched. Filtering for real trade outcomes...")
