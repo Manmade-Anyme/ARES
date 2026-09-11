@@ -30,7 +30,7 @@ FEATURE_GROUPS = [
 ]
 
 # Non-feature bookkeeping columns produced by flatten_features().
-_META_COLS = {"timestamp", "date", "close", "label"}
+_META_COLS = {"timestamp", "date", "close", "label", "pnl_points", "exit_timestamp"}
 
 
 def _load(v: Any) -> Dict[str, Any]:
@@ -224,6 +224,8 @@ def build_real_outcome_frame(
     
     valid_rows = []
     labels = []
+    pnl_points = []
+    exit_timestamps = []
     
     for r in rows:
         outcome = r.get("trade_outcome")
@@ -234,6 +236,8 @@ def build_real_outcome_frame(
         if label is not None:
             valid_rows.append(r)
             labels.append(label)
+            pnl_points.append(r.get("trade_pnl"))
+            exit_timestamps.append(r.get("exit_timestamp"))
 
     if not valid_rows:
         df = flatten_features([])
@@ -241,5 +245,10 @@ def build_real_outcome_frame(
 
     df = flatten_features(valid_rows)
     df["label"] = labels
+    # Performance reporting consumes realized spot P&L separately from model
+    # inputs. `feature_columns` explicitly excludes this column, preventing
+    # outcome leakage into the reliability model.
+    df["pnl_points"] = pd.to_numeric(pnl_points, errors="coerce")
+    df["exit_timestamp"] = exit_timestamps
     
     return df

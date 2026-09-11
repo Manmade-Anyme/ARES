@@ -31,9 +31,11 @@ from ml_signal.train_offline import (
     run_training,
     _compute_shap,
     _fetch_ml_collection,
+    _fetch_trade_exit_timestamps,
     _native_shap_values,
     _offline_report_paths,
     _print_shap_summary,
+    _sharpe_metrics,
     _shap_metrics,
 )
 from ml_signal.config import MLConfig
@@ -197,6 +199,71 @@ class TestRunTrainingSmallDataGuard(unittest.TestCase):
         self.assertIn("auc_roc", metrics)
 
 
+class TestSharpeMetrics(unittest.TestCase):
+    def test_annualizes_daily_pnl_without_becoming_a_feature(self):
+        df = pd.DataFrame({
+            "timestamp": [
+                "2026-08-03T04:00:00+00:00",  # 09:30 IST
+                "2026-08-03T05:00:00+00:00",  # same day
+                "2026-08-04T04:00:00+00:00",
+                "2026-08-05T04:00:00+00:00",
+            ],
+            "pnl_points": [10.0, -2.0, -4.0, 8.0],
+            "exit_timestamp": [
+                "2026-08-03T04:00:00+00:00",
+                "2026-08-03T05:00:00+00:00",
+                "2026-08-04T04:00:00+00:00",
+                "2026-08-05T04:00:00+00:00",
+            ],
+            "label": [1, 0, 0, 1],
+            "alpha": [1.0, 2.0, 3.0, 4.0],
+        })
+        metrics = _sharpe_metrics(df)
+        # Daily P&L is [8, -4, 8], so mean/std is 0.57735.
+        self.assertEqual(metrics["sharpe_status"], "computed")
+        self.assertEqual(metrics["sharpe_days"], 3)
+        self.assertEqual(metrics["sharpe_trades"], 4)
+        self.assertEqual(metrics["sharpe_day_basis"], "active_trading_days")
+        self.assertIn("active-trading-day", metrics["sharpe_pnl_unit"])
+        self.assertAlmostEqual(metrics["sharpe_daily"], 0.57735, places=5)
+        self.assertAlmostEqual(metrics["sharpe_annualized"], 9.165151, places=5)
+        self.assertNotIn("pnl_points", feature_columns(df))
+
+    def test_groups_realized_pnl_by_exit_date_not_signal_timestamp(self):
+        df = pd.DataFrame({
+            "timestamp": [
+                "2026-08-03T04:00:00+00:00",
+                "2026-08-04T04:00:00+00:00",
+            ],
+            "exit_timestamp": [
+                "2026-08-05T04:00:00+00:00",
+                "2026-08-06T04:00:00+00:00",
+            ],
+            "pnl_points": [10.0, -4.0],
+        })
+        metrics = _sharpe_metrics(df)
+        self.assertEqual(metrics["sharpe_window_start"], "2026-08-05")
+        self.assertEqual(metrics["sharpe_window_end"], "2026-08-06")
+
+    def test_requires_exit_timestamps_for_realized_pnl(self):
+        df = pd.DataFrame({
+            "timestamp": ["2026-08-03T04:00:00+00:00"],
+            "pnl_points": [10.0],
+        })
+        metrics = _sharpe_metrics(df)
+        self.assertEqual(metrics["sharpe_status"], "missing_exit_timestamp")
+
+    def test_requires_two_distinct_trading_days(self):
+        df = pd.DataFrame({
+            "timestamp": ["2026-08-03T04:00:00+00:00"],
+            "exit_timestamp": ["2026-08-03T04:00:00+00:00"],
+            "pnl_points": [10.0],
+        })
+        metrics = _sharpe_metrics(df)
+        self.assertEqual(metrics["sharpe_status"], "insufficient_days")
+        self.assertIsNone(metrics["sharpe_annualized"])
+
+
 class TestDetectorScoresFeature(unittest.TestCase):
     """TASK-4e: detector_scores fed from ml_collection into XGBoost training."""
 
@@ -266,6 +333,69 @@ class TestDetectorScoresFeature(unittest.TestCase):
         source = inspect.getsource(_fetch_ml_collection)
         self.assertIn("detector_scores", source,
                       "_fetch_ml_collection must list 'detector_scores' in its SELECT column string")
+        self.assertIn("trade_pnl", source,
+                      "_fetch_ml_collection must request realized P&L for the Sharpe diagnostic")
+
+    def test_fetch_requests_realized_pnl_from_supabase(self):
+        """The executed Supabase query includes realized P&L for Sharpe metrics."""
+        class Query:
+            def __init__(self):
+                self.selected_columns = None
+
+            def select(self, columns):
+                self.selected_columns = columns
+                return self
+
+            def order(self, _column):
+                return self
+
+            def range(self, _start, _end):
+                return self
+
+            def execute(self):
+                return types.SimpleNamespace(data=[])
+
+        query = Query()
+
+        class Supabase:
+            def table(self, table_name):
+                self.table_name = table_name
+                return query
+
+        supabase = Supabase()
+        self.assertEqual(_fetch_ml_collection(supabase), [])
+        self.assertEqual(supabase.table_name, "ml_collection")
+        self.assertIn("trade_pnl", query.selected_columns)
+
+    def test_fetches_exit_timestamps_by_trade_id(self):
+        class Query:
+            def select(self, columns):
+                self.selected_columns = columns
+                return self
+
+            def order(self, _column):
+                return self
+
+            def range(self, _start, _end):
+                return self
+
+            def execute(self):
+                return types.SimpleNamespace(data=[
+                    {"id": "trade-1", "exit_timestamp": "2026-08-05T04:00:00+00:00"},
+                ])
+
+        query = Query()
+
+        class Supabase:
+            def table(self, table_name):
+                self.table_name = table_name
+                return query
+
+        supabase = Supabase()
+        exits = _fetch_trade_exit_timestamps(supabase)
+        self.assertEqual(supabase.table_name, "trade_analytics")
+        self.assertEqual(query.selected_columns, "id,exit_timestamp")
+        self.assertEqual(exits["trade-1"], "2026-08-05T04:00:00+00:00")
 
 
 def _training_frame(n=64, feature_names=None):
@@ -727,6 +857,7 @@ class TestOfflineShapContract(unittest.TestCase):
         with patch.dict(os.environ, {"SUPABASE_URL": "url", "SUPABASE_KEY": "key"}), \
                 patch.dict(sys.modules, {"supabase": fake_supabase, "dotenv": fake_dotenv}), \
                 patch("ml_signal.train_offline._fetch_ml_collection", return_value=[{"row": 1}]), \
+                patch("ml_signal.train_offline._fetch_trade_exit_timestamps", return_value={}), \
                 patch("ml_signal.dataset.build_real_outcome_frame", return_value=frame), \
                 patch("ml_signal.train_offline.feature_columns", return_value=["alpha"]), \
                 patch("ml_signal.predictor.get_next_model_version_and_path",

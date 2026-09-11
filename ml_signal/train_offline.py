@@ -115,6 +115,80 @@ def _safe_metrics(model, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, f
         }
 
 
+def _sharpe_metrics(df: pd.DataFrame, periods_per_year: int = 252) -> Dict[str, object]:
+    """Calculate a zero-risk-free-rate Sharpe ratio from daily spot P&L.
+
+    This is a weekly performance diagnostic, not a capital-return Sharpe:
+    ARES records NIFTY spot points and does not yet persist capital deployed,
+    costs, or option fills. Grouping realized trade P&L by its India exit date
+    avoids annualising individual trade observations with unequal hold times.
+    """
+    metrics: Dict[str, object] = {
+        "sharpe_status": "missing_pnl",
+        "sharpe_annualized": None,
+        "sharpe_daily": None,
+        "sharpe_days": 0,
+        "sharpe_trades": 0,
+        "sharpe_window_start": None,
+        "sharpe_window_end": None,
+        "sharpe_total_pnl_points": 0.0,
+        "sharpe_pnl_unit": "active-trading-day NIFTY spot P&L points",
+        "sharpe_day_basis": "active_trading_days",
+        "sharpe_missing_exit_timestamps": 0,
+        "sharpe_risk_free_rate": 0.0,
+    }
+    if "pnl_points" not in df:
+        return metrics
+    if "exit_timestamp" not in df:
+        metrics["sharpe_status"] = "missing_exit_timestamp"
+        return metrics
+
+    pnl = pd.to_numeric(df["pnl_points"], errors="coerce")
+    # Supabase emits both whole-second and fractional-second ISO timestamps.
+    # `mixed` preserves both shapes instead of coercing one form to NaT.
+    timestamps = pd.to_datetime(
+        df["exit_timestamp"], utc=True, errors="coerce", format="mixed",
+    )
+    pnl_valid = pnl.notna() & np.isfinite(pnl)
+    metrics["sharpe_missing_exit_timestamps"] = int((pnl_valid & timestamps.isna()).sum())
+    valid = pnl.notna() & timestamps.notna() & np.isfinite(pnl)
+    if not valid.any():
+        if metrics["sharpe_missing_exit_timestamps"]:
+            metrics["sharpe_status"] = "missing_exit_timestamp"
+        return metrics
+
+    daily = pd.DataFrame({
+        "timestamp": timestamps[valid],
+        "pnl_points": pnl[valid],
+    })
+    daily["date"] = daily["timestamp"].dt.tz_convert("Asia/Kolkata").dt.date
+    daily = daily.groupby("date", sort=True)["pnl_points"].sum()
+
+    metrics.update({
+        "sharpe_trades": int(valid.sum()),
+        "sharpe_days": int(len(daily)),
+        "sharpe_window_start": daily.index.min().isoformat(),
+        "sharpe_window_end": daily.index.max().isoformat(),
+        "sharpe_total_pnl_points": round(float(daily.sum()), 6),
+    })
+    if len(daily) < 2:
+        metrics["sharpe_status"] = "insufficient_days"
+        return metrics
+
+    daily_std = float(daily.std(ddof=1))
+    if not np.isfinite(daily_std) or daily_std == 0.0:
+        metrics["sharpe_status"] = "zero_variance"
+        return metrics
+
+    daily_sharpe = float(daily.mean()) / daily_std
+    metrics.update({
+        "sharpe_status": "computed",
+        "sharpe_daily": round(daily_sharpe, 6),
+        "sharpe_annualized": round(daily_sharpe * np.sqrt(periods_per_year), 6),
+    })
+    return metrics
+
+
 def _shap_metrics() -> Dict[str, object]:
     """Return the stable, explicit schema for optional offline SHAP output."""
     return {
@@ -346,6 +420,7 @@ def run_training(
         "pos_rate": float(df[label_col].mean()) if n else float("nan"),
         "provisional": bool(provisional),
     })
+    metrics.update(_sharpe_metrics(df))
     metrics.update(_shap_metrics())
     if model_version is not None:
         metrics["model_version"] = model_version
@@ -373,7 +448,7 @@ def run_training(
 
 def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     """Read-only, paginated pull of ml_collection ordered by timestamp asc."""
-    cols = "timestamp,raw_candle,trade_outcome," + ",".join([
+    cols = "timestamp,raw_candle,trade_id,trade_outcome,trade_pnl," + ",".join([
         "candle_features", "volume_features", "iv_features", "oi_features",
         "greek_features", "structure_features", "meta_features",
         "detector_scores",   # TASK-4e: one-hot setup-detector dict
@@ -394,6 +469,30 @@ def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
             break
         start += page
     return rows
+
+
+def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, str]:
+    """Read completed trade exit timestamps keyed by the ml_collection trade id."""
+    exits: Dict[str, str] = {}
+    start = 0
+    while True:
+        batch = (
+            supabase.table("trade_analytics")
+            .select("id,exit_timestamp")
+            .order("exit_timestamp")
+            .range(start, start + page - 1)
+            .execute()
+            .data or []
+        )
+        for trade in batch:
+            trade_id = trade.get("id")
+            exit_timestamp = trade.get("exit_timestamp")
+            if trade_id is not None and exit_timestamp is not None:
+                exits[str(trade_id)] = exit_timestamp
+        if len(batch) < page:
+            break
+        start += page
+    return exits
 
 
 def main() -> None:
@@ -427,6 +526,10 @@ def main() -> None:
     config = DEFAULT_CONFIG
     print(f"[*] Reading ml_collection (read-only)...")
     rows = _fetch_ml_collection(supabase)
+    exit_timestamps = _fetch_trade_exit_timestamps(supabase)
+    for row in rows:
+        trade_id = row.get("trade_id")
+        row["exit_timestamp"] = exit_timestamps.get(str(trade_id)) if trade_id else None
     
     from ml_signal.dataset import build_real_outcome_frame
     print(f"[*] {len(rows)} rows fetched. Filtering for real trade outcomes...")
