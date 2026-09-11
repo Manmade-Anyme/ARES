@@ -48,6 +48,16 @@ class OIWallDetector:
         self.last_seen: Optional[datetime] = None
         self.persistence_snapshots: int = 0
 
+    def release_terminal_wall(self, wall_key: Optional[str]) -> None:
+        """Release priority only when the filter terminates the tracked wall."""
+        if wall_key != self.current_wall_key:
+            return
+
+        self.current_wall_key = None
+        self.first_seen = None
+        self.last_seen = None
+        self.persistence_snapshots = 0
+
     def update(
         self,
         spot: float,

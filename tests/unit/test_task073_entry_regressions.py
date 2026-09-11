@@ -502,3 +502,43 @@ def test_tracked_wall_yields_to_opposite_side_when_spot_moves_far(profile, side)
     assert decision2.wall_key == opp_wall_key
     assert entry_filter.latest_expired_decision is not None
     assert entry_filter.latest_expired_decision.wall_key == expected_wall_key
+
+
+def test_terminal_wall_does_not_pin_detector_over_closer_opposite_side(profile):
+    """A terminal filter decision must release detector priority for that wall."""
+    detector = OIWallDetector()
+
+    # Start by tracking a CE wall.  It remains close enough to win MANM-110's
+    # cross-side priority rule unless terminal state releases it.
+    initial = OHLCVCandle(
+        timestamp=datetime(2026, 9, 5, 9, 30),
+        open=24055.0, high=24065.0, low=24050.0, close=24060.0, volume=1000,
+    )
+    ce_wall = {
+        "strike": 24100,
+        "ce_oi": 20000000,
+        "ce_oi_change_pct": 25.0,
+        "pe_oi": 100000,
+        "pe_oi_change_pct": 0.0,
+    }
+    assert detector.update(initial.close, [ce_wall], initial, []).wall_key == "CE:24100"
+
+    detector.release_terminal_wall("CE:24100")
+
+    # The CE wall is 15 points away, but the fresh PE wall is 10 points away.
+    # A terminal CE wall must not suppress the nearer, live PE opportunity.
+    follow_up = OHLCVCandle(
+        timestamp=datetime(2026, 9, 5, 9, 31),
+        open=24085.0, high=24090.0, low=24075.0, close=24085.0, volume=1000,
+    )
+    pe_wall = {
+        "strike": 24075,
+        "ce_oi": 100000,
+        "ce_oi_change_pct": 0.0,
+        "pe_oi": 20000000,
+        "pe_oi_change_pct": 25.0,
+    }
+    bias = detector.update(follow_up.close, [ce_wall, pe_wall], follow_up, [])
+
+    assert bias is not None
+    assert bias.wall_key == "PE:24075", "Terminal CE wall must not retain priority"

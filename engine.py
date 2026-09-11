@@ -93,6 +93,11 @@ class AresEngine:
             return self.oi_wall_filter.latest_expired_decision.telemetry.to_dict()
         return None
 
+    def _release_terminal_oi_wall(self, decision: OIWallEntryDecision) -> None:
+        """Keep detector priority aligned with terminal filter decisions."""
+        if decision.status in ("CONSUMED", "EXPIRED"):
+            self.oi_wall_detector.release_terminal_wall(decision.wall_key)
+
     def tick(
         self,
         candle: OHLCVCandle,
@@ -202,9 +207,12 @@ class AresEngine:
             )
             oi_wall_candidate = oi_wall_bias
 
+        self._release_terminal_oi_wall(oi_wall_decision)
+
         if in_cooldown:
             if oi_wall_decision.status == "QUALIFIED":
                 ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "SUPPRESSED_BY_COOLDOWN")
+                self._release_terminal_oi_wall(ack)
                 self._latest_oi_wall_context = ack.telemetry.to_dict()
             return None
 
@@ -223,6 +231,7 @@ class AresEngine:
         if breakout_signal:
             if oi_wall_decision.status == "QUALIFIED":
                 ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "SUPPRESSED_BY_PRIORITY")
+                self._release_terminal_oi_wall(ack)
                 self._latest_oi_wall_context = ack.telemetry.to_dict()
             signal = breakout_signal
         elif oi_wall_candidate:
@@ -262,12 +271,14 @@ class AresEngine:
                 print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: R:R {rr:.2f} below minimum {settings.min_rr_ratio:.2f} (risk {risk:.1f} pts vs reward {reward:.1f} pts).")
                 if signal.setup_type == SetupType.OI_WALL_REJECTION and oi_wall_decision.status == "QUALIFIED":
                     ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "REJECTED_BY_RR")
+                    self._release_terminal_oi_wall(ack)
                     self._latest_oi_wall_context = ack.telemetry.to_dict()
                 signal = None
 
         # Acknowledge emission for OI wall setup
         if signal and signal.setup_type == SetupType.OI_WALL_REJECTION and oi_wall_decision.status == "QUALIFIED":
             ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "EMITTED")
+            self._release_terminal_oi_wall(ack)
             self._latest_oi_wall_context = ack.telemetry.to_dict()
             signal.oi_wall_context = ack.telemetry.to_dict()
 
