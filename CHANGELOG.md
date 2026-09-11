@@ -30,6 +30,10 @@ All notable changes to the ARES trading system will be documented in this file.
   `OI_WALL_REJECTION` Discord alerts. The tracked wall still correctly yields
   when spot moves beyond 2× the interaction window (far-from-wall crash/rally),
   preserving the legitimate cross-side switch behaviour.
+  Furthermore, pre-interaction candidate walls that have not yet touched the
+  interaction band are restricted to 1× `oi_wall_initial_interaction_distance_pts`,
+  ensuring an immediately actionable opposite-side wall (e.g. 1 pt away) is
+  never starved by a distant un-interacted candidate.
 - **OI wall re-test timestamps and watchlist webhook failures (TASK-073 / PR #103)**:
   Qualified OI-wall telemetry now records the armed re-test touch timestamp,
   rather than the later confirmation-candle timestamp. Watchlist Discord

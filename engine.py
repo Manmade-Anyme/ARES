@@ -98,6 +98,12 @@ class AresEngine:
         if decision.status in ("CONSUMED", "EXPIRED"):
             self.oi_wall_detector.release_terminal_wall(decision.wall_key)
 
+    def _sync_oi_wall_interaction(self, decision: OIWallEntryDecision) -> None:
+        """Keep detector priority informed of confirmed filter interaction state."""
+        if decision.status in ("INTERACTED", "RETEST_READY", "QUALIFIED"):
+            self.oi_wall_detector.register_interaction(decision.wall_key)
+
+
     def tick(
         self,
         candle: OHLCVCandle,
@@ -207,6 +213,7 @@ class AresEngine:
             )
             oi_wall_candidate = oi_wall_bias
 
+        self._sync_oi_wall_interaction(oi_wall_decision)
         self._release_terminal_oi_wall(oi_wall_decision)
 
         if in_cooldown:

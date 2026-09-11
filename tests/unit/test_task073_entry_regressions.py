@@ -542,3 +542,76 @@ def test_terminal_wall_does_not_pin_detector_over_closer_opposite_side(profile):
 
     assert bias is not None
     assert bias.wall_key == "PE:24075", "Terminal CE wall must not retain priority"
+
+
+@pytest.mark.parametrize("side", ["CE", "PE"])
+def test_pre_interaction_tracked_wall_does_not_block_closer_opposite_wall(profile, side):
+    """
+    P1 Regression Guard:
+    When a tracked wall is merely in TRACKING and has never interacted with price
+    (e.g. 39 pts away), it must not be granted unconditional priority over a substantially
+    closer, immediately actionable opposite-side wall (e.g. 1 pt away).
+    """
+    detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
+
+    tracked_strike = 24100 if side == "CE" else 24000
+    outer_dist = (profile.oi_wall_initial_interaction_distance_pts * 2.0) - 1.0
+    spot1 = tracked_strike - outer_dist if side == "CE" else tracked_strike + outer_dist
+    competing_strike = int(spot1 - 1.0) if side == "CE" else int(spot1 + 1.0)
+
+    expected_wall_key = f"{side}:{tracked_strike}"
+    opp_side = "PE" if side == "CE" else "CE"
+    opp_wall_key = f"{opp_side}:{competing_strike}"
+
+    # Step 1: Establish tracking on candidate wall in the outer proximity band.
+    # Narrow candle does NOT touch initial interaction band.
+    c1 = OHLCVCandle(
+        timestamp=datetime(2026, 9, 5, 9, 30),
+        open=spot1, high=spot1 + 0.5, low=spot1 - 0.5, close=spot1, volume=1000,
+    )
+    ch1 = [
+        {
+            "strike": tracked_strike,
+            "ce_oi": 20000000 if side == "CE" else 100000,
+            "ce_oi_change_pct": 25.0 if side == "CE" else 0.0,
+            "pe_oi": 20000000 if side == "PE" else 100000,
+            "pe_oi_change_pct": 25.0 if side == "PE" else 0.0,
+        },
+    ]
+    bias1 = detector.update(c1.close, ch1, c1, [])
+    decision1 = entry_filter.update(bias1, c1, [])
+    assert detector.current_wall_key == expected_wall_key
+    assert decision1.wall_key == expected_wall_key
+    assert entry_filter.initial_interaction_timestamp is None, "Candidate wall has not interacted"
+
+    # Step 2: Price stays at spot1. A qualifying opposite wall appears 1 pt away.
+    # The pre-interaction tracked wall must NOT suppress the 1 pt opposite wall.
+    c2 = OHLCVCandle(
+        timestamp=datetime(2026, 9, 5, 9, 31),
+        open=spot1, high=spot1 + 0.5, low=spot1 - 0.5, close=spot1, volume=1000,
+    )
+    ch2 = [
+        {
+            "strike": tracked_strike,
+            "ce_oi": 20000000 if side == "CE" else 100000,
+            "ce_oi_change_pct": 25.0 if side == "CE" else 0.0,
+            "pe_oi": 20000000 if side == "PE" else 100000,
+            "pe_oi_change_pct": 25.0 if side == "PE" else 0.0,
+        },
+        {
+            "strike": competing_strike,
+            "ce_oi": 20000000 if opp_side == "CE" else 100000,
+            "ce_oi_change_pct": 25.0 if opp_side == "CE" else 0.0,
+            "pe_oi": 20000000 if opp_side == "PE" else 100000,
+            "pe_oi_change_pct": 25.0 if opp_side == "PE" else 0.0,
+        },
+    ]
+    bias2 = detector.update(c2.close, ch2, c2, [])
+    assert bias2 is not None
+    assert bias2.wall_key == opp_wall_key, (
+        f"Pre-interaction tracked wall {expected_wall_key} ({outer_dist} pts away) wrongly suppressed "
+        f"immediately actionable opposite wall {opp_wall_key} (1 pt away)"
+    )
+    decision2 = entry_filter.update(bias2, c2, [])
+    assert decision2.wall_key == opp_wall_key
+

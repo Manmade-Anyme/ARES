@@ -242,6 +242,20 @@ class TestEngineOIWallEntry(unittest.TestCase):
 
         self.assertEqual(self.engine.latest_oi_wall_context["entry_status"], "EXPIRED")
 
+    def test_engine_syncs_oi_wall_interaction_to_detector(self):
+        bias = self._make_bias(state="INTERACTED")
+        decision = self._make_decision(status="INTERACTED", bias=bias)
+
+        self.engine.oi_wall_detector.update = MagicMock(return_value=bias)
+        self.engine.oi_wall_filter.update = MagicMock(return_value=decision)
+        self.engine.oi_wall_detector.register_interaction = MagicMock()
+
+        candle = self._make_candle(24080.0)
+        atm = self._make_atm(24080.0)
+        self.engine.tick(candle, [], atm, 0.0, [])
+
+        self.engine.oi_wall_detector.register_interaction.assert_called_once_with("CE:24100")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,13 +12,16 @@ Fixed silent suppression of `OI_WALL_REJECTION` signals caused by premature wall
 - The detector emitted the opposite wall key, causing `OIWallEntryFilter` to mark the tracked wall `EXPIRED` and reset to `TRACKING` every candle. Consequently, `QUALIFIED` state never fired and Discord alerts were silenced.
 
 **Implementation Details**
-- `detectors/oi_wall.py`: Added proximity-gated tracked-wall priority in `update()`. When both CE and PE walls qualify, the currently tracked wall is preserved if spot remains within $2 \times \text{oi\_wall\_initial\_interaction\_distance\_pts}$ (default 40 pts).
+- `detectors/oi_wall.py`: Added proximity-gated tracked-wall priority in `update()`. When both CE and PE walls qualify, the currently tracked wall is preserved if spot remains within $2 \times \text{oi\_wall\_initial\_interaction\_distance\_pts}$ (default 40 pts) for active interaction/retest lifecycles.
+- Resolved P1 defect: Pre-interaction candidate walls in `TRACKING` state that have not yet touched the interaction band are restricted to $1 \times \text{oi\_wall\_initial\_interaction\_distance\_pts}$ (20 pts non-expiry, 10 pts expiry), ensuring an immediately actionable opposite-side wall (e.g. 1 pt away) is never starved by an un-interacted distant candidate.
+- Added interaction tracking (`self.has_interacted`, `_check_candle_interaction`, and `register_interaction`) in `OIWallDetector` and wired `_sync_oi_wall_interaction` in `engine.py`.
 - The tracked wall correctly yields when spot moves beyond $2 \times$ the interaction distance, preserving legitimate cross-side switches (e.g. sharp rallies or selloffs). Same-side wall selection remains pure distance to retain order-independence.
 - Simplified boolean identity checks for `tracked_ce` and `tracked_pe`.
 
 **Verification**
-- Added parametrized unit regression tests in `tests/unit/test_task073_entry_regressions.py` covering both CE and PE directions for displacement protection during retest and yielding on large moves across non-expiry and expiry profiles (82 passing tests).
-- Full suite of 501 unit tests passing.
+- Added parametrized unit regression tests in `tests/unit/test_task073_entry_regressions.py` covering both CE and PE directions for displacement protection during retest, yielding on large moves, and pre-interaction candidate non-starvation across non-expiry and expiry profiles (88 passing tests).
+- Added engine interaction synchronization unit test in `tests/unit/test_engine_oi_wall_entry.py`.
+- Full suite of 515 unit tests passing.
 
 ---
 

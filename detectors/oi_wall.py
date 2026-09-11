@@ -47,6 +47,7 @@ class OIWallDetector:
         self.first_seen: Optional[datetime] = None
         self.last_seen: Optional[datetime] = None
         self.persistence_snapshots: int = 0
+        self.has_interacted: bool = False
 
     def release_terminal_wall(self, wall_key: Optional[str]) -> None:
         """Release priority only when the filter terminates the tracked wall."""
@@ -57,6 +58,29 @@ class OIWallDetector:
         self.first_seen = None
         self.last_seen = None
         self.persistence_snapshots = 0
+        self.has_interacted = False
+
+    def register_interaction(self, wall_key: Optional[str]) -> None:
+        """Explicitly record that the filter has confirmed interaction for this wall."""
+        if wall_key and wall_key == self.current_wall_key:
+            self.has_interacted = True
+
+    @staticmethod
+    def _check_candle_interaction(
+        candle: OHLCVCandle,
+        strike: float,
+        wall_option_type: str,
+        interaction_dist: float,
+    ) -> bool:
+        is_bearish = (wall_option_type == "CE")
+        interacted = (
+            (candle.high >= strike - interaction_dist)
+            if is_bearish
+            else (candle.low <= strike + interaction_dist)
+        )
+        defended = (candle.close <= strike) if is_bearish else (candle.close >= strike)
+        return bool(interacted and defended)
+
 
     def update(
         self,
@@ -132,16 +156,29 @@ class OIWallDetector:
         if nearest_ce_wall and nearest_pe_wall:
             ce_dist = abs(float(nearest_ce_wall["strike"]) - spot)
             pe_dist = abs(spot - float(nearest_pe_wall["strike"]))
-            if tracked_ce and ce_dist <= proximity_window:
-                # Tracked CE wall is still close enough to remain relevant — keep it.
+
+            ce_active = tracked_ce and (
+                self.has_interacted
+                or self._check_candle_interaction(candle, float(nearest_ce_wall["strike"]), "CE", interaction_dist)
+            )
+            pe_active = tracked_pe and (
+                self.has_interacted
+                or self._check_candle_interaction(candle, float(nearest_pe_wall["strike"]), "PE", interaction_dist)
+            )
+
+            ce_priority_window = proximity_window if ce_active else interaction_dist
+            pe_priority_window = proximity_window if pe_active else interaction_dist
+
+            if tracked_ce and ce_dist <= ce_priority_window:
+                # Tracked CE wall is active or in initial interaction band — keep it.
                 selected_wall = nearest_ce_wall
                 wall_option_type = "CE"
-            elif tracked_pe and pe_dist <= proximity_window:
-                # Tracked PE wall is still close enough to remain relevant — keep it.
+            elif tracked_pe and pe_dist <= pe_priority_window:
+                # Tracked PE wall is active or in initial interaction band — keep it.
                 selected_wall = nearest_pe_wall
                 wall_option_type = "PE"
             else:
-                # No active close-range tracking — pick whichever qualifying wall is nearest.
+                # Neither tracked wall qualifies for priority — pick whichever qualifying wall is nearest.
                 if ce_dist <= pe_dist:
                     selected_wall = nearest_ce_wall
                     wall_option_type = "CE"
@@ -160,6 +197,7 @@ class OIWallDetector:
             self.persistence_snapshots = 0
             self.first_seen = None
             self.last_seen = None
+            self.has_interacted = False
             return None
 
         strike = float(selected_wall["strike"])
@@ -191,6 +229,10 @@ class OIWallDetector:
             self.first_seen = candle.timestamp
             self.last_seen = candle.timestamp
             self.persistence_snapshots = 1
+            self.has_interacted = False
+
+        if self._check_candle_interaction(candle, strike, wall_option_type, interaction_dist):
+            self.has_interacted = True
 
         persistence_duration = (self.last_seen - self.first_seen).total_seconds() if self.first_seen else 0.0
         req_snapshots = _setting_int("oi_wall_persistence_snapshots", 3)
@@ -227,6 +269,7 @@ class OIWallDetector:
             self.persistence_snapshots = 0
             self.first_seen = None
             self.last_seen = None
+            self.has_interacted = False
 
         return bias
 
