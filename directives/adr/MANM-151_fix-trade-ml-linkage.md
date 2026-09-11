@@ -20,12 +20,12 @@ Investigation into the ARES signal logging, position management, and ML collecti
    - `AresSignal.signal_id`: 4-digit randomly generated display string (e.g. `"4829"` via `f"{random.randint(0, 9999):04d}"`).
    - `active_trades.signal_id`: Stores the 4-digit `signal_id`.
 
-2. **Linkage Disconnect**:
+2. **Linkage Disconnect & Executor Race Condition (P1 Review Finding)**:
    - In `MLCollector.snapshot` (`ml_signal/collector.py`), `signal_id` is set to `str(signal.db_id)` (the `ares_signals.id` BIGSERIAL primary key).
    - In `PositionManager.add_trade` (`position_manager.py`), `trade_data["signal_id"]` is initialized to `signal.signal_id` (the 4-digit display string).
    - When `AnalyticsLogger.log_entry` (`storage.py`) creates a row in `trade_analytics`, it sets `"signal_id": getattr(signal, "db_id", None)`.
    - If `Storage.log_signal` fails or completes asynchronously after `PositionManager.add_trade`, `signal.db_id` is `None` when `trade_analytics` is written. This leaves `trade_analytics.signal_id = NULL` (an orphaned trade).
-   - Furthermore, when `AnalyticsLogger.log_exit` fires, it attempts to back-fill `ml_collection` using `eq("signal_id", str(signal_id))`. If `trade_analytics.signal_id` is `NULL`, `log_exit` aborts early and does not update `ml_collection`.
+   - **Main-Loop Candle Race Condition**: When a trade opens and closes within the same candle or consecutive fast ticks, `PositionManager.add_trade` schedules `log_entry` on an executor thread before `update_trades` schedules `log_exit`. `log_exit` currently performs an immediate query `.select(...).eq("id", trade_id)`. If `log_entry` has not finished writing to PostgreSQL, `log_exit` finds no row and returns permanently. Consequently, `trade_analytics` remains in `result_state = 'OPEN'`, and `log_exit`'s `ml_collection` backfill is permanently skipped.
 
 3. **Database Schema & Documentation Incompatibility (P2 Review Finding)**:
    - `schema.sql` and `README.md` (lines 401 & 223) currently define `trade_analytics.signal_id` as `bigint`.
@@ -56,12 +56,16 @@ To ensure 100% robust, deterministic, and fail-safe linkage between `ares_signal
    - Simultaneously preserve the database primary key `signal.db_id` in `market_context` metadata (`market_context["signal_db_id"]`) whenever available.
    - Update `repair_be_after_t1` in `ml_signal/backfill_labels.py` to read `market_context ->> 'signal_db_id'` when resolving `ares_signals` for BE target lookups, falling back safely to timestamp/setup matching instead of querying `ares_signals.id` with the 4-digit display code.
 
-3. **Dual-Key / 4-Digit Reconciliation in ML Collection & Backfill**:
+3. **Serialized Entry/Exit Persistence & Entry-Race Reconciliation**:
+   - Update `AnalyticsLogger.log_exit` to implement exponential backoff retry (e.g., 3 retries with 100ms delay) when the initial `trade_analytics.select()` query for `trade_id` returns no row, allowing async `log_entry` execution to complete.
+   - Expand `ml_signal/backfill_labels.py` / background reconciliation to detect trades stuck in `result_state = 'OPEN'` that exist in `active_trades` as `CLOSED`/`STOPPED_OUT` or match closed signals, repairing the `trade_analytics` exit state and backfilling `ml_collection`.
+
+4. **Dual-Key / 4-Digit Reconciliation in ML Collection & Backfill**:
    - `MLCollector.snapshot` will write the 4-digit `signal_id` (`signal.signal_id`) to `ml_collection.signal_id`.
    - `AnalyticsLogger.log_exit` will back-fill `ml_collection` by matching on `signal_id` (4-digit code) or timestamp+setup fallback.
    - Update `ml_signal/backfill_labels.py` to include 4-digit `signal_id` reconciliation across `repair_orphan_trades`, `repair_join_key`, and `repair_be_after_t1`.
 
-4. **Orphan Prevention & Retry Reconciliation**:
+5. **Orphan Prevention & Retry Reconciliation**:
    - If `ml_collection` update fails during `log_exit`, a secondary background reconciliation job / function will retry linking unlinked `trade_analytics` rows to `ml_collection` using `(signal_id, setup_type, entry_timestamp)`.
 
 ---
@@ -83,7 +87,8 @@ Assign implementation of ticket **MANM-151** to the **Code Generator Agent** wit
 3. **`storage.py` (`AnalyticsLogger`)**:
    - Update `log_entry` to populate `trade_analytics.signal_id` with `signal.signal_id` (4-digit string).
    - Store `signal.db_id` inside `market_context["signal_db_id"]` if non-null.
-   - Update `log_exit` to attempt back-filling `ml_collection` using `signal_id` (4-digit display code) and fallback matching on `(setup_type, entry_timestamp)`.
+   - Update `log_exit` to include retry logic (3 retries with 100ms pause) if `select("entry_price", "direction", "signal_id").eq("id", trade_id)` initially returns empty due to concurrent `log_entry` execution.
+   - Backfill `ml_collection` using `signal_id` (4-digit display code) and fallback matching on `(setup_type, entry_timestamp)`.
 
 4. **`ml_signal/collector.py` (`MLCollector`)**:
    - Update `snapshot` to record `signal.signal_id` (4-digit string) as `signal_id` in `ml_collection`.
@@ -91,14 +96,16 @@ Assign implementation of ticket **MANM-151** to the **Code Generator Agent** wit
 5. **`ml_signal/backfill_labels.py`**:
    - Update `repair_orphan_trades` / `repair_join_key` to support 4-digit `signal_id` matching.
    - Update `repair_be_after_t1` to extract `market_context ->> 'signal_db_id'` for `ares_signals` lookup, preventing misattribution or invalid lookup against `ares_signals.id`.
+   - Add reconciliation support for `OPEN` trades in `trade_analytics` whose entry write raced `log_exit`.
 
 6. **`tests/unit/test_task151_trade_ml_linkage.py`**:
    - Add unit and integration tests verifying:
      a) Column data type compatibility for 4-digit string IDs with leading zeros (e.g. `"0007"`).
      b) `repair_be_after_t1` correctly uses `market_context["signal_db_id"]` without misinterpreting 4-digit display strings as serial IDs.
-     c) Fresh schema setup from `README.md` / `schema.sql` creates `trade_analytics.signal_id` as `text`.
-     d) Trade close writes complete ML outcome records to `ml_collection` using the 4-digit `signal_id`.
-     e) Fallback reconciliation successfully links unlinked trades.
+     c) Fast-entry/exit race condition: `log_exit` successfully retries and updates `trade_analytics` and `ml_collection` when `log_entry` completes asynchronously.
+     d) Fresh schema setup from `README.md` / `schema.sql` creates `trade_analytics.signal_id` as `text`.
+     e) Trade close writes complete ML outcome records to `ml_collection` using the 4-digit `signal_id`.
+     f) Fallback reconciliation successfully links unlinked trades.
 
 ---
 
@@ -106,6 +113,7 @@ Assign implementation of ticket **MANM-151** to the **Code Generator Agent** wit
 
 - [ ] Schema migration created altering `trade_analytics.signal_id` to `text`.
 - [ ] `schema.sql` and `README.md` documentation updated to define `trade_analytics.signal_id text`.
+- [ ] `AnalyticsLogger.log_exit` retries when racing concurrent `log_entry` inserts.
 - [ ] `repair_be_after_t1` updated to use `market_context["signal_db_id"]` preserving database primary key lookups.
 - [ ] All 233 trades in `trade_analytics` are properly accounted for in `ml_collection`.
 - [ ] Orphaned trade UUID identified and reconciled via 4-digit `signal_id`.
