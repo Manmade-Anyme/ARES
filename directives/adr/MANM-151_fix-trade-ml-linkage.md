@@ -32,7 +32,12 @@ Investigation into the ARES signal logging, position management, and ML collecti
    - `ml_collection.signal_id` is defined as `text`.
    - Storing a zero-padded 4-digit display string (e.g., `"0007"`) in a `bigint` column causes PostgreSQL to cast or strip leading zeros to `7`. When joining or querying `ml_collection.signal_id` (`text`), `"0007"` != `"7"`, breaking linkage for ~10% of generated codes.
 
-4. **User & PM Directive**:
+4. **Break-Even P&L Repair Disconnect (P1 Review Finding)**:
+   - `repair_be_after_t1` in `ml_signal/backfill_labels.py` currently looks up `trade_analytics.signal_id` directly in `ares_signals.id` (`BIGSERIAL`) when `active_trades` has no row.
+   - If `trade_analytics.signal_id` is changed to store the 4-digit display code, `repair_be_after_t1` will fail or mistakenly match an unrelated signal whose serial `id` happens to equal the 4-digit integer value.
+   - Preserving the exact database primary key (`ares_signals.id`) is mandatory for `repair_be_after_t1` to query `ares_signals.target_1` accurately.
+
+5. **User & PM Directive**:
    - Per Project Manager and team instructions, linkage will utilize the **4-digit randomly generated trade/signal ID** (`AresSignal.signal_id`), which is synchronously available at signal creation, stored on `AresSignal`, passed into `active_trades`, and present across runtime alerts and telemetry.
 
 ---
@@ -46,14 +51,15 @@ To ensure 100% robust, deterministic, and fail-safe linkage between `ares_signal
    - Update `schema.sql` to specify `trade_analytics.signal_id text` (matching `active_trades.signal_id` and `ml_collection.signal_id`).
    - Both `trade_analytics.signal_id` and `ml_collection.signal_id` will consistently store the string representation of the 4-digit `signal.signal_id` (e.g., `"0007"`), preserving leading zeros.
 
-2. **Fail-Safe Trade Analytics Logging**:
-   - `AnalyticsLogger.log_entry` in `storage.py` will record `signal.signal_id` (the 4-digit text string) in `trade_analytics.signal_id` even if `signal.db_id` has not yet resolved.
-   - If `signal.db_id` exists, `signal_db_id` will also be stored in `market_context` metadata (`market_context["signal_db_id"]`).
+2. **Preserving Database Primary Key in Metadata**:
+   - Update `AnalyticsLogger.log_entry` in `storage.py` to record `signal.signal_id` (4-digit text string) in `trade_analytics.signal_id`.
+   - Simultaneously preserve the database primary key `signal.db_id` in `market_context` metadata (`market_context["signal_db_id"]`) whenever available.
+   - Update `repair_be_after_t1` in `ml_signal/backfill_labels.py` to read `market_context ->> 'signal_db_id'` when resolving `ares_signals` for BE target lookups, falling back safely to timestamp/setup matching instead of querying `ares_signals.id` with the 4-digit display code.
 
 3. **Dual-Key / 4-Digit Reconciliation in ML Collection & Backfill**:
    - `MLCollector.snapshot` will write the 4-digit `signal_id` (`signal.signal_id`) to `ml_collection.signal_id`.
    - `AnalyticsLogger.log_exit` will back-fill `ml_collection` by matching on `signal_id` (4-digit code) or timestamp+setup fallback.
-   - Update `ml_signal/backfill_labels.py` to include a 4-digit `signal_id` reconciliation phase that resolves the single orphaned trade among the 233 `trade_analytics` records to its corresponding `ml_collection` snapshot.
+   - Update `ml_signal/backfill_labels.py` to include 4-digit `signal_id` reconciliation across `repair_orphan_trades`, `repair_join_key`, and `repair_be_after_t1`.
 
 4. **Orphan Prevention & Retry Reconciliation**:
    - If `ml_collection` update fails during `log_exit`, a secondary background reconciliation job / function will retry linking unlinked `trade_analytics` rows to `ml_collection` using `(signal_id, setup_type, entry_timestamp)`.
@@ -74,26 +80,30 @@ Assign implementation of ticket **MANM-151** to the **Code Generator Agent** wit
    - Ensure `AresSignal.signal_id` is always formatted as a non-null 4-digit string (`f"{random.randint(0, 9999):04d}"`).
 
 3. **`storage.py` (`AnalyticsLogger`)**:
-   - Update `log_entry` to populate `trade_analytics.signal_id` with `signal.signal_id` (4-digit string), ensuring non-null linkage even if `signal.db_id` is `None`.
+   - Update `log_entry` to populate `trade_analytics.signal_id` with `signal.signal_id` (4-digit string).
+   - Store `signal.db_id` inside `market_context["signal_db_id"]` if non-null.
    - Update `log_exit` to attempt back-filling `ml_collection` using `signal_id` (4-digit display code) and fallback matching on `(setup_type, entry_timestamp)`.
 
 4. **`ml_signal/collector.py` (`MLCollector`)**:
    - Update `snapshot` to record `signal.signal_id` (4-digit string) as `signal_id` in `ml_collection`.
 
 5. **`ml_signal/backfill_labels.py`**:
-   - Update `repair_orphan_trades` / `repair_join_key` to support 4-digit `signal_id` matching to isolate and link the single orphaned trade out of the 233 trades.
+   - Update `repair_orphan_trades` / `repair_join_key` to support 4-digit `signal_id` matching.
+   - Update `repair_be_after_t1` to extract `market_context ->> 'signal_db_id'` for `ares_signals` lookup, preventing misattribution or invalid lookup against `ares_signals.id`.
 
 6. **`tests/unit/test_task151_trade_ml_linkage.py`**:
    - Add unit and integration tests verifying:
      a) Column data type compatibility for 4-digit string IDs with leading zeros (e.g. `"0007"`).
-     b) Trade close writes complete ML outcome records to `ml_collection` using the 4-digit `signal_id`.
-     c) Fallback reconciliation successfully links unlinked trades.
+     b) `repair_be_after_t1` correctly uses `market_context["signal_db_id"]` without misinterpreting 4-digit display strings as serial IDs.
+     c) Trade close writes complete ML outcome records to `ml_collection` using the 4-digit `signal_id`.
+     d) Fallback reconciliation successfully links unlinked trades.
 
 ---
 
 ## 4. Definition of Done & Acceptance Criteria
 
 - [ ] Schema migration created altering `trade_analytics.signal_id` to `text`.
+- [ ] `repair_be_after_t1` updated to use `market_context["signal_db_id"]` preserving database primary key lookups.
 - [ ] All 233 trades in `trade_analytics` are properly accounted for in `ml_collection`.
 - [ ] Orphaned trade UUID identified and reconciled via 4-digit `signal_id`.
 - [ ] Unit tests pass in `pytest`.
