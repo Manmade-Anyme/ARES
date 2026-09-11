@@ -47,6 +47,40 @@ class OIWallDetector:
         self.first_seen: Optional[datetime] = None
         self.last_seen: Optional[datetime] = None
         self.persistence_snapshots: int = 0
+        self.has_interacted: bool = False
+
+    def release_terminal_wall(self, wall_key: Optional[str]) -> None:
+        """Release priority only when the filter terminates the tracked wall."""
+        if wall_key != self.current_wall_key:
+            return
+
+        self.current_wall_key = None
+        self.first_seen = None
+        self.last_seen = None
+        self.persistence_snapshots = 0
+        self.has_interacted = False
+
+    def register_interaction(self, wall_key: Optional[str]) -> None:
+        """Explicitly record that the filter has confirmed interaction for this wall."""
+        if wall_key and wall_key == self.current_wall_key:
+            self.has_interacted = True
+
+    @staticmethod
+    def _check_candle_interaction(
+        candle: OHLCVCandle,
+        strike: float,
+        wall_option_type: str,
+        interaction_dist: float,
+    ) -> bool:
+        is_bearish = (wall_option_type == "CE")
+        interacted = (
+            (candle.high >= strike - interaction_dist)
+            if is_bearish
+            else (candle.low <= strike + interaction_dist)
+        )
+        defended = (candle.close <= strike) if is_bearish else (candle.close >= strike)
+        return bool(interacted and defended)
+
 
     def update(
         self,
@@ -92,18 +126,65 @@ class OIWallDetector:
                     if nearest_pe_wall is None or abs(strike - spot) < abs(float(nearest_pe_wall["strike"]) - spot):
                         nearest_pe_wall = row
 
-        # Pick the nearest qualifying wall to spot
+        # Pick the qualifying wall to track.
+        #
+        # Priority rule (MANM-110): when both a CE and PE wall qualify simultaneously,
+        # prefer the currently tracked wall to avoid resetting the OIWallEntryFilter
+        # state machine mid-interaction/retest cycle.
+        #
+        # However, if spot has moved so far from the tracked wall that it falls outside
+        # 2× the configured interaction distance, the tracked wall is no longer relevant
+        # and the closer opposite-side wall correctly takes over.
+        #
+        # Same-side nearest-wall selection is always pure distance (preserves f410bdd
+        # order-independence guarantee).
         selected_wall = None
         wall_option_type = None
+
+        interaction_dist = _setting_float("oi_wall_initial_interaction_distance_pts", 20.0)
+        proximity_window = 2.0 * interaction_dist  # tracked wall still "reachable" from spot
+
+        tracked_ce = bool(
+            nearest_ce_wall
+            and self.current_wall_key == f"CE:{int(float(nearest_ce_wall['strike']))}"
+        )
+        tracked_pe = bool(
+            nearest_pe_wall
+            and self.current_wall_key == f"PE:{int(float(nearest_pe_wall['strike']))}"
+        )
+
         if nearest_ce_wall and nearest_pe_wall:
             ce_dist = abs(float(nearest_ce_wall["strike"]) - spot)
             pe_dist = abs(spot - float(nearest_pe_wall["strike"]))
-            if ce_dist <= pe_dist:
+
+            ce_active = tracked_ce and (
+                self.has_interacted
+                or self._check_candle_interaction(candle, float(nearest_ce_wall["strike"]), "CE", interaction_dist)
+            )
+            pe_active = tracked_pe and (
+                self.has_interacted
+                or self._check_candle_interaction(candle, float(nearest_pe_wall["strike"]), "PE", interaction_dist)
+            )
+
+            ce_priority_window = proximity_window if ce_active else interaction_dist
+            pe_priority_window = proximity_window if pe_active else interaction_dist
+
+            if tracked_ce and ce_dist <= ce_priority_window:
+                # Tracked CE wall is active or in initial interaction band — keep it.
                 selected_wall = nearest_ce_wall
                 wall_option_type = "CE"
-            else:
+            elif tracked_pe and pe_dist <= pe_priority_window:
+                # Tracked PE wall is active or in initial interaction band — keep it.
                 selected_wall = nearest_pe_wall
                 wall_option_type = "PE"
+            else:
+                # Neither tracked wall qualifies for priority — pick whichever qualifying wall is nearest.
+                if ce_dist <= pe_dist:
+                    selected_wall = nearest_ce_wall
+                    wall_option_type = "CE"
+                else:
+                    selected_wall = nearest_pe_wall
+                    wall_option_type = "PE"
         elif nearest_ce_wall:
             selected_wall = nearest_ce_wall
             wall_option_type = "CE"
@@ -116,6 +197,7 @@ class OIWallDetector:
             self.persistence_snapshots = 0
             self.first_seen = None
             self.last_seen = None
+            self.has_interacted = False
             return None
 
         strike = float(selected_wall["strike"])
@@ -147,6 +229,10 @@ class OIWallDetector:
             self.first_seen = candle.timestamp
             self.last_seen = candle.timestamp
             self.persistence_snapshots = 1
+            self.has_interacted = False
+
+        if self._check_candle_interaction(candle, strike, wall_option_type, interaction_dist):
+            self.has_interacted = True
 
         persistence_duration = (self.last_seen - self.first_seen).total_seconds() if self.first_seen else 0.0
         req_snapshots = _setting_int("oi_wall_persistence_snapshots", 3)
@@ -183,6 +269,7 @@ class OIWallDetector:
             self.persistence_snapshots = 0
             self.first_seen = None
             self.last_seen = None
+            self.has_interacted = False
 
         return bias
 

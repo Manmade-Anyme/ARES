@@ -27,6 +27,21 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **OI wall rejection silenced by mid-retest wall displacement (MANM-110)**:
+  `detectors/oi_wall.py` now preserves the currently tracked wall when a
+  qualifying opposite-side wall appears marginally closer to spot during the
+  retest approach (within 2× `oi_wall_initial_interaction_distance_pts`).
+  Previously (since `f410bdd`), pure distance-based CE vs PE selection allowed
+  an opposite-side strike to displace the tracked wall mid-interaction/retest
+  cycle, resetting `OIWallEntryFilter`'s state machine to `TRACKING` every
+  candle — permanently preventing `QUALIFIED` from firing and silencing all
+  `OI_WALL_REJECTION` Discord alerts. The tracked wall still correctly yields
+  when spot moves beyond 2× the interaction window (far-from-wall crash/rally),
+  preserving the legitimate cross-side switch behaviour.
+  Furthermore, pre-interaction candidate walls that have not yet touched the
+  interaction band are restricted to 1× `oi_wall_initial_interaction_distance_pts`,
+  ensuring an immediately actionable opposite-side wall (e.g. 1 pt away) is
+  never starved by a distant un-interacted candidate.
 - **OI wall re-test timestamps and watchlist webhook failures (TASK-073 / PR #103)**:
   Qualified OI-wall telemetry now records the armed re-test touch timestamp,
   rather than the later confirmation-candle timestamp. Watchlist Discord

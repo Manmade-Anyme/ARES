@@ -161,6 +161,7 @@ class TestEngineOIWallEntry(unittest.TestCase):
         self.engine.oi_wall_filter.acknowledge = MagicMock(
             return_value=self._make_decision(status="EXPIRED", bias=bias)
         )
+        self.engine.oi_wall_detector.release_terminal_wall = MagicMock()
 
         # Force R:R rejection by emptying per_type_levels and returning inverted levels from detector
         mock_signal = AresSignal(
@@ -187,6 +188,7 @@ class TestEngineOIWallEntry(unittest.TestCase):
 
         self.assertIsNone(signal)
         self.engine.oi_wall_filter.acknowledge.assert_called_once_with(decision, "REJECTED_BY_RR")
+        self.engine.oi_wall_detector.release_terminal_wall.assert_called_once_with("CE:24100")
 
     def test_qualified_signal_emits_and_acknowledges_emitted(self):
         bias = self._make_bias()
@@ -197,6 +199,7 @@ class TestEngineOIWallEntry(unittest.TestCase):
         self.engine.oi_wall_filter.acknowledge = MagicMock(
             return_value=self._make_decision(status="CONSUMED", bias=bias)
         )
+        self.engine.oi_wall_detector.release_terminal_wall = MagicMock()
 
         candle = self._make_candle(24075.0)
         atm = self._make_atm(24075.0)
@@ -205,6 +208,7 @@ class TestEngineOIWallEntry(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal.setup_type, SetupType.OI_WALL_REJECTION)
         self.engine.oi_wall_filter.acknowledge.assert_called_once_with(decision, "EMITTED")
+        self.engine.oi_wall_detector.release_terminal_wall.assert_called_once_with("CE:24100")
         self.assertIsNotNone(signal.oi_wall_context)
         self.assertEqual(signal.oi_wall_context.get("wall_strike"), 24100.0)
 
@@ -237,6 +241,20 @@ class TestEngineOIWallEntry(unittest.TestCase):
         self.engine.tick(candle, [], atm, 0.0, [])
 
         self.assertEqual(self.engine.latest_oi_wall_context["entry_status"], "EXPIRED")
+
+    def test_engine_syncs_oi_wall_interaction_to_detector(self):
+        bias = self._make_bias(state="INTERACTED")
+        decision = self._make_decision(status="INTERACTED", bias=bias)
+
+        self.engine.oi_wall_detector.update = MagicMock(return_value=bias)
+        self.engine.oi_wall_filter.update = MagicMock(return_value=decision)
+        self.engine.oi_wall_detector.register_interaction = MagicMock()
+
+        candle = self._make_candle(24080.0)
+        atm = self._make_atm(24080.0)
+        self.engine.tick(candle, [], atm, 0.0, [])
+
+        self.engine.oi_wall_detector.register_interaction.assert_called_once_with("CE:24100")
 
 
 if __name__ == "__main__":
