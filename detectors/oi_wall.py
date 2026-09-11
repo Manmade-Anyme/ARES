@@ -92,18 +92,56 @@ class OIWallDetector:
                     if nearest_pe_wall is None or abs(strike - spot) < abs(float(nearest_pe_wall["strike"]) - spot):
                         nearest_pe_wall = row
 
-        # Pick the nearest qualifying wall to spot
+        # Pick the qualifying wall to track.
+        #
+        # Priority rule (MANM-110): when both a CE and PE wall qualify simultaneously,
+        # prefer the currently tracked wall to avoid resetting the OIWallEntryFilter
+        # state machine mid-interaction/retest cycle.
+        #
+        # However, if spot has moved so far from the tracked wall that it falls outside
+        # 2× the configured interaction distance, the tracked wall is no longer relevant
+        # and the closer opposite-side wall correctly takes over.
+        #
+        # Same-side nearest-wall selection is always pure distance (preserves f410bdd
+        # order-independence guarantee).
         selected_wall = None
         wall_option_type = None
+
+        interaction_dist = _setting_float("oi_wall_initial_interaction_distance_pts", 20.0)
+        proximity_window = 2.0 * interaction_dist  # tracked wall still "reachable" from spot
+
+        tracked_ce = (
+            self.current_wall_key is not None
+            and self.current_wall_key.startswith("CE:")
+            and nearest_ce_wall is not None
+            and self.current_wall_key == f"CE:{int(float(nearest_ce_wall['strike']))}"
+        )
+        tracked_pe = (
+            self.current_wall_key is not None
+            and self.current_wall_key.startswith("PE:")
+            and nearest_pe_wall is not None
+            and self.current_wall_key == f"PE:{int(float(nearest_pe_wall['strike']))}"
+        )
+
         if nearest_ce_wall and nearest_pe_wall:
             ce_dist = abs(float(nearest_ce_wall["strike"]) - spot)
             pe_dist = abs(spot - float(nearest_pe_wall["strike"]))
-            if ce_dist <= pe_dist:
+            if tracked_ce and ce_dist <= proximity_window:
+                # Tracked CE wall is still close enough to remain relevant — keep it.
                 selected_wall = nearest_ce_wall
                 wall_option_type = "CE"
-            else:
+            elif tracked_pe and pe_dist <= proximity_window:
+                # Tracked PE wall is still close enough to remain relevant — keep it.
                 selected_wall = nearest_pe_wall
                 wall_option_type = "PE"
+            else:
+                # No active close-range tracking — pick whichever qualifying wall is nearest.
+                if ce_dist <= pe_dist:
+                    selected_wall = nearest_ce_wall
+                    wall_option_type = "CE"
+                else:
+                    selected_wall = nearest_pe_wall
+                    wall_option_type = "PE"
         elif nearest_ce_wall:
             selected_wall = nearest_ce_wall
             wall_option_type = "CE"
