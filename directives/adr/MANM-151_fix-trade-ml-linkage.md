@@ -27,10 +27,10 @@ Investigation into the ARES signal logging, position management, and ML collecti
    - If `Storage.log_signal` fails or completes asynchronously after `PositionManager.add_trade`, `signal.db_id` is `None` when `trade_analytics` is written. This leaves `trade_analytics.signal_id = NULL` (an orphaned trade).
    - Furthermore, when `AnalyticsLogger.log_exit` fires, it attempts to back-fill `ml_collection` using `eq("signal_id", str(signal_id))`. If `trade_analytics.signal_id` is `NULL`, `log_exit` aborts early and does not update `ml_collection`.
 
-3. **Database Schema Incompatibility (Codex Review Finding)**:
-   - `schema.sql` currently defines `trade_analytics.signal_id` as `bigint`.
+3. **Database Schema & Documentation Incompatibility (P2 Review Finding)**:
+   - `schema.sql` and `README.md` (lines 401 & 223) currently define `trade_analytics.signal_id` as `bigint`.
    - `ml_collection.signal_id` is defined as `text`.
-   - Storing a zero-padded 4-digit display string (e.g., `"0007"`) in a `bigint` column causes PostgreSQL to cast or strip leading zeros to `7`. When joining or querying `ml_collection.signal_id` (`text`), `"0007"` != `"7"`, breaking linkage for ~10% of generated codes.
+   - Storing a zero-padded 4-digit display string (e.g., `"0007"`) in a `bigint` column causes PostgreSQL to cast or strip leading zeros to `7`. When joining or querying `ml_collection.signal_id` (`text`), `"0007"` != `"7"`, breaking linkage for ~10% of generated codes in fresh deployments initialized from `README.md`.
 
 4. **Break-Even P&L Repair Disconnect (P1 Review Finding)**:
    - `repair_be_after_t1` in `ml_signal/backfill_labels.py` currently looks up `trade_analytics.signal_id` directly in `ares_signals.id` (`BIGSERIAL`) when `active_trades` has no row.
@@ -46,10 +46,10 @@ Investigation into the ARES signal logging, position management, and ML collecti
 
 To ensure 100% robust, deterministic, and fail-safe linkage between `ares_signals`, `active_trades`, `trade_analytics`, and `ml_collection`:
 
-1. **4-Digit Signal ID Schema Standardization & Migration**:
+1. **4-Digit Signal ID Schema Standardization, Migration & Documentation Sync**:
    - Create a database migration script `migrations/2026-09-11-task151-trade-analytics-signal-id-text.sql` to alter `trade_analytics.signal_id` from `bigint` to `text` (`ALTER TABLE trade_analytics ALTER COLUMN signal_id TYPE text;`).
-   - Update `schema.sql` to specify `trade_analytics.signal_id text` (matching `active_trades.signal_id` and `ml_collection.signal_id`).
-   - Both `trade_analytics.signal_id` and `ml_collection.signal_id` will consistently store the string representation of the 4-digit `signal.signal_id` (e.g., `"0007"`), preserving leading zeros.
+   - Update `schema.sql` and `README.md` (lines 223 & 401) to specify `trade_analytics.signal_id text` (matching `active_trades.signal_id` and `ml_collection.signal_id`).
+   - Both `trade_analytics.signal_id` and `ml_collection.signal_id` will consistently store the string representation of the 4-digit `signal.signal_id` (e.g., `"0007"`), preserving leading zeros across new and existing deployments.
 
 2. **Preserving Database Primary Key in Metadata**:
    - Update `AnalyticsLogger.log_entry` in `storage.py` to record `signal.signal_id` (4-digit text string) in `trade_analytics.signal_id`.
@@ -72,9 +72,10 @@ Assign implementation of ticket **MANM-151** to the **Code Generator Agent** wit
 
 ### Task Breakdown
 
-1. **`migrations/2026-09-11-task151-trade-analytics-signal-id-text.sql` & `schema.sql`**:
+1. **`migrations/2026-09-11-task151-trade-analytics-signal-id-text.sql`**, **`schema.sql`**, & **`README.md`**:
    - Add migration script: `ALTER TABLE trade_analytics ALTER COLUMN signal_id TYPE text;`.
    - Update `schema.sql` definition of `trade_analytics.signal_id` to `text`.
+   - Update `README.md` lines 223 & 401 to reflect 4-digit display code tracking and `signal_id text` schema definition.
 
 2. **`models.py`**:
    - Ensure `AresSignal.signal_id` is always formatted as a non-null 4-digit string (`f"{random.randint(0, 9999):04d}"`).
@@ -95,14 +96,16 @@ Assign implementation of ticket **MANM-151** to the **Code Generator Agent** wit
    - Add unit and integration tests verifying:
      a) Column data type compatibility for 4-digit string IDs with leading zeros (e.g. `"0007"`).
      b) `repair_be_after_t1` correctly uses `market_context["signal_db_id"]` without misinterpreting 4-digit display strings as serial IDs.
-     c) Trade close writes complete ML outcome records to `ml_collection` using the 4-digit `signal_id`.
-     d) Fallback reconciliation successfully links unlinked trades.
+     c) Fresh schema setup from `README.md` / `schema.sql` creates `trade_analytics.signal_id` as `text`.
+     d) Trade close writes complete ML outcome records to `ml_collection` using the 4-digit `signal_id`.
+     e) Fallback reconciliation successfully links unlinked trades.
 
 ---
 
 ## 4. Definition of Done & Acceptance Criteria
 
 - [ ] Schema migration created altering `trade_analytics.signal_id` to `text`.
+- [ ] `schema.sql` and `README.md` documentation updated to define `trade_analytics.signal_id text`.
 - [ ] `repair_be_after_t1` updated to use `market_context["signal_db_id"]` preserving database primary key lookups.
 - [ ] All 233 trades in `trade_analytics` are properly accounted for in `ml_collection`.
 - [ ] Orphaned trade UUID identified and reconciled via 4-digit `signal_id`.
