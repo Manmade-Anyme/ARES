@@ -29,6 +29,7 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
                     "pnl_points": 0.0,
                     "entry_price": 24000.0,
                     "direction": "BEARISH",
+                    "setup_type": "TEST_SETUP",
                     "entry_timestamp": "2026-08-22T08:42:00+00:00",
                     "exit_price": 24000.0,
                 },
@@ -59,7 +60,7 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
             ],
             "ares_signals": [
                 {"id": 101, "target_1": 24060.0},
-                {"id": 102, "target_1": 23950.0},
+                {"id": 102, "target_1": 23950.0, "timestamp": "2026-08-22T08:42:00+00:00", "setup_type": "TEST_SETUP"},
                 {"id": 103, "target_1": 24020.0},
             ],
             "ml_collection": [

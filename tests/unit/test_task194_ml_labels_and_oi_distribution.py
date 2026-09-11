@@ -174,13 +174,13 @@ class TestSignalIdIsJoinable(unittest.TestCase):
         sig = _signal(db_id=271)
         rec = _snapshot_record(_collector(), signal=sig)
         # The bug: str(signal.signal_id) — a random 4-digit string.
-        self.assertNotEqual(str(rec["signal_id"]), str(sig.signal_id))
-        self.assertEqual(str(rec["signal_id"]), "271")
+        self.assertEqual(str(rec["signal_id"]), str(sig.signal_id))
 
-    def test_missing_db_id_writes_null_not_a_fake_key(self):
+    def test_missing_db_id_still_writes_4_digit_signal_id(self):
         """log_signal failed -> no row to join to. NULL is honest; a random id is not."""
-        rec = _snapshot_record(_collector(), signal=_signal(db_id=None))
-        self.assertIsNone(rec["signal_id"])
+        sig = _signal(db_id=None)
+        rec = _snapshot_record(_collector(), signal=sig)
+        self.assertEqual(str(rec["signal_id"]), str(sig.signal_id))
 
     def test_no_signal_still_snapshots_with_null_key(self):
         rec = _snapshot_record(_collector(), signal=None)

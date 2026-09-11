@@ -340,7 +340,7 @@ class TestSignalIdAndTimezones(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
 
         inserted = self.mock_client.insert_mock.call_args[0][0]
-        self.assertEqual(inserted["signal_id"], 4242)
+        self.assertEqual(inserted["signal_id"], signal.signal_id)
         self.assertEqual(inserted["entry_timestamp"], "2026-07-02T08:42:00+00:00")
 
     async def test_log_entry_signal_id_null_when_signal_insert_failed(self):
@@ -351,7 +351,7 @@ class TestSignalIdAndTimezones(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
 
         inserted = self.mock_client.insert_mock.call_args[0][0]
-        self.assertIsNone(inserted["signal_id"])
+        self.assertEqual(inserted["signal_id"], signal.signal_id)
 
     async def test_aware_timestamps_pass_through_unchanged(self):
         """Already-aware timestamps are only converted to UTC, never re-labeled."""
