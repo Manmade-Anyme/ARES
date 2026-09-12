@@ -126,6 +126,80 @@ BEGIN
   END IF;
 END $$;
 
+-- CREATE TABLE IF NOT EXISTS is a no-op for an existing deployment. Add every
+-- standardized column explicitly so upgraded and fresh installations converge.
+ALTER TABLE ml_predictions
+   ADD COLUMN IF NOT EXISTS timestamp timestamptz,
+   ADD COLUMN IF NOT EXISTS probability numeric,
+   ADD COLUMN IF NOT EXISTS confidence_tier text,
+   ADD COLUMN IF NOT EXISTS model_version text,
+   ADD COLUMN IF NOT EXISTS signal_id text,
+   ADD COLUMN IF NOT EXISTS trade_id uuid,
+   ADD COLUMN IF NOT EXISTS spot numeric,
+   ADD COLUMN IF NOT EXISTS source text,
+   ADD COLUMN IF NOT EXISTS feature_snapshot jsonb,
+   ADD COLUMN IF NOT EXISTS created_at timestamptz;
+
+UPDATE ml_predictions
+SET feature_snapshot = '{}'::jsonb
+WHERE feature_snapshot IS NULL;
+
+UPDATE ml_predictions
+SET source = 'event_triggered'
+WHERE source IS NULL;
+
+UPDATE ml_predictions
+SET created_at = now()
+WHERE created_at IS NULL;
+
+UPDATE ml_predictions
+SET timestamp = created_at
+WHERE timestamp IS NULL;
+
+DO $$
+BEGIN
+   IF EXISTS (
+      SELECT 1 FROM ml_predictions
+      WHERE timestamp IS NULL
+          OR probability IS NULL
+          OR confidence_tier IS NULL
+          OR model_version IS NULL
+          OR spot IS NULL
+   ) THEN
+      RAISE EXCEPTION
+         'TASK-153 cannot apply NOT NULL constraints: legacy ml_predictions rows are missing required audit values';
+   END IF;
+END $$;
+
+ALTER TABLE ml_predictions
+   ALTER COLUMN timestamp SET NOT NULL,
+   ALTER COLUMN probability SET NOT NULL,
+   ALTER COLUMN confidence_tier SET NOT NULL,
+   ALTER COLUMN model_version SET NOT NULL,
+   ALTER COLUMN spot SET NOT NULL,
+   ALTER COLUMN source SET NOT NULL,
+   ALTER COLUMN feature_snapshot SET NOT NULL,
+   ALTER COLUMN created_at SET NOT NULL;
+
+ALTER TABLE ml_predictions
+   ALTER COLUMN source SET DEFAULT 'event_triggered',
+   ALTER COLUMN created_at SET DEFAULT now();
+
+-- Prediction rows are backend audit data. Never use the anon key for this
+-- table; only the service role may read or append rows.
+ALTER TABLE ml_predictions ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE ml_predictions FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON TABLE ml_predictions TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE ml_predictions_id_seq TO service_role;
+
+DROP POLICY IF EXISTS ml_predictions_service_read ON ml_predictions;
+CREATE POLICY ml_predictions_service_read
+   ON ml_predictions FOR SELECT TO service_role USING (true);
+
+DROP POLICY IF EXISTS ml_predictions_service_insert ON ml_predictions;
+CREATE POLICY ml_predictions_service_insert
+   ON ml_predictions FOR INSERT TO service_role WITH CHECK (true);
+
 -- Idempotent index creation
 CREATE INDEX IF NOT EXISTS idx_ml_pred_timestamp ON ml_predictions (timestamp desc);
 CREATE INDEX IF NOT EXISTS idx_ml_pred_signal ON ml_predictions (signal_id);
@@ -148,6 +222,7 @@ To guarantee zero impact on trading execution:
 2. **Fire-and-Forget Dispatch**: The core event loop dispatches the database insert task to the executor without `await`ing the network response. Dispatch overhead is $< 0.05$ ms.
 3. **Synchronous Fallback**: When called outside an active event loop (such as in offline evaluation scripts or unit test suites), the logger falls back to safe synchronous execution without crashing.
 4. **Complete Exception Containment**: The internal insert routine catches all subclasses of `Exception`, emits a structured warning to stderr/logging, and never propagates errors up the stack.
+5. **Backend Credential Contract**: `PredictionLogger` must construct its Supabase client with `SUPABASE_SERVICE_ROLE_KEY` (or the equivalent server-only settings field). It must fail closed when that credential is absent and must never fall back to the anon `SUPABASE_KEY`. The service-role key is permitted only in backend process secrets and must not be exposed to browser code, logs, or serialized prediction rows.
 
 ### Component Architecture Diagram
 
@@ -227,6 +302,9 @@ To prevent race conditions between trade entry and prediction logging:
 5. `PredictionLogger.log_prediction` is called immediately following `add_trade`, logging in a **single atomic INSERT** with both `signal_id` and `trade_id` (if executed).
    - *Advantage*: Completely eliminates the need for a secondary `UPDATE ml_predictions SET trade_id = ...` on trade close, avoiding race conditions and halving Supabase write volume.
 
+### Event-Triggered Writer Ownership
+The in-process `main.py` hook is the sole authoritative writer for `source = "event_triggered"`. `ml_signal.signal_consumer` must not insert event-triggered predictions when production ARES is running; it may remain a read-only signal observer or write only `source = "continuous"` rows under an explicitly separate deployment mode. The implementation must remove its event-triggered insert path and document that operators must not run a second event writer alongside `main.py`. This prevents duplicate rows, divergent feature snapshots, and double-counted calibration samples without relying on a best-effort deduplication query.
+
 ---
 
 ## 4. API & Class Contracts
@@ -238,9 +316,9 @@ class PredictionLogger:
     """Handles asynchronous, non-blocking persistence of ML predictions to Supabase."""
 
     def __init__(self, supabase_client: Optional[Client] = None, max_workers: int = 2):
-        self.supabase = supabase_client or create_client(
-            settings.supabase_url, settings.supabase_key
-        )
+      self.supabase = supabase_client or create_client(
+         settings.supabase_url, settings.supabase_service_role_key
+      )
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="ml_pred_logger"
@@ -360,8 +438,8 @@ Replace ad-hoc `self._supabase.table("ml_predictions").insert(...)` calls with u
    - `ml_predictions` stores exclusively market microstructure data (spot price, technical indicators, Greek values, open interest) and model scores.
    - Broker account IDs, Dhan client IDs, API tokens, user identifiers, and IP addresses are strictly excluded from `feature_snapshot` and all schema columns.
 2. **Row Level Security (RLS) & Access Control**:
-   - `ml_predictions` access is restricted to the backend service role (`authenticator` / `postgres`).
-   - Public anonymous read and write access is disabled.
+   - The migration enables RLS, revokes table and sequence access from `PUBLIC`, `anon`, and `authenticated`, and grants only the backend `service_role` SELECT/INSERT access through explicit policies.
+   - `PredictionLogger` uses a server-only `SUPABASE_SERVICE_ROLE_KEY`; the documented anon `SUPABASE_KEY` is never accepted for prediction persistence.
 3. **Immutable Audit Record**:
    - Rows in `ml_predictions` are append-only. Application code never issues `UPDATE` or `DELETE` on event-triggered prediction records.
 
@@ -387,6 +465,8 @@ Upon human approval of this ADR, assign implementation of **TASK-153** to the **
 
 1. **`migrations/2026-09-12-task153-ml-predictions-schema.sql`**:
    - Author idempotent SQL migration adjusting `ml_predictions` to use `feature_snapshot jsonb`, `trade_id uuid`, `source text`, and required indexes.
+   - For existing tables, add missing columns explicitly, backfill only safe values, fail with a diagnostic if required audit values are missing, then apply the required `NOT NULL` constraints.
+   - Enable RLS, revoke `PUBLIC`/`anon`/`authenticated` access, and add explicit `service_role` policies and sequence grants.
 
 2. **`schema.sql` & `ml_signal/schema.sql`**:
    - Update `ml_predictions` table definition and index definitions to match Section 2.
@@ -407,7 +487,9 @@ Upon human approval of this ADR, assign implementation of **TASK-153** to the **
    - In the `if signal:` block, after `position_manager.add_trade`, invoke `prediction_logger.log_prediction(...)`.
 
 7. **`ml_signal/live.py` & `ml_signal/signal_consumer.py`**:
-   - Update prediction logging to use `PredictionLogger.log_prediction` with `source="continuous"` and `source="event_triggered"`.
+   - Update `live.py` prediction logging to use `PredictionLogger.log_prediction` with `source="continuous"`.
+   - Remove the `signal_consumer.py` event-triggered insert path; it must not write rows when the authoritative `main.py` hook is enabled. If retained for offline/standalone use, make that mode explicit and mutually exclusive with the in-process event writer.
+   - Update backend configuration and deployment documentation to require `SUPABASE_SERVICE_ROLE_KEY` for `PredictionLogger`, with no anon-key fallback.
 
 8. **`docs/data_retention_and_privacy.md`**:
    - Author comprehensive data retention and privacy documentation reflecting Section 5.
