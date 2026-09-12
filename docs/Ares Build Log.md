@@ -2,6 +2,25 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-12 · Enable SHAP Package Support, Native TreeSHAP Fallback, and Drift Stability Auditing (MANM-156)
+
+Architected resilient multi-tier SHAP explainability, raw-margin additivity validation, and rolling-window feature drift stability auditing.
+
+**Problem**
+- In audit/evaluation environments lacking the Python `shap` package, `train_offline.py` caught `ModuleNotFoundError` (`if exc.name == "shap": return`) and returned early, failing to invoke the native XGBoost TreeSHAP fallback.
+- Training degraded to global split gain, losing sample-level local attribution, directional sign (positive vs. negative contribution), and raw-margin additivity.
+- No beeswarm distribution plots, rolling-window drift detection, or comprehensive metadata capture were present.
+
+**Architecture & Decisions (ADR-156)**
+- Dependency isolation: added `shap>=0.47.0,<0.50.0` and `matplotlib>=3.7.0,<4.0.0` to root `requirements.txt` and `ml_signal/requirements.txt`. Live serving path remains strictly decoupled from `shap`.
+- Multi-tier resilient explanation: Tier 1 (`shap_tree_explainer`) normalizes diverse output shapes to `(N, M)`; Tier 2 (`xgboost_pred_contribs`) automatically handles `ModuleNotFoundError` or explainer failures via native XGBoost `pred_contribs=True`; Tier 3 non-fatal failure guard.
+- Raw-margin log-odds additivity: validated via `np.allclose(contributions[:, :-1].sum(axis=1) + contributions[:, -1], raw_margin)`.
+- Multi-plot suite: summary bar chart (`{version}_shap_summary.png`) and directional beeswarm plot (`{version}_shap_beeswarm.png`) with pure Matplotlib scatter/jitter fallback for environments without `shap`.
+- Feature drift audit: `audit_shap_stability(...)` computes rank correlation ($\rho_s$), top-5 turnover, and attribution drift across rolling windows with graceful sparse data handling.
+- Implementation tasks assigned to Code Generator Agent via ADR-156.
+
+---
+
 ## 2026-09-11 · Preserve Tracked OI Wall Against Opposite-Side Displacement Mid-Retest (MANM-110)
 
 Fixed silent suppression of `OI_WALL_REJECTION` signals caused by premature wall displacement during retest approach.
