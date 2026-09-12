@@ -2,7 +2,27 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-12 · Feature Versioning, Missing Data Remediation, and Storage Contracts (MANM-154)
+
+Audited historical missing data across 14,823 `ml_collection` records and drafted Architecture Decision Record [ADR MANM-154](directives/adr/MANM-154_feature-versioning-missing-data.md) establishing schema versioning epochs, strict NULL/NaN storage contracts, and a dual-track training strategy.
+
+**Problem & Historical Findings**
+- `net_delta` missing in 8,996 rows (60.7%): Traced to schema evolution; introduced in TASK-4c / PR #98 (`a1b67ce` on 2026-08-21). Prior rows lacked option delta capture.
+- OI shape fields missing in 3,729 rows (25.2%): Introduced in TASK-194 (`ec2a84f` on 2026-07-31); prior rows only computed totals.
+- Nearest support/resistance distances missing (support in 6,236 rows, resistance in 2,327 rows): TASK-195 (`08c36e3`) nulled 5,226 rows carrying `100.0` literal sentinels. Remaining missingness reflects NIFTY all-time high breakouts (no resistance above spot) or pre-open hydration boundaries.
+- `trend_continuation` detector score missing in 2,606 rows (17.6%): Introduced in commit `782a240` (2026-07-28) when setup one-hot dynamically iterated `SetupType`.
+- Zero-injection defect (MANM-49): `signal_consumer.py` defaulted missing options context to zeros (`{"iv": 0, "oi": 0, ...}`), which TASK-199 resolved in `dataset.py` by converting missing features to `np.nan`.
+
+**Architectural Decisions**
+- Added `feature_version` integer column (default 4) with 4 historical epochs: v1 (Legacy, <2026-07-28), v2 (Setup Enums, 2026-07-28 to 2026-07-31), v3 (OI Shape & Joins, 2026-07-31 to 2026-08-21), and v4 (Full Modern Suite, 2026-08-21+).
+- Enforced strict invariant: missing data must always be stored as `None`/`null` and flattened to `np.nan`. Zero injection is strictly eliminated.
+- Adopted dual-track training: Baseline invariant models (v1-v4) vs enriched production models (v3+/v4) with explicit presence indicators (`has_nearest_support`, etc.).
+- Defined file-level implementation roadmap for the Code Generator Agent upon human ADR approval.
+
+---
+
 ## 2026-09-11 · Preserve Tracked OI Wall Against Opposite-Side Displacement Mid-Retest (MANM-110)
+
 
 Fixed silent suppression of `OI_WALL_REJECTION` signals caused by premature wall displacement during retest approach.
 
