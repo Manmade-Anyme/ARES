@@ -3,7 +3,7 @@
 **Status:** draft
 
 ## Goal
-Fix broken signal-to-trade joins so that `trade_analytics`, `active_trades`, and `ml_collection` tables all correctly reference `ares_signals.id` as their canonical join key instead of 4-digit display IDs.
+Fix broken signal-to-trade joins so that `trade_analytics`, `active_trades`, and `ml_collection` tables all correctly reference a canonical UUID. New schemas use `ares_signals.id`; existing deployments use the additive `ares_signals.signal_uuid` bridge until a separately reviewed primary-key cutover.
 
 ## Inputs
 - `storage.py`
@@ -17,12 +17,12 @@ Fix broken signal-to-trade joins so that `trade_analytics`, `active_trades`, and
 
 ## Expected Output
 - Architectural Decision Record (ADR) capturing the canonical key decisions and transition strategy.
-- Code changes in data models and insertion paths enforcing the use of the canonical `ares_signals.id` UUID primary key.
+- Code changes in data models and insertion paths enforcing the canonical UUID contract without writing UUIDs into an existing bigint `ares_signals.id` column.
 - A safe read-only validation query and a documented historical backfill plan.
 - Integration tests ensuring correct signal joins.
 
 ## Acceptance Criteria
-- `trade_analytics.signal_id` and `ml_collection.signal_id` store actual UUID keys corresponding to `ares_signals.id`.
+- New schemas use `trade_analytics.signal_id` and `ml_collection.signal_id` as UUID foreign keys to `ares_signals.id`; existing schemas use UUID bridge columns referencing `ares_signals.signal_uuid` until primary-key cutover.
 - The display IDs (4-digit format) are preserved in a dedicated display column if needed for UX/alerts.
 - Tests verify signal -> active trade -> trade analytics -> ML collection relationships.
 - Historical data is left untouched until backfill is fully planned and unambiguous.
