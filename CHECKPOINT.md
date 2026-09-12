@@ -6,19 +6,19 @@
 - MANM-156 [Enable SHAP package support, interpretability reporting, and native fallback] — Directive created by PM Agent.
 - MANM-156 — ADR-156 completed and pushed to `feature/MANM-156-shap-support` by Architect Agent.
 - MANM-156 — Implementation completed by Code Generator Agent.
+- MANM-156 — QA and PR Reviewer Agents approved PR #111.
 
 ## Open Tasks
-- MANM-156 [Enable SHAP package support, interpretability reporting, and native fallback] — assigned to QA & PR Reviewer, status: in_review.
+- MANM-156 [Enable SHAP package support, interpretability reporting, and native fallback] — awaiting human review and merge gate.
 
 ## Blockers
 - None.
 
 ## Agent States
-- Architect: Idle (ADR complete).
-- Code Generator: Idle (Implementation complete).
-- QA: Verifying MANM-156 coverage and tests.
-- PR Reviewer: Reviewing MANM-156 code diff.
+- Architect: Idle.
+- Code Generator: Idle.
+- QA: Idle (Review passed).
+- PR Reviewer: Idle (Review passed).
 
 ## Resume Instructions
-QA Agent to verify 100% test coverage and CI results on `feature/MANM-156-shap-support`.
-PR Reviewer Agent to review the code implementation on `feature/MANM-156-shap-support` against ADR-156 and general repo standards.
+Awaiting human approval and merge of PR #111. Once merged, human should trigger the post-merge workflow to finalize branch cleanup and Obsidian sync.
