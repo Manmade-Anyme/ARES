@@ -47,7 +47,7 @@ class TestOrphanTradeRepair(unittest.TestCase):
         sb = _FakeSupabase(rows)
         fixed = _mod().repair_orphan_trades(sb, apply=True)
         self.assertEqual(fixed, 1)
-        self.assertEqual(rows["trade_analytics"][0]["signal_id"], 243)
+        self.assertEqual(rows["trade_analytics"][0]["signal_id"], "243")
 
     def test_open_trades_are_repaired_too(self):
         """signal_id is independent of result_state — an OPEN trade still links."""
@@ -68,7 +68,7 @@ class TestOrphanTradeRepair(unittest.TestCase):
     def test_a_signal_already_used_by_another_trade_is_not_stolen(self):
         rows = {
             "trade_analytics": [
-                {"id": "t1", "signal_id": 243, "setup_type": "OI_WALL_REJECTION",
+                {"id": "t1", "signal_id": "243", "setup_type": "OI_WALL_REJECTION",
                  "entry_timestamp": "2026-07-23T03:49:20+00:00"},
                 {"id": "t2", "signal_id": None, "setup_type": "OI_WALL_REJECTION",
                  "entry_timestamp": "2026-07-23T03:49:21+00:00"},
@@ -163,12 +163,12 @@ class TestFixturesAreNeverLinked(unittest.TestCase):
     def test_unlink_clears_a_previously_linked_fixture(self):
         rows = {"trade_analytics": [
             {"id": _FIXTURE_ID, "signal_id": 169},
-            {"id": "real-uuid", "signal_id": 243},
+            {"id": "real-uuid", "signal_id": "243"},
         ]}
         sb = _FakeSupabase(rows)
         self.assertEqual(_mod().unlink_fixture_trades(sb, apply=True), 1)
         self.assertIsNone(rows["trade_analytics"][0]["signal_id"])
-        self.assertEqual(rows["trade_analytics"][1]["signal_id"], 243,
+        self.assertEqual(rows["trade_analytics"][1]["signal_id"], "243",
                          "a real trade's link must not be touched")
 
     def test_unlink_is_a_noop_once_clean(self):

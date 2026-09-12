@@ -54,7 +54,7 @@ CREATE TABLE active_trades (
 
 CREATE TABLE trade_analytics (
   id uuid PRIMARY KEY,
-  signal_id bigint, -- Optional link to ares_signals
+  signal_id text, -- Optional link to ares_signals
   setup_type text NOT NULL,
   direction text NOT NULL,
   

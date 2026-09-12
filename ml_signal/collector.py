@@ -193,7 +193,8 @@ class MLCollector:
         # None when db_id is unset (log_signal failed, or no signal): a NULL is
         # honest about having nothing to join to; a fabricated key is not.
         db_id = getattr(signal, "db_id", None) if signal_generated else None
-        signal_id = str(db_id) if db_id is not None else None
+        # Use 4-digit signal_id as requested by MANM-151 for linkage
+        signal_id = getattr(signal, "signal_id", None) if signal_generated else None
         # Enum members must be stored by .value — str(SetupType.X) yields
         # "SetupType.X", which silently broke the detector_scores one-hot below
         # for every row ever collected. See tests/unit/test_ml_feature_fidelity.py.

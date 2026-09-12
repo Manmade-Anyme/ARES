@@ -251,7 +251,7 @@ def repair_join_key(sb, apply: bool) -> int:
 
 def backfill_labels(sb, apply: bool) -> int:
     """Phase 2 — write trade_id / trade_outcome / trade_pnl from closed trades."""
-    trades = _page(sb, "trade_analytics", "id,signal_id,result_state,pnl_points")
+    trades = _page(sb, "trade_analytics", "id,signal_id,result_state,pnl_points,setup_type,entry_timestamp")
     closed = [
         t for t in trades
         if t.get("result_state") not in _OPEN_STATES and t.get("signal_id") is not None
@@ -327,7 +327,7 @@ def repair_be_after_t1(
     trades = _page(
         sb,
         "trade_analytics",
-        "id,signal_id,result_state,pnl_points,entry_price,direction,entry_timestamp,exit_price",
+        "id,signal_id,result_state,pnl_points,entry_price,direction,entry_timestamp,exit_price,market_context,setup_type",
     )
     be_rows = [
         trade for trade in trades
@@ -384,13 +384,30 @@ def repair_be_after_t1(
             signal_id = prospective_signal_ids.get(str(trade.get("id")))
 
         if pnl is None and signal_id is not None:
-            signal_source = signal_by_id.get(str(signal_id))
-            pnl = _be_pnl(
-                trade.get("entry_price"),
-                signal_source.get("target_1") if signal_source else None,
-                trade.get("direction"),
-            )
-            source_name = "ares_signals" if pnl is not None else None
+            signal_db_id = (trade.get("market_context") or {}).get("signal_db_id")
+            signal_source = None
+            if signal_db_id is not None:
+                signal_source = signal_by_id.get(str(signal_db_id))
+            else:
+                # Fallback safely to timestamp/setup matching instead of bare 4-digit query
+                cand = signal_by_id.get(str(signal_id))
+                if cand:
+                    st = cand.get("timestamp") or cand.get("created_at")
+                    tt = trade.get("entry_timestamp")
+                    if st and tt:
+                        st_dt = _parse_ts(st)
+                        tt_dt = _parse_ts(tt)
+                        if st_dt and tt_dt and abs((st_dt - tt_dt).total_seconds()) <= 65:
+                            if _normalise_setup(cand.get("setup_type")) == _normalise_setup(trade.get("setup_type")):
+                                signal_source = cand
+
+            if signal_source:
+                pnl = _be_pnl(
+                    trade.get("entry_price"),
+                    signal_source.get("target_1"),
+                    trade.get("direction"),
+                )
+                source_name = "ares_signals" if pnl is not None else None
         if source_name is None or pnl is None:
             unrepairable.append(trade)
             continue
@@ -513,7 +530,7 @@ def repair_orphan_trades(
     exact UUID-to-signal mappings even during a dry run so later phases can
     preview the same repairs that ``--apply`` would perform.
     """
-    trades = _page(sb, "trade_analytics", "id,signal_id,setup_type,entry_timestamp,result_state")
+    trades = _page(sb, "trade_analytics", "id,signal_id,setup_type,entry_timestamp,result_state,market_context")
     signals = _page(sb, "ares_signals", "id,setup_type,timestamp,created_at")
 
     # Fixtures are not trades. Linking one both fabricates a relationship and
@@ -565,7 +582,7 @@ def repair_orphan_trades(
             prospective_links[str(t["id"])] = best["id"]
         if apply:
             sb.table("trade_analytics").update(
-                {"signal_id": best["id"]}
+                {"signal_id": str(best["id"])}
             ).eq("id", t["id"]).execute()
         fixed += 1
 

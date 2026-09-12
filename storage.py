@@ -192,9 +192,12 @@ class AnalyticsLogger:
         if getattr(signal, "oi_wall_context", None) is not None:
             market_context["oi_wall"] = signal.oi_wall_context
 
+        if getattr(signal, "db_id", None) is not None:
+            market_context["signal_db_id"] = signal.db_id
+
         data = {
             "id": trade_id,
-            "signal_id": getattr(signal, "db_id", None),  # joins to ares_signals.id (NULL if signal logging failed)
+            "signal_id": getattr(signal, "signal_id", None),
             "setup_type": signal.setup_type.value,
             "direction": signal.direction.value,
             "entry_timestamp": to_utc_iso(signal.timestamp),
@@ -234,7 +237,13 @@ class AnalyticsLogger:
         def _update():
             # signal_id comes back too: it is the key the ml_collection label
             # back-fill below joins on.
-            response = self.supabase.table("trade_analytics").select("entry_price", "direction", "signal_id").eq("id", trade_id).execute()
+            import time
+            for _ in range(3):
+                response = self.supabase.table("trade_analytics").select("entry_price", "direction", "signal_id", "setup_type").eq("id", trade_id).execute()
+                if response.data:
+                    break
+                time.sleep(0.1)
+                
             if not response.data:
                 return
 
@@ -288,7 +297,7 @@ class AnalyticsLogger:
                     "trade_outcome": final_state,
                     "trade_pnl": pnl,
                     "trade_score": score,
-                }).eq("signal_id", str(signal_id)).execute()
+                }).eq("signal_id", str(signal_id)).is_("trade_id", "null").eq("signal_setup_type", record["setup_type"]).execute()
             except Exception as ml_err:
                 # Never let a labelling failure lose the trade exit above.
                 print(f"Failed to back-fill ml_collection label: {ml_err}")

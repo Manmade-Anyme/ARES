@@ -198,12 +198,25 @@ class PositionManager:
             if state_changed:
                 events.append((trade["id"], update_type))
 
+                pnl_points_override = None
+                if trade["state"] in ["CLOSED", "STOPPED_OUT"] and update_type == "STOPPED_OUT_AT_BE":
+                    if direction == "BULLISH":
+                        pnl_points_override = trade["target_1"] - trade["entry_price"]
+                    else:
+                        pnl_points_override = trade["entry_price"] - trade["target_1"]
+
                 # Prepare update payload
                 update_data = {
                     "state": trade["state"],
                     "stop_loss": trade["stop_loss"]
                 }
-                
+                if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
+                    update_data["exit_price"] = float(event_price)
+                    update_data["exit_type"] = update_type
+                    update_data["exit_timestamp"] = datetime.now(timezone.utc).isoformat()
+                    if pnl_points_override is not None:
+                        update_data["pnl_points_override"] = float(pnl_points_override)
+
                 # Push update to Supabase asynchronously
                 def _update(t_id=trade["id"], data=update_data):
                     self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
@@ -218,11 +231,7 @@ class PositionManager:
                 # the exit is recorded at the touched stop/target price)
                 if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
                     try:
-                        if update_type == "STOPPED_OUT_AT_BE":
-                            if direction == "BULLISH":
-                                pnl_points_override = trade["target_1"] - trade["entry_price"]
-                            else:
-                                pnl_points_override = trade["entry_price"] - trade["target_1"]
+                        if pnl_points_override is not None:
                             self.analytics.log_exit(
                                 trade["id"],
                                 event_price,
