@@ -1,6 +1,7 @@
 # MANM-159 Investigate and resolve directional performance asymmetry (Bullish vs Bearish)
 **Date:** 2026-09-12
-**Status:** draft
+**Status:** ready_for_review
+**ADR:** [ADR-159](directives/adr/MANM-159_directional-performance-asymmetry.md)
 
 ## Goal
 Identify the structural causes behind the severe underperformance of bullish trades compared to bearish trades, and implement a remediation strategy (e.g., asymmetrical risk/reward targets, regime-aware gating, or revised trend confirmation rules).

@@ -8,5 +8,5 @@
 
 ## Assigned Tasks
 - **PM Agent**: Created directive `MANM-159_performance-asymmetry.md` and initial backlog. Handed off to Architect.
-- **Architect Agent**: Pending. Needs to read directive, perform statistical analysis on the bullish vs bearish trades, and write an ADR proposing a fix.
-- **Code Generator Agent**: Pending ADR completion.
+- **Architect Agent**: Complete. Conducted statistical diagnostics (bootstrap CI, trimmed means, outlier sensitivity, setup cross-tabs, options parity) and authored ADR-159 (`directives/adr/MANM-159_directional-performance-asymmetry.md`).
+- **Code Generator Agent**: Assigned. Ready to implement remediation per ADR-159.
