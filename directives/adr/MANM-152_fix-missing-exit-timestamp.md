@@ -102,7 +102,7 @@ flowchart TD
 To guarantee 100% data integrity, eliminate inverted durations, and enforce strict trade finalization invariants across all components:
 
 ### 3.1 Database Migration & Anomaly Flagging
-Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-flagging.sql`:
+Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-flagging.sql`. The migration must be ordered as **add nullable columns, backfill/repair legacy rows, then add constraints**, because PostgreSQL validates existing rows when a constraint is added:
 
 1. **Add Flagging Column to `trade_analytics`**:
    ```sql
@@ -110,7 +110,37 @@ Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-fl
    ADD COLUMN IF NOT EXISTS time_metrics_excluded boolean NOT NULL DEFAULT false;
    ```
 
-2. **Flag and Isolate the Unrecoverable Trade (`d7713f41-7173-4da1-8d67-8c489609e23c`)**:
+2. **Add the active-trade timestamp and terminal telemetry columns**:
+   ```sql
+   ALTER TABLE active_trades
+   ADD COLUMN IF NOT EXISTS entry_timestamp timestamptz,
+   ADD COLUMN IF NOT EXISTS exit_timestamp timestamptz,
+   ADD COLUMN IF NOT EXISTS exit_price numeric,
+   ADD COLUMN IF NOT EXISTS exit_type text,
+   ADD COLUMN IF NOT EXISTS time_metrics_excluded boolean NOT NULL DEFAULT false;
+   ```
+
+3. **Backfill legacy active-trade rows before enforcing terminal invariants**:
+   ```sql
+   -- The UUID is shared by active_trades and trade_analytics.
+   UPDATE active_trades AS active
+   SET entry_timestamp = analytics.entry_timestamp,
+       exit_timestamp = analytics.exit_timestamp,
+       exit_price = analytics.exit_price,
+       exit_type = analytics.result_state
+   FROM trade_analytics AS analytics
+   WHERE active.id = analytics.id;
+
+   -- Rows without an analytics counterpart still need a stable event-time
+   -- anchor for the new lifecycle checks and future reconciliation.
+   UPDATE active_trades
+   SET entry_timestamp = created_at
+   WHERE entry_timestamp IS NULL;
+   ```
+
+   The implementation task must verify that no `active_trades` row remains without `entry_timestamp` before applying `SET NOT NULL`. If the deployment contains rows that cannot be matched or anchored, archive them or stop the migration with an explicit diagnostic rather than adding a constraint that cannot validate.
+
+4. **Flag and isolate the unrecoverable trade (`d7713f41-7173-4da1-8d67-8c489609e23c`) before chronology checks**:
    ```sql
    UPDATE trade_analytics
    SET time_metrics_excluded = true,
@@ -120,14 +150,20 @@ Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-fl
            '{"flag": "INVALID_NEGATIVE_DURATION", "reason": "Leaked synthetic test fixture with exit preceding entry", "investigation": "MANM-152"}'::jsonb
        )
    WHERE id = 'd7713f41-7173-4da1-8d67-8c489609e23c';
+
+   UPDATE active_trades
+   SET time_metrics_excluded = true
+   WHERE id = 'd7713f41-7173-4da1-8d67-8c489609e23c';
    ```
 
-3. **Add Chronological & Completeness Constraints to `trade_analytics`**:
+   This row is intentionally retained for auditability. It is explicitly exempted from time-based validation; its inverted timestamps are not silently treated as valid data.
+
+5. **Add Chronological & Completeness Constraints after repair/backfill**:
    ```sql
    -- Invariant 1: Exit timestamp must never precede entry timestamp
    ALTER TABLE trade_analytics
    ADD CONSTRAINT chk_trade_analytics_exit_chronology
-   CHECK (exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp);
+   CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp);
 
    -- Invariant 2: Terminal states require exit_timestamp unless explicitly flagged as an excluded anomaly
    ALTER TABLE trade_analytics
@@ -135,17 +171,19 @@ Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-fl
    CHECK (result_state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true);
    ```
 
-4. **Expand `active_trades` Schema for Redundant Telemetry**:
+   Add equivalent checks for `active_trades`; the anomaly flag is required there because its legacy row is terminal but has no trustworthy exit timestamp:
    ```sql
    ALTER TABLE active_trades
-   ADD COLUMN IF NOT EXISTS exit_timestamp timestamptz,
-   ADD COLUMN IF NOT EXISTS exit_price numeric,
-   ADD COLUMN IF NOT EXISTS exit_type text;
+   ALTER COLUMN entry_timestamp SET NOT NULL;
 
-   -- Invariant 3: Closed active trades require exit_timestamp
+   ALTER TABLE active_trades
+   ADD CONSTRAINT chk_active_trades_exit_chronology
+   CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp);
+
+   -- Invariant 3: Closed active trades require exit_timestamp unless excluded
    ALTER TABLE active_trades
    ADD CONSTRAINT chk_active_trades_closed_requires_exit
-   CHECK (state NOT IN ('CLOSED', 'STOPPED_OUT') OR exit_timestamp IS NOT NULL);
+   CHECK (state NOT IN ('CLOSED', 'STOPPED_OUT') OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true);
    ```
 
 ### 3.2 Event-Time Propagation Pipeline
@@ -166,7 +204,7 @@ sequenceDiagram
     PM->>PM: Resolve event_timestamp = candle_timestamp or now(utc)
     PM->>PM: Validate event_timestamp >= trade["entry_timestamp"]
     
-    PM->>AT: update({"state": "CLOSED", "exit_timestamp": event_ts, "exit_price": px, "exit_type": type})
+   PM->>AT: await insert completion, then update({"state": "CLOSED", "exit_timestamp": event_ts, "exit_price": px, "exit_type": type})
     
     PM->>AL: log_exit(trade_id, event_price, update_type, exit_timestamp=event_ts, pnl_override)
     deactivate PM
@@ -197,9 +235,11 @@ sequenceDiagram
      - Determine event timestamp: `event_ts = to_utc_iso(candle_timestamp) if candle_timestamp else datetime.now(timezone.utc).isoformat()`.
      - In-memory trade dict stores `trade["entry_timestamp"]`.
      - Validate that `event_ts >= trade["entry_timestamp"]`. If violated, clamp to `trade["entry_timestamp"]` and log a structured warning.
-   - Persistence:
-     - Update payload for `active_trades` on close includes `exit_timestamp`, `exit_price`, and `exit_type`.
-     - Pass `exit_timestamp=event_ts` to `self.analytics.log_exit`.
+    - Persistence:
+       - Add `entry_timestamp` to the `active_trades` insert payload and persist the normalized value from `signal.timestamp`.
+       - Update payload for `active_trades` on close includes `exit_timestamp`, `exit_price`, and `exit_type`.
+       - Track the executor future returned by `add_trade` per trade ID. Before closing a trade, `update_trades` awaits that future and then awaits the terminal update, so the close cannot overtake the insert. A failed insert must be surfaced and retried or leave the close operation pending; a fire-and-forget update is not sufficient.
+       - Pass `exit_timestamp=event_ts` to `self.analytics.log_exit`.
 
 3. **`AnalyticsLogger.log_exit`**:
    - Signature:
@@ -230,8 +270,11 @@ Update all downstream analysis consumers to ignore records flagged with `time_me
    - Filter out rows where `time_metrics_excluded == True`.
    - Update `pnl_valid` and timestamp validation:
      ```python
+   entry_dt = pd.to_datetime(df["entry_timestamp"], utc=True, errors="coerce", format="mixed")
+   exit_dt = pd.to_datetime(df["exit_timestamp"], utc=True, errors="coerce", format="mixed")
      valid_chronology = (exit_dt >= entry_dt)
      metrics["sharpe_invalid_chronology_count"] = int((~valid_chronology).sum())
+   valid = pnl_valid & ~df["time_metrics_excluded"].fillna(False) & valid_chronology
      ```
    - Exclude any row where hold duration $< 0$ from trading-day P&L aggregation.
 
@@ -245,16 +288,17 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
 
 1. **`migrations/2026-09-12-task152-exit-timestamp-validation-and-flagging.sql`**:
    - Add `time_metrics_excluded boolean DEFAULT false` to `trade_analytics`.
-   - Update `d7713f41-7173-4da1-8d67-8c489609e23c` setting `time_metrics_excluded = true` and recording anomaly context in `market_context`.
+    - Add `entry_timestamp`, `exit_timestamp`, `exit_price`, `exit_type`, and `time_metrics_excluded` to `active_trades`.
+    - Backfill `active_trades` from `trade_analytics` by UUID, with an explicit `created_at` fallback for rows without an analytics counterpart; fail or archive any row that still cannot be anchored.
+    - Update `d7713f41-7173-4da1-8d67-8c489609e23c` in both tables, setting `time_metrics_excluded = true` and recording anomaly context in `market_context`.
    - Add CHECK constraints:
-     - `chk_trade_analytics_exit_chronology`: `exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp`.
+       - `chk_trade_analytics_exit_chronology`: `time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp`.
      - `chk_trade_analytics_closed_requires_exit`: `result_state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true`.
-   - Add `exit_timestamp timestamptz`, `exit_price numeric`, and `exit_type text` to `active_trades`.
-   - Add CHECK constraint on `active_trades`:
-     - `chk_active_trades_closed_requires_exit`: `state NOT IN ('CLOSED', 'STOPPED_OUT') OR exit_timestamp IS NOT NULL`.
+       - `chk_active_trades_exit_chronology`: `time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp`.
+       - `chk_active_trades_closed_requires_exit`: `state NOT IN ('CLOSED', 'STOPPED_OUT') OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true`.
 
 2. **`schema.sql` & `README.md`**:
-   - Update `active_trades` table definition in `schema.sql` and `README.md` to include `exit_timestamp timestamptz`, `exit_price numeric`, and `exit_type text`.
+   - Update `active_trades` table definition in `schema.sql` and `README.md` to include `entry_timestamp timestamptz`, `exit_timestamp timestamptz`, `exit_price numeric`, `exit_type text`, and `time_metrics_excluded boolean DEFAULT false`.
    - Update `trade_analytics` table definition in `schema.sql` and `README.md` to include `time_metrics_excluded boolean DEFAULT false` and document the check constraints.
 
 3. **`storage.py` (`AnalyticsLogger`)**:
@@ -275,12 +319,13 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
    - Update query to select `entry_timestamp` alongside `entry_price, direction, signal_id`.
 
 4. **`position_manager.py` (`PositionManager`)**:
-   - Update `add_trade`: ensure `trade_data["entry_timestamp"]` stores the ISO UTC timestamp from `signal.timestamp`.
+   - Update `add_trade`: ensure `trade_data["entry_timestamp"]` stores the ISO UTC timestamp from `signal.timestamp`, and track the executor future for the `active_trades` insert by trade ID.
    - Update `update_trades` signature to accept `candle_timestamp: Optional[datetime] = None`.
    - On trade exit (`CLOSED`, `STOPPED_OUT`):
      - Compute `event_ts = to_utc_iso(candle_timestamp) if candle_timestamp else datetime.now(timezone.utc).isoformat()`.
      - Invariant check: ensure `event_ts >= trade["entry_timestamp"]`.
      - Include `exit_timestamp: event_ts`, `exit_price: event_price`, `exit_type: update_type` in `active_trades` update payload.
+   - Await the matching insert future before submitting and awaiting the terminal update; retry or report a failed terminal write instead of allowing an update against a not-yet-inserted row.
      - Pass `exit_timestamp=event_ts` to `self.analytics.log_exit`.
 
 5. **`main.py`**:
@@ -293,7 +338,7 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
 
 6. **`reports.py` & `ml_signal/train_offline.py`**:
    - `reports.py`: filter out `time_metrics_excluded = true` in `fetch_closed_trades`.
-   - `ml_signal/train_offline.py`: in `_sharpe_metrics`, exclude records flagged with `time_metrics_excluded = true` or having inverted duration ($\text{exit} < \text{entry}$).
+   - `ml_signal/train_offline.py`: change `_fetch_trade_exit_timestamps` to select and return `id,exit_timestamp,entry_timestamp,time_metrics_excluded`; merge all three metadata fields into each `ml_collection` row before `_sharpe_metrics` runs. In `_sharpe_metrics`, exclude records flagged with `time_metrics_excluded = true` or having inverted duration ($\text{exit} < \text{entry}$), and report the count of invalid chronology rows.
 
 7. **Regression Test Suite (`tests/unit/test_task152_exit_timestamp_validation.py`)**:
    - Test 1: `log_exit` requires and validates `exit_timestamp`.
