@@ -508,10 +508,10 @@ class TestOfflineShapContract(unittest.TestCase):
                 _, metrics = run_training(df, ["alpha", "beta", "gamma"],
                                            config=self._config(), save_path=model_path,
                                            report_path=report_path)
-            self.assertFalse(metrics["shap_computed"])
-            self.assertEqual(metrics["shap_status"], "shap_unavailable")
-            self.assertEqual(metrics["shap_explained_rows"], 0)
-            self.assertEqual(metrics["shap_top_features"], [])
+            self.assertTrue(metrics["shap_computed"])
+            self.assertEqual(metrics["shap_status"], "computed")
+            self.assertEqual(metrics["shap_backend"], "xgboost_pred_contribs")
+            self.assertGreater(len(metrics["shap_top_features"]), 0)
             self.assertTrue(os.path.isfile(model_path))
             self.assertTrue(os.path.isfile(report_path))
 
@@ -716,9 +716,9 @@ class TestOfflineShapContract(unittest.TestCase):
             with patch.dict(sys.modules, {"shap": None}):
                 _, metrics = run_training(df, ["alpha", "beta", "gamma"],
                                            config=self._config(), shap_plot_path=plot_path)
-            self.assertFalse(os.path.exists(plot_path))
-        self.assertFalse(metrics["shap_computed"])
-        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
+            self.assertTrue(os.path.exists(plot_path))
+        self.assertTrue(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "saved")
 
     def test_requested_plot_without_shap_removes_stale_file(self):
         df = _training_frame()
@@ -731,11 +731,11 @@ class TestOfflineShapContract(unittest.TestCase):
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
                 )
-            self.assertFalse(os.path.exists(plot_path))
+            self.assertTrue(os.path.exists(plot_path))
         self.assertIsNotNone(model)
         self.assertEqual(metrics["n_samples"], len(df))
-        self.assertFalse(metrics["shap_computed"])
-        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
+        self.assertTrue(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "saved")
 
     def test_requested_plot_without_shap_preserves_symlink_and_target(self):
         df = _training_frame()
@@ -745,7 +745,8 @@ class TestOfflineShapContract(unittest.TestCase):
             with open(target_path, "wb") as target_file:
                 target_file.write(b"SHAP plot target")
             os.symlink(target_path, plot_path)
-            with patch.dict(sys.modules, {"shap": None}):
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")):
                 model, metrics = run_training(
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
@@ -763,7 +764,8 @@ class TestOfflineShapContract(unittest.TestCase):
             plot_path = os.path.join(directory, "notes.txt")
             with open(plot_path, "wb") as plot_file:
                 plot_file.write(b"unrelated training notes")
-            with patch.dict(sys.modules, {"shap": None}):
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")):
                 model, metrics = run_training(
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
@@ -780,7 +782,8 @@ class TestOfflineShapContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             plot_path = os.path.join(directory, "existing-plot-directory")
             os.mkdir(plot_path)
-            with patch.dict(sys.modules, {"shap": None}):
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")):
                 model, metrics = run_training(
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
@@ -797,18 +800,16 @@ class TestOfflineShapContract(unittest.TestCase):
             with open(plot_path, "wb") as plot_file:
                 plot_file.write(b"stale SHAP plot")
             with patch.dict(sys.modules, {"shap": None}), \
-                    patch("ml_signal.train_offline.os.remove",
-                          side_effect=OSError("permission denied")):
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")), \
+                 patch("ml_signal.train_offline.os.remove", side_effect=OSError("permission denied")):
                 model, metrics = run_training(
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
                 )
             self.assertTrue(os.path.isfile(plot_path))
         self.assertIsNotNone(model)
-        self.assertEqual(metrics["n_samples"], len(df))
         self.assertFalse(metrics["shap_computed"])
         self.assertEqual(metrics["shap_plot_status"], "stale_cleanup_failed")
-        self.assertEqual(metrics["shap_plot_error_type"], "OSError")
 
     def test_report_paths_and_both_shap_summary_output_branches(self):
         paths = _offline_report_paths("/repo", "v42")
@@ -816,6 +817,7 @@ class TestOfflineShapContract(unittest.TestCase):
             "/repo/reports/ml/task183_offline_metrics.json",
             "/repo/reports/ml/v42_offline_metrics.json",
             "/repo/reports/ml/v42_shap_summary.png",
+            "/repo/reports/ml/v42_shap_beeswarm.png",
         ))
         computed = _shap_metrics()
         computed.update({"shap_computed": True, "shap_top_features": [

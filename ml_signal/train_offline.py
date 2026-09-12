@@ -243,11 +243,6 @@ def _compute_shap(
     try:
         import shap
     except ModuleNotFoundError as exc:
-        if exc.name == "shap":
-            print("[!] SHAP unavailable; skipping offline explanation and continuing.")
-            metrics["shap_status"] = "shap_unavailable"
-            metrics["shap_error_type"] = type(exc).__name__
-            return
         import_failure = exc
     except Exception as exc:
         import_failure = exc
@@ -269,6 +264,10 @@ def _compute_shap(
             if isinstance(values, list):
                 values = values[-1]
             values = np.asarray(values, dtype=float)
+            
+            if values.ndim == 3:
+                values = values[:, :, 1] if values.shape[-1] == 2 else values[:, :, -1]
+                
             expected_shape = (len(X_test), len(feature_cols))
             if values.shape != expected_shape:
                 raise ValueError("SHAP contribution shape mismatch")
@@ -296,7 +295,7 @@ def _compute_shap(
         except Exception as native_exc:
             metrics["shap_status"] = "failed"
             metrics["shap_error_type"] = type(native_exc).__name__
-            return
+            return None
 
     means = np.mean(np.abs(values), axis=0)
     ranked = sorted(zip(feature_cols, means), key=lambda item: item[1], reverse=True)
@@ -309,6 +308,160 @@ def _compute_shap(
     metrics["shap_backend"] = backend
     metrics["shap_status"] = "computed"
     metrics["shap_iteration_range"] = iteration_range
+    return values
+
+
+
+def _save_shap_beeswarm_plot(values: np.ndarray, X_test: pd.DataFrame, feature_cols: List[str], beeswarm_path: Optional[str], backend: str) -> None:
+    if not beeswarm_path or values is None:
+        return
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        os.makedirs(os.path.dirname(beeswarm_path) or ".", exist_ok=True)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        try:
+            plot_success = False
+            if backend == "shap_tree_explainer":
+                try:
+                    import shap
+                    shap.summary_plot(values, X_test, show=False, max_display=15)
+                    fig = plt.gcf()
+                    plot_success = True
+                except Exception as e:
+                    print(f"[!] shap.summary_plot failed ({e}), falling back to Matplotlib beeswarm.")
+                    plt.clf() # Clear failed plot
+            
+            if not plot_success:
+                # Native fallback beeswarm (Matplotlib directional scatter/jitter)
+                means = np.mean(np.abs(values), axis=0)
+                top_indices = np.argsort(means)[-15:]
+                
+                for i, feat_idx in enumerate(top_indices):
+                    feat_vals = X_test.iloc[:, feat_idx].values
+                    shap_vals = values[:, feat_idx]
+                    
+                    # Normalize feature values to [0, 1]
+                    feat_min, feat_max = feat_vals.min(), feat_vals.max()
+                    if feat_max > feat_min:
+                        norm_vals = (feat_vals - feat_min) / (feat_max - feat_min)
+                    else:
+                        norm_vals = np.zeros_like(feat_vals)
+                    
+                    jitter = np.random.uniform(-0.15, 0.15, size=len(shap_vals))
+                    y_pos = np.full_like(shap_vals, i) + jitter
+                    
+                    sc = ax.scatter(shap_vals, y_pos, c=norm_vals, cmap="coolwarm", s=10, alpha=0.7)
+                
+                ax.axvline(x=0, color="k", linestyle="-", linewidth=0.5)
+                ax.set_yticks(range(len(top_indices)))
+                ax.set_yticklabels([feature_cols[idx] for idx in top_indices])
+                ax.set_xlabel("SHAP value (impact on model output)")
+                ax.set_title("SHAP Beeswarm Plot (Native Fallback)")
+                cbar = plt.colorbar(sc, ax=ax)
+                cbar.set_label("Feature value")
+            
+            fig.savefig(beeswarm_path, dpi=150, bbox_inches="tight")
+            print(f"[+] SHAP beeswarm plot saved -> {beeswarm_path}")
+        finally:
+            plt.close(fig)
+    except Exception as exc:
+        print(f"[!] SHAP beeswarm plot could not be saved; continuing ({type(exc).__name__}).")
+
+def audit_shap_stability(df: pd.DataFrame, feature_cols: List[str], model, min_window_samples: int = 30) -> Dict[str, object]:
+    """Audit SHAP stability across rolling training windows to detect feature drift."""
+    if "timestamp" not in df.columns:
+        return {"status": "missing_timestamp_column"}
+        
+    n = len(df)
+    if n < 2 * min_window_samples:
+        return {"status": "insufficient_data"}
+    
+    n_windows = 4
+    # Split df chronologically into W windows
+    sorted_df = df.sort_values("timestamp").reset_index(drop=True)
+    window_size = n // n_windows
+    if window_size < min_window_samples:
+        return {"status": "insufficient_data"}
+        
+    window_shaps = []
+    best_iteration = int(getattr(model, "best_iteration", model.n_estimators - 1))
+    
+    for w in range(n_windows):
+        start_idx = w * window_size
+        end_idx = start_idx + window_size if w < n_windows - 1 else n
+        w_df = sorted_df.iloc[start_idx:end_idx]
+        if len(w_df) == 0:
+            continue
+            
+        # Extract native SHAP for window
+        try:
+            w_X = w_df[feature_cols]
+            w_dtest = xgb.DMatrix(w_X)
+            booster = model.get_booster()
+            w_contribs = np.asarray(booster.predict(w_dtest, pred_contribs=True, iteration_range=(0, best_iteration + 1)))
+            w_values = w_contribs[:, :-1]
+            w_mean_abs = np.mean(np.abs(w_values), axis=0)
+            window_shaps.append(w_mean_abs)
+        except Exception:
+            pass
+            
+    if len(window_shaps) < 2:
+        return {"status": "insufficient_data"}
+        
+    correlations = []
+    turnover_rates = []
+    drifts = []
+    flagged_features = set()
+    
+    for i in range(1, len(window_shaps)):
+        prev = window_shaps[i-1]
+        curr = window_shaps[i]
+        
+        # Rank correlation
+        prev_ranks = np.argsort(np.argsort(-prev))
+        curr_ranks = np.argsort(np.argsort(-curr))
+        
+        d_sq = np.sum((prev_ranks - curr_ranks) ** 2)
+        M = len(feature_cols)
+        rho = 1 - (6 * d_sq) / (M * (M**2 - 1)) if M > 1 else 1.0
+        correlations.append(rho)
+        
+        # Top 5 turnover
+        prev_top5 = set(np.argsort(-prev)[:5])
+        curr_top5 = set(np.argsort(-curr)[:5])
+        denom = float(min(5, len(feature_cols)))
+        turnover = len(prev_top5 - curr_top5) / denom if denom > 0 else 0.0
+        turnover_rates.append(turnover)
+        
+        # Drift score
+        drift = np.abs(curr - prev) / (prev + 1e-6)
+        drifts.append(drift)
+        
+        # Flag features with > 100% swing in top features
+        for j in curr_top5:
+            if drift[j] > 1.0:
+                flagged_features.add(feature_cols[j])
+
+    mean_rho = float(np.mean(correlations))
+    mean_turnover = float(np.mean(turnover_rates))
+    
+    if mean_rho >= 0.65 and mean_turnover <= 0.4:
+        verdict = "stable"
+    elif mean_rho < 0.50 or flagged_features:
+        verdict = "drift_detected"
+    else:
+        verdict = "stable"
+        
+    return {
+        "status": "computed",
+        "mean_rank_correlation": mean_rho,
+        "mean_top5_turnover": mean_turnover,
+        "stability_verdict": verdict,
+        "flagged_features": list(flagged_features)
+    }
 
 
 def _save_shap_plot(metrics: Dict[str, object], shap_plot_path: Optional[str]) -> None:
@@ -356,13 +509,14 @@ def _save_shap_plot(metrics: Dict[str, object], shap_plot_path: Optional[str]) -
         print(f"[!] SHAP plot could not be saved; continuing ({type(exc).__name__}).")
 
 
-def _offline_report_paths(repo: str, version: str) -> Tuple[str, str, str]:
+def _offline_report_paths(repo: str, version: str) -> Tuple[str, str, str, str]:
     """Return canonical, versioned, and SHAP plot report paths."""
     report_dir = os.path.join(repo, "reports", "ml")
     return (
         os.path.join(report_dir, "task183_offline_metrics.json"),
         os.path.join(report_dir, f"{version}_offline_metrics.json"),
         os.path.join(report_dir, f"{version}_shap_summary.png"),
+        os.path.join(report_dir, f"{version}_shap_beeswarm.png"),
     )
 
 
@@ -386,6 +540,7 @@ def run_training(
     save_path: Optional[str] = None,
     report_path: Optional[str] = None,
     shap_plot_path: Optional[str] = None,
+    shap_beeswarm_path: Optional[str] = None,
     model_version: Optional[str] = None,
 ) -> Tuple[object, Dict[str, object]]:
     """
@@ -427,8 +582,48 @@ def run_training(
 
     importance = _importance(model, feature_cols)
     metrics["top_features"] = importance.head(15).to_dict(orient="records")
-    _compute_shap(model, X_test, feature_cols, metrics)
+    values = _compute_shap(model, X_test, feature_cols, metrics)
     _save_shap_plot(metrics, shap_plot_path)
+    _save_shap_beeswarm_plot(values, X_test, feature_cols, shap_beeswarm_path, metrics.get("shap_backend", "none"))
+    
+    # Metadata assembly
+    try:
+        import hashlib
+        schema_str = ",".join(feature_cols)
+        schema_hash = hashlib.sha256(schema_str.encode()).hexdigest()[:8]
+        
+        train_start = pd.to_datetime(train["timestamp"]).min().isoformat() if not train.empty and "timestamp" in train else None
+        train_end = pd.to_datetime(train["timestamp"]).max().isoformat() if not train.empty and "timestamp" in train else None
+        test_start = pd.to_datetime(test["timestamp"]).min().isoformat() if not test.empty and "timestamp" in test else None
+        test_end = pd.to_datetime(test["timestamp"]).max().isoformat() if not test.empty and "timestamp" in test else None
+        
+        from datetime import datetime, timezone
+        metrics["shap_metadata"] = {
+            "model_version": model_version,
+            "feature_schema_version": "v1.0",
+            "feature_count": len(feature_cols),
+            "feature_schema_hash": schema_hash,
+            "training_window_start": train_start,
+            "training_window_end": train_end,
+            "testing_window_start": test_start,
+            "testing_window_end": test_end,
+            "sample_size_total": metrics["n_samples"],
+            "sample_size_train": metrics["n_train"],
+            "sample_size_test": metrics["n_test"],
+            "shap_backend": metrics.get("shap_backend", "none"),
+            "shap_status": metrics.get("shap_status", "not_attempted"),
+            "raw_margin_additivity": metrics.get("shap_raw_margin_additivity", False),
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+    except Exception as e:
+        print(f"[!] Metadata generation failed: {e}")
+        
+    try:
+        metrics["shap_stability_audit"] = audit_shap_stability(df, feature_cols, model)
+    except Exception as e:
+        print(f"[!] Stability audit failed: {e}")
+        metrics["shap_stability_audit"] = {"status": "failed", "error": type(e).__name__}
+
 
     if save_path:
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
@@ -552,7 +747,7 @@ def main() -> None:
     save_path, next_version = get_next_model_version_and_path(models_dir)
     print(f"[*] Incrementing model version -> {next_version} ({save_path})")
 
-    report_path, versioned_report_path, shap_plot_path = _offline_report_paths(
+    report_path, versioned_report_path, shap_plot_path, shap_beeswarm_path = _offline_report_paths(
         repo, next_version,
     )
     model, metrics = run_training(
@@ -561,6 +756,7 @@ def main() -> None:
         save_path=save_path,
         report_path=report_path,
         shap_plot_path=shap_plot_path,
+        shap_beeswarm_path=shap_beeswarm_path,
         model_version=next_version,
     )
     with open(versioned_report_path, "w") as f:
