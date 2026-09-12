@@ -12,6 +12,7 @@
 | TASK-177 | 2026-07-06 | Trend-Continuation Detector | Approved |
 | MANM-93 | 2026-08-31 | Dhan Redis API Removal & Local/Supabase State Architecture | Proposed |
 | MANM-151 | 2026-09-11 | Trade ML Linkage via 4-Digit Display Signal ID Reconciliation | Proposed |
+| MANM-157 | 2026-09-12 | Improve Confidence Calibration and Reliability Across Signal Tiers | Proposed |
 | TASK-073 | 2026-09-05 | OI-wall directional bias, delayed entry qualification, and telemetry | Approved via PR #102; implementation under PR #103 review |
 | TASK-073-R1 | 2026-09-05 | Replay evidence audit and repair contract (`TASK-073_replay-evidence-remediation.md`) | Superseded by human replay-waiver direction; no runtime changes |
 | TASK-108 | 2026-09-09 | Remove automatic BE time-stop from trade exits | Approved |
