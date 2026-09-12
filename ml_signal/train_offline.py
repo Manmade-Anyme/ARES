@@ -264,6 +264,10 @@ def _compute_shap(
             if isinstance(values, list):
                 values = values[-1]
             values = np.asarray(values, dtype=float)
+            
+            if values.ndim == 3:
+                values = values[:, :, 1] if values.shape[-1] == 2 else values[:, :, -1]
+                
             expected_shape = (len(X_test), len(feature_cols))
             if values.shape != expected_shape:
                 raise ValueError("SHAP contribution shape mismatch")
@@ -319,12 +323,18 @@ def _save_shap_beeswarm_plot(values: np.ndarray, X_test: pd.DataFrame, feature_c
         os.makedirs(os.path.dirname(beeswarm_path) or ".", exist_ok=True)
         fig, ax = plt.subplots(figsize=(10, 6))
         try:
+            plot_success = False
             if backend == "shap_tree_explainer":
-                import shap
-                # Using show=False to prevent plt.show()
-                shap.summary_plot(values, X_test, show=False, max_display=15)
-                fig = plt.gcf()
-            else:
+                try:
+                    import shap
+                    shap.summary_plot(values, X_test, show=False, max_display=15)
+                    fig = plt.gcf()
+                    plot_success = True
+                except Exception as e:
+                    print(f"[!] shap.summary_plot failed ({e}), falling back to Matplotlib beeswarm.")
+                    plt.clf() # Clear failed plot
+            
+            if not plot_success:
                 # Native fallback beeswarm (Matplotlib directional scatter/jitter)
                 means = np.mean(np.abs(values), axis=0)
                 top_indices = np.argsort(means)[-15:]
@@ -362,6 +372,9 @@ def _save_shap_beeswarm_plot(values: np.ndarray, X_test: pd.DataFrame, feature_c
 
 def audit_shap_stability(df: pd.DataFrame, feature_cols: List[str], model, min_window_samples: int = 30) -> Dict[str, object]:
     """Audit SHAP stability across rolling training windows to detect feature drift."""
+    if "timestamp" not in df.columns:
+        return {"status": "missing_timestamp_column"}
+        
     n = len(df)
     if n < 2 * min_window_samples:
         return {"status": "insufficient_data"}
@@ -419,7 +432,8 @@ def audit_shap_stability(df: pd.DataFrame, feature_cols: List[str], model, min_w
         # Top 5 turnover
         prev_top5 = set(np.argsort(-prev)[:5])
         curr_top5 = set(np.argsort(-curr)[:5])
-        turnover = len(prev_top5 - curr_top5) / 5.0
+        denom = float(min(5, len(feature_cols)))
+        turnover = len(prev_top5 - curr_top5) / denom if denom > 0 else 0.0
         turnover_rates.append(turnover)
         
         # Drift score
@@ -604,7 +618,11 @@ def run_training(
     except Exception as e:
         print(f"[!] Metadata generation failed: {e}")
         
-    metrics["shap_stability_audit"] = audit_shap_stability(df, feature_cols, model)
+    try:
+        metrics["shap_stability_audit"] = audit_shap_stability(df, feature_cols, model)
+    except Exception as e:
+        print(f"[!] Stability audit failed: {e}")
+        metrics["shap_stability_audit"] = {"status": "failed", "error": type(e).__name__}
 
 
     if save_path:

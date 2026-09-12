@@ -738,16 +738,78 @@ class TestOfflineShapContract(unittest.TestCase):
         self.assertEqual(metrics["shap_plot_status"], "saved")
 
     def test_requested_plot_without_shap_preserves_symlink_and_target(self):
-        pass # Disabling this test since we now overwrite it with the fallback plot anyway
+        df = _training_frame()
+        with tempfile.TemporaryDirectory() as directory:
+            target_path = os.path.join(directory, "shap-target.png")
+            plot_path = os.path.join(directory, "shap-link.png")
+            with open(target_path, "wb") as target_file:
+                target_file.write(b"SHAP plot target")
+            os.symlink(target_path, plot_path)
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")):
+                model, metrics = run_training(
+                    df, ["alpha", "beta", "gamma"], config=self._config(),
+                    shap_plot_path=plot_path,
+                )
+            self.assertTrue(os.path.islink(plot_path))
+            with open(target_path, "rb") as target_file:
+                self.assertEqual(target_file.read(), b"SHAP plot target")
+        self.assertIsNotNone(model)
+        self.assertFalse(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
 
     def test_requested_non_png_plot_without_shap_preserves_regular_file(self):
-        pass # Disabling as fallback now triggers and creates plot
+        df = _training_frame()
+        with tempfile.TemporaryDirectory() as directory:
+            plot_path = os.path.join(directory, "notes.txt")
+            with open(plot_path, "wb") as plot_file:
+                plot_file.write(b"unrelated training notes")
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")):
+                model, metrics = run_training(
+                    df, ["alpha", "beta", "gamma"], config=self._config(),
+                    shap_plot_path=plot_path,
+                )
+            self.assertTrue(os.path.isfile(plot_path))
+            with open(plot_path, "rb") as plot_file:
+                self.assertEqual(plot_file.read(), b"unrelated training notes")
+        self.assertIsNotNone(model)
+        self.assertFalse(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
 
     def test_requested_directory_plot_without_shap_is_nonfatal(self):
-        pass # Disabling as fallback now triggers
+        df = _training_frame()
+        with tempfile.TemporaryDirectory() as directory:
+            plot_path = os.path.join(directory, "existing-plot-directory")
+            os.mkdir(plot_path)
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")):
+                model, metrics = run_training(
+                    df, ["alpha", "beta", "gamma"], config=self._config(),
+                    shap_plot_path=plot_path,
+                )
+            self.assertTrue(os.path.isdir(plot_path))
+        self.assertIsNotNone(model)
+        self.assertFalse(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
 
     def test_stale_plot_cleanup_failure_is_nonfatal(self):
-        pass # Disabling since plot generates anyway
+        df = _training_frame()
+        with tempfile.TemporaryDirectory() as directory:
+            plot_path = os.path.join(directory, "stale-shap.png")
+            with open(plot_path, "wb") as plot_file:
+                plot_file.write(b"stale SHAP plot")
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")), \
+                 patch("ml_signal.train_offline.os.remove", side_effect=OSError("permission denied")):
+                model, metrics = run_training(
+                    df, ["alpha", "beta", "gamma"], config=self._config(),
+                    shap_plot_path=plot_path,
+                )
+            self.assertTrue(os.path.isfile(plot_path))
+        self.assertIsNotNone(model)
+        self.assertFalse(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "stale_cleanup_failed")
 
     def test_report_paths_and_both_shap_summary_output_branches(self):
         paths = _offline_report_paths("/repo", "v42")
