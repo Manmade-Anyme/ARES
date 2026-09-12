@@ -15,3 +15,4 @@
 | TASK-073 | 2026-09-05 | OI-wall directional bias, delayed entry qualification, and telemetry | Approved via PR #102; implementation under PR #103 review |
 | TASK-073-R1 | 2026-09-05 | Replay evidence audit and repair contract (`TASK-073_replay-evidence-remediation.md`) | Superseded by human replay-waiver direction; no runtime changes |
 | TASK-108 | 2026-09-09 | Remove automatic BE time-stop from trade exits | Approved |
+| TASK-155 | 2026-09-12 | Decoupled ML Pipelines, Purged Walk-Forward CV & Promotion Gating | Proposed |

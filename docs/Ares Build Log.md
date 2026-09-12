@@ -943,3 +943,20 @@ Human direction retired the TASK-073 historical replay gate after repository rev
 **TODOs**
 - [x] Code Generator removed replay runner/fixture from release-gate scope.
 - [x] Documentation records the final entry-filter behavior after implementation lands.
+
+---
+
+## 2026-09-12 22:40 · TASK-155 ML Training Architecture Refactor & Walk-Forward Validation
+
+Drafted ADR-155 detailing the complete architectural decoupling of self-labeled market-movement vs realized-trade outcome training pipelines, purged and embargoed walk-forward cross-validation engine, 4 data leakage invariant guards, small-sample ($N=232$) starvation analysis with a two-stage hybrid transfer strategy, and a hard production promotion gate.
+
+**Decisions**
+- Decouple training into two distinct pipelines: `MarketMovementPipeline` (continuous triple-barrier forward labeling across 14,823 snapshots) and `TradeOutcomePipeline` (realized trade execution outcomes).
+- Replace fragile single chronological holdout split (which showed test AUC of 0.418 on 47 samples) with expanding/rolling $K$-fold walk-forward cross-validation ($K \ge 4$) with purging and embargo buffers.
+- Enforce four hard data leakage invariant guards (`assert_no_outcome_leakage`, `assert_chronological_integrity`, `assert_train_test_purged`, and duplicate snapshot deduplication).
+- Formalize that $N=232$ trades is mathematically insufficient for standalone high-capacity XGBoost; architect a two-stage hybrid transfer model where Stage 1 representation model informs Stage 2 regularized shallow trees (`max_depth=2`, L1/L2 shrinkage).
+- Implement a hard production promotion gate in `ml_signal/promotion_gate.py` blocking model promotion based on single splits or sub-threshold out-of-fold metrics ($\text{AUC} < 0.55$, $\text{Brier} > 0.23$).
+
+**TODOs**
+- [ ] Human review and approval of ADR-155.
+- [ ] Code Generator Agent implementation of `ml_signal/validation.py`, `ml_signal/leakage_guards.py`, `ml_signal/promotion_gate.py`, decoupled pipelines, and test suites.
