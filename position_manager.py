@@ -66,7 +66,7 @@ class PositionManager:
                 return "", "DUPLICATE_SKIPPED" 
 
         import uuid
-        trade_id = str(uuid.uuid4())
+        trade_id = str(uuid.uuid5(uuid.NAMESPACE_OID, str(signal.id)))
         
         # Prepare RPC payload
         trade_data = {
@@ -127,8 +127,19 @@ class PositionManager:
 
         def _insert():
             payload = {
-                "p_active_trade": trade_data,
-                "p_trade_analytics": analytics_data
+                "p_trade_id": trade_id,
+                "p_signal_id": getattr(signal, "db_id", None),
+                "p_signal_uuid": str(signal.id),
+                "p_setup_type": signal.setup_type.value,
+                "p_direction": signal.direction.value,
+                "p_entry_price": float(spot),
+                "p_stop_loss": float(signal.stop_loss),
+                "p_target_1": float(signal.target_1),
+                "p_target_2": float(signal.target_2),
+                "p_added_time_ist": trade_data["added_time_ist"],
+                "p_market_context": market_context,
+                "p_oi_data": {},
+                "p_entry_timestamp": analytics_data["entry_timestamp"]
             }
             res = self.supabase.rpc("create_trade_entry_bridge", payload).execute()
             # If RPC succeeds, it returns the inserted active_trades row or something similar
@@ -136,14 +147,18 @@ class PositionManager:
 
         import asyncio
         loop = asyncio.get_running_loop()
-        try:
-            success = await loop.run_in_executor(None, _insert)
-            if success:
-                self.active_trades.append(trade_data)
-                return trade_id, "BOUND"
-        except Exception as e:
-            print(f"Failed to push new trade to Supabase: {e}")
-            raise RuntimeError("Database insertion failed for atomic trade entry")
+        import time
+        for attempt in range(3):
+            try:
+                success = await loop.run_in_executor(None, _insert)
+                if success:
+                    self.active_trades.append(trade_data)
+                    return trade_id, "BOUND"
+            except Exception as e:
+                print(f"Failed to push new trade to Supabase (attempt {attempt+1}): {e}")
+                if attempt == 2:
+                    raise RuntimeError("Database insertion failed for atomic trade entry after 3 attempts")
+                await asyncio.sleep(1)
         
         return "", "FAILED"
 

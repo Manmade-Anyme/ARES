@@ -101,7 +101,7 @@ CREATE OR REPLACE FUNCTION create_trade_entry_bridge(
   p_market_context jsonb,
   p_oi_data jsonb,
   p_entry_timestamp timestamptz
-) RETURNS void
+) RETURNS uuid
 LANGUAGE plpgsql
 AS $$
 BEGIN
@@ -111,7 +111,7 @@ BEGIN
   ) VALUES (
     p_trade_id, p_signal_id::text, p_signal_uuid, p_setup_type, p_direction, p_entry_price,
     p_stop_loss, p_target_1, p_target_2, 'OPEN', p_added_time_ist
-  );
+  ) ON CONFLICT (id) DO NOTHING;
 
   INSERT INTO trade_analytics (
     id, signal_id, signal_uuid, setup_type, direction, entry_price,
@@ -119,6 +119,8 @@ BEGIN
   ) VALUES (
     p_trade_id, p_signal_id, p_signal_uuid, p_setup_type, p_direction, p_entry_price,
     p_market_context, p_oi_data, p_entry_timestamp, 'OPEN'
-  );
+  ) ON CONFLICT (id) DO NOTHING;
+  
+  RETURN p_trade_id;
 END;
 $$;
