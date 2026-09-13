@@ -1,7 +1,6 @@
 import unittest
 from unittest.mock import patch, MagicMock
 from datetime import datetime
-from collections import deque
 import asyncio
 
 from ml_signal.collector import MLCollector
@@ -326,7 +325,6 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
 
     @patch("ml_signal.collector.create_client")
     async def test_snapshot_converts_naive_ist_timestamp_to_utc(self, mock_create_client):
-        from datetime import timezone, timedelta
         mock_supabase = MagicMock()
         mock_create_client.return_value = mock_supabase
 

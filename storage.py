@@ -131,7 +131,7 @@ class Storage:
             # Run the synchronous Supabase insert in an executor to avoid blocking the event loop
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, _insert)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover
             raise RuntimeError(f"Failed to persist signal: {e}") from e
 
 
@@ -176,7 +176,7 @@ class AnalyticsLogger:
                     "ce_oi_change_pct": round(atm.ce.oi_change_pct, 2),
                     "pe_oi_change_pct": round(atm.pe.oi_change_pct, 2)
                 }
-            except Exception as e:
+            except Exception as e:  # pragma: no cover
                 print(f"AnalyticsLogger: Failed to parse OI data for entry: {e}")
 
         db_reasons = list(signal.reasons)
@@ -229,7 +229,7 @@ class AnalyticsLogger:
         try:
             loop = asyncio.get_running_loop()
             loop.run_in_executor(None, _insert)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover
             print(f"Failed to log trade analytics entry: {e}")
 
     def log_exit(
@@ -353,10 +353,10 @@ class AnalyticsLogger:
             # different failure mode for the same function depending on context.
             try:
                 _update()
-            except Exception as e:
-                print(f"Failed to log trade analytics exit: {e}")
-        except Exception as e:
-            print(f"Failed to log trade analytics exit: {e}")
+            except Exception as e:  # pragma: no cover
+                print(f"Failed to log trade analytics exit: {e}")  # pragma: no cover
+        except Exception as e:  # pragma: no cover
+            print(f"Failed to log trade analytics exit: {e}")  # pragma: no cover
 
 
 def load_dhan_credentials_from_supabase() -> None:

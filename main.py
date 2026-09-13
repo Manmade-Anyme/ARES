@@ -127,7 +127,7 @@ async def run():
     ml_predictor = SignalPredictor()
     try:
         ml_predictor.load_model()
-    except Exception as e:
+    except Exception:
         ml_predictor = None
 
     # Make this dynamic via Yahoo Finance Oracle 
@@ -421,5 +421,5 @@ if __name__ == "__main__":
         print(f"\n{R}🚨 FATAL ERROR: ARES crashed! {fatal_error}{RESET}", flush=True)
         try:
             asyncio.run(send_error_alert(f"FATAL SYSTEM CRASH: {fatal_error}"))
-        except:
+        except Exception:
             pass

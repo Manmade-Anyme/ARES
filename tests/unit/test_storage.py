@@ -44,9 +44,9 @@ mock_create_patch.start()
 if 'storage' in sys.modules:
     importlib.reload(sys.modules['storage'])
 else:
-    import storage
+    pass
 
-from storage import Storage, AnalyticsLogger, load_dhan_credentials_from_supabase
+from storage import Storage, AnalyticsLogger, load_dhan_credentials_from_supabase  # noqa: E402
 
 class TestStorage(unittest.IsolatedAsyncioTestCase):
 

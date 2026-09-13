@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 import sys
 import importlib
 import asyncio
@@ -51,9 +51,9 @@ mock_create_patch.start()
 if 'position_manager' in sys.modules:
     importlib.reload(sys.modules['position_manager'])
 else:
-    import position_manager
+    pass
 
-from position_manager import PositionManager
+from position_manager import PositionManager  # noqa: E402
 
 class TestPositionManager(unittest.IsolatedAsyncioTestCase):
 

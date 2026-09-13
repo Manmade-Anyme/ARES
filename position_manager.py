@@ -169,7 +169,7 @@ class PositionManager:
                     raise RuntimeError("Database insertion failed for atomic trade entry after 3 attempts")
                 await asyncio.sleep(1)
         
-        return "", "FAILED"
+        return "", "FAILED"  # pragma: no cover
 
     async def update_trades(
         self,
