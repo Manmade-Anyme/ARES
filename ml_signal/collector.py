@@ -247,7 +247,7 @@ class MLCollector:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._insert, record)
+            await loop.run_in_executor(None, self._insert, record)
         except RuntimeError:
             self._insert(record)
 

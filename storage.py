@@ -298,16 +298,27 @@ class AnalyticsLogger:
                     print(f"Failed to back-fill ml_collection label: {ml_err}")
                 return
 
-            try:
-                res = self.supabase.table("ml_collection").update({
-                    "trade_outcome": final_state,
-                    "trade_pnl": pnl,
-                    "trade_score": score,
-                }).eq("trade_id", trade_id).eq("signal_uuid", signal_uuid).execute()
-                if not res.data:
-                    print(f"Storage: zero rows updated in ml_collection for trade {trade_id}")
-            except Exception as ml_err:
-                print(f"Failed to back-fill ml_collection label: {ml_err}")
+            # Retry logic for ML outcome binding
+            import time
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    res = self.supabase.table("ml_collection").update({
+                        "trade_outcome": final_state,
+                        "trade_pnl": pnl,
+                        "trade_score": score,
+                    }).eq("trade_id", trade_id).eq("signal_uuid", signal_uuid).execute()
+                    if res.data:
+                        break
+                    else:
+                        if attempt < max_retries - 1:
+                            time.sleep(0.5 * (attempt + 1))
+                        else:
+                            print(f"Storage: Terminal reconciliation error - zero rows updated in ml_collection for trade {trade_id} after {max_retries} attempts")
+                except Exception as ml_err:
+                    print(f"Failed to back-fill ml_collection label: {ml_err}")
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5 * (attempt + 1))
 
         try:
             loop = asyncio.get_running_loop()

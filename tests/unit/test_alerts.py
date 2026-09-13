@@ -8,7 +8,7 @@ from alerts import format_signal, send_discord, send_startup_alert, send_error_a
 class TestAlerts(unittest.IsolatedAsyncioTestCase):
 
     @patch('alerts.datetime')
-    async def test_format_signal_without_sizing(self, mock_datetime):
+    def test_format_signal_without_sizing(self, mock_datetime):
         ist_tz = timezone(timedelta(hours=5, minutes=30))
         fixed_dt = datetime(2026, 6, 16, 12, 30, 45, tzinfo=ist_tz)
         mock_datetime.now.return_value = fixed_dt
@@ -40,7 +40,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Option Sizing Calculator", msg)
 
     @patch('alerts.datetime')
-    async def test_format_signal_with_sizing(self, mock_datetime):
+    def test_format_signal_with_sizing(self, mock_datetime):
         ist_tz = timezone(timedelta(hours=5, minutes=30))
         fixed_dt = datetime(2026, 6, 16, 12, 30, 45, tzinfo=ist_tz)
         mock_datetime.now.return_value = fixed_dt

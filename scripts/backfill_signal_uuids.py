@@ -18,7 +18,8 @@ def main():
     print("Phase 5: Validation gate completed.")
     
     if args.apply:
-        print("Backfill applied successfully.")
+        print("Error: apply mode is not yet implemented. Refusing to report success.", file=sys.stderr)
+        sys.exit(1)
     else:
         print("Dry run completed. Run with --apply to mutate data.")
 

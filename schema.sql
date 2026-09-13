@@ -64,6 +64,7 @@ CREATE TABLE trade_analytics (
   
   -- Price & Time
   entry_timestamp timestamptz NOT NULL,
+  exit_timestamp timestamptz,
   exit_signal_uuid uuid UNIQUE,
   display_id text,
   timestamp timestamptz,

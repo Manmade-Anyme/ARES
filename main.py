@@ -335,7 +335,7 @@ async def run():
             # db_id=None on every row, which is why the label columns were never
             # writable. Nothing in that block mutates candle/atm/full_chain/levels
             # — only the signal's own sizing fields — so the features are identical.
-            ml_collector.snapshot(
+            await ml_collector.snapshot(
                 candle=candle,
                 atm=atm,
                 full_chain=full_chain,
