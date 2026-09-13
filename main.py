@@ -322,10 +322,11 @@ async def run():
                     except Exception as pm_err:
                         print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
 
-                try:
-                    await send_discord(signal, spot)
-                except Exception as alert_err:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
+                if signal is not None:
+                    try:
+                        await send_discord(signal, spot)
+                    except Exception as alert_err:
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
 
             # ML Data Collection: log a feature snapshot every cycle, signal or not.
             #
@@ -348,6 +349,11 @@ async def run():
                 dte=days_to_expiry(expiry_date),
                 timestamp=now,
                 oi_wall_context=engine.latest_oi_wall_context,
+                trade_id=getattr(signal, "trade_id", None) if signal else None,
+                trade_binding_status=(
+                    getattr(signal, "trade_binding_status", "UNRESOLVED")
+                    if signal else "NOT_APPLICABLE"
+                ),
             )
 
             # Update active trades with new spot price. Candle high/low enable

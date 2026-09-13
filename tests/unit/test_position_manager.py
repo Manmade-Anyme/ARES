@@ -35,7 +35,9 @@ class MockSupabaseClient:
 
     def rpc(self, name, payload):
         m = __import__('unittest.mock').mock.MagicMock()
-        m.execute.return_value = __import__('unittest.mock').mock.MagicMock(data=[])
+        m.execute.return_value = __import__('unittest.mock').mock.MagicMock(
+            data=payload["p_trade_id"]
+        )
         return m
 
     def table(self, name):
@@ -155,6 +157,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
     @patch('position_manager.settings')
     async def test_add_trade_success_and_exception_safety(self, mock_settings):
         mock_settings.trade_dedupe_tolerance_pts = 1.0
+        mock_settings.signal_schema_mode = "bridge"
         pm = PositionManager()
         pm.analytics.log_entry = MagicMock()
         
@@ -613,6 +616,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         """The 06-29 14:12 OI wall trade was logged twice. A second add for the
         same setup/direction at (nearly) the same entry is now skipped."""
         mock_settings.trade_dedupe_tolerance_pts = 1.0
+        mock_settings.signal_schema_mode = "bridge"
         pm = PositionManager()
         pm.analytics.log_entry = MagicMock()
         pm.active_trades = []
@@ -628,6 +632,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
     @patch('position_manager.settings')
     async def test_add_trade_allows_same_setup_at_different_level(self, mock_settings):
         mock_settings.trade_dedupe_tolerance_pts = 1.0
+        mock_settings.signal_schema_mode = "bridge"
         pm = PositionManager()
         pm.active_trades = []
         signal = self._make_signal()
@@ -639,6 +644,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
     @patch('position_manager.settings')
     async def test_add_trade_allows_reentry_after_close(self, mock_settings):
+        mock_settings.signal_schema_mode = "bridge"
         pm = PositionManager()
         pm.active_trades = []
         signal = self._make_signal()

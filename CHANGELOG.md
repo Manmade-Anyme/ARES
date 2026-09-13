@@ -27,6 +27,11 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **Canonical signal join regression set (MANM-150)**: Completed bridge/greenfield
+  schema-mode dispatch, verified signal and atomic trade persistence, restored
+  entry-time ATM OI context, kept routine ML snapshots off the exit-processing
+  critical path, persisted canonical signal/trade binding fields, validated
+  idempotent RPC conflicts, and retained four-digit display IDs in trade alerts.
 - **OI wall rejection silenced by mid-retest wall displacement (MANM-110)**:
   `detectors/oi_wall.py` now preserves the currently tracked wall when a
   qualifying opposite-side wall appears marginally closer to spot during the

@@ -213,6 +213,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         # Bearish, T2 Hit
         trade_bearish = {
             "signal_id": "123",
+            "display_id": "4321",
             "setup_type": "OI_WALL_REJECTION",
             "direction": "BEARISH",
             "entry_price": 24000.0,
@@ -221,6 +222,9 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         }
         await send_trade_update(trade_bearish, spot=23900.0, update_type="T2_HIT")
         mock_client.post.assert_called_once()
+        payload = mock_client.post.call_args.kwargs["json"]
+        self.assertIn("#4321 TRADE UPDATE", payload["embeds"][0]["title"])
+        self.assertNotIn("#123 TRADE UPDATE", payload["embeds"][0]["title"])
 
         # Bearish, T1 Hit
         mock_client.reset_mock()

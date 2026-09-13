@@ -68,9 +68,6 @@ class Storage:
         """
         Asynchronously logs a signal to the 'ares_signals' table in Supabase.
         
-        This method suppresses any exceptions so that database connectivity issues
-        do not crash the main trading loop.
-        
         Args:
             signal: The generated AresSignal object.
             spot: The current NIFTY spot price when the signal was generated.
@@ -99,21 +96,43 @@ class Storage:
                 "timestamp": to_utc_iso(signal.timestamp),
                 "oi_wall_context": getattr(signal, "oi_wall_context", None),
             }
-            # Execute the insert and capture the generated row id so trade
-            # analytics can join back to this signal (TASK-172, audit item 17:
-            # signal_id was NULL in every trade_analytics row).
+            mode = settings.signal_schema_mode
+            if mode == "bridge":
+                data.update({
+                    "signal_uuid": str(signal.id),
+                    "display_id": signal.display_id,
+                })
+            elif mode == "greenfield":
+                data.update({
+                    "id": str(signal.id),
+                    "display_id": signal.display_id,
+                })
+            else:
+                raise ValueError(f"Unsupported signal schema mode: {mode}")
+            # Require the database to echo the persisted canonical UUID. A
+            # successful HTTP response without the expected parent row is not
+            # sufficient to let downstream trade writers proceed.
             response = self.supabase.table("ares_signals").insert(data).execute()
             rows = getattr(response, "data", None)
-            if rows and isinstance(rows[0], dict) and rows[0].get("id") is not None:
-                signal.db_id = rows[0]["id"]
+            if not rows or not isinstance(rows[0], dict):
+                raise RuntimeError("Signal insert returned no persisted row")
+            row = rows[0]
+            if mode == "bridge":
+                if str(row.get("signal_uuid")) != str(signal.id):
+                    raise RuntimeError("Signal insert returned a mismatched canonical UUID")
+                signal.db_id = row.get("id")
+                if signal.db_id is None:
+                    raise RuntimeError("Bridge signal insert returned no legacy row id")
+            elif str(row.get("id")) != str(signal.id):
+                raise RuntimeError("Signal insert returned a mismatched canonical UUID")
+            return True
 
         try:
             # Run the synchronous Supabase insert in an executor to avoid blocking the event loop
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, _insert)
+            return await loop.run_in_executor(None, _insert)
         except Exception as e:
-            # Print the error, but do NOT raise it
-            print(f"Failed to log signal to Supabase: {e}")
+            raise RuntimeError(f"Failed to persist signal: {e}") from e
 
 
 class AnalyticsLogger:

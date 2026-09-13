@@ -65,14 +65,14 @@ class PositionManager:
                 print(f"[-] PositionManager: Duplicate {signal.setup_type.value} ({signal.direction.value}) trade at {spot:.2f} skipped — already tracking {existing['id']}.")
                 return "", "DUPLICATE_SKIPPED" 
 
-        import uuid
-        trade_id = str(uuid.uuid5(uuid.NAMESPACE_OID, str(signal.id)))
+        trade_id = str(uuid.uuid4())
         
         # Prepare RPC payload
         trade_data = {
             "id": trade_id,
-            "signal_id": getattr(signal, "db_id", None),
+            "signal_id": str(signal.id),
             "signal_uuid": str(signal.id),
+            "display_id": signal.display_id,
             "setup_type": signal.setup_type.value,
             "direction": signal.direction.value,
             "entry_price": float(spot),
@@ -112,24 +112,27 @@ class PositionManager:
         if getattr(signal, "oi_wall_context", None) is not None:
             market_context["oi_wall"] = signal.oi_wall_context
 
-        analytics_data = {
-            "id": trade_id,
-            "signal_id": getattr(signal, "db_id", None),
-            "signal_uuid": str(signal.id),
-            "setup_type": signal.setup_type.value,
-            "direction": signal.direction.value,
-            "entry_timestamp": __import__("storage").to_utc_iso(signal.timestamp),
-            "entry_price": float(spot),
-            "result_state": "OPEN",
-            "market_context": market_context,
-            "oi_data": {} # Fetching atm data would go here, we mock it empty for atomic insert
-        }
+        oi_data = {}
+        if atm is not None:
+            ce_oi = atm.ce.oi
+            pe_oi = atm.pe.oi
+            oi_data = {
+                "pcr": round(pe_oi / ce_oi if ce_oi > 0 else 0.0, 4),
+                "atm_ce_oi": ce_oi,
+                "atm_pe_oi": pe_oi,
+                "ce_oi_change_pct": round(atm.ce.oi_change_pct, 2),
+                "pe_oi_change_pct": round(atm.pe.oi_change_pct, 2),
+            }
 
+        entry_timestamp = __import__("storage").to_utc_iso(signal.timestamp)
+        mode = settings.signal_schema_mode
+        if mode not in {"bridge", "greenfield"}:
+            raise ValueError(f"Unsupported signal schema mode: {mode}")
         def _insert():
             payload = {
                 "p_trade_id": trade_id,
-                "p_signal_id": getattr(signal, "db_id", None),
                 "p_signal_uuid": str(signal.id),
+                "p_display_id": signal.display_id,
                 "p_setup_type": signal.setup_type.value,
                 "p_direction": signal.direction.value,
                 "p_entry_price": float(spot),
@@ -138,16 +141,22 @@ class PositionManager:
                 "p_target_2": float(signal.target_2),
                 "p_added_time_ist": trade_data["added_time_ist"],
                 "p_market_context": market_context,
-                "p_oi_data": {},
-                "p_entry_timestamp": analytics_data["entry_timestamp"]
+                "p_oi_data": oi_data,
+                "p_entry_timestamp": entry_timestamp,
             }
-            res = self.supabase.rpc("create_trade_entry_bridge", payload).execute()
-            # If RPC succeeds, it returns the inserted active_trades row or something similar
+            if mode == "bridge":
+                payload["p_legacy_signal_id"] = signal.db_id
+            rpc_name = f"create_trade_entry_{mode}"
+            response = self.supabase.rpc(rpc_name, payload).execute()
+            persisted_id = getattr(response, "data", None)
+            if isinstance(persisted_id, list) and len(persisted_id) == 1:
+                persisted_id = persisted_id[0]
+            if str(persisted_id) != trade_id:
+                raise RuntimeError(f"{rpc_name} returned an unexpected trade id")
             return True
 
         import asyncio
         loop = asyncio.get_running_loop()
-        import time
         for attempt in range(3):
             try:
                 success = await loop.run_in_executor(None, _insert)

@@ -328,7 +328,7 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     payload = {
         "embeds": [
             {
-                "title": f"{icon} #{trade.get('signal_id', '0000')} TRADE UPDATE: {trade['setup_type']} ({trade['direction']})",
+                "title": f"{icon} #{trade.get('display_id', trade.get('signal_id', '0000'))} TRADE UPDATE: {trade['setup_type']} ({trade['direction']})",
                 "color": color,
                 "description": description
             }
