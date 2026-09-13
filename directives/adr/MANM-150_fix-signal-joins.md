@@ -32,7 +32,7 @@ The schema mode is selected explicitly at startup (`bridge` by default until cut
 | `ares_signals` | Legacy `id bigint` retained; `signal_uuid uuid UNIQUE NOT NULL` is canonical | `id uuid PRIMARY KEY` | `display_id text` |
 | `active_trades` | Legacy `signal_id` retained; `signal_uuid uuid` is canonical | `signal_id uuid REFERENCES ares_signals(id)` | `display_id text` |
 | `trade_analytics` | Legacy `signal_id` retained; `signal_uuid uuid` is canonical | `signal_id uuid REFERENCES ares_signals(id)` | `market_context.signal_display_id` |
-| `ml_collection` | Legacy `signal_id` retained; `signal_uuid uuid` is canonical | `signal_id uuid` and `trade_id uuid` | `signal_display_id text` |
+| `ml_collection` | Legacy `signal_id` retained; `signal_uuid uuid` is canonical | `signal_id uuid REFERENCES ares_signals(id)` and `trade_id uuid` | `signal_display_id text` |
 
 `active_trades.id`, `trade_analytics.id`, and `ml_collection.trade_id` are trade UUIDs. `trade_analytics.id` and `active_trades.id` identify the same trade. `ml_collection` may have multiple feature rows, so its outcome update is constrained by both `trade_id` and the verified canonical signal UUID.
 

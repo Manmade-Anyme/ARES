@@ -86,11 +86,11 @@ def _signal(setup_type, direction=Direction.BULLISH):
 
 class TestChainTotalsMatchFetcherShape(unittest.TestCase):
 
-    def test_fixture_matches_the_fetchers_key_set(self):
+    async def test_fixture_matches_the_fetchers_key_set(self):
         """If this fails, the fetcher changed shape and the fixture is now a lie."""
         self.assertEqual(set(_chain_row(24000, 1, 1).keys()), FETCHER_CHAIN_KEYS)
 
-    def test_totals_are_summed_from_flat_keys(self):
+    async def test_totals_are_summed_from_flat_keys(self):
         collector = MLCollector.__new__(MLCollector)  # no Supabase client needed
         chain = [
             _chain_row(24000, ce_oi=1_000_000, pe_oi=3_000_000),
@@ -104,7 +104,7 @@ class TestChainTotalsMatchFetcherShape(unittest.TestCase):
         self.assertEqual(totals["all_ce_oi"], [1_000_000, 2_000_000])
         self.assertEqual(totals["all_pe_oi"], [3_000_000, 1_000_000])
 
-    def test_pcr_is_the_real_ratio_not_the_divide_guard(self):
+    async def test_pcr_is_the_real_ratio_not_the_divide_guard(self):
         """Regression: real NIFTY PCR sits near 0.73, never exactly 1.0."""
         collector = MLCollector.__new__(MLCollector)
         chain = [_chain_row(24000, ce_oi=366_983_500, pe_oi=268_724_755)]
@@ -120,7 +120,7 @@ class TestChainTotalsMatchFetcherShape(unittest.TestCase):
         self.assertAlmostEqual(feats["pcr_oi"], 0.7323, places=3)
         self.assertGreater(feats["oi_concentration"], 0.0)
 
-    def test_empty_chain_reports_missing_not_neutral(self):
+    async def test_empty_chain_reports_missing_not_neutral(self):
         """No chain data must be distinguishable from a genuinely neutral PCR."""
         feats = compute_oi_features(
             atm_ce_oi=0, atm_pe_oi=0, total_ce_oi=0, total_pe_oi=0,
@@ -132,21 +132,21 @@ class TestChainTotalsMatchFetcherShape(unittest.TestCase):
 class TestIVHistoryOrdering(unittest.TestCase):
     """iv_history must EXCLUDE the current bar — otherwise every diff is self-vs-self."""
 
-    def test_iv_change_1_tracks_a_moving_iv(self):
+    async def test_iv_change_1_tracks_a_moving_iv(self):
         feats = compute_iv_features(
             current_iv=14.0, iv_ce=14.0, iv_pe=14.5,
             iv_history=[15.0, 14.5],  # prior bars only
         )
         self.assertAlmostEqual(feats["iv_change_1"], -0.5)
 
-    def test_iv_change_5_spans_five_bars(self):
+    async def test_iv_change_5_spans_five_bars(self):
         feats = compute_iv_features(
             current_iv=10.0, iv_ce=10.0, iv_pe=10.0,
             iv_history=[15.0, 14.0, 13.0, 12.0, 11.0],
         )
         self.assertAlmostEqual(feats["iv_change_5"], -5.0)
 
-    def test_iv_acceleration_includes_the_current_bar(self):
+    async def test_iv_acceleration_includes_the_current_bar(self):
         # series 10, 11, 13 -> changes +1, +2 -> acceleration +1
         feats = compute_iv_features(
             current_iv=13.0, iv_ce=13.0, iv_pe=13.0,
@@ -154,7 +154,7 @@ class TestIVHistoryOrdering(unittest.TestCase):
         )
         self.assertAlmostEqual(feats["iv_acceleration"], 1.0)
 
-    def test_iv_percentile_can_reach_100(self):
+    async def test_iv_percentile_can_reach_100(self):
         """With the current bar wrongly inside history, this capped at 95.0."""
         feats = compute_iv_features(
             current_iv=99.0, iv_ce=99.0, iv_pe=99.0,
@@ -180,7 +180,7 @@ class TestHistoryContractHoldsForEveryCaller(unittest.TestCase):
                 f"{append!r} must run AFTER {compute_marker!r} — history must hold prior bars only",
             )
 
-    def test_collector_appends_after_computing(self):
+    async def test_collector_appends_after_computing(self):
         import inspect
         from ml_signal import collector
         self._append_lines_are_after_the_compute_call(
@@ -189,7 +189,7 @@ class TestHistoryContractHoldsForEveryCaller(unittest.TestCase):
             ["self.volume_history.append(", "self.iv_history.append("],
         )
 
-    def test_live_loop_appends_after_predicting(self):
+    async def test_live_loop_appends_after_predicting(self):
         import inspect
         from ml_signal import live
         cls = next(
@@ -213,7 +213,7 @@ class TestSignalColumnsCarryEnumValues(unittest.TestCase):
     assertion is against the shape the engine actually emits.
     """
 
-    def _snapshot_record(self, signal, **kwargs):
+    async def _snapshot_record(self, signal, **kwargs):
         """Run snapshot() with the Supabase client stubbed and return the record."""
         from unittest.mock import patch
         from ml_signal.collector import MLCollector
@@ -227,7 +227,7 @@ class TestSignalColumnsCarryEnumValues(unittest.TestCase):
 
         captured = {}
         with patch.object(MLCollector, "_insert", lambda self, record: captured.update(record)):
-            collector.snapshot(
+            await collector.snapshot(
                 candle=_candle(),
                 atm=_atm(),
                 full_chain=[_chain_row(24000, ce_oi=1_000_000, pe_oi=1_000_000)],
@@ -238,10 +238,10 @@ class TestSignalColumnsCarryEnumValues(unittest.TestCase):
             )
         return captured
 
-    def test_each_setup_type_sets_exactly_its_own_flag(self):
+    async def test_each_setup_type_sets_exactly_its_own_flag(self):
         for setup in SetupType:
             with self.subTest(setup=setup):
-                record = self._snapshot_record(_signal(setup))
+                record = await self._snapshot_record(_signal(setup))
                 scores = json.loads(record["detector_scores"])
 
                 self.assertEqual(
@@ -253,29 +253,29 @@ class TestSignalColumnsCarryEnumValues(unittest.TestCase):
                     f"exactly one flag may be set for {setup.value}, got {scores}",
                 )
 
-    def test_every_setup_type_has_a_flag(self):
+    async def test_every_setup_type_has_a_flag(self):
         """TREND_CONTINUATION had no key at all, so it scored as all-zeros."""
         scores = json.loads(
-            self._snapshot_record(_signal(SetupType.FAILED_BREAKOUT))["detector_scores"]
+            await self._snapshot_record(_signal(SetupType.FAILED_BREAKOUT))["detector_scores"]
         )
         self.assertEqual(
             set(scores), {s.value.lower() for s in SetupType},
             "detector_scores must carry one key per SetupType member",
         )
 
-    def test_no_signal_leaves_every_flag_zero(self):
-        scores = json.loads(self._snapshot_record(None)["detector_scores"])
+    async def test_no_signal_leaves_every_flag_zero(self):
+        scores = json.loads(await self._snapshot_record(None)["detector_scores"])
         self.assertEqual(set(scores.values()), {0})
 
-    def test_setup_and_direction_store_bare_enum_values(self):
-        record = self._snapshot_record(
+    async def test_setup_and_direction_store_bare_enum_values(self):
+        record = await self._snapshot_record(
             _signal(SetupType.EXHAUSTION_REVERSAL, Direction.BEARISH)
         )
         self.assertEqual(record["signal_setup_type"], "EXHAUSTION_REVERSAL")
         self.assertEqual(record["signal_direction"], "BEARISH")
 
-    def test_dte_reaches_meta_features(self):
-        record = self._snapshot_record(None, is_expiry=True, dte=0)
+    async def test_dte_reaches_meta_features(self):
+        record = await self._snapshot_record(None, is_expiry=True, dte=0)
         meta = json.loads(record["meta_features"])
 
         self.assertEqual(meta["is_expiry_day"], 1)
@@ -288,22 +288,22 @@ class TestSignalColumnsCarryEnumValues(unittest.TestCase):
 class TestDaysToExpiry(unittest.TestCase):
     """dte was pinned at the 7.0 fallback on every row because main.py passed None."""
 
-    def test_expiry_today_is_zero(self):
+    async def test_expiry_today_is_zero(self):
         from detectors.expiry_detector import days_to_expiry, _today_ist
         self.assertEqual(days_to_expiry(_today_ist().strftime("%Y-%m-%d")), 0)
 
-    def test_future_expiry_counts_calendar_days(self):
+    async def test_future_expiry_counts_calendar_days(self):
         from detectors.expiry_detector import days_to_expiry, _today_ist
         future = _today_ist() + timedelta(days=7)
         self.assertEqual(days_to_expiry(future.strftime("%Y-%m-%d")), 7)
 
-    def test_unparseable_input_returns_none_not_a_wrong_number(self):
+    async def test_unparseable_input_returns_none_not_a_wrong_number(self):
         from detectors.expiry_detector import days_to_expiry
         for bad in ["", None, "not-a-date", "28-07-2026"]:
             with self.subTest(bad=bad):
                 self.assertIsNone(days_to_expiry(bad))
 
-    def test_main_does_not_hardcode_dte(self):
+    async def test_main_does_not_hardcode_dte(self):
         """Regression: the snapshot call passed a literal dte=None for months."""
         import inspect
         import main
@@ -313,7 +313,7 @@ class TestDaysToExpiry(unittest.TestCase):
             "main.py must pass a computed dte, not the None that forces the 7.0 fallback",
         )
 
-    def test_live_serving_path_does_not_hardcode_dte(self):
+    async def test_live_serving_path_does_not_hardcode_dte(self):
         """Collection and serving must agree, or the model trains on a real dte and
         is served the 7.0 fallback (training-serving skew)."""
         import inspect

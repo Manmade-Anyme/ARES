@@ -305,17 +305,22 @@ async def run():
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
 
                 format_signal_console(signal, spot)
+                success = False
                 try:
-                    await storage.log_signal(signal, spot)
+                    success = await storage.log_signal(signal, spot)
                 except Exception as db_err:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
 
-                # Every fired signal is a live trade now (TASK-182 removed the
-                # observation-only gate).
-                try:
-                    position_manager.add_trade(signal, spot, atm=atm)
-                except Exception as pm_err:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
+                if not success:
+                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Engine: Failed to log signal, aborting trade entry.{RESET}")
+                    signal = None
+                else:
+                    try:
+                        trade_id, binding_status = await position_manager.add_trade(signal, spot, atm=atm)
+                        signal.trade_id = trade_id
+                        signal.trade_binding_status = binding_status
+                    except Exception as pm_err:
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
 
                 try:
                     await send_discord(signal, spot)

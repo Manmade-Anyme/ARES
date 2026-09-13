@@ -90,11 +90,11 @@ def _collector():
         return MLCollector("http://supabase.invalid", "key")
 
 
-def _snapshot_record(collector, signal=None, chain=None):
+async def _snapshot_record(collector, signal=None, chain=None):
     """Run snapshot and return the record it tried to insert."""
     captured = {}
     collector._insert = lambda rec: captured.update(rec)
-    collector.snapshot(
+    await collector.snapshot(
         candle=_candle(), atm=_ATM(),
         full_chain=chain if chain is not None else [_chain_row(24000, 100, 100)],
         levels=[], spot=24002.0, signal=signal,
@@ -107,7 +107,7 @@ def _snapshot_record(collector, signal=None, chain=None):
 class TestOIDistributionCaptured(unittest.TestCase):
     """Defect 2 — the chain's shape must survive, not just its sum."""
 
-    def test_max_and_p85_are_exposed(self):
+    async def test_max_and_p85_are_exposed(self):
         # 10 strikes, CE OI 100..1000. p85 of a 10-point set is a real quantile,
         # and max is unambiguous.
         chain = [_chain_row(23500 + i * 50, (i + 1) * 100, (i + 1) * 10)
@@ -130,7 +130,7 @@ class TestOIDistributionCaptured(unittest.TestCase):
         self.assertGreater(feats["p85_ce_oi"], feats["max_ce_oi"] * 0.5)
         self.assertLessEqual(feats["p85_ce_oi"], feats["max_ce_oi"])
 
-    def test_zero_oi_strikes_excluded_from_percentile(self):
+    async def test_zero_oi_strikes_excluded_from_percentile(self):
         """'p85 of strikes with NON-ZERO OI' — dead strikes must not drag it down."""
         live = [1000, 2000, 3000, 4000]
         padded = live + [0] * 40
@@ -148,7 +148,7 @@ class TestOIDistributionCaptured(unittest.TestCase):
         self.assertEqual(dense["p85_ce_oi"], sparse["p85_ce_oi"])
         self.assertEqual(sparse["strikes_with_ce_oi"], 4)
 
-    def test_empty_chain_does_not_raise_or_fabricate(self):
+    async def test_empty_chain_does_not_raise_or_fabricate(self):
         feats = compute_oi_features(
             atm_ce_oi=0, atm_pe_oi=0, total_ce_oi=0, total_pe_oi=0,
             ce_oi_change_pct=0.0, pe_oi_change_pct=0.0,
@@ -159,9 +159,9 @@ class TestOIDistributionCaptured(unittest.TestCase):
         self.assertIsNone(feats["p85_ce_oi"])
         self.assertEqual(feats["strikes_with_ce_oi"], 0)
 
-    def test_distribution_survives_the_collector_end_to_end(self):
+    async def test_distribution_survives_the_collector_end_to_end(self):
         chain = [_chain_row(23800 + i * 50, (i + 1) * 1000, 500) for i in range(8)]
-        rec = _snapshot_record(_collector(), chain=chain)
+        rec = await _snapshot_record(_collector(), chain=chain)
         oi = json.loads(rec["oi_features"])
         self.assertEqual(oi["max_ce_oi"], 8000)
         self.assertEqual(oi["strikes_with_ce_oi"], 8)
@@ -170,20 +170,20 @@ class TestOIDistributionCaptured(unittest.TestCase):
 class TestSignalIdIsJoinable(unittest.TestCase):
     """Defect 1 — the key that makes labels writable at all."""
 
-    def test_snapshot_stores_db_id_not_the_random_display_id(self):
+    async def test_snapshot_stores_db_id_not_the_random_display_id(self):
         sig = _signal(db_id=271)
-        rec = _snapshot_record(_collector(), signal=sig)
+        rec = await _snapshot_record(_collector(), signal=sig)
         # The bug: str(signal.signal_id) — a random 4-digit string.
         self.assertNotEqual(str(rec["signal_id"]), str(sig.signal_id))
         self.assertEqual(str(rec["signal_id"]), "271")
 
-    def test_missing_db_id_writes_null_not_a_fake_key(self):
+    async def test_missing_db_id_writes_null_not_a_fake_key(self):
         """log_signal failed -> no row to join to. NULL is honest; a random id is not."""
-        rec = _snapshot_record(_collector(), signal=_signal(db_id=None))
+        rec = await _snapshot_record(_collector(), signal=_signal(db_id=None))
         self.assertIsNone(rec["signal_id"])
 
-    def test_no_signal_still_snapshots_with_null_key(self):
-        rec = _snapshot_record(_collector(), signal=None)
+    async def test_no_signal_still_snapshots_with_null_key(self):
+        rec = await _snapshot_record(_collector(), signal=None)
         self.assertIsNone(rec["signal_id"])
         self.assertFalse(rec["signal_generated"])
 
@@ -191,14 +191,14 @@ class TestSignalIdIsJoinable(unittest.TestCase):
 class TestStructureSentinel(unittest.TestCase):
     """Defect 3 — 'no level found' must not masquerade as a 100-point distance."""
 
-    def test_absent_levels_emit_none_not_100(self):
+    async def test_absent_levels_emit_none_not_100(self):
         f = compute_structure_features(spot=24000.0, levels=[], full_chain=[],
                                        pdh=None, pdl=None)
         for k in ("dist_to_nearest_resistance", "dist_to_nearest_support",
                   "dist_to_pdh", "dist_to_pdl"):
             self.assertIsNone(f[k], f"{k} must be None when unknown, not a sentinel")
 
-    def test_real_distances_still_computed(self):
+    async def test_real_distances_still_computed(self):
         f = compute_structure_features(spot=24000.0, levels=[24050.0, 23950.0],
                                        full_chain=[], pdh=24100.0, pdl=23900.0)
         self.assertAlmostEqual(f["dist_to_nearest_resistance"], 50.0)
@@ -206,7 +206,7 @@ class TestStructureSentinel(unittest.TestCase):
         self.assertAlmostEqual(f["dist_to_pdh"], 100.0)
         self.assertAlmostEqual(f["dist_to_pdl"], 100.0)
 
-    def test_a_genuine_100pt_distance_is_not_confused_with_missing(self):
+    async def test_a_genuine_100pt_distance_is_not_confused_with_missing(self):
         f = compute_structure_features(spot=24000.0, levels=[24100.0],
                                        full_chain=[], pdh=None, pdl=None)
         self.assertAlmostEqual(f["dist_to_nearest_resistance"], 100.0)
@@ -221,7 +221,7 @@ class TestLabelBackfillOnTradeClose(unittest.TestCase):
         with patch.object(storage, "create_client", return_value=MagicMock()):
             return storage.AnalyticsLogger()
 
-    def test_log_exit_writes_outcome_to_ml_collection(self):
+    async def test_log_exit_writes_outcome_to_ml_collection(self):
         lg = self._logger()
         sb = lg.supabase
 
@@ -242,7 +242,7 @@ class TestLabelBackfillOnTradeClose(unittest.TestCase):
         self.assertEqual(label["trade_id"], "trade-uuid-1")
         self.assertAlmostEqual(float(label["trade_pnl"]), 42.0)  # bearish 24002 -> 23960
 
-    def test_trade_without_signal_id_is_skipped_not_crashed(self):
+    async def test_trade_without_signal_id_is_skipped_not_crashed(self):
         lg = self._logger()
         sb = lg.supabase
         sb.table.return_value.select.return_value.eq.return_value.execute.return_value = \
@@ -322,7 +322,7 @@ class TestBackfillGuards(unittest.TestCase):
         from ml_signal import backfill_labels
         return backfill_labels
 
-    def test_one_signal_is_never_claimed_by_two_rows(self):
+    async def test_one_signal_is_never_claimed_by_two_rows(self):
         """Two rows inside tolerance of one signal must not both take its id."""
         rows = {
             "ml_collection": [
@@ -342,7 +342,7 @@ class TestBackfillGuards(unittest.TestCase):
         assigned = [u for u in sb.updates if "signal_id" in u[2]]
         self.assertEqual(len(assigned), 1)
 
-    def test_coincidental_numeric_match_is_not_trusted(self):
+    async def test_coincidental_numeric_match_is_not_trusted(self):
         """A legacy 4-digit code equal to a real id must still be corroborated."""
         rows = {
             "ml_collection": [
@@ -364,7 +364,7 @@ class TestBackfillGuards(unittest.TestCase):
         self.assertEqual(len(writes), 1, "row was skipped as already-valid on a coincidence")
         self.assertEqual(writes[0][2]["signal_id"], "1240")
 
-    def test_two_closed_trades_on_one_signal_are_skipped_not_overwritten(self):
+    async def test_two_closed_trades_on_one_signal_are_skipped_not_overwritten(self):
         rows = {
             "trade_analytics": [
                 {"id": "t1", "signal_id": 300, "result_state": "SL_HIT", "pnl_points": -12.0},
@@ -383,7 +383,7 @@ class TestBackfillGuards(unittest.TestCase):
         self.assertEqual(labelled[0][1]["signal_id"], "301")
         self.assertIsNone(rows["ml_collection"][0].get("trade_outcome"))
 
-    def test_open_and_orphan_trades_are_excluded(self):
+    async def test_open_and_orphan_trades_are_excluded(self):
         rows = {
             "trade_analytics": [
                 {"id": "t1", "signal_id": 300, "result_state": "OPEN", "pnl_points": None},

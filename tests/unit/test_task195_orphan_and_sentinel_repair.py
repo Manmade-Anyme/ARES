@@ -32,7 +32,7 @@ def _mod():
 
 class TestOrphanTradeRepair(unittest.TestCase):
 
-    def test_orphan_is_matched_on_entry_timestamp_and_setup(self):
+    async def test_orphan_is_matched_on_entry_timestamp_and_setup(self):
         rows = {
             "trade_analytics": [
                 {"id": "t1", "signal_id": None, "setup_type": "OI_WALL_REJECTION",
@@ -49,7 +49,7 @@ class TestOrphanTradeRepair(unittest.TestCase):
         self.assertEqual(fixed, 1)
         self.assertEqual(rows["trade_analytics"][0]["signal_id"], 243)
 
-    def test_open_trades_are_repaired_too(self):
+    async def test_open_trades_are_repaired_too(self):
         """signal_id is independent of result_state — an OPEN trade still links."""
         rows = {
             "trade_analytics": [
@@ -65,7 +65,7 @@ class TestOrphanTradeRepair(unittest.TestCase):
         sb = _FakeSupabase(rows)
         self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 1)
 
-    def test_a_signal_already_used_by_another_trade_is_not_stolen(self):
+    async def test_a_signal_already_used_by_another_trade_is_not_stolen(self):
         rows = {
             "trade_analytics": [
                 {"id": "t1", "signal_id": 243, "setup_type": "OI_WALL_REJECTION",
@@ -83,7 +83,7 @@ class TestOrphanTradeRepair(unittest.TestCase):
         self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 0)
         self.assertIsNone(rows["trade_analytics"][1]["signal_id"])
 
-    def test_far_from_any_signal_is_left_alone(self):
+    async def test_far_from_any_signal_is_left_alone(self):
         rows = {
             "trade_analytics": [
                 {"id": "t1", "signal_id": None, "setup_type": "FAILED_BREAKOUT",
@@ -99,7 +99,7 @@ class TestOrphanTradeRepair(unittest.TestCase):
         self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 0)
         self.assertIsNone(rows["trade_analytics"][0]["signal_id"])
 
-    def test_setup_type_must_agree(self):
+    async def test_setup_type_must_agree(self):
         rows = {
             "trade_analytics": [
                 {"id": "t1", "signal_id": None, "setup_type": "FAILED_BREAKOUT",
@@ -127,7 +127,7 @@ class TestFixturesAreNeverLinked(unittest.TestCase):
     signals they point at were deleted.
     """
 
-    def test_a_fixture_orphan_is_never_matched(self):
+    async def test_a_fixture_orphan_is_never_matched(self):
         rows = {
             "trade_analytics": [
                 {"id": _FIXTURE_ID, "signal_id": None, "setup_type": "OI_WALL_REJECTION",
@@ -143,7 +143,7 @@ class TestFixturesAreNeverLinked(unittest.TestCase):
         self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 0)
         self.assertIsNone(rows["trade_analytics"][0]["signal_id"])
 
-    def test_a_real_trade_at_the_fixture_price_is_still_repaired(self):
+    async def test_a_real_trade_at_the_fixture_price_is_still_repaired(self):
         """Guard is by id, never by price — 24001.0 is a reachable real fill."""
         rows = {
             "trade_analytics": [
@@ -160,7 +160,7 @@ class TestFixturesAreNeverLinked(unittest.TestCase):
         sb = _FakeSupabase(rows)
         self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 1)
 
-    def test_unlink_clears_a_previously_linked_fixture(self):
+    async def test_unlink_clears_a_previously_linked_fixture(self):
         rows = {"trade_analytics": [
             {"id": _FIXTURE_ID, "signal_id": 169},
             {"id": "real-uuid", "signal_id": 243},
@@ -171,19 +171,19 @@ class TestFixturesAreNeverLinked(unittest.TestCase):
         self.assertEqual(rows["trade_analytics"][1]["signal_id"], 243,
                          "a real trade's link must not be touched")
 
-    def test_unlink_is_a_noop_once_clean(self):
+    async def test_unlink_is_a_noop_once_clean(self):
         rows = {"trade_analytics": [{"id": _FIXTURE_ID, "signal_id": None}]}
         sb = _FakeSupabase(rows)
         self.assertEqual(_mod().unlink_fixture_trades(sb, apply=True), 0)
         self.assertFalse(sb.updates)
 
-    def test_unlink_dry_run_writes_nothing(self):
+    async def test_unlink_dry_run_writes_nothing(self):
         rows = {"trade_analytics": [{"id": _FIXTURE_ID, "signal_id": 169}]}
         sb = _FakeSupabase(rows)
         self.assertEqual(_mod().unlink_fixture_trades(sb, apply=False), 1)
         self.assertFalse(sb.updates)
 
-    def test_fixture_id_list_matches_the_migration(self):
+    async def test_fixture_id_list_matches_the_migration(self):
         """Drift here silently re-opens the bug, so pin it to the SQL."""
         import re
         sql = open("migrations/2026-07-17-task188-fixture-cleanup-and-ist.sql").read()
@@ -197,7 +197,7 @@ class TestSentinelRepair(unittest.TestCase):
     def _row(rid, **kv):
         return {"id": rid, "structure_features": json.dumps(kv)}
 
-    def test_only_the_exact_sentinel_fields_are_nulled(self):
+    async def test_only_the_exact_sentinel_fields_are_nulled(self):
         rows = {"ml_collection": [self._row(
             1,
             dist_to_nearest_resistance=100.0,   # sentinel
@@ -214,7 +214,7 @@ class TestSentinelRepair(unittest.TestCase):
         self.assertEqual(out["dist_to_nearest_support"], 37.5)
         self.assertEqual(out["dist_to_pdl"], -212.4)
 
-    def test_rows_are_never_deleted_and_other_keys_survive(self):
+    async def test_rows_are_never_deleted_and_other_keys_survive(self):
         rows = {"ml_collection": [self._row(
             1, dist_to_nearest_resistance=100.0, some_future_key=1.23,
         )]}
@@ -224,19 +224,19 @@ class TestSentinelRepair(unittest.TestCase):
         out = json.loads(rows["ml_collection"][0]["structure_features"])
         self.assertEqual(out["some_future_key"], 1.23)
 
-    def test_clean_rows_are_not_rewritten(self):
+    async def test_clean_rows_are_not_rewritten(self):
         rows = {"ml_collection": [self._row(1, dist_to_nearest_resistance=42.0)]}
         sb = _FakeSupabase(rows)
         self.assertEqual(_mod().repair_structure_sentinel(sb, apply=True), 0)
         self.assertFalse(sb.updates, "a clean row must not be written at all")
 
-    def test_a_near_100_value_is_not_treated_as_a_sentinel(self):
+    async def test_a_near_100_value_is_not_treated_as_a_sentinel(self):
         """100.0000001 is a real distance; only exact equality is the marker."""
         rows = {"ml_collection": [self._row(1, dist_to_nearest_resistance=100.0000001)]}
         sb = _FakeSupabase(rows)
         self.assertEqual(_mod().repair_structure_sentinel(sb, apply=True), 0)
 
-    def test_dry_run_writes_nothing(self):
+    async def test_dry_run_writes_nothing(self):
         rows = {"ml_collection": [self._row(1, dist_to_nearest_resistance=100.0)]}
         sb = _FakeSupabase(rows)
         n = _mod().repair_structure_sentinel(sb, apply=False)

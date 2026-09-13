@@ -51,7 +51,7 @@ class PositionManager:
             self.is_initialized = False
             print(f"Failed to initialize PositionManager DB: {e}")
 
-    def add_trade(self, signal: AresSignal, spot: float, atm: ATMStrikes = None):
+    async def add_trade(self, signal: AresSignal, spot: float, atm: ATMStrikes = None) -> tuple[str, str]:
         """
         Formats an AresSignal, pushes it to Supabase as OPEN, and stores it in memory.
         Also logs entry to the permanent trade_analytics table.
@@ -68,7 +68,7 @@ class PositionManager:
                     and existing.get("direction") == signal.direction.value
                     and abs(float(existing.get("entry_price", 0.0)) - float(spot)) <= settings.trade_dedupe_tolerance_pts):
                 print(f"[-] PositionManager: Duplicate {signal.setup_type.value} ({signal.direction.value}) trade at {spot:.2f} skipped — already tracking {existing['id']}.")
-                return
+                return "", "DUPLICATE_SKIPPED" 
 
         trade_id = str(uuid.uuid4())
         trade_data = {

@@ -98,7 +98,7 @@ class MLCollector:
                 prices.append(float(lvl.get("price", 0)))
         return prices
 
-    def snapshot(
+    async def snapshot(
         self,
         candle,
         atm,

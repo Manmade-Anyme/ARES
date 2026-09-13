@@ -26,6 +26,8 @@ CREATE TABLE ares_signals (
   option_type text,
   reasons jsonb,
   oi_wall_context jsonb, -- TASK-073: decoupled entry telemetry (NULL for non-OI-wall)
+  signal_uuid uuid UNIQUE,
+  display_id text,
   timestamp timestamptz,
   created_at timestamptz default now()
 );
@@ -36,6 +38,7 @@ CREATE INDEX idx_ares_signals_timestamp ON ares_signals (timestamp DESC);
 CREATE TABLE active_trades (
   id uuid primary key,
   signal_id text,
+  signal_uuid uuid,
   setup_type text not null,
   direction text not null,
   entry_price numeric not null,
@@ -55,12 +58,15 @@ CREATE TABLE active_trades (
 CREATE TABLE trade_analytics (
   id uuid PRIMARY KEY,
   signal_id bigint, -- Optional link to ares_signals
+  signal_uuid uuid,
   setup_type text NOT NULL,
   direction text NOT NULL,
   
   -- Price & Time
   entry_timestamp timestamptz NOT NULL,
-  exit_timestamp timestamptz,
+  exit_signal_uuid uuid UNIQUE,
+  display_id text,
+  timestamp timestamptz,
   entry_price numeric NOT NULL,
   exit_price numeric,
   pnl_points numeric,
@@ -78,3 +84,40 @@ CREATE TABLE trade_analytics (
 
 -- Index for temporal analysis
 CREATE INDEX idx_trade_analytics_entry ON trade_analytics (entry_timestamp DESC);
+
+-- Atomic trade entry RPC for bridge mode
+CREATE OR REPLACE FUNCTION create_trade_entry_bridge(
+  p_trade_id uuid,
+  p_signal_id bigint,
+  p_signal_uuid uuid,
+  p_setup_type text,
+  p_direction text,
+  p_entry_price numeric,
+  p_stop_loss numeric,
+  p_target_1 numeric,
+  p_target_2 numeric,
+  p_added_time_ist text,
+  p_market_context jsonb,
+  p_oi_data jsonb,
+  p_entry_timestamp timestamptz
+) RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO active_trades (
+    id, signal_id, signal_uuid, setup_type, direction, entry_price, 
+    stop_loss, target_1, target_2, state, added_time_ist
+  ) VALUES (
+    p_trade_id, p_signal_id::text, p_signal_uuid, p_setup_type, p_direction, p_entry_price,
+    p_stop_loss, p_target_1, p_target_2, 'OPEN', p_added_time_ist
+  );
+
+  INSERT INTO trade_analytics (
+    id, signal_id, signal_uuid, setup_type, direction, entry_price,
+    market_context, oi_data, entry_timestamp, result_state
+  ) VALUES (
+    p_trade_id, p_signal_id, p_signal_uuid, p_setup_type, p_direction, p_entry_price,
+    p_market_context, p_oi_data, p_entry_timestamp, 'OPEN'
+  );
+END;
+$$;

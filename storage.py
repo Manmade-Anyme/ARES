@@ -64,7 +64,7 @@ class Storage:
             settings.supabase_key
         )
 
-    async def log_signal(self, signal: AresSignal, spot: float) -> None:
+    async def log_signal(self, signal: AresSignal, spot: float) -> bool:
         """
         Asynchronously logs a signal to the 'ares_signals' table in Supabase.
         
@@ -234,7 +234,7 @@ class AnalyticsLogger:
         def _update():
             # signal_id comes back too: it is the key the ml_collection label
             # back-fill below joins on.
-            response = self.supabase.table("trade_analytics").select("entry_price", "direction", "signal_id").eq("id", trade_id).execute()
+            response = self.supabase.table("trade_analytics").select("entry_price", "direction", "signal_id", "signal_uuid").eq("id", trade_id).execute()
             if not response.data:
                 return
 
@@ -279,18 +279,34 @@ class AnalyticsLogger:
             #
             # Skipped when signal_id is NULL (log_signal failed): there is no row
             # to attribute the outcome to, and guessing one would poison the label.
-            signal_id = record.get("signal_id")
-            if signal_id is None:
+            signal_uuid = record.get("signal_uuid")
+            if signal_uuid is None:
+                # Fallback to signal_id for legacy rows
+                signal_id = record.get("signal_id")
+                if signal_id is None:
+                    return
+                try:
+                    res = self.supabase.table("ml_collection").update({
+                        "trade_id": trade_id,
+                        "trade_outcome": final_state,
+                        "trade_pnl": pnl,
+                        "trade_score": score,
+                    }).eq("signal_id", str(signal_id)).execute()
+                    if not res.data:
+                        print(f"Storage: zero rows updated in ml_collection for signal_id {signal_id}")
+                except Exception as ml_err:
+                    print(f"Failed to back-fill ml_collection label: {ml_err}")
                 return
+
             try:
-                self.supabase.table("ml_collection").update({
-                    "trade_id": trade_id,
+                res = self.supabase.table("ml_collection").update({
                     "trade_outcome": final_state,
                     "trade_pnl": pnl,
                     "trade_score": score,
-                }).eq("signal_id", str(signal_id)).execute()
+                }).eq("trade_id", trade_id).eq("signal_uuid", signal_uuid).execute()
+                if not res.data:
+                    print(f"Storage: zero rows updated in ml_collection for trade {trade_id}")
             except Exception as ml_err:
-                # Never let a labelling failure lose the trade exit above.
                 print(f"Failed to back-fill ml_collection label: {ml_err}")
 
         try:

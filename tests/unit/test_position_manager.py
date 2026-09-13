@@ -65,7 +65,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         self.mock_client.last_table = None
 
     @patch('position_manager.settings')
-    def test_lazy_initialization_success(self, mock_settings):
+    async def test_lazy_initialization_success(self, mock_settings):
         mock_settings.supabase_url = "https://mock.supabase.co"
         mock_settings.supabase_key = "key"
         
@@ -95,7 +95,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(pm_fail.is_initialized)
 
     @patch('position_manager.settings')
-    def test_initialize_db_loads_open_trades_from_any_date(self, mock_settings):
+    async def test_initialize_db_loads_open_trades_from_any_date(self, mock_settings):
         today_str = datetime.now(timezone.utc).isoformat()
         yesterday_str = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         last_week_str = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -169,7 +169,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         )
         
         # Test Success path
-        pm.add_trade(signal, 24001.0, None)
+        await pm.add_trade(signal, 24001.0, None)
         self.assertEqual(len(pm.active_trades), 1)
         await asyncio.sleep(0.05)
         self.mock_client.insert_mock.assert_called_once()
@@ -180,13 +180,13 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         self.mock_client.insert_mock.reset_mock()
         self.mock_client.insert_mock.side_effect = Exception("Supabase insert error")
         with patch.object(pm.analytics, 'log_entry', side_effect=Exception("Analytics logger error")):
-            pm.add_trade(signal, 24010.0, None)
+            await pm.add_trade(signal, 24010.0, None)
             await asyncio.sleep(0.05)
             self.mock_client.insert_mock.assert_called_once()
 
         # Test line 96-97 get_running_loop error pathway
         with patch('asyncio.get_running_loop', side_effect=RuntimeError("No event loop")):
-            pm.add_trade(signal, 24020.0, None)
+            await pm.add_trade(signal, 24020.0, None)
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -615,8 +615,8 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         pm.active_trades = []
         signal = self._make_signal()
 
-        pm.add_trade(signal, 24001.0, None)
-        pm.add_trade(signal, 24001.4, None)  # same setup, entry within 1pt
+        await pm.add_trade(signal, 24001.0, None)
+        await pm.add_trade(signal, 24001.4, None)  # same setup, entry within 1pt
 
         self.assertEqual(len(pm.active_trades), 1)
         await asyncio.sleep(0.05)
@@ -629,8 +629,8 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         pm.active_trades = []
         signal = self._make_signal()
 
-        pm.add_trade(signal, 24001.0, None)
-        pm.add_trade(signal, 24020.0, None)  # >1pt away: legitimate new trade
+        await pm.add_trade(signal, 24001.0, None)
+        await pm.add_trade(signal, 24020.0, None)  # >1pt away: legitimate new trade
 
         self.assertEqual(len(pm.active_trades), 2)
 
@@ -640,9 +640,9 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         pm.active_trades = []
         signal = self._make_signal()
 
-        pm.add_trade(signal, 24001.0, None)
+        await pm.add_trade(signal, 24001.0, None)
         pm.active_trades[0]["state"] = "CLOSED"
-        pm.add_trade(signal, 24001.0, None)  # prior trade closed: re-entry OK
+        await pm.add_trade(signal, 24001.0, None)  # prior trade closed: re-entry OK
 
         self.assertEqual(len(pm.active_trades), 2)
 

@@ -37,7 +37,7 @@ def _requirement_names():
 
 
 @pytest.mark.parametrize("dist", ["joblib", "xgboost"])
-def test_ml_runtime_deps_are_declared(dist):
+async def test_ml_runtime_deps_are_declared(dist):
     """main.py imports ml_signal.predictor at module scope, which imports joblib
     and unpickles an XGBClassifier. The Dockerfile installs ONLY requirements.txt,
     so an undeclared import here is a hard startup crash, not a degraded feature.
@@ -48,7 +48,7 @@ def test_ml_runtime_deps_are_declared(dist):
     )
 
 
-def test_predictor_import_has_no_undeclared_third_party_imports():
+async def test_predictor_import_has_no_undeclared_third_party_imports():
     """The predictor module must import cleanly using only declared deps."""
     import ml_signal.predictor as predictor  # noqa: F401
 
@@ -73,7 +73,7 @@ MODEL_PATH = REPO / "ml_signal" / "models" / "v1.joblib"
         ([], None, None),                        # nothing known
     ],
 )
-def test_predict_from_raw_survives_unknown_structure_features(levels, pdh, pdl):
+async def test_predict_from_raw_survives_unknown_structure_features(levels, pdh, pdl):
     """compute_structure_features returns None when a distance is unknown. On a
     single-row frame that makes the column object-dtype, which XGBoost refuses.
     """
@@ -137,7 +137,7 @@ UNTRAILED = {"state": "ACTIVE", "stop_loss": 23950.0, "entry_price": 24000.0}
         ("SL_HIT", UNTRAILED, "Stop Loss Hit. Trade Closed."),
     ],
 )
-def test_exit_state_renders_its_exact_message(update_type, trade, expected):
+async def test_exit_state_renders_its_exact_message(update_type, trade, expected):
     """Each known state maps to its own sentence.
 
     Asserting the exact text, not merely non-empty: the fallback added alongside
@@ -149,7 +149,7 @@ def test_exit_state_renders_its_exact_message(update_type, trade, expected):
     assert trade_update_action_text(update_type, trade) == expected
 
 
-def test_unknown_state_uses_the_readable_fallback():
+async def test_unknown_state_uses_the_readable_fallback():
     """An unmapped state degrades to a readable line, never the blank string that
     rendered '⚡ Action : ****' before TASK-199.
     """
@@ -186,7 +186,7 @@ def _emitted_update_types():
     return found
 
 
-def test_emitted_update_type_extractor_is_syntax_tolerant():
+async def test_emitted_update_type_extractor_is_syntax_tolerant():
     """Guard the guard: the extractor must not depend on quote style or spacing."""
     import ast
 
@@ -209,7 +209,7 @@ def test_emitted_update_type_extractor_is_syntax_tolerant():
     assert found == {"DOUBLE_QUOTED", "SINGLE_QUOTED", "ODD_SPACING", "WRAPPED"}
 
 
-def test_position_manager_exit_states_are_explicitly_mapped():
+async def test_position_manager_exit_states_are_explicitly_mapped():
     """Whatever position_manager can emit must have its OWN alert text.
 
     Reads the literals out of position_manager.py so adding a state there
@@ -233,7 +233,7 @@ def test_position_manager_exit_states_are_explicitly_mapped():
 # P2 — an unknown distance became 0.0 ("spot exactly AT the level") in training.
 # --------------------------------------------------------------------------
 
-def test_unknown_feature_is_nan_not_zero():
+async def test_unknown_feature_is_nan_not_zero():
     """flatten_features filled absent keys with 0.0. For structure distances that
     reads as 'price is exactly at support/resistance' — a stronger and more
     misleading claim than the 100.0 sentinel TASK-194/195 set out to remove.
@@ -271,7 +271,7 @@ def test_unknown_feature_is_nan_not_zero():
     assert df.iloc[0]["structure_features__dist_to_nearest_support"] == pytest.approx(130.0)
 
 
-def test_known_zero_distance_is_preserved():
+async def test_known_zero_distance_is_preserved():
     """Guard the fix's own edge: spot sitting exactly on a level is a REAL 0.0
     and must not be turned into NaN.
     """
