@@ -118,7 +118,7 @@ class PositionManager:
             "signal_uuid": str(signal.id),
             "setup_type": signal.setup_type.value,
             "direction": signal.direction.value,
-            "entry_timestamp": to_utc_iso(signal.timestamp),
+            "entry_timestamp": __import__("storage").to_utc_iso(signal.timestamp),
             "entry_price": float(spot),
             "result_state": "OPEN",
             "market_context": market_context,

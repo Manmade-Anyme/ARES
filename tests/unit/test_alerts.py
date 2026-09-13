@@ -26,7 +26,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
             timestamp=fixed_dt,
             strike_to_trade=23000,
             option_type="CE",
-            signal_id="1234"
+            display_id="1234"
         )
         
         msg = format_signal(signal, spot=23005.0)
@@ -58,7 +58,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
             timestamp=fixed_dt,
             strike_to_trade=24000,
             option_type="PE",
-            signal_id="5678"
+            display_id="5678"
         )
         # Sizing params
         signal.suggested_lots = 2
@@ -363,7 +363,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
             timestamp=datetime.now(),
             strike_to_trade=24050,
             option_type="PE",
-            signal_id="7301",
+            display_id="7301",
             oi_wall_context={
                 "wall_key": "CE:24100",
                 "wall_strike": 24100.0,
