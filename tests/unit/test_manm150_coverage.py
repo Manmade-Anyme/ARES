@@ -1,6 +1,5 @@
 import unittest
 from unittest.mock import patch, MagicMock
-import asyncio
 
 from position_manager import PositionManager
 from storage import Storage, AnalyticsLogger
@@ -236,6 +235,27 @@ class TestManm150Coverage(unittest.IsolatedAsyncioTestCase):
         logger.log_exit("trade1", 24050.0, "T1_HIT")
         mock_print.assert_any_call("Failed to log trade analytics exit: Outer exception test")
 
+
+    @patch('builtins.print')
+    @patch('storage.create_client')
+    @patch('storage.settings')
+    def test_analytics_log_exit_greenfield_success(self, mock_settings, mock_create_client, mock_print):
+        mock_settings.signal_schema_mode = "greenfield"
+        logger = AnalyticsLogger()
+        def table_mock(name):
+            from unittest.mock import MagicMock
+            mock = MagicMock()
+            if name == "trade_analytics":
+                mock.select.return_value.eq.return_value.execute.return_value.data = [{"entry_price": 24000.0, "direction": "BULLISH", "signal_id": "sig1", "signal_uuid": None}]
+                mock.update.return_value.eq.return_value.execute.return_value.data = [{"id": "trade1"}]
+            elif name == "ml_collection":
+                mock.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [{"id": "ml_row1"}]
+            return mock
+        logger.supabase.table.side_effect = table_mock
+        
+        logger.log_exit("trade1", 24050.0, "T1_HIT")
+
 if __name__ == '__main__':
+
 
     unittest.main()

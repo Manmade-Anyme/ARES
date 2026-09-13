@@ -11,7 +11,9 @@ def main():
     
     # Ensure pdoc is installed
     try:
-        import pdoc
+        import importlib.util
+        if importlib.util.find_spec('pdoc') is None:
+            raise ImportError
     except ImportError:
         print("[-] 'pdoc' is not installed. Installing it now...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pdoc"])

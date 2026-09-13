@@ -251,9 +251,13 @@ class AnalyticsLogger:
                 where the fill remains at entry but T1 profit was locked.
         """
         def _update():
-            # signal_id comes back too: it is the key the ml_collection label
-            # back-fill below joins on.
-            response = self.supabase.table("trade_analytics").select("entry_price", "direction", "signal_id", "signal_uuid").eq("id", trade_id).execute()
+            mode = settings.signal_schema_mode
+            if mode == "bridge":
+                fields = "entry_price, direction, signal_id, signal_uuid"
+            else:
+                fields = "entry_price, direction, signal_id"
+                
+            response = self.supabase.table("trade_analytics").select(fields).eq("id", trade_id).execute()
             if not response.data:
                 return
 
@@ -298,9 +302,15 @@ class AnalyticsLogger:
             #
             # Skipped when signal_id is NULL (log_signal failed): there is no row
             # to attribute the outcome to, and guessing one would poison the label.
-            signal_uuid = record.get("signal_uuid")
-            if signal_uuid is None:
-                # Fallback to signal_id for legacy rows
+            if mode == "greenfield":
+                signal_val = record.get("signal_id")
+                signal_col = "signal_id"
+            else:
+                signal_val = record.get("signal_uuid")
+                signal_col = "signal_uuid"
+
+            if signal_val is None:
+                # Fallback to legacy logic for old rows when not in greenfield
                 signal_id = record.get("signal_id")
                 if signal_id is None:
                     return
@@ -326,7 +336,7 @@ class AnalyticsLogger:
                         "trade_outcome": final_state,
                         "trade_pnl": pnl,
                         "trade_score": score,
-                    }).eq("trade_id", trade_id).eq("signal_uuid", signal_uuid).execute()
+                    }).eq("trade_id", trade_id).eq(signal_col, str(signal_val)).execute()
                     if res.data:
                         break
                     else:
