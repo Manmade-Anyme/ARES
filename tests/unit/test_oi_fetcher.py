@@ -1,9 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
-import asyncio
 
 from fetchers.oi_fetcher import OIFetcher
-from models import ATMStrikes
 
 class TestOIFetcherRemediation(unittest.IsolatedAsyncioTestCase):
 

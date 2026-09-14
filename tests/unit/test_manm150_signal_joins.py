@@ -71,6 +71,10 @@ class _MemoryTable:
         self.payload = dict(payload)
         return self
 
+    def upsert(self, payload, on_conflict=None):
+        self.payload = dict(payload)
+        return self
+
     def execute(self):
         row = dict(self.payload)
         if self.name == "ares_signals":
@@ -230,7 +234,9 @@ class TestMLSnapshotOrdering(unittest.IsolatedAsyncioTestCase):
     async def test_signal_snapshot_persists_canonical_binding_fields(self):
         collector = self._collector()
         captured = []
-        collector._insert = lambda record: captured.append(record) or [record]
+        collector._upsert_signal_snapshot = (
+            lambda record: captured.append(record) or [record]
+        )
         signal = _signal()
 
         await collector.snapshot(
@@ -249,7 +255,9 @@ class TestMLSnapshotOrdering(unittest.IsolatedAsyncioTestCase):
     async def test_greenfield_snapshot_uses_canonical_signal_id(self):
         collector = self._collector()
         captured = []
-        collector._insert = lambda record: captured.append(record) or [record]
+        collector._upsert_signal_snapshot = (
+            lambda record: captured.append(record) or [record]
+        )
         signal = _signal()
 
         with patch("ml_signal.collector.settings.signal_schema_mode", "greenfield", create=True):

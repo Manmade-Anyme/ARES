@@ -3,6 +3,7 @@ import json
 from collections import deque
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+from uuid import uuid4
 
 from supabase import create_client, Client
 
@@ -225,6 +226,9 @@ class MLCollector:
         }
 
         record = {
+            # A client-generated identity makes a retry safe when PostgREST
+            # commits the first request but the response is lost.
+            "snapshot_uuid": str(uuid4()) if trade_id else None,
             "timestamp": to_utc_iso(ts),
             "spot": spot,
             "candle_features": json.dumps(candle_feats),
@@ -271,7 +275,9 @@ class MLCollector:
 
         for attempt in range(3):
             try:
-                rows = await loop.run_in_executor(None, self._insert, record)
+                rows = await loop.run_in_executor(
+                    None, self._upsert_signal_snapshot, record
+                )
                 if not rows:
                     raise RuntimeError("ML snapshot insert returned no persisted row")
                 row = rows[0] if isinstance(rows, list) else rows
@@ -304,6 +310,14 @@ class MLCollector:
 
     def _insert(self, record: Dict[str, Any]):
         response = self.supabase.table("ml_collection").insert(record).execute()
+        return getattr(response, "data", None)
+
+    def _upsert_signal_snapshot(self, record: Dict[str, Any]):
+        response = (
+            self.supabase.table("ml_collection")
+            .upsert(record, on_conflict="snapshot_uuid")
+            .execute()
+        )
         return getattr(response, "data", None)
 
     @property

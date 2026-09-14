@@ -78,7 +78,7 @@ class TestWickGateDropped(unittest.TestCase):
         )
         bias = self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle, levels=[])
         self.assertIsNotNone(bias)
-        decision = self.filter.update(bias=bias, candle=candle, levels=[])
+        self.filter.update(bias=bias, candle=candle, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
 
     @patch('detectors.oi_wall.settings')
@@ -91,7 +91,7 @@ class TestWickGateDropped(unittest.TestCase):
         )
         bias = self.detector.update(spot=24020.0, full_chain=PE_WALL_CHAIN, candle=candle, levels=[])
         self.assertIsNotNone(bias)
-        decision = self.filter.update(bias=bias, candle=candle, levels=[])
+        self.filter.update(bias=bias, candle=candle, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
 
     @patch('detectors.oi_wall.settings')
@@ -105,7 +105,7 @@ class TestWickGateDropped(unittest.TestCase):
         )
         bias = self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle, levels=[])
         self.assertIsNotNone(bias)
-        decision = self.filter.update(bias=bias, candle=candle, levels=[])
+        self.filter.update(bias=bias, candle=candle, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
 
 
@@ -130,7 +130,7 @@ class TestConfirmationKept(unittest.TestCase):
             open=24075.0, high=24081.0, low=24063.0, close=24065.0, volume=1000,
         )
         bias1 = self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle1, levels=[])
-        decision1 = self.filter.update(bias=bias1, candle=candle1, levels=[])
+        self.filter.update(bias=bias1, candle=candle1, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
 
         # Excursion candle (low 24050 is 50 pts away from 24100 -> RETEST_READY)
@@ -139,7 +139,7 @@ class TestConfirmationKept(unittest.TestCase):
             open=24064.0, high=24066.0, low=24050.0, close=24055.0, volume=1000,
         )
         bias2 = self.detector.update(spot=24055.0, full_chain=CE_WALL_CHAIN, candle=candle2, levels=[])
-        decision2 = self.filter.update(bias=bias2, candle=candle2, levels=[])
+        self.filter.update(bias=bias2, candle=candle2, levels=[])
         self.assertEqual(self.filter.state, "RETEST_READY")
 
         # Re-test candle tests wall and defends: high 24085 (within 20 pts of 24100), close 24075 (<= 24100)
@@ -175,7 +175,7 @@ class TestConfirmationKept(unittest.TestCase):
             open=24075.0, high=24081.0, low=24063.0, close=24065.0, volume=1000,
         )
         bias1 = self.detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle1, levels=[])
-        decision1 = self.filter.update(bias=bias1, candle=candle1, levels=[])
+        self.filter.update(bias=bias1, candle=candle1, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
 
         # Re-test candle with spot still below wall (24095), but close reaches 24105 > strike 24100 -> breach -> EXPIRED
@@ -203,7 +203,7 @@ class TestWritersHoldingRemoved(unittest.TestCase):
             open=24075.0, high=24081.0, low=24063.0, close=24065.0, volume=1000,
         )
         bias = detector.update(spot=24080.0, full_chain=CE_WALL_CHAIN, candle=candle, levels=[])
-        decision = entry_filter.update(bias=bias, candle=candle, levels=[])
+        entry_filter.update(bias=bias, candle=candle, levels=[])
         self.assertEqual(entry_filter.state, "INTERACTED")
 
     @patch('detectors.oi_wall.settings')

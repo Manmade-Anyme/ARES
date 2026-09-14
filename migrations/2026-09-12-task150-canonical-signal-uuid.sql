@@ -10,6 +10,9 @@ ALTER TABLE trade_analytics ADD COLUMN IF NOT EXISTS signal_uuid uuid;
 ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS signal_uuid uuid;
 ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS signal_display_id text;
 ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS trade_binding_status text;
+ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS snapshot_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ml_collection_snapshot_uuid
+  ON ml_collection (snapshot_uuid);
 
 DO $$
 BEGIN

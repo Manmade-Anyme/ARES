@@ -64,6 +64,16 @@ def format_signal_console(signal, spot):
         print(f"     {W}• {r}{RESET}")
     print(f"{color}{B}━" * 65 + RESET + "\n")
 
+
+async def _persist_ml_snapshot_before_exit_checks(collector, **snapshot):
+    """Keep risk-management checks live when ML persistence is unavailable."""
+    try:
+        await collector.snapshot(**snapshot)
+        return True
+    except Exception as exc:
+        print(f"MLCollector: signal-bound snapshot persistence failed: {exc}")
+        return False
+
 async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine):
     """
     Sleeps for `total_seconds` (the REST poll interval), but when the
@@ -336,7 +346,8 @@ async def run():
             # db_id=None on every row, which is why the label columns were never
             # writable. Nothing in that block mutates candle/atm/full_chain/levels
             # — only the signal's own sizing fields — so the features are identical.
-            await ml_collector.snapshot(
+            await _persist_ml_snapshot_before_exit_checks(
+                ml_collector,
                 candle=candle,
                 atm=atm,
                 full_chain=full_chain,

@@ -164,10 +164,9 @@ class TestContinuationStateMachine(unittest.TestCase):
     def test_full_bearish_continuation_emits_signal(self):
         pdh, pdl = 24200.0, 23900.0
         n = settings.continuation_regime_min_candles
-        sig = None
         for i in range(n):
-            sig = self.det.update(candle(24010.0, 24050.0, minute=i), avg_volume=100000, levels=[],
-                                   pdh=pdh, pdl=pdl)
+            self.det.update(candle(24010.0, 24050.0, minute=i), avg_volume=100000, levels=[],
+                            pdh=pdh, pdl=pdl)
         self.assertTrue(self.det.state.armed)
         self.assertEqual(self.det.state.direction, Direction.BEARISH)
 

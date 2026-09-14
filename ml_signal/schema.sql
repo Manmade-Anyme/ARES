@@ -48,6 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_pred_confidence ON ml_predictions (confidence_
 
 CREATE TABLE IF NOT EXISTS ml_collection (
   id bigserial primary key,
+  snapshot_uuid uuid UNIQUE,
   timestamp timestamptz not null,
   spot numeric,
 

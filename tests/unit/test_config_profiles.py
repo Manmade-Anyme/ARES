@@ -3,10 +3,10 @@ Tests for config_profiles, config, and expiry_detector modules.
 Ensures the auto-switching logic works correctly without breaking existing settings.
 """
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from dataclasses import fields as dc_fields
 from datetime import date
-from config import Settings, Secrets
+from config import Settings
 from config_profiles import TuningConfig, EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors import expiry_detector
 

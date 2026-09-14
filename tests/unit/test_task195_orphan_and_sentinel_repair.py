@@ -20,7 +20,6 @@ corroborate rather than assume, report contention instead of overwriting.
 
 import json
 import unittest
-from unittest.mock import MagicMock
 
 from tests.unit.test_task194_ml_labels_and_oi_distribution import _FakeSupabase
 
