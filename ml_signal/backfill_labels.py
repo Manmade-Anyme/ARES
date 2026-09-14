@@ -281,11 +281,26 @@ def repair_join_key(sb, apply: bool) -> int:
 
 
 def backfill_labels(sb, apply: bool) -> int:
-    """Phase 2 — write trade_id / trade_outcome / trade_pnl from closed trades."""
-    trades = _page(sb, "trade_analytics", "id,signal_id,result_state,pnl_points,setup_type,entry_timestamp")
+    """Phase 2 — write complete labels from closed trades to unowned ML rows."""
+    trades = _page(
+        sb,
+        "trade_analytics",
+        "id,signal_id,result_state,pnl_points,score,setup_type,entry_timestamp",
+    )
+    ml_rows = _page(
+        sb,
+        "ml_collection",
+        "id,signal_id,signal_setup_type,timestamp,trade_id",
+    )
+    linked_trade_ids = {
+        str(row["trade_id"])
+        for row in ml_rows
+        if row.get("trade_id") is not None
+    }
     closed = [
         t for t in trades
         if t.get("result_state") not in _OPEN_STATES and t.get("signal_id") is not None
+        and str(t.get("id")) not in linked_trade_ids
     ]
     orphans = [t for t in trades if t.get("signal_id") is None]
 
@@ -297,12 +312,6 @@ def backfill_labels(sb, apply: bool) -> int:
         # have recovered. Say so rather than let the figure read as final.
         print(f"    NOTE dry run: phase 2's recoveries are not reflected above."
               f" Under --apply this number falls and 'attributable' rises.")
-
-    ml_rows = _page(
-        sb,
-        "ml_collection",
-        "id,signal_id,signal_setup_type,timestamp,trade_id",
-    )
 
     # Display IDs are intentionally reusable. Pair each trade with at most one
     # unlabelled ML snapshot, using setup and entry time when a code is reused.
@@ -352,6 +361,7 @@ def backfill_labels(sb, apply: bool) -> int:
                 "trade_id": t["id"],
                 "trade_outcome": t["result_state"],
                 "trade_pnl": t.get("pnl_points"),
+                "trade_score": t.get("score"),
             }
             trades_applied += 1
             if apply:

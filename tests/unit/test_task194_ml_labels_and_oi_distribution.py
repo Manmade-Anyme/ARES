@@ -444,6 +444,56 @@ class TestBackfillGuards(unittest.TestCase):
         self.assertEqual(rows["ml_collection"][0]["trade_id"], "t1")
         self.assertEqual(rows["ml_collection"][1]["trade_id"], "t2")
 
+    def test_repeated_backfill_skips_trade_that_already_owns_snapshot(self):
+        rows = {
+            "trade_analytics": [
+                {
+                    "id": "t1", "signal_id": "0042", "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-09-13T04:00:00+00:00",
+                    "result_state": "SL_HIT", "pnl_points": -12.0, "score": 0,
+                },
+                {
+                    "id": "t2", "signal_id": "0042", "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-09-13T04:01:00+00:00",
+                    "result_state": "T2_HIT", "pnl_points": 80.0, "score": 2,
+                },
+            ],
+            "ml_collection": [
+                {
+                    "id": 10, "signal_id": "0042", "signal_setup_type": "FAILED_BREAKOUT",
+                    "timestamp": "2026-09-13T04:00:01+00:00", "trade_id": "t1",
+                },
+                {
+                    "id": 11, "signal_id": "0042", "signal_setup_type": "FAILED_BREAKOUT",
+                    "timestamp": "2026-09-13T04:01:01+00:00", "trade_id": None,
+                },
+            ],
+        }
+        sb = _FakeSupabase(rows)
+
+        written = self._mod().backfill_labels(sb, apply=True)
+
+        self.assertEqual(written, 1)
+        self.assertEqual(rows["ml_collection"][1]["trade_id"], "t2")
+
+    def test_backfill_copies_trade_score(self):
+        rows = {
+            "trade_analytics": [{
+                "id": "t1", "signal_id": "0042", "setup_type": "FAILED_BREAKOUT",
+                "entry_timestamp": "2026-09-13T04:00:00+00:00",
+                "result_state": "T2_HIT", "pnl_points": 80.0, "score": 2,
+            }],
+            "ml_collection": [{
+                "id": 10, "signal_id": "0042", "signal_setup_type": "FAILED_BREAKOUT",
+                "timestamp": "2026-09-13T04:00:01+00:00", "trade_id": None,
+            }],
+        }
+        sb = _FakeSupabase(rows)
+
+        self._mod().backfill_labels(sb, apply=True)
+
+        self.assertEqual(rows["ml_collection"][0]["trade_score"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
