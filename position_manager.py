@@ -51,15 +51,10 @@ class PositionManager:
             self.is_initialized = False
             print(f"Failed to initialize PositionManager DB: {e}")
 
-    def add_trade(self, signal: AresSignal, spot: float, atm: ATMStrikes = None):
+    async def add_trade(self, signal: AresSignal, spot: float, atm: ATMStrikes = None) -> tuple[str, str]:
         """
-        Formats an AresSignal, pushes it to Supabase as OPEN, and stores it in memory.
-        Also logs entry to the permanent trade_analytics table.
-
-        Duplicate guard (TASK-172, audit item 13): the same setup firing twice
-        in quick succession produced double rows (06-29 14:12 OI wall logged
-        twice). A signal matching an already-tracked open trade's setup,
-        direction and entry (within 1 pt) is skipped.
+        Formats an AresSignal, pushes it to Supabase as OPEN using atomic RPC,
+        and stores it in memory. Returns (trade_id, binding_status).
         """
         for existing in self.active_trades:
             if existing.get("state") in ["CLOSED", "STOPPED_OUT"]:
@@ -68,12 +63,16 @@ class PositionManager:
                     and existing.get("direction") == signal.direction.value
                     and abs(float(existing.get("entry_price", 0.0)) - float(spot)) <= settings.trade_dedupe_tolerance_pts):
                 print(f"[-] PositionManager: Duplicate {signal.setup_type.value} ({signal.direction.value}) trade at {spot:.2f} skipped — already tracking {existing['id']}.")
-                return
+                return "", "DUPLICATE_SKIPPED" 
 
         trade_id = str(uuid.uuid4())
+        
+        # Prepare RPC payload
         trade_data = {
             "id": trade_id,
-            "signal_id": getattr(signal, "signal_id", f"{__import__('random').randint(0, 9999):04d}"),
+            "signal_id": str(signal.id),
+            "signal_uuid": str(signal.id),
+            "display_id": signal.display_id,
             "setup_type": signal.setup_type.value,
             "direction": signal.direction.value,
             "entry_price": float(spot),
@@ -81,29 +80,95 @@ class PositionManager:
             "target_1": float(signal.target_1),
             "target_2": float(signal.target_2),
             "state": "OPEN",
-            # We explicitly set created_at so we can reliably parse it later
             "created_at": datetime.now(timezone.utc).isoformat(),
             "added_time_ist": datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%H:%M:%S")
         }
-        
-        # Add to memory list
-        self.active_trades.append(trade_data)
-        
-        # Push to Supabase asynchronously to avoid blocking the main event loop
+
+        # Market context for analytics
+        db_reasons = list(signal.reasons)
+        if getattr(signal, "suggested_lots", None) is not None:
+            db_reasons.append(
+                f"Option Sizing: {signal.suggested_lots} lots suggested | "
+                f"Capital: ₹{signal.capital:,.2f} | Risk: {signal.risk_pct:.1f}% | "
+                f"Option SL: ₹{signal.option_sl:.2f} | Option Target: ₹{signal.option_target:.2f} | "
+                f"Premium: ₹{signal.option_premium:.2f} | Delta: {signal.option_delta:+.4f}"
+            )
+        market_context = {
+            "reasons": db_reasons,
+            "spot_at_signal": float(signal.trigger_price),
+            "confidence": signal.confidence,
+            "entry_spot": float(spot)
+        }
+        if getattr(signal, "suggested_lots", None) is not None:
+            market_context["options_sizing"] = {
+                "suggested_lots": signal.suggested_lots,
+                "option_sl": signal.option_sl,
+                "option_target": signal.option_target,
+                "capital": signal.capital,
+                "delta": signal.option_delta,
+                "premium": signal.option_premium,
+                "risk_pct": signal.risk_pct
+            }
+        if getattr(signal, "oi_wall_context", None) is not None:
+            market_context["oi_wall"] = signal.oi_wall_context
+
+        oi_data = {}
+        if atm is not None:
+            ce_oi = atm.ce.oi
+            pe_oi = atm.pe.oi
+            oi_data = {
+                "pcr": round(pe_oi / ce_oi if ce_oi > 0 else 0.0, 4),
+                "atm_ce_oi": ce_oi,
+                "atm_pe_oi": pe_oi,
+                "ce_oi_change_pct": round(atm.ce.oi_change_pct, 2),
+                "pe_oi_change_pct": round(atm.pe.oi_change_pct, 2),
+            }
+
+        entry_timestamp = __import__("storage").to_utc_iso(signal.timestamp)
+        mode = settings.signal_schema_mode
+        if mode not in {"bridge", "greenfield"}:
+            raise ValueError(f"Unsupported signal schema mode: {mode}")
         def _insert():
-            self.supabase.table("active_trades").insert(trade_data).execute()
-            
-        try:
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, _insert)
-        except Exception as e:
-            print(f"Failed to push new trade to Supabase: {e}")
-            
-        # 2. Log to permanent Analytics table
-        try:
-            self.analytics.log_entry(trade_id, signal, spot, atm)
-        except Exception as e:
-            print(f"Failed to log trade to Analytics: {e}")
+            payload = {
+                "p_trade_id": trade_id,
+                "p_signal_uuid": str(signal.id),
+                "p_display_id": signal.display_id,
+                "p_setup_type": signal.setup_type.value,
+                "p_direction": signal.direction.value,
+                "p_entry_price": float(spot),
+                "p_stop_loss": float(signal.stop_loss),
+                "p_target_1": float(signal.target_1),
+                "p_target_2": float(signal.target_2),
+                "p_added_time_ist": trade_data["added_time_ist"],
+                "p_market_context": market_context,
+                "p_oi_data": oi_data,
+                "p_entry_timestamp": entry_timestamp,
+            }
+            if mode == "bridge":
+                payload["p_legacy_signal_id"] = signal.db_id
+            rpc_name = f"create_trade_entry_{mode}"
+            response = self.supabase.rpc(rpc_name, payload).execute()
+            persisted_id = getattr(response, "data", None)
+            if isinstance(persisted_id, list) and len(persisted_id) == 1:
+                persisted_id = persisted_id[0]
+            if str(persisted_id) != trade_id:
+                raise RuntimeError(f"{rpc_name} returned an unexpected trade id")
+            return True
+
+        import asyncio
+        loop = asyncio.get_running_loop()
+        for attempt in range(3):
+            try:
+                success = await loop.run_in_executor(None, _insert)
+                if success:
+                    self.active_trades.append(trade_data)
+                    return trade_id, "BOUND"
+            except Exception as e:
+                print(f"Failed to push new trade to Supabase (attempt {attempt+1}): {e}")
+                if attempt == 2:
+                    raise RuntimeError("Database insertion failed for atomic trade entry after 3 attempts")
+                await asyncio.sleep(1)
+        
 
     async def update_trades(
         self,

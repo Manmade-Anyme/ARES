@@ -26,6 +26,8 @@ CREATE TABLE ares_signals (
   option_type text,
   reasons jsonb,
   oi_wall_context jsonb, -- TASK-073: decoupled entry telemetry (NULL for non-OI-wall)
+  signal_uuid uuid UNIQUE,
+  display_id text,
   timestamp timestamptz,
   created_at timestamptz default now()
 );
@@ -36,6 +38,8 @@ CREATE INDEX idx_ares_signals_timestamp ON ares_signals (timestamp DESC);
 CREATE TABLE active_trades (
   id uuid primary key,
   signal_id text,
+  signal_uuid uuid CONSTRAINT fk_active_trades_signal_uuid REFERENCES ares_signals(signal_uuid),
+  display_id text,
   setup_type text not null,
   direction text not null,
   entry_price numeric not null,
@@ -55,12 +59,16 @@ CREATE TABLE active_trades (
 CREATE TABLE trade_analytics (
   id uuid PRIMARY KEY,
   signal_id bigint, -- Optional link to ares_signals
+  signal_uuid uuid CONSTRAINT fk_trade_analytics_signal_uuid REFERENCES ares_signals(signal_uuid),
   setup_type text NOT NULL,
   direction text NOT NULL,
   
   -- Price & Time
   entry_timestamp timestamptz NOT NULL,
   exit_timestamp timestamptz,
+  exit_signal_uuid uuid UNIQUE,
+  display_id text,
+  timestamp timestamptz,
   entry_price numeric NOT NULL,
   exit_price numeric,
   pnl_points numeric,
@@ -78,3 +86,71 @@ CREATE TABLE trade_analytics (
 
 -- Index for temporal analysis
 CREATE INDEX idx_trade_analytics_entry ON trade_analytics (entry_timestamp DESC);
+
+-- Atomic trade entry RPC for bridge mode
+CREATE OR REPLACE FUNCTION create_trade_entry_bridge(
+  p_trade_id uuid,
+  p_signal_uuid uuid,
+  p_display_id text,
+  p_setup_type text,
+  p_direction text,
+  p_entry_price numeric,
+  p_stop_loss numeric,
+  p_target_1 numeric,
+  p_target_2 numeric,
+  p_added_time_ist text,
+  p_market_context jsonb,
+  p_oi_data jsonb,
+  p_entry_timestamp timestamptz,
+  p_legacy_signal_id bigint
+) RETURNS uuid
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO active_trades (
+    id, signal_id, signal_uuid, display_id, setup_type, direction, entry_price,
+    stop_loss, target_1, target_2, state, added_time_ist
+  ) VALUES (
+    p_trade_id, p_legacy_signal_id::text, p_signal_uuid, p_display_id,
+    p_setup_type, p_direction, p_entry_price,
+    p_stop_loss, p_target_1, p_target_2, 'OPEN', p_added_time_ist
+  ) ON CONFLICT (id) DO NOTHING;
+
+  INSERT INTO trade_analytics (
+    id, signal_id, signal_uuid, setup_type, direction, entry_price,
+    market_context, oi_data, entry_timestamp, result_state
+  ) VALUES (
+    p_trade_id, p_legacy_signal_id, p_signal_uuid, p_setup_type, p_direction, p_entry_price,
+    p_market_context, p_oi_data, p_entry_timestamp, 'OPEN'
+  ) ON CONFLICT (id) DO NOTHING;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM active_trades
+    WHERE id = p_trade_id
+      AND signal_id IS NOT DISTINCT FROM p_legacy_signal_id::text
+      AND signal_uuid IS NOT DISTINCT FROM p_signal_uuid
+      AND display_id IS NOT DISTINCT FROM p_display_id
+      AND setup_type IS NOT DISTINCT FROM p_setup_type
+      AND direction IS NOT DISTINCT FROM p_direction
+      AND entry_price IS NOT DISTINCT FROM p_entry_price
+      AND stop_loss IS NOT DISTINCT FROM p_stop_loss
+      AND target_1 IS NOT DISTINCT FROM p_target_1
+      AND target_2 IS NOT DISTINCT FROM p_target_2
+  ) OR NOT EXISTS (
+    SELECT 1 FROM trade_analytics
+    WHERE id = p_trade_id
+      AND signal_id IS NOT DISTINCT FROM p_legacy_signal_id
+      AND signal_uuid IS NOT DISTINCT FROM p_signal_uuid
+      AND setup_type IS NOT DISTINCT FROM p_setup_type
+      AND direction IS NOT DISTINCT FROM p_direction
+      AND entry_price IS NOT DISTINCT FROM p_entry_price
+      AND market_context IS NOT DISTINCT FROM p_market_context
+      AND oi_data IS NOT DISTINCT FROM p_oi_data
+      AND entry_timestamp IS NOT DISTINCT FROM p_entry_timestamp
+  ) THEN
+    RAISE EXCEPTION 'Conflicting trade entry for id %', p_trade_id;
+  END IF;
+
+  RETURN p_trade_id;
+END;
+$$;

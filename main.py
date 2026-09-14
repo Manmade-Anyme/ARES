@@ -64,6 +64,16 @@ def format_signal_console(signal, spot):
         print(f"     {W}• {r}{RESET}")
     print(f"{color}{B}━" * 65 + RESET + "\n")
 
+
+async def _persist_ml_snapshot_before_exit_checks(collector, **snapshot):
+    """Keep risk-management checks live when ML persistence is unavailable."""
+    try:
+        await collector.snapshot(**snapshot)
+        return True
+    except Exception as exc:
+        print(f"MLCollector: signal-bound snapshot persistence failed: {exc}")
+        return False
+
 async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine):
     """
     Sleeps for `total_seconds` (the REST poll interval), but when the
@@ -127,7 +137,7 @@ async def run():
     ml_predictor = SignalPredictor()
     try:
         ml_predictor.load_model()
-    except Exception as e:
+    except Exception:
         ml_predictor = None
 
     # Make this dynamic via Yahoo Finance Oracle 
@@ -305,22 +315,28 @@ async def run():
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
 
                 format_signal_console(signal, spot)
+                success = False
                 try:
-                    await storage.log_signal(signal, spot)
+                    success = await storage.log_signal(signal, spot)
                 except Exception as db_err:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
 
-                # Every fired signal is a live trade now (TASK-182 removed the
-                # observation-only gate).
-                try:
-                    position_manager.add_trade(signal, spot, atm=atm)
-                except Exception as pm_err:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
+                if not success:
+                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Engine: Failed to log signal, aborting trade entry.{RESET}")
+                    signal = None
+                else:
+                    try:
+                        trade_id, binding_status = await position_manager.add_trade(signal, spot, atm=atm)
+                        signal.trade_id = trade_id
+                        signal.trade_binding_status = binding_status
+                    except Exception as pm_err:
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
 
-                try:
-                    await send_discord(signal, spot)
-                except Exception as alert_err:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
+                if signal is not None:
+                    try:
+                        await send_discord(signal, spot)
+                    except Exception as alert_err:
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
 
             # ML Data Collection: log a feature snapshot every cycle, signal or not.
             #
@@ -330,7 +346,7 @@ async def run():
             # db_id=None on every row, which is why the label columns were never
             # writable. Nothing in that block mutates candle/atm/full_chain/levels
             # — only the signal's own sizing fields — so the features are identical.
-            ml_collector.snapshot(
+            snapshot_kwargs = dict(
                 candle=candle,
                 atm=atm,
                 full_chain=full_chain,
@@ -343,7 +359,17 @@ async def run():
                 dte=days_to_expiry(expiry_date),
                 timestamp=now,
                 oi_wall_context=engine.latest_oi_wall_context,
+                trade_id=getattr(signal, "trade_id", None) if signal else None,
+                trade_binding_status=(
+                    getattr(signal, "trade_binding_status", "UNRESOLVED")
+                    if signal else "NOT_APPLICABLE"
+                ),
             )
+            
+            if signal:
+                await _persist_ml_snapshot_before_exit_checks(ml_collector, **snapshot_kwargs)
+            else:
+                asyncio.create_task(ml_collector.snapshot(**snapshot_kwargs))
 
             # Update active trades with new spot price. Candle high/low enable
             # intrabar SL/target detection (TASK-172, audit item 11).
@@ -410,5 +436,5 @@ if __name__ == "__main__":
         print(f"\n{R}🚨 FATAL ERROR: ARES crashed! {fatal_error}{RESET}", flush=True)
         try:
             asyncio.run(send_error_alert(f"FATAL SYSTEM CRASH: {fatal_error}"))
-        except:
+        except Exception:
             pass

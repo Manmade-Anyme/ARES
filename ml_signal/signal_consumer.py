@@ -17,8 +17,12 @@ from supabase import create_client, Client
 
 from .config import MLConfig, DEFAULT_CONFIG
 from .predictor import SignalPredictor
-from .features import build_feature_vector
 from .discord import send_prediction_alert
+
+
+def _display_id_for_alert(signal: dict) -> str:
+    """Return presentation identity without weakening canonical-key handling."""
+    return str(signal.get("display_id") or signal.get("id", ""))
 
 
 class SignalConsumer:
@@ -79,6 +83,7 @@ class SignalConsumer:
 
                 for signal in signals:
                     signal_id = str(signal.get("id", ""))
+                    signal_display_id = _display_id_for_alert(signal)
                     if signal_id in self._processed_ids:
                         continue
 
@@ -116,6 +121,7 @@ class SignalConsumer:
 
                     result["source"] = "event_triggered"
                     result["signal_id"] = signal_id
+                    result["signal_display_id"] = signal_display_id
                     result["signal_setup_type"] = signal.get("setup_type", "")
                     result["spot"] = spot
 
@@ -130,11 +136,11 @@ class SignalConsumer:
                         confidence_tier=tier,
                         spot=spot,
                         source="event_triggered",
-                        signal_id=signal_id,
+                        signal_id=signal_display_id,
                         signal_setup_type=signal.get("setup_type", ""),
                     )
 
-                    print(f"[ML Consumer] Signal #{signal_id} ({signal.get('setup_type', '?')}) "
+                    print(f"[ML Consumer] Signal #{signal_display_id} ({signal.get('setup_type', '?')}) "
                           f"→ Prob(T1)={proba:.2%}")
 
             except Exception as e:

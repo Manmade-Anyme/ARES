@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta
 
-from models import OHLCVCandle, Direction, OIWallBias, OIWallTelemetry, OIWallEntryDecision
+from models import OHLCVCandle, Direction, OIWallBias
 from detectors.oi_wall_entry import OIWallEntryFilter
 
 
@@ -93,7 +93,7 @@ class TestOIWallEntryFilter(unittest.TestCase):
         t1 = self.t0 + timedelta(minutes=1)
         candle2 = OHLCVCandle(timestamp=t1, open=24070.0, high=24072.0, low=24050.0, close=24055.0, volume=1000)
         bias2 = self._make_ce_bias(persistence=2)
-        decision2 = self.filter.update(bias=bias2, candle=candle2, levels=[])
+        self.filter.update(bias=bias2, candle=candle2, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
         self.assertAlmostEqual(self.filter.favourable_excursion_pts, 50.0)  # 24100 - 24050 = 50.0
 
@@ -101,7 +101,7 @@ class TestOIWallEntryFilter(unittest.TestCase):
         t2 = self.t0 + timedelta(minutes=2)
         candle3 = OHLCVCandle(timestamp=t2, open=24055.0, high=24060.0, low=24045.0, close=24050.0, volume=1000)
         bias3 = self._make_ce_bias(persistence=3)
-        decision3 = self.filter.update(bias=bias3, candle=candle3, levels=[])
+        self.filter.update(bias=bias3, candle=candle3, levels=[])
         self.assertEqual(self.filter.state, "RETEST_READY")
         self.assertIsNotNone(self.filter.latest_watchlist_event)
         self.assertEqual(self.filter.latest_watchlist_event.wall_key, "CE:24100")
@@ -110,7 +110,7 @@ class TestOIWallEntryFilter(unittest.TestCase):
         t3 = self.t0 + timedelta(minutes=3)
         candle4 = OHLCVCandle(timestamp=t3, open=24050.0, high=24065.0, low=24048.0, close=24060.0, volume=1000)
         bias4 = self._make_ce_bias(persistence=4)
-        decision4 = self.filter.update(bias=bias4, candle=candle4, levels=[])
+        self.filter.update(bias=bias4, candle=candle4, levels=[])
         self.assertEqual(self.filter.state, "RETEST_READY")
         self.assertIsNone(self.filter.latest_watchlist_event)
 
@@ -145,21 +145,21 @@ class TestOIWallEntryFilter(unittest.TestCase):
         # 1. Interaction: low drops to 24015 <= 24000 + 20, defends close at 24025 >= 24000
         candle1 = OHLCVCandle(timestamp=self.t0, open=24040.0, high=24045.0, low=24015.0, close=24025.0, volume=1000)
         bias1 = self._make_pe_bias(persistence=1)
-        decision1 = self.filter.update(bias=bias1, candle=candle1, levels=[])
+        self.filter.update(bias=bias1, candle=candle1, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
 
         # 2. Excursion: high climbs to 24060 (60 pts above 24000 >= 12)
         t1 = self.t0 + timedelta(minutes=1)
         candle2 = OHLCVCandle(timestamp=t1, open=24025.0, high=24060.0, low=24022.0, close=24055.0, volume=1000)
         bias2 = self._make_pe_bias(persistence=2)
-        decision2 = self.filter.update(bias=bias2, candle=candle2, levels=[])
+        self.filter.update(bias=bias2, candle=candle2, levels=[])
         self.assertEqual(self.filter.state, "INTERACTED")
 
         # 3. Snapshot 3: persistence reaches 3 -> RETEST_READY
         t2 = self.t0 + timedelta(minutes=2)
         candle3 = OHLCVCandle(timestamp=t2, open=24055.0, high=24065.0, low=24045.0, close=24050.0, volume=1000)
         bias3 = self._make_pe_bias(persistence=3)
-        decision3 = self.filter.update(bias=bias3, candle=candle3, levels=[])
+        self.filter.update(bias=bias3, candle=candle3, levels=[])
         self.assertEqual(self.filter.state, "RETEST_READY")
 
         # 4. Secondary Re-test: low pulls back to 24018 <= 24020, closes defended at 24028 >= 24000

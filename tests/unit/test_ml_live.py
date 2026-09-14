@@ -1,5 +1,4 @@
 import unittest
-from unittest.mock import MagicMock
 
 from ml_signal.live import LiveRunner
 

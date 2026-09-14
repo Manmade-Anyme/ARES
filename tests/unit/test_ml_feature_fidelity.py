@@ -163,7 +163,7 @@ class TestIVHistoryOrdering(unittest.TestCase):
         self.assertEqual(feats["iv_percentile"], 100.0)
 
 
-class TestHistoryContractHoldsForEveryCaller(unittest.TestCase):
+class TestHistoryContractHoldsForEveryCaller(unittest.IsolatedAsyncioTestCase):
     """Both feature producers must pass PRIOR-bar history.
 
     MLCollector.snapshot and LivePredictionLoop.run are independent callers of the
@@ -189,7 +189,7 @@ class TestHistoryContractHoldsForEveryCaller(unittest.TestCase):
             ["self.volume_history.append(", "self.iv_history.append("],
         )
 
-    def test_live_loop_appends_after_predicting(self):
+    async def test_live_loop_appends_after_predicting(self):
         import inspect
         from ml_signal import live
         cls = next(
@@ -203,7 +203,7 @@ class TestHistoryContractHoldsForEveryCaller(unittest.TestCase):
         )
 
 
-class TestSignalColumnsCarryEnumValues(unittest.TestCase):
+class TestSignalColumnsCarryEnumValues(unittest.IsolatedAsyncioTestCase):
     """Regression: every ``detector_scores`` row ever collected was all-zero.
 
     ``str(SetupType.OI_WALL_REJECTION)`` is ``'SetupType.OI_WALL_REJECTION'``, which
@@ -213,7 +213,7 @@ class TestSignalColumnsCarryEnumValues(unittest.TestCase):
     assertion is against the shape the engine actually emits.
     """
 
-    def _snapshot_record(self, signal, **kwargs):
+    async def _snapshot_record(self, signal, **kwargs):
         """Run snapshot() with the Supabase client stubbed and return the record."""
         from unittest.mock import patch
         from ml_signal.collector import MLCollector
@@ -227,7 +227,7 @@ class TestSignalColumnsCarryEnumValues(unittest.TestCase):
 
         captured = {}
         with patch.object(MLCollector, "_insert", lambda self, record: captured.update(record)):
-            collector.snapshot(
+            await collector.snapshot(
                 candle=_candle(),
                 atm=_atm(),
                 full_chain=[_chain_row(24000, ce_oi=1_000_000, pe_oi=1_000_000)],
@@ -238,10 +238,10 @@ class TestSignalColumnsCarryEnumValues(unittest.TestCase):
             )
         return captured
 
-    def test_each_setup_type_sets_exactly_its_own_flag(self):
+    async def test_each_setup_type_sets_exactly_its_own_flag(self):
         for setup in SetupType:
             with self.subTest(setup=setup):
-                record = self._snapshot_record(_signal(setup))
+                record = await self._snapshot_record(_signal(setup))
                 scores = json.loads(record["detector_scores"])
 
                 self.assertEqual(
@@ -253,29 +253,29 @@ class TestSignalColumnsCarryEnumValues(unittest.TestCase):
                     f"exactly one flag may be set for {setup.value}, got {scores}",
                 )
 
-    def test_every_setup_type_has_a_flag(self):
+    async def test_every_setup_type_has_a_flag(self):
         """TREND_CONTINUATION had no key at all, so it scored as all-zeros."""
         scores = json.loads(
-            self._snapshot_record(_signal(SetupType.FAILED_BREAKOUT))["detector_scores"]
+            (await self._snapshot_record(_signal(SetupType.FAILED_BREAKOUT)))["detector_scores"]
         )
         self.assertEqual(
             set(scores), {s.value.lower() for s in SetupType},
             "detector_scores must carry one key per SetupType member",
         )
 
-    def test_no_signal_leaves_every_flag_zero(self):
-        scores = json.loads(self._snapshot_record(None)["detector_scores"])
+    async def test_no_signal_leaves_every_flag_zero(self):
+        scores = json.loads((await self._snapshot_record(None))["detector_scores"])
         self.assertEqual(set(scores.values()), {0})
 
-    def test_setup_and_direction_store_bare_enum_values(self):
-        record = self._snapshot_record(
+    async def test_setup_and_direction_store_bare_enum_values(self):
+        record = await self._snapshot_record(
             _signal(SetupType.EXHAUSTION_REVERSAL, Direction.BEARISH)
         )
         self.assertEqual(record["signal_setup_type"], "EXHAUSTION_REVERSAL")
         self.assertEqual(record["signal_direction"], "BEARISH")
 
-    def test_dte_reaches_meta_features(self):
-        record = self._snapshot_record(None, is_expiry=True, dte=0)
+    async def test_dte_reaches_meta_features(self):
+        record = await self._snapshot_record(None, is_expiry=True, dte=0)
         meta = json.loads(record["meta_features"])
 
         self.assertEqual(meta["is_expiry_day"], 1)

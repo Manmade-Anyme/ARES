@@ -12,7 +12,7 @@ import asyncio
 import os
 from collections import deque
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple
 
 from dhanhq import dhanhq
 from supabase import create_client, Client
