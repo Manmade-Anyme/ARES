@@ -8,6 +8,36 @@ from tests.unit.test_task194_ml_labels_and_oi_distribution import _FakeSupabase
 
 
 class TestBreakevenAfterT1Repair(unittest.TestCase):
+
+    def test_repair_stuck_open_trades(self):
+        from ml_signal import backfill_labels
+        rows = {
+            "trade_analytics": [
+                {
+                    "id": "t-open",
+                    "result_state": "OPEN",
+                    "entry_price": 24000.0,
+                    "direction": "BULLISH"
+                }
+            ],
+            "active_trades": [
+                {
+                    "id": "t-open",
+                    "exit_price": 24100.0,
+                    "exit_type": "T1_HIT",
+                    "exit_timestamp": "2026-08-25T08:42:00+00:00",
+                    "pnl_points_override": None
+                }
+            ]
+        }
+        sb = _FakeSupabase(rows)
+        repaired = backfill_labels.repair_stuck_open_trades(sb, apply=True)
+        self.assertEqual(repaired, 1)
+        self.assertEqual(rows["trade_analytics"][0]["result_state"], "T1_HIT")
+        self.assertEqual(rows["trade_analytics"][0]["pnl_points"], 100.0)
+        self.assertEqual(rows["trade_analytics"][0]["score"], 1)
+
+
     @staticmethod
     def _rows():
         return {

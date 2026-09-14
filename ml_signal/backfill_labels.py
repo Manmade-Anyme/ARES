@@ -225,7 +225,17 @@ def repair_join_key(sb, apply: bool) -> int:
     # and phase 2 — which updates by signal_id — writes one trade's outcome onto
     # both. Consecutive same-setup signals are real here (TASK-185 recorded three
     # exhaustion entries in three consecutive minutes), so this is reachable.
-    claimed = {str(r["signal_id"]) for r in already}
+    # Only claim database IDs. Modern display IDs do not map 1:1 to database IDs,
+    # and treating them as such would lock out valid legacy repairs targeting that db_id.
+    claimed = set()
+    for r in already:
+        # Check if the signal_id is a valid db_id corroboration
+        s = by_id.get(str(r["signal_id"]))
+        if s is not None:
+            rt, st = _parse_ts(r.get("created_at")), _parse_ts(s.get("created_at"))
+            if rt and st and _normalise_setup(r.get("signal_setup_type")) == _normalise_setup(s.get("setup_type")):
+                if abs((st - rt).total_seconds()) <= _MATCH_TOLERANCE_SECONDS:
+                    claimed.add(str(s["id"]))
     fixed = 0
     unmatched: List[int] = []
     contended: List[int] = []
@@ -354,6 +364,74 @@ def backfill_labels(sb, apply: bool) -> int:
         print(f"  trades attributable      : {trades_applied}  (row count unknown until --apply)")
     return rows_written if apply else trades_applied
 
+
+
+def repair_stuck_open_trades(sb, apply: bool) -> int:
+    """Phase 2a — reconcile OPEN trades that raced a process termination.
+    
+    Reads the durable terminal telemetry (exit_price, exit_type, exit_timestamp,
+    pnl_points_override) from active_trades to close out trade_analytics rows
+    that are stuck in OPEN. This ensures Phase 4 will label their ml_collection rows.
+    """
+    trades = _page(sb, "trade_analytics", "id,result_state,entry_price,direction")
+    open_trades = [t for t in trades if t.get("result_state") in _OPEN_STATES]
+    
+    if not open_trades:
+        print(f"  stuck OPEN trades (affected): 0")
+        return 0
+
+    active = _page(sb, "active_trades", "id,exit_price,exit_type,exit_timestamp,pnl_points_override")
+    active_by_id = {str(a["id"]): a for a in active if a.get("id")}
+    
+    repairs = []
+    for t in open_trades:
+        a = active_by_id.get(str(t["id"]))
+        if a and a.get("exit_type"):
+            # Terminal telemetry is present.
+            pnl = None
+            if a.get("pnl_points_override") is not None:
+                pnl = float(a["pnl_points_override"])
+            else:
+                ep = float(t["entry_price"])
+                xp = float(a["exit_price"])
+                pnl = xp - ep if t["direction"] == "BULLISH" else ep - xp
+            pnl = round(pnl, 2)
+            
+            score = None
+            final_state = a["exit_type"]
+            if final_state == "T2_HIT":
+                score = 2
+            elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE"):
+                score = 1
+            elif final_state in ("SL_HIT", "STOPPED_OUT"):
+                score = 0
+                
+            repairs.append({
+                "id": t["id"],
+                "result_state": final_state,
+                "exit_price": float(a["exit_price"]),
+                "exit_timestamp": a["exit_timestamp"],
+                "pnl_points": pnl,
+                "score": score
+            })
+            
+    print(f"  stuck OPEN trades (affected): {len(open_trades)}")
+    print(f"  terminal in active_trades   : {len(repairs)}")
+    
+    if not apply:
+        return len(repairs)
+        
+    for r in repairs:
+        sb.table("trade_analytics").update({
+            "result_state": r["result_state"],
+            "exit_price": r["exit_price"],
+            "exit_timestamp": r["exit_timestamp"],
+            "pnl_points": r["pnl_points"],
+            "score": r["score"]
+        }).eq("id", r["id"]).execute()
+        
+    print(f"  trade_analytics rows closed : {len(repairs)}")
+    return len(repairs)
 
 def repair_be_after_t1(
     sb,
@@ -728,6 +806,9 @@ def main() -> int:
     print("\nPhase 2 — recover orphaned trade_analytics.signal_id")
     prospective_links: Dict[str, Any] = {}
     repair_orphan_trades(sb, args.apply, prospective_links=prospective_links)
+
+    print("\nPhase 2a — reconcile stuck OPEN trades")
+    repair_stuck_open_trades(sb, args.apply)
 
     print("\nPhase 3 — repair STOPPED_OUT_AT_BE P&L")
     repair_be_after_t1(
