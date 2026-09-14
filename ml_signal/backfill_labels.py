@@ -267,37 +267,69 @@ def backfill_labels(sb, apply: bool) -> int:
         print(f"    NOTE dry run: phase 2's recoveries are not reflected above."
               f" Under --apply this number falls and 'attributable' rises.")
 
-    # One signal must map to one trade. If two closed trades share a signal_id the
-    # second .eq() update overwrites the first, and which one survives depends on
-    # pagination order — arbitrary rather than wrong-but-explainable. Report and
-    # skip instead of writing a label that cannot be trusted.
+    ml_rows = _page(
+        sb,
+        "ml_collection",
+        "id,signal_id,signal_setup_type,timestamp,trade_id",
+    )
+
+    # Display IDs are intentionally reusable. Pair each trade with at most one
+    # unlabelled ML snapshot, using setup and entry time when a code is reused.
     by_signal: Dict[str, List[Dict[str, Any]]] = {}
     for t in closed:
         by_signal.setdefault(str(t["signal_id"]), []).append(t)
 
-    ambiguous = {k: v for k, v in by_signal.items() if len(v) > 1}
-    if ambiguous:
-        print(f"  AMBIGUOUS (skipped)      : {len(ambiguous)} signal(s) with >1 closed trade")
-        for sid, ts in list(ambiguous.items())[:10]:
-            print(f"    signal {sid}: trades {[t['id'] for t in ts]}")
-
     rows_written = 0
     trades_applied = 0
+    claimed_ml_ids = set()
+    ambiguous = []
     for sid, ts in by_signal.items():
-        if len(ts) > 1:
-            continue
-        t = ts[0]
-        payload = {
-            "trade_id": t["id"],
-            "trade_outcome": t["result_state"],
-            "trade_pnl": t.get("pnl_points"),
-        }
-        trades_applied += 1
-        if apply:
-            resp = sb.table("ml_collection").update(payload).eq("signal_id", sid).execute()
-            # Count ROWS touched, not trades iterated — a trade whose signal has no
-            # ml_collection row writes nothing, and the two numbers diverge.
-            rows_written += len(getattr(resp, "data", None) or [])
+        candidates = [
+            row for row in ml_rows
+            if str(row.get("signal_id")) == sid
+            and row.get("trade_id") is None
+            and row.get("id") not in claimed_ml_ids
+        ]
+        for t in sorted(ts, key=lambda row: row.get("entry_timestamp") or ""):
+            setup_matches = [
+                row for row in candidates
+                if _normalise_setup(row.get("signal_setup_type")) == _normalise_setup(t.get("setup_type"))
+            ]
+            timed = []
+            trade_time = _parse_ts(t.get("entry_timestamp"))
+            for row in setup_matches:
+                row_time = _parse_ts(row.get("timestamp"))
+                if trade_time and row_time:
+                    timed.append((abs((row_time - trade_time).total_seconds()), row))
+
+            if timed:
+                delta, target = min(timed, key=lambda item: item[0])
+                if delta > _MATCH_TOLERANCE_SECONDS:
+                    target = None
+            elif len(ts) == 1 and len(candidates) == 1:
+                target = candidates[0]
+            else:
+                target = None
+
+            if target is None:
+                ambiguous.append(t["id"])
+                continue
+
+            claimed_ml_ids.add(target["id"])
+            candidates.remove(target)
+            payload = {
+                "trade_id": t["id"],
+                "trade_outcome": t["result_state"],
+                "trade_pnl": t.get("pnl_points"),
+            }
+            trades_applied += 1
+            if apply:
+                resp = sb.table("ml_collection").update(payload).eq("id", target["id"]).execute()
+                rows_written += len(getattr(resp, "data", None) or [])
+
+    if ambiguous:
+        print(f"  AMBIGUOUS (skipped)      : {len(ambiguous)} trade(s) without a unique setup/time match")
+        print(f"    trades {ambiguous[:10]}")
 
     if apply:
         print(f"  trades applied           : {trades_applied}")
@@ -355,7 +387,7 @@ def repair_be_after_t1(
         return 0
 
     active_trades = _page(sb, "active_trades", "id,target_1")
-    signals = _page(sb, "ares_signals", "id,target_1")
+    signals = _page(sb, "ares_signals", "id,target_1,timestamp,created_at,setup_type")
     active_by_id = {
         str(row.get("id")): row
         for row in active_trades

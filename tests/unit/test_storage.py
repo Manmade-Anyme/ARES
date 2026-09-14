@@ -229,6 +229,12 @@ class TestStorage(unittest.IsolatedAsyncioTestCase):
             "entry_price": 24000.0,
             "direction": "BULLISH",
             "signal_id": 456,
+            "setup_type": "FAILED_BREAKOUT",
+            "entry_timestamp": "2026-09-13T04:00:00+00:00",
+        }]
+        self.mock_client.eq_mock.return_value.is_.return_value.eq.return_value.execute.return_value.data = [{
+            "id": 99,
+            "timestamp": "2026-09-13T04:00:01+00:00",
         }]
 
         self.analytics.log_exit(

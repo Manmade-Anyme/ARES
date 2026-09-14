@@ -151,6 +151,19 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
         )
         self.assertFalse(sb.updates)
 
+    def test_legacy_fallback_projects_timestamp_and_setup_fields(self):
+        from ml_signal import backfill_labels
+
+        rows = self._rows()
+        rows["active_trades"] = []
+        rows["trade_analytics"] = [rows["trade_analytics"][1]]
+        rows["ml_collection"] = [rows["ml_collection"][1]]
+        sb = _FakeSupabase(rows)
+
+        repaired = backfill_labels.repair_be_after_t1(sb, apply=False)
+
+        self.assertEqual(repaired, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

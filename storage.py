@@ -131,6 +131,7 @@ class AnalyticsLogger:
             settings.supabase_url,
             settings.supabase_key
         )
+        self._entry_futures = {}
 
     def log_entry(self, trade_id: str, signal: AresSignal, spot: float, atm: Any = None) -> None:
         """
@@ -212,7 +213,12 @@ class AnalyticsLogger:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, _insert)
+            self._entry_futures[trade_id] = loop.run_in_executor(None, _insert)
+        except RuntimeError:
+            try:
+                _insert()
+            except Exception as e:
+                print(f"Failed to log trade analytics entry: {e}")
         except Exception as e:
             print(f"Failed to log trade analytics entry: {e}")
 
@@ -239,7 +245,9 @@ class AnalyticsLogger:
             # back-fill below joins on.
             import time
             for _ in range(3):
-                response = self.supabase.table("trade_analytics").select("entry_price", "direction", "signal_id", "setup_type").eq("id", trade_id).execute()
+                response = self.supabase.table("trade_analytics").select(
+                    "entry_price", "direction", "signal_id", "setup_type", "entry_timestamp"
+                ).eq("id", trade_id).execute()
                 if response.data:
                     break
                 time.sleep(0.1)
@@ -292,19 +300,51 @@ class AnalyticsLogger:
             if signal_id is None:
                 return
             try:
+                candidates = self.supabase.table("ml_collection").select(
+                    "id", "timestamp"
+                ).eq("signal_id", str(signal_id)).is_("trade_id", "null").eq(
+                    "signal_setup_type", record["setup_type"]
+                ).execute().data
+                entry_timestamp = datetime.fromisoformat(
+                    record["entry_timestamp"].replace("Z", "+00:00")
+                )
+                closest = min(
+                    (
+                        (
+                            abs((datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")) - entry_timestamp).total_seconds()),
+                            row,
+                        )
+                        for row in candidates
+                        if row.get("id") is not None and row.get("timestamp")
+                    ),
+                    default=None,
+                    key=lambda item: item[0],
+                )
+                if closest is None or closest[0] > 120:
+                    return
                 self.supabase.table("ml_collection").update({
                     "trade_id": trade_id,
                     "trade_outcome": final_state,
                     "trade_pnl": pnl,
                     "trade_score": score,
-                }).eq("signal_id", str(signal_id)).is_("trade_id", "null").eq("signal_setup_type", record["setup_type"]).execute()
+                }).eq("id", closest[1]["id"]).is_("trade_id", "null").execute()
             except Exception as ml_err:
                 # Never let a labelling failure lose the trade exit above.
                 print(f"Failed to back-fill ml_collection label: {ml_err}")
 
         try:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, _update)
+            entry_future = self._entry_futures.pop(trade_id, None)
+            if entry_future is not None and not entry_future.done():
+                def _update_after_entry(_future):
+                    try:
+                        loop.run_in_executor(None, _update)
+                    except RuntimeError:
+                        pass
+
+                entry_future.add_done_callback(_update_after_entry)
+            else:
+                loop.run_in_executor(None, _update)
         except RuntimeError:
             # No running loop (sync caller, tests, backfill scripts). Previously
             # this branch only printed, so log_exit silently did nothing at all

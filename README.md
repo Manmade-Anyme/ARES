@@ -392,6 +392,10 @@ CREATE TABLE IF NOT EXISTS active_trades (
   target_1 numeric not null,
   target_2 numeric not null,
   state text not null default 'OPEN',
+  exit_price numeric,
+  exit_type text,
+  exit_timestamp timestamptz,
+  pnl_points_override numeric,
   added_time_ist text,
   created_at timestamptz default now()
 );

@@ -5,7 +5,7 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
-- **Trade ML Linkage (MANM-151)**: Standardized `trade_analytics.signal_id` to use the 4-digit display code (text). Added a PostgreSQL migration (`2026-09-11-task151-trade-analytics-signal-id-text.sql`) to safely cast the column. `position_manager` now persists terminal telemetry (`exit_price`, `exit_type`, `exit_timestamp`, `pnl_points_override`) to `active_trades` upon trade exit. `AnalyticsLogger.log_exit` backfills `ml_collection` using a collision-resistant composite filter (`signal_id`, `trade_id IS NULL`, `signal_setup_type`). `repair_be_after_t1` updated to use `market_context["signal_db_id"]` for fallback resolution. `repair_orphan_trades` updated to support 4-digit ID mapping.
+- **Trade ML Linkage (MANM-151)**: Standardized `trade_analytics.signal_id` to use the 4-digit display code (text). Added PostgreSQL migrations to cast that identifier safely and add terminal telemetry columns (`exit_price`, `exit_type`, `exit_timestamp`, `pnl_points_override`) to `active_trades`. Analytics entry and exit writes are ordered per trade, while live and batch ML backfills select one exact row using display ID, setup, and entry-time correlation. `repair_be_after_t1` now projects and uses the metadata required for safe fallback resolution.
 
 
 ### Removed

@@ -10,11 +10,27 @@ class TestTask151TradeMlLinkage(unittest.TestCase):
             content = f.read()
         self.assertIn("USING signal_id::text", content)
 
+    def test_active_trade_terminal_telemetry_has_schema_and_migration(self):
+        migration_path = "migrations/2026-09-14-task151-active-trade-terminal-telemetry.sql"
+        self.assertTrue(os.path.exists(migration_path))
+        with open(migration_path, "r") as f:
+            migration = f.read()
+        with open("schema.sql", "r") as f:
+            schema = f.read()
+        with open("README.md", "r") as f:
+            readme = f.read()
+
+        for column in ("exit_price", "exit_type", "exit_timestamp", "pnl_points_override"):
+            self.assertIn(f"ADD COLUMN IF NOT EXISTS {column}", migration)
+            self.assertIn(column, schema)
+            self.assertIn(column, readme)
+
     def test_b_collision_resistance_in_ml_collection_update(self):
         with open("storage.py", "r") as f:
             content = f.read()
         self.assertIn('.is_("trade_id", "null")', content)
-        self.assertIn('.eq("signal_setup_type", record["setup_type"])', content)
+        self.assertIn('"signal_setup_type", record["setup_type"]', content)
+        self.assertIn('.eq("id", closest[1]["id"])', content)
 
     def test_c_terminal_telemetry_persisted(self):
         with open("position_manager.py", "r") as f:
