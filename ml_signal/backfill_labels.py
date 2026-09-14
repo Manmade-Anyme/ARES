@@ -171,6 +171,11 @@ def repair_join_key(sb, apply: bool) -> int:
     signals = _page(sb, "ares_signals", "id,created_at,setup_type")
     by_id = {str(s["id"]): s for s in signals}
 
+    trades = _page(sb, "trade_analytics", "id,signal_id,setup_type,entry_timestamp")
+    trades_by_signal = {}
+    for t in trades:
+        trades_by_signal.setdefault(str(t.get("signal_id")), []).append(t)
+
     def _corroborated(row: Dict[str, Any]) -> bool:
         """Is this row's existing signal_id actually the right signal?
 
@@ -182,15 +187,26 @@ def repair_join_key(sb, apply: bool) -> int:
         (time, setup) evidence used to repair, so a coincidental numeric match
         cannot pass.
         """
+        # 1. Check if it matches a legacy `ares_signals.id` exactly.
         s = by_id.get(str(row["signal_id"]))
-        if s is None:
-            return False
-        rt, st = _parse_ts(row.get("created_at")), _parse_ts(s.get("created_at"))
-        if not (rt and st):
-            return False
-        if _normalise_setup(row.get("signal_setup_type")) != _normalise_setup(s.get("setup_type")):
-            return False
-        return abs((st - rt).total_seconds()) <= _MATCH_TOLERANCE_SECONDS
+        if s is not None:
+            rt, st = _parse_ts(row.get("created_at")), _parse_ts(s.get("created_at"))
+            if rt and st and _normalise_setup(row.get("signal_setup_type")) == _normalise_setup(s.get("setup_type")):
+                if abs((st - rt).total_seconds()) <= _MATCH_TOLERANCE_SECONDS:
+                    return True
+        
+        # 2. Prevent phase 1 from rewriting new display IDs by checking if it matches
+        #    a modern `trade_analytics` row's 4-digit display ID.
+        ts = trades_by_signal.get(str(row["signal_id"]))
+        if ts is not None:
+            rt = _parse_ts(row.get("created_at"))
+            for t in ts:
+                tt = _parse_ts(t.get("entry_timestamp"))
+                if rt and tt and _normalise_setup(row.get("signal_setup_type")) == _normalise_setup(t.get("setup_type")):
+                    if abs((tt - rt).total_seconds()) <= _MATCH_TOLERANCE_SECONDS:
+                        return True
+                        
+        return False
 
     candidates = [r for r in rows if r.get("signal_id") is not None]
     already = [r for r in candidates if _corroborated(r)]
@@ -471,71 +487,51 @@ def repair_be_after_t1(
         print(f"    trade ids                 : {[row.get('id') for row in unrepairable[:10]]}")
     print(f"  total points delta         : {total_delta:+.2f}")
 
-    # Reconciliation is restricted to the exact signal IDs of repaired trades.
-    # Duplicate signal IDs with different repaired values are not safe to sync.
-    ml_rows = _page(sb, "ml_collection", "id,signal_id,trade_pnl")
-    expected_by_signal = {}
-    ambiguous_signal_ids = set()
-    for repair in repairs:
-        signal_id = repair.get("signal_id")
-        if signal_id is None:
-            continue
-        key = str(signal_id)
-        previous = expected_by_signal.get(key)
-        if previous is not None and previous != repair["pnl_points"]:
-            ambiguous_signal_ids.add(key)
-        expected_by_signal[key] = repair["pnl_points"]
-
+    ml_rows = _page(sb, "ml_collection", "id,trade_id,trade_pnl")
     ml_matches = 0
     ml_mismatches = 0
     ml_missing = 0
-    for signal_id, expected in expected_by_signal.items():
-        matches = [row for row in ml_rows if str(row.get("signal_id")) == signal_id]
+
+    for repair in repairs:
+        matches = [row for row in ml_rows if row.get("trade_id") == repair["trade_id"]]
         if not matches:
             ml_missing += 1
             continue
         ml_matches += len(matches)
-        if signal_id not in ambiguous_signal_ids:
-            ml_mismatches += sum(
-                1
-                for row in matches
-                if not _pnl_matches(row.get("trade_pnl"), expected)
-            )
+        ml_mismatches += sum(
+            1
+            for row in matches
+            if not _pnl_matches(row.get("trade_pnl"), repair["pnl_points"])
+        )
 
     print(f"  ml_collection exact rows  : {ml_matches}")
     print(f"  ml_collection mismatches  : {ml_mismatches}")
     if ml_missing:
         print(f"  ml_collection missing ids : {ml_missing}")
-    if ambiguous_signal_ids:
-        print(f"  ambiguous signal IDs      : {sorted(ambiguous_signal_ids)} (ML sync skipped)")
 
     if not apply:
         return len(repairs)
 
+    ml_rows_written = 0
     for repair in repairs:
         sb.table("trade_analytics").update(
             {"pnl_points": repair["pnl_points"]}
         ).eq("id", repair["trade_id"]).execute()
 
-    ml_rows_written = 0
-    for signal_id, expected in expected_by_signal.items():
-        if signal_id in ambiguous_signal_ids:
-            continue
         response = sb.table("ml_collection").update(
-            {"trade_pnl": expected}
-        ).eq("signal_id", signal_id).execute()
+            {"trade_pnl": repair["pnl_points"]}
+        ).eq("trade_id", repair["trade_id"]).execute()
         ml_rows_written += len(getattr(response, "data", None) or [])
 
     print(f"  trade_analytics rows written: {len(repairs)}")
     print(f"  ml_collection rows written : {ml_rows_written}")
-    post_rows = _page(sb, "ml_collection", "id,signal_id,trade_pnl")
+    post_rows = _page(sb, "ml_collection", "id,trade_id,trade_pnl")
     post_mismatches = sum(
         1
-        for signal_id, expected in expected_by_signal.items()
-        if signal_id not in ambiguous_signal_ids
+        for repair in repairs
         for row in post_rows
-        if str(row.get("signal_id")) == signal_id
-        and not _pnl_matches(row.get("trade_pnl"), expected)
+        if row.get("trade_id") == repair["trade_id"]
+        and not _pnl_matches(row.get("trade_pnl"), repair["pnl_points"])
     )
     print(f"  ml_collection mismatches after repair: {post_mismatches}")
     return len(repairs)

@@ -64,10 +64,10 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
                 {"id": 103, "target_1": 24020.0},
             ],
             "ml_collection": [
-                {"id": 1, "signal_id": "101", "trade_pnl": 0.0},
-                {"id": 2, "signal_id": "102", "trade_pnl": 0.0},
-                {"id": 3, "signal_id": "103", "trade_pnl": 12.0},
-                {"id": 4, "signal_id": "999", "trade_pnl": 0.0},
+                {"id": 1, "trade_id": "t-active", "signal_id": "101", "trade_pnl": 0.0},
+                {"id": 2, "trade_id": "t-fallback", "signal_id": "102", "trade_pnl": 0.0},
+                {"id": 3, "trade_id": "t-nonzero", "signal_id": "103", "trade_pnl": 12.0},
+                {"id": 4, "trade_id": "t-missing", "signal_id": "999", "trade_pnl": 0.0},
             ],
         }
 
