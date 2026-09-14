@@ -34,7 +34,9 @@ All notable changes to the ARES trading system will be documented in this file.
   idempotent RPC conflicts, and retained four-digit display IDs in trade alerts.
   Signal-bound ML retries now upsert by a stable snapshot UUID, exhausted ML
   writes no longer suppress same-candle exit checks, and migrated/event-consumer
-  alerts fall back to presentation IDs without exposing canonical UUIDs.
+  alerts fall back to presentation IDs without exposing canonical UUIDs. The
+  unfinished historical-backfill CLI now fails closed instead of reporting a
+  successful dry-run audit without executing validation queries.
 - **OI wall rejection silenced by mid-retest wall displacement (MANM-110)**:
   `detectors/oi_wall.py` now preserves the currently tracked wall when a
   qualifying opposite-side wall appears marginally closer to spot during the

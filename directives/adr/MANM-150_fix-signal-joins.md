@@ -249,7 +249,7 @@ No runtime rollout may assume this cutover occurred merely because the additive 
 | `ml_signal/collector.py` | Accept optional `trade_id` and `trade_binding_status`; persist canonical signal identity, `signal_display_id`, and the auditable binding status. |
 | `alerts.py` | Render persisted-trade updates from `trade.display_id`, with a legacy fallback only for rows that have not been migrated. |
 | `schema.sql`, `ml_signal/schema.sql`, `migrations/` | Document both schema modes, add the bridge migration, add `trade_binding_status`, and create `create_trade_entry_bridge` plus the separately reviewed greenfield cutover migration. |
-| `scripts/backfill_signal_uuids.py` | Provide idempotent, dry-run-by-default reconciliation with ambiguity guards, orphan reporting, duplicate classification, and `--apply` for reviewed writes. |
+| `scripts/backfill_signal_uuids.py` | Fail closed in both default and `--apply` modes until the documented read-only reconciliation, ambiguity guards, orphan reporting, and separately reviewed writes are implemented. It must never claim that an audit or validation phase ran when it did not. |
 | `tests/` | Cover UUID propagation, signal persistence gates, atomic rollback/idempotent retry, serialized entry/exit behavior, active-trade reconciliation, orphan audits, unresolved signal snapshots, duplicate classification, entry-time ML binding, display-ID alerts, dry-run behavior, and ambiguity skips. |
 
 ---
