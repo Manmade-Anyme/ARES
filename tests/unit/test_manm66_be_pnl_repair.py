@@ -37,6 +37,44 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
         self.assertEqual(rows["trade_analytics"][0]["pnl_points"], 100.0)
         self.assertEqual(rows["trade_analytics"][0]["score"], 1)
 
+    def test_repair_recreates_missing_analytics_row_and_labels_ml(self):
+        from ml_signal import backfill_labels
+
+        rows = {
+            "trade_analytics": [],
+            "active_trades": [{
+                "id": "t-missing",
+                "signal_id": "0042",
+                "setup_type": "FAILED_BREAKOUT",
+                "direction": "BULLISH",
+                "entry_price": 24000.0,
+                "created_at": "2026-08-25T08:40:00+00:00",
+                "state": "CLOSED",
+                "exit_price": 24100.0,
+                "exit_type": "T2_HIT",
+                "exit_timestamp": "2026-08-25T08:42:00+00:00",
+                "pnl_points_override": None,
+            }],
+            "ml_collection": [{
+                "id": 1,
+                "signal_id": "0042",
+                "signal_setup_type": "FAILED_BREAKOUT",
+                "timestamp": "2026-08-25T08:40:01+00:00",
+                "trade_id": None,
+            }],
+        }
+        sb = _FakeSupabase(rows)
+
+        self.assertEqual(backfill_labels.repair_stuck_open_trades(sb, apply=True), 1)
+        self.assertEqual(backfill_labels.backfill_labels(sb, apply=True), 1)
+
+        analytics = rows["trade_analytics"][0]
+        self.assertEqual(analytics["id"], "t-missing")
+        self.assertEqual(analytics["result_state"], "T2_HIT")
+        self.assertEqual(analytics["score"], 2)
+        self.assertEqual(rows["ml_collection"][0]["trade_id"], "t-missing")
+        self.assertEqual(rows["ml_collection"][0]["trade_score"], 2)
+
 
     @staticmethod
     def _rows():

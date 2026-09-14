@@ -83,6 +83,46 @@ class TestOrphanTradeRepair(unittest.TestCase):
         self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 0)
         self.assertIsNone(rows["trade_analytics"][1]["signal_id"])
 
+    def test_modern_trade_claims_preserved_db_id_not_display_code(self):
+        rows = {
+            "trade_analytics": [
+                {
+                    "id": "modern", "signal_id": "243", "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-07-23T05:00:00+00:00",
+                    "market_context": {"signal_db_id": 999},
+                },
+                {
+                    "id": "legacy-orphan", "signal_id": None,
+                    "setup_type": "OI_WALL_REJECTION",
+                    "entry_timestamp": "2026-07-23T03:49:20+00:00",
+                },
+                {
+                    "id": "must-not-steal", "signal_id": None,
+                    "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-07-23T05:00:01+00:00",
+                },
+            ],
+            "ares_signals": [
+                {
+                    "id": 243, "setup_type": "OI_WALL_REJECTION",
+                    "timestamp": "2026-07-23T03:49:19+00:00",
+                    "created_at": "2026-07-23T03:49:19+00:00",
+                },
+                {
+                    "id": 999, "setup_type": "FAILED_BREAKOUT",
+                    "timestamp": "2026-07-23T05:00:00+00:00",
+                    "created_at": "2026-07-23T05:00:00+00:00",
+                },
+            ],
+        }
+        sb = _FakeSupabase(rows)
+
+        repaired = _mod().repair_orphan_trades(sb, apply=True)
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(rows["trade_analytics"][1]["signal_id"], "243")
+        self.assertIsNone(rows["trade_analytics"][2]["signal_id"])
+
     def test_far_from_any_signal_is_left_alone(self):
         rows = {
             "trade_analytics": [

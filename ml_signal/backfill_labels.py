@@ -382,68 +382,84 @@ def backfill_labels(sb, apply: bool) -> int:
 
 
 def repair_stuck_open_trades(sb, apply: bool) -> int:
-    """Phase 2a — reconcile OPEN trades that raced a process termination.
+    """Phase 2a — reconcile terminal trades that raced entry/exit persistence.
     
     Reads the durable terminal telemetry (exit_price, exit_type, exit_timestamp,
-    pnl_points_override) from active_trades to close out trade_analytics rows
-    that are stuck in OPEN. This ensures Phase 4 will label their ml_collection rows.
+    pnl_points_override) from active_trades. Existing OPEN analytics rows are
+    closed, while entirely absent analytics rows are recreated so Phase 4 can
+    label their ml_collection rows.
     """
     trades = _page(sb, "trade_analytics", "id,result_state,entry_price,direction")
     open_trades = [t for t in trades if t.get("result_state") in _OPEN_STATES]
-    
-    if not open_trades:
-        print(f"  stuck OPEN trades (affected): 0")
-        return 0
-
-    active = _page(sb, "active_trades", "id,exit_price,exit_type,exit_timestamp,pnl_points_override")
-    active_by_id = {str(a["id"]): a for a in active if a.get("id")}
+    analytics_by_id = {str(t["id"]): t for t in trades if t.get("id")}
+    active = _page(
+        sb,
+        "active_trades",
+        "id,signal_id,setup_type,direction,entry_price,created_at,"
+        "exit_price,exit_type,exit_timestamp,pnl_points_override",
+    )
     
     repairs = []
-    for t in open_trades:
-        a = active_by_id.get(str(t["id"]))
-        if a and a.get("exit_type"):
-            # Terminal telemetry is present.
-            pnl = None
-            if a.get("pnl_points_override") is not None:
-                pnl = float(a["pnl_points_override"])
-            else:
-                ep = float(t["entry_price"])
-                xp = float(a["exit_price"])
-                pnl = xp - ep if t["direction"] == "BULLISH" else ep - xp
-            pnl = round(pnl, 2)
-            
-            score = None
-            final_state = a["exit_type"]
-            if final_state == "T2_HIT":
-                score = 2
-            elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE"):
-                score = 1
-            elif final_state in ("SL_HIT", "STOPPED_OUT"):
-                score = 0
-                
-            repairs.append({
-                "id": t["id"],
-                "result_state": final_state,
-                "exit_price": float(a["exit_price"]),
-                "exit_timestamp": a["exit_timestamp"],
-                "pnl_points": pnl,
-                "score": score
-            })
-            
+    missing_analytics = 0
+    for a in active:
+        if not a.get("id") or not a.get("exit_type"):
+            continue
+        t = analytics_by_id.get(str(a["id"]))
+        is_missing = t is None
+        if not is_missing and t.get("result_state") not in _OPEN_STATES:
+            continue
+
+        source = a if is_missing else t
+        if a.get("pnl_points_override") is not None:
+            pnl = float(a["pnl_points_override"])
+        else:
+            ep = float(source["entry_price"])
+            xp = float(a["exit_price"])
+            pnl = xp - ep if source["direction"] == "BULLISH" else ep - xp
+        pnl = round(pnl, 2)
+
+        final_state = a["exit_type"]
+        score = {
+            "T2_HIT": 2,
+            "T1_HIT": 1,
+            "STOPPED_OUT_AT_BE": 1,
+            "SL_HIT": 0,
+            "STOPPED_OUT": 0,
+        }.get(final_state)
+
+        terminal = {
+            "result_state": final_state,
+            "exit_price": float(a["exit_price"]),
+            "exit_timestamp": a["exit_timestamp"],
+            "pnl_points": pnl,
+            "score": score,
+        }
+        insert_data = None
+        if is_missing:
+            insert_data = {
+                "id": a["id"],
+                "signal_id": a.get("signal_id"),
+                "setup_type": a["setup_type"],
+                "direction": a["direction"],
+                "entry_timestamp": a["created_at"],
+                "entry_price": float(a["entry_price"]),
+                **terminal,
+            }
+            missing_analytics += 1
+        repairs.append((a["id"], terminal, insert_data))
+
     print(f"  stuck OPEN trades (affected): {len(open_trades)}")
+    print(f"  missing analytics entries   : {missing_analytics}")
     print(f"  terminal in active_trades   : {len(repairs)}")
     
     if not apply:
         return len(repairs)
         
-    for r in repairs:
-        sb.table("trade_analytics").update({
-            "result_state": r["result_state"],
-            "exit_price": r["exit_price"],
-            "exit_timestamp": r["exit_timestamp"],
-            "pnl_points": r["pnl_points"],
-            "score": r["score"]
-        }).eq("id", r["id"]).execute()
+    for trade_id, terminal, insert_data in repairs:
+        if insert_data is not None:
+            sb.table("trade_analytics").insert(insert_data).execute()
+        else:
+            sb.table("trade_analytics").update(terminal).eq("id", trade_id).execute()
         
     print(f"  trade_analytics rows closed : {len(repairs)}")
     return len(repairs)
@@ -674,8 +690,35 @@ def repair_orphan_trades(
     for s in signals:
         by_setup.setdefault(_normalise_setup(s.get("setup_type")), []).append(s)
 
-    # A signal already attributed to another trade must not be stolen.
-    claimed = {str(t["signal_id"]) for t in trades if t.get("signal_id") is not None}
+    # A signal already attributed to another trade must not be stolen. Modern
+    # rows store a reusable display code in signal_id and preserve the database
+    # ID separately; legacy signal_id values are accepted only when the signal's
+    # setup and timestamp corroborate that database-ID interpretation.
+    signal_by_id = {str(s["id"]): s for s in signals if s.get("id") is not None}
+    claimed = set()
+    for trade in trades:
+        if trade.get("signal_id") is None:
+            continue
+        preserved_id = (trade.get("market_context") or {}).get("signal_db_id")
+        if preserved_id is not None:
+            claimed.add(str(preserved_id))
+            continue
+        candidate = signal_by_id.get(str(trade["signal_id"]))
+        entry_time = _parse_ts(trade.get("entry_timestamp"))
+        if candidate is None or entry_time is None:
+            continue
+        if _normalise_setup(candidate.get("setup_type")) != _normalise_setup(trade.get("setup_type")):
+            continue
+        candidate_times = (
+            _parse_ts(candidate.get("timestamp")),
+            _parse_ts(candidate.get("created_at")),
+        )
+        if any(
+            timestamp is not None
+            and abs((timestamp - entry_time).total_seconds()) <= _ORPHAN_TOLERANCE_SECONDS
+            for timestamp in candidate_times
+        ):
+            claimed.add(str(candidate["id"]))
 
     fixed = 0
     unmatched: List[str] = []

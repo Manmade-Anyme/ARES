@@ -301,7 +301,18 @@ class _FakeTable:
         self._pending = payload
         return self
 
+    def insert(self, payload):
+        self._insert_pending = payload
+        return self
+
     def execute(self):
+        if hasattr(self, "_insert_pending"):
+            payload, self._insert_pending = self._insert_pending, None
+            del self._insert_pending
+            inserted = dict(payload)
+            self._store.rows.setdefault(self._name, []).append(inserted)
+            self._store.inserts.append((self._name, inserted))
+            return MagicMock(data=[inserted])
         if hasattr(self, "_pending"):
             payload, self._pending = self._pending, None
             del self._pending
@@ -325,7 +336,7 @@ class _FakeTable:
 
 class _FakeSupabase:
     def __init__(self, rows):
-        self.rows, self.updates = rows, []
+        self.rows, self.updates, self.inserts = rows, [], []
 
     def table(self, name):
         return _FakeTable(self, name)
