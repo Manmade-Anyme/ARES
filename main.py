@@ -346,8 +346,7 @@ async def run():
             # db_id=None on every row, which is why the label columns were never
             # writable. Nothing in that block mutates candle/atm/full_chain/levels
             # — only the signal's own sizing fields — so the features are identical.
-            await _persist_ml_snapshot_before_exit_checks(
-                ml_collector,
+            snapshot_kwargs = dict(
                 candle=candle,
                 atm=atm,
                 full_chain=full_chain,
@@ -366,6 +365,11 @@ async def run():
                     if signal else "NOT_APPLICABLE"
                 ),
             )
+            
+            if signal:
+                await _persist_ml_snapshot_before_exit_checks(ml_collector, **snapshot_kwargs)
+            else:
+                asyncio.create_task(ml_collector.snapshot(**snapshot_kwargs))
 
             # Update active trades with new spot price. Candle high/low enable
             # intrabar SL/target detection (TASK-172, audit item 11).
