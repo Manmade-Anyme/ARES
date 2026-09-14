@@ -346,8 +346,8 @@ def backfill_labels(sb, apply: bool) -> int:
                 delta, target = min(timed, key=lambda item: item[0])
                 if delta > _MATCH_TOLERANCE_SECONDS:
                     target = None
-            elif len(ts) == 1 and len(candidates) == 1:
-                target = candidates[0]
+            elif len(ts) == 1 and len(setup_matches) == 1:
+                target = setup_matches[0]
             else:
                 target = None
 
@@ -382,7 +382,7 @@ def backfill_labels(sb, apply: bool) -> int:
 
 
 def repair_stuck_open_trades(sb, apply: bool) -> int:
-    """Phase 2a — reconcile terminal trades that raced entry/exit persistence.
+    """Phase 0a — reconcile terminal trades that raced entry/exit persistence.
     
     Reads the durable terminal telemetry (exit_price, exit_type, exit_timestamp,
     pnl_points_override) from active_trades. Existing OPEN analytics rows are
@@ -857,6 +857,10 @@ def main() -> int:
     print("Phase 0 — unlink test fixtures")
     unlink_fixture_trades(sb, args.apply)
 
+    # Recreate missing analytics first so key repair can corroborate display IDs.
+    print("\nPhase 0a — reconcile terminal trades and missing analytics")
+    repair_stuck_open_trades(sb, args.apply)
+
     print("\nPhase 1 — rebuild the ml_collection join key")
     repair_join_key(sb, args.apply)
 
@@ -864,9 +868,6 @@ def main() -> int:
     print("\nPhase 2 — recover orphaned trade_analytics.signal_id")
     prospective_links: Dict[str, Any] = {}
     repair_orphan_trades(sb, args.apply, prospective_links=prospective_links)
-
-    print("\nPhase 2a — reconcile stuck OPEN trades")
-    repair_stuck_open_trades(sb, args.apply)
 
     print("\nPhase 3 — repair STOPPED_OUT_AT_BE P&L")
     repair_be_after_t1(
