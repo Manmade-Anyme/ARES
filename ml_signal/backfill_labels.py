@@ -35,7 +35,7 @@ values. DRY RUN BY DEFAULT — pass --apply to write.
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import create_client
@@ -140,9 +140,14 @@ def _parse_ts(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # Historical ARES timestamps without an offset were written in IST.
+    # Normalize every parsed value to aware UTC before proximity comparisons.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    return parsed.astimezone(timezone.utc)
 
 
 def _normalise_setup(value: Optional[str]) -> str:

@@ -39,6 +39,21 @@ class PositionManager:
             response = self.supabase.table("active_trades").select("*").execute()
             records = response.data
 
+            # A process can stop after terminal telemetry is committed but
+            # before trade_analytics and ml_collection are updated. Reconcile
+            # those durable terminal rows before filtering them from memory.
+            if any(
+                record.get("state") in ["CLOSED", "STOPPED_OUT"]
+                and record.get("exit_type")
+                for record in records
+            ):
+                from ml_signal.backfill_labels import (
+                    backfill_labels,
+                    repair_stuck_open_trades,
+                )
+                repair_stuck_open_trades(self.supabase, apply=True)
+                backfill_labels(self.supabase, apply=True)
+
             valid_trades = [
                 record for record in records
                 if record.get("state") not in ["CLOSED", "STOPPED_OUT"]
