@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from models import AresSignal, ATMStrikes
 from config import settings
@@ -25,8 +25,27 @@ class PositionManager:
         )
         self.analytics = AnalyticsLogger()
         self.active_trades: List[Dict[str, Any]] = []
+        self._trade_writes: Dict[str, asyncio.Task] = {}
         self.is_initialized = False
         self._initialize_db()
+
+    def _queue_trade_write(self, trade_id: str, write: Callable[[], Any]):
+        """Serialize each trade's writes without blocking the loop or other trades."""
+        loop = asyncio.get_running_loop()
+        previous = self._trade_writes.get(trade_id)
+
+        async def _write_after_previous():
+            try:
+                if previous is not None:
+                    await previous
+                await loop.run_in_executor(None, write)
+            except Exception as e:
+                print(f"Failed to persist active trade {trade_id}: {e}")
+            finally:
+                if self._trade_writes.get(trade_id) is asyncio.current_task():
+                    self._trade_writes.pop(trade_id, None)
+
+        self._trade_writes[trade_id] = loop.create_task(_write_after_previous())
 
     def _initialize_db(self):
         """
@@ -105,12 +124,11 @@ class PositionManager:
         self.active_trades.append(trade_data)
         
         # Push to Supabase asynchronously to avoid blocking the main event loop
-        def _insert():
-            self.supabase.table("active_trades").insert(trade_data).execute()
+        def _insert(data=trade_data.copy()):
+            self.supabase.table("active_trades").insert(data).execute()
             
         try:
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, _insert)
+            self._queue_trade_write(trade_id, _insert)
         except Exception as e:
             print(f"Failed to push new trade to Supabase: {e}")
             
@@ -237,8 +255,7 @@ class PositionManager:
                     self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
                     
                 try:
-                    loop = asyncio.get_running_loop()
-                    loop.run_in_executor(None, _update)
+                    self._queue_trade_write(trade["id"], _update)
                 except Exception as e:
                     print(f"Failed to update trade in Supabase: {e}")
 
