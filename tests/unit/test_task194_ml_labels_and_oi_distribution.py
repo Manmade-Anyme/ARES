@@ -174,13 +174,13 @@ class TestSignalIdIsJoinable(unittest.TestCase):
         sig = _signal(db_id=271)
         rec = _snapshot_record(_collector(), signal=sig)
         # The bug: str(signal.signal_id) — a random 4-digit string.
-        self.assertNotEqual(str(rec["signal_id"]), str(sig.signal_id))
-        self.assertEqual(str(rec["signal_id"]), "271")
+        self.assertEqual(str(rec["signal_id"]), str(sig.signal_id))
 
-    def test_missing_db_id_writes_null_not_a_fake_key(self):
+    def test_missing_db_id_still_writes_4_digit_signal_id(self):
         """log_signal failed -> no row to join to. NULL is honest; a random id is not."""
-        rec = _snapshot_record(_collector(), signal=_signal(db_id=None))
-        self.assertIsNone(rec["signal_id"])
+        sig = _signal(db_id=None)
+        rec = _snapshot_record(_collector(), signal=sig)
+        self.assertEqual(str(rec["signal_id"]), str(sig.signal_id))
 
     def test_no_signal_still_snapshots_with_null_key(self):
         rec = _snapshot_record(_collector(), signal=None)
@@ -225,9 +225,17 @@ class TestLabelBackfillOnTradeClose(unittest.TestCase):
         lg = self._logger()
         sb = lg.supabase
 
-        trade_row = {"entry_price": 24002.0, "direction": "BEARISH", "signal_id": 271}
+        trade_row = {
+            "entry_price": 24002.0,
+            "direction": "BEARISH",
+            "signal_id": 271,
+            "setup_type": "FAILED_BREAKOUT",
+            "entry_timestamp": "2026-09-13T04:00:00+00:00",
+        }
         sb.table.return_value.select.return_value.eq.return_value.execute.return_value = \
             MagicMock(data=[trade_row])
+        sb.table.return_value.select.return_value.eq.return_value.is_.return_value.eq.return_value.execute.return_value = \
+            MagicMock(data=[{"id": 99, "timestamp": "2026-09-13T04:00:01+00:00"}])
 
         lg.log_exit("trade-uuid-1", exit_price=23960.0, final_state="T2_HIT")
 
@@ -267,9 +275,11 @@ class _FakeTable:
     def __init__(self, store, name):
         self._store, self._name = store, name
         self._filters = {}
+        self._selected = None
 
     # -- select path -------------------------------------------------------
-    def select(self, *_a, **_k):
+    def select(self, columns="*", *_a, **_k):
+        self._selected = None if columns == "*" else columns.split(",")
         return self
 
     def order(self, *_a, **_k):
@@ -291,7 +301,18 @@ class _FakeTable:
         self._pending = payload
         return self
 
+    def insert(self, payload):
+        self._insert_pending = payload
+        return self
+
     def execute(self):
+        if hasattr(self, "_insert_pending"):
+            payload, self._insert_pending = self._insert_pending, None
+            del self._insert_pending
+            inserted = dict(payload)
+            self._store.rows.setdefault(self._name, []).append(inserted)
+            self._store.inserts.append((self._name, inserted))
+            return MagicMock(data=[inserted])
         if hasattr(self, "_pending"):
             payload, self._pending = self._pending, None
             del self._pending
@@ -304,12 +325,18 @@ class _FakeTable:
             self._store.updates.append((self._name, dict(self._filters), payload))
             return MagicMock(data=affected)
         start, end = getattr(self, "_slice", (0, 999))
-        return MagicMock(data=self._store.rows.get(self._name, [])[start:end + 1])
+        rows = self._store.rows.get(self._name, [])[start:end + 1]
+        if self._selected is not None:
+            rows = [
+                {key: row.get(key) for key in self._selected}
+                for row in rows
+            ]
+        return MagicMock(data=rows)
 
 
 class _FakeSupabase:
     def __init__(self, rows):
-        self.rows, self.updates = rows, []
+        self.rows, self.updates, self.inserts = rows, [], []
 
     def table(self, name):
         return _FakeTable(self, name)
@@ -380,7 +407,7 @@ class TestBackfillGuards(unittest.TestCase):
         self._mod().backfill_labels(sb, apply=True)
         labelled = [u for u in sb.updates if "trade_outcome" in u[2]]
         self.assertEqual(len(labelled), 1, "the contested signal must not be labelled at all")
-        self.assertEqual(labelled[0][1]["signal_id"], "301")
+        self.assertEqual(labelled[0][1]["id"], 2)
         self.assertIsNone(rows["ml_collection"][0].get("trade_outcome"))
 
     def test_open_and_orphan_trades_are_excluded(self):
@@ -394,6 +421,89 @@ class TestBackfillGuards(unittest.TestCase):
         sb = _FakeSupabase(rows)
         self._mod().backfill_labels(sb, apply=True)
         self.assertFalse([u for u in sb.updates if "trade_outcome" in u[2]])
+
+    def test_reused_display_id_is_correlated_by_setup_and_entry_time(self):
+        rows = {
+            "trade_analytics": [
+                {
+                    "id": "t1", "signal_id": "0042", "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-09-13T04:00:00+00:00",
+                    "result_state": "SL_HIT", "pnl_points": -12.0,
+                },
+                {
+                    "id": "t2", "signal_id": "0042", "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-09-13T05:00:00+00:00",
+                    "result_state": "T2_HIT", "pnl_points": 80.0,
+                },
+            ],
+            "ml_collection": [
+                {
+                    "id": 10, "signal_id": "0042", "signal_setup_type": "FAILED_BREAKOUT",
+                    "timestamp": "2026-09-13T04:00:01+00:00", "trade_id": None,
+                },
+                {
+                    "id": 11, "signal_id": "0042", "signal_setup_type": "FAILED_BREAKOUT",
+                    "timestamp": "2026-09-13T05:00:01+00:00", "trade_id": None,
+                },
+            ],
+        }
+        sb = _FakeSupabase(rows)
+
+        written = self._mod().backfill_labels(sb, apply=True)
+
+        self.assertEqual(written, 2)
+        self.assertEqual(rows["ml_collection"][0]["trade_id"], "t1")
+        self.assertEqual(rows["ml_collection"][1]["trade_id"], "t2")
+
+    def test_repeated_backfill_skips_trade_that_already_owns_snapshot(self):
+        rows = {
+            "trade_analytics": [
+                {
+                    "id": "t1", "signal_id": "0042", "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-09-13T04:00:00+00:00",
+                    "result_state": "SL_HIT", "pnl_points": -12.0, "score": 0,
+                },
+                {
+                    "id": "t2", "signal_id": "0042", "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-09-13T04:01:00+00:00",
+                    "result_state": "T2_HIT", "pnl_points": 80.0, "score": 2,
+                },
+            ],
+            "ml_collection": [
+                {
+                    "id": 10, "signal_id": "0042", "signal_setup_type": "FAILED_BREAKOUT",
+                    "timestamp": "2026-09-13T04:00:01+00:00", "trade_id": "t1",
+                },
+                {
+                    "id": 11, "signal_id": "0042", "signal_setup_type": "FAILED_BREAKOUT",
+                    "timestamp": "2026-09-13T04:01:01+00:00", "trade_id": None,
+                },
+            ],
+        }
+        sb = _FakeSupabase(rows)
+
+        written = self._mod().backfill_labels(sb, apply=True)
+
+        self.assertEqual(written, 1)
+        self.assertEqual(rows["ml_collection"][1]["trade_id"], "t2")
+
+    def test_backfill_copies_trade_score(self):
+        rows = {
+            "trade_analytics": [{
+                "id": "t1", "signal_id": "0042", "setup_type": "FAILED_BREAKOUT",
+                "entry_timestamp": "2026-09-13T04:00:00+00:00",
+                "result_state": "T2_HIT", "pnl_points": 80.0, "score": 2,
+            }],
+            "ml_collection": [{
+                "id": 10, "signal_id": "0042", "signal_setup_type": "FAILED_BREAKOUT",
+                "timestamp": "2026-09-13T04:00:01+00:00", "trade_id": None,
+            }],
+        }
+        sb = _FakeSupabase(rows)
+
+        self._mod().backfill_labels(sb, apply=True)
+
+        self.assertEqual(rows["ml_collection"][0]["trade_score"], 2)
 
 
 if __name__ == "__main__":

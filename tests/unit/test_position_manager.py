@@ -121,6 +121,27 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         t1_trade = next(t for t in pm.active_trades if t["id"] == "trade-old-t1")
         self.assertEqual(t1_trade["stop_loss"], t1_trade["entry_price"])
 
+    @patch('ml_signal.backfill_labels.backfill_labels')
+    @patch('ml_signal.backfill_labels.repair_stuck_open_trades')
+    @patch('position_manager.settings')
+    def test_initialize_db_reconciles_terminal_telemetry_before_filtering(
+        self, mock_settings, mock_repair_stuck, mock_backfill
+    ):
+        self.mock_client.execute_mock.return_value.data = [{
+            "id": "trade-closed-during-crash",
+            "state": "CLOSED",
+            "exit_price": 24100.0,
+            "exit_type": "T2_HIT",
+            "exit_timestamp": "2026-09-14T03:30:00+00:00",
+        }]
+
+        pm = PositionManager()
+
+        mock_repair_stuck.assert_called_once_with(self.mock_client, apply=True)
+        mock_backfill.assert_called_once_with(self.mock_client, apply=True)
+        self.assertTrue(pm.is_initialized)
+        self.assertEqual(pm.active_trades, [])
+
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
     async def test_previous_day_trade_continues_to_exit(self, mock_settings, mock_send_trade_update):

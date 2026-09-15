@@ -4,6 +4,12 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Active-trade persistence ordering (MANM-151)**: Chain asynchronous inserts and state updates per trade so delayed OPEN/T1 writes cannot erase terminal state or cause exits to repeat after restart. Snapshot insert payloads before queuing, report executor failures, and release completed write chains. Regression tests cover both directions, target/stop exits, restart, independent trades, and a failed T1 update.
+- **Backfill review fixes (MANM-151)**: Reconcile terminal trades and recreate missing analytics before repairing ML join keys, preserving display IDs during crash recovery. Require a matching setup for the singleton label fallback so reused display IDs cannot label another setup's snapshot. Added CLI apply/dry-run, repeat-run, and setup fallback regressions.
+- **Trade ML Linkage (MANM-151)**: Standardized `trade_analytics.signal_id` to use the 4-digit display code (text). Added PostgreSQL migrations to cast that identifier safely and add terminal telemetry columns (`exit_price`, `exit_type`, `exit_timestamp`, `pnl_points_override`) to `active_trades`. Analytics entry and exit writes are ordered per trade, and signal-bearing ML snapshots now finish inserting before same-cycle exits can label them. Live and batch ML backfills select one exact row using display ID, setup, and entry-time correlation, normalizing legacy naive-IST timestamps to UTC; repeated runs skip trades that already own an ML row and propagate `trade_score` with the other labels. Orphan recovery reserves modern signals by the preserved database ID rather than the reusable display code. Startup automatically reconciles terminal telemetry into analytics and ML labels after a crash, including recreating a missing analytics entry when the original insert never committed. `repair_be_after_t1` now projects and uses the metadata required for safe fallback resolution.
+
+
 ### Removed
 - **Automatic BE time-stop from trade exits (MANM-108)**: Completely removed the timer-based break-even stop feature (`time_stop_minutes`, `_apply_time_stop`, and live `TIME_STOP` exit states). Open trades retain their original stop-loss until genuine target/SL execution. Historical `TIME_STOP` records in `ml_collection` are preserved and mapped to loss (`0`) in `classify_ares_outcome` during offline ML model retraining to avoid label bias.
 

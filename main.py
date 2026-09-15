@@ -93,6 +93,17 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
             except Exception as e:
                 print(f"[-] Tick-driven exit check failed: {e}")
 
+
+async def _record_ml_snapshot(ml_collector, signal, **snapshot_fields):
+    """Persist signal snapshots before exits can label them.
+
+    Ordinary feature snapshots remain fire-and-forget so the polling loop does
+    not acquire a database round trip on every cycle.
+    """
+    insert_future = ml_collector.snapshot(signal=signal, **snapshot_fields)
+    if signal is not None and insert_future is not None:
+        await insert_future
+
 async def run():
     """
     Main entry point for the ARES Trading System.
@@ -330,13 +341,14 @@ async def run():
             # db_id=None on every row, which is why the label columns were never
             # writable. Nothing in that block mutates candle/atm/full_chain/levels
             # — only the signal's own sizing fields — so the features are identical.
-            ml_collector.snapshot(
+            await _record_ml_snapshot(
+                ml_collector,
+                signal,
                 candle=candle,
                 atm=atm,
                 full_chain=full_chain,
                 levels=levels,
                 spot=spot,
-                signal=signal,
                 pdh=pdh,
                 pdl=pdl,
                 is_expiry=is_expiry,

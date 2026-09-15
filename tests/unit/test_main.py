@@ -9,6 +9,7 @@ are caught between candle closes, not just at the 60s boundary. Falls back
 to a single plain sleep when the feed isn't active — zero behavior change
 from the pre-TASK-173 loop in that case.
 """
+import asyncio
 import unittest
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -16,6 +17,29 @@ import main
 
 
 class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
+
+    async def test_signal_snapshot_is_durable_before_cycle_continues(self):
+        collector = MagicMock()
+        insert_finished = asyncio.get_running_loop().create_future()
+        collector.snapshot.return_value = insert_finished
+
+        task = asyncio.create_task(main._record_ml_snapshot(collector, object(), spot=24000.0))
+        await asyncio.sleep(0)
+
+        self.assertFalse(task.done())
+        insert_finished.set_result(None)
+        await task
+        collector.snapshot.assert_called_once()
+
+    async def test_non_signal_snapshot_does_not_block_cycle(self):
+        collector = MagicMock()
+        insert_finished = asyncio.get_running_loop().create_future()
+        collector.snapshot.return_value = insert_finished
+
+        await main._record_ml_snapshot(collector, None, spot=24000.0)
+
+        self.assertFalse(insert_finished.done())
+        insert_finished.cancel()
 
     async def test_inactive_feed_sleeps_once_for_full_duration(self):
         tick_feed = MagicMock()
