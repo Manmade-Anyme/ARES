@@ -290,13 +290,35 @@ def repair_join_key(
     return fixed
 
 
-def backfill_labels(sb, apply: bool) -> int:
-    """Phase 2 — write complete labels from closed trades to unowned ML rows."""
+def backfill_labels(
+    sb,
+    apply: bool,
+    prospective_trades: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Phase 4 — write complete labels from closed trades to unowned ML rows.
+
+    During a dry run, phase 0a may have reconstructed analytics rows in
+    memory. Include those prospective rows here so the preview reflects the
+    labels that ``--apply`` would write without mutating the database.
+    """
     trades = _page(
         sb,
         "trade_analytics",
         "id,signal_id,result_state,pnl_points,score,setup_type,entry_timestamp",
     )
+    if prospective_trades:
+        prospective_by_id = {
+            str(t.get("id")): t for t in prospective_trades
+        }
+        trades = [
+            prospective_by_id.get(str(t.get("id")), t)
+            for t in trades
+        ]
+        known_trade_ids = {str(t.get("id")) for t in trades}
+        trades.extend(
+            t for t in prospective_trades
+            if str(t.get("id")) not in known_trade_ids
+        )
     ml_rows = _page(
         sb,
         "ml_collection",
@@ -403,7 +425,11 @@ def repair_stuck_open_trades(
     closed, while entirely absent analytics rows are recreated so Phase 4 can
     label their ml_collection rows.
     """
-    trades = _page(sb, "trade_analytics", "id,result_state,entry_price,direction")
+    trades = _page(
+        sb,
+        "trade_analytics",
+        "id,signal_id,setup_type,result_state,entry_timestamp,entry_price,direction,pnl_points,score",
+    )
     open_trades = [t for t in trades if t.get("result_state") in _OPEN_STATES]
     analytics_by_id = {str(t["id"]): t for t in trades if t.get("id")}
     active = _page(
@@ -460,8 +486,10 @@ def repair_stuck_open_trades(
                 **terminal,
             }
             missing_analytics += 1
-            if not apply and prospective_trades is not None:
-                prospective_trades.append(dict(insert_data))
+        if not apply and prospective_trades is not None:
+            prospective = dict(insert_data if insert_data is not None else t)
+            prospective.update(terminal)
+            prospective_trades.append(prospective)
         repairs.append((a["id"], terminal, insert_data))
 
     print(f"  stuck OPEN trades (affected): {len(open_trades)}")
@@ -902,7 +930,11 @@ def main() -> int:
     )
 
     print("\nPhase 4 — back-fill outcome labels")
-    backfill_labels(sb, args.apply)
+    backfill_labels(
+        sb,
+        args.apply,
+        prospective_trades=prospective_trades if not args.apply else None,
+    )
 
     print("\nPhase 5 — null the structure_features sentinel")
     repair_structure_sentinel(sb, args.apply)
