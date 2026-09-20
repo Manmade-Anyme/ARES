@@ -60,6 +60,41 @@ def test_cli_recovers_missing_analytics_before_repairing_display_key(monkeypatch
     assert (len(sb.inserts), len(sb.updates)) == writes
 
 
+def test_dry_run_carries_reconstructed_analytics_into_key_repair(capsys):
+    rows = {
+        "trade_analytics": [],
+        "active_trades": [{
+            "id": "t-missing", "signal_id": "0042",
+            "setup_type": "FAILED_BREAKOUT", "direction": "BULLISH",
+            "entry_price": 24000.0, "created_at": "2026-08-25T08:40:00+00:00",
+            "state": "CLOSED", "exit_price": 24100.0, "exit_type": "T2_HIT",
+            "exit_timestamp": "2026-08-25T08:42:00+00:00",
+            "pnl_points_override": None,
+        }],
+        "ares_signals": [{
+            "id": 205, "setup_type": "FAILED_BREAKOUT",
+            "created_at": "2026-08-25T08:40:00+00:00",
+            "timestamp": "2026-08-25T08:40:00+00:00",
+        }],
+        "ml_collection": [{
+            "id": 1, "signal_id": "0042", "signal_setup_type": "FAILED_BREAKOUT",
+            "created_at": "2026-08-25T08:40:01+00:00", "trade_id": None,
+        }],
+    }
+    sb = _FakeSupabase(rows)
+    prospective = []
+
+    assert backfill_labels.repair_stuck_open_trades(
+        sb, apply=False, prospective_trades=prospective
+    ) == 1
+    assert prospective[0]["signal_id"] == "0042"
+    assert backfill_labels.repair_join_key(
+        sb, apply=False, prospective_trades=prospective
+    ) == 0
+    assert "already correct          : 1" in capsys.readouterr().out
+    assert sb.inserts == sb.updates == []
+
+
 @pytest.mark.parametrize("apply", [False, True])
 @pytest.mark.parametrize("timestamp", [None, "2026-08-25T08:40:01+00:00"])
 @pytest.mark.parametrize("setup,expected", [

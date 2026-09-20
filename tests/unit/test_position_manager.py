@@ -142,6 +142,24 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(pm.is_initialized)
         self.assertEqual(pm.active_trades, [])
 
+    @patch('ml_signal.backfill_labels.repair_stuck_open_trades')
+    @patch('ml_signal.backfill_labels.backfill_labels')
+    @patch('position_manager.settings')
+    def test_initialize_db_keeps_active_trades_when_reconciliation_fails(
+        self, mock_settings, mock_backfill, mock_repair_stuck
+    ):
+        self.mock_client.execute_mock.return_value.data = [
+            {"id": "trade-open", "state": "OPEN", "entry_price": 24000.0},
+            {"id": "trade-terminal", "state": "CLOSED", "exit_type": "T2_HIT"},
+        ]
+        mock_repair_stuck.side_effect = RuntimeError("ML table unavailable")
+
+        pm = PositionManager()
+
+        self.assertTrue(pm.is_initialized)
+        self.assertEqual([t["id"] for t in pm.active_trades], ["trade-open"])
+        mock_backfill.assert_not_called()
+
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
     async def test_previous_day_trade_continues_to_exit(self, mock_settings, mock_send_trade_update):

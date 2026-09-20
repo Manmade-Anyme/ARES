@@ -170,13 +170,23 @@ def _page(sb, table: str, cols: str, size: int = 1000) -> List[Dict[str, Any]]:
     return out
 
 
-def repair_join_key(sb, apply: bool) -> int:
+def repair_join_key(
+    sb,
+    apply: bool,
+    prospective_trades: Optional[List[Dict[str, Any]]] = None,
+) -> int:
     """Phase 1 — rebuild ml_collection.signal_id as the real ares_signals.id."""
     rows = _page(sb, "ml_collection", "id,created_at,signal_id,signal_setup_type")
     signals = _page(sb, "ares_signals", "id,created_at,setup_type")
     by_id = {str(s["id"]): s for s in signals}
 
     trades = _page(sb, "trade_analytics", "id,signal_id,setup_type,entry_timestamp")
+    if prospective_trades:
+        known_trade_ids = {str(t.get("id")) for t in trades}
+        trades.extend(
+            t for t in prospective_trades
+            if str(t.get("id")) not in known_trade_ids
+        )
     trades_by_signal = {}
     for t in trades:
         trades_by_signal.setdefault(str(t.get("signal_id")), []).append(t)
@@ -381,7 +391,11 @@ def backfill_labels(sb, apply: bool) -> int:
 
 
 
-def repair_stuck_open_trades(sb, apply: bool) -> int:
+def repair_stuck_open_trades(
+    sb,
+    apply: bool,
+    prospective_trades: Optional[List[Dict[str, Any]]] = None,
+) -> int:
     """Phase 0a — reconcile terminal trades that raced entry/exit persistence.
     
     Reads the durable terminal telemetry (exit_price, exit_type, exit_timestamp,
@@ -446,6 +460,8 @@ def repair_stuck_open_trades(sb, apply: bool) -> int:
                 **terminal,
             }
             missing_analytics += 1
+            if not apply and prospective_trades is not None:
+                prospective_trades.append(dict(insert_data))
         repairs.append((a["id"], terminal, insert_data))
 
     print(f"  stuck OPEN trades (affected): {len(open_trades)}")
@@ -859,10 +875,19 @@ def main() -> int:
 
     # Recreate missing analytics first so key repair can corroborate display IDs.
     print("\nPhase 0a — reconcile terminal trades and missing analytics")
-    repair_stuck_open_trades(sb, args.apply)
+    prospective_trades: List[Dict[str, Any]] = []
+    repair_stuck_open_trades(
+        sb,
+        args.apply,
+        prospective_trades=prospective_trades if not args.apply else None,
+    )
 
     print("\nPhase 1 — rebuild the ml_collection join key")
-    repair_join_key(sb, args.apply)
+    repair_join_key(
+        sb,
+        args.apply,
+        prospective_trades=prospective_trades if not args.apply else None,
+    )
 
     # Before phase 3: a trade recovered here becomes labellable in the same run.
     print("\nPhase 2 — recover orphaned trade_analytics.signal_id")
