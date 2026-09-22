@@ -106,9 +106,6 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
             pdl=24000.0,
             is_expiry=False,
         )
-        
-        # Give event loop tasks a brief moment to execute run_in_executor (covers line 224)
-        await asyncio.sleep(0.05)
 
         stats = collector.stats
         self.assertEqual(stats["total_snapshots"], 1)
@@ -490,4 +487,3 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

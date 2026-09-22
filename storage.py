@@ -150,6 +150,7 @@ class AnalyticsLogger:
             settings.supabase_url,
             settings.supabase_key
         )
+        self._entry_futures = {}
 
     def log_entry(self, trade_id: str, signal: AresSignal, spot: float, atm: Any = None) -> None:
         """
@@ -211,9 +212,12 @@ class AnalyticsLogger:
         if getattr(signal, "oi_wall_context", None) is not None:
             market_context["oi_wall"] = signal.oi_wall_context
 
+        if getattr(signal, "db_id", None) is not None:
+            market_context["signal_db_id"] = signal.db_id
+
         data = {
             "id": trade_id,
-            "signal_id": getattr(signal, "db_id", None),  # joins to ares_signals.id (NULL if signal logging failed)
+            "signal_id": getattr(signal, "signal_id", None),
             "setup_type": signal.setup_type.value,
             "direction": signal.direction.value,
             "entry_timestamp": to_utc_iso(signal.timestamp),
@@ -228,8 +232,13 @@ class AnalyticsLogger:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, _insert)
-        except Exception as e:  # pragma: no cover
+            self._entry_futures[trade_id] = loop.run_in_executor(None, _insert)
+        except RuntimeError:
+            try:
+                _insert()
+            except Exception as e:
+                print(f"Failed to log trade analytics entry: {e}")
+        except Exception as e:
             print(f"Failed to log trade analytics entry: {e}")
 
     def log_exit(
@@ -253,11 +262,16 @@ class AnalyticsLogger:
         def _update():
             mode = settings.signal_schema_mode
             if mode == "bridge":
-                fields = "entry_price, direction, signal_id, signal_uuid"
+                fields = "entry_price, direction, signal_id, signal_uuid, setup_type, entry_timestamp"
             else:
-                fields = "entry_price, direction, signal_id"
+                fields = "entry_price, direction, signal_id, setup_type, entry_timestamp"
                 
-            response = self.supabase.table("trade_analytics").select(fields).eq("id", trade_id).execute()
+            import time
+            for _ in range(3):
+                response = self.supabase.table("trade_analytics").select(fields).eq("id", trade_id).execute()
+                if response.data:
+                    break
+                time.sleep(0.1)
             if not response.data:
                 return
 
@@ -326,7 +340,6 @@ class AnalyticsLogger:
                 except Exception as ml_err:
                     print(f"Failed to back-fill ml_collection label: {ml_err}")
                 return
-
             # Retry logic for ML outcome binding
             import time
             max_retries = 3
@@ -351,7 +364,17 @@ class AnalyticsLogger:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, _update)
+            entry_future = self._entry_futures.pop(trade_id, None)
+            if entry_future is not None and not entry_future.done():
+                def _update_after_entry(_future):
+                    try:
+                        loop.run_in_executor(None, _update)
+                    except RuntimeError:
+                        pass
+
+                entry_future.add_done_callback(_update_after_entry)
+            else:
+                loop.run_in_executor(None, _update)
         except RuntimeError:
             # No running loop (sync caller, tests, backfill scripts). Previously
             # this branch only printed, so log_exit silently did nothing at all

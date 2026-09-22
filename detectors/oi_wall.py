@@ -72,14 +72,19 @@ class OIWallDetector:
         wall_option_type: str,
         interaction_dist: float,
     ) -> bool:
+        approach_dist = _setting_float("oi_wall_approach_distance_pts", 80.0)
+        distance_to_wall = abs(strike - candle.close)
+        approaching = distance_to_wall < approach_dist
+
         is_bearish = (wall_option_type == "CE")
-        interacted = (
+        tested_wall = (
             (candle.high >= strike - interaction_dist)
             if is_bearish
             else (candle.low <= strike + interaction_dist)
         )
+        rejected = (candle.close < candle.open) if is_bearish else (candle.close > candle.open)
         defended = (candle.close <= strike) if is_bearish else (candle.close >= strike)
-        return bool(interacted and defended)
+        return bool(approaching and tested_wall and rejected and defended)
 
 
     def update(
@@ -140,8 +145,7 @@ class OIWallDetector:
         # order-independence guarantee).
         selected_wall = None
         wall_option_type = None
-
-        interaction_dist = _setting_float("oi_wall_initial_interaction_distance_pts", 20.0)
+        interaction_dist = _setting_float("oi_wall_test_distance", 20.0)
         proximity_window = 2.0 * interaction_dist  # tracked wall still "reachable" from spot
 
         tracked_ce = bool(

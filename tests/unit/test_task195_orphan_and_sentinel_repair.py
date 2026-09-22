@@ -46,7 +46,7 @@ class TestOrphanTradeRepair(unittest.TestCase):
         sb = _FakeSupabase(rows)
         fixed = _mod().repair_orphan_trades(sb, apply=True)
         self.assertEqual(fixed, 1)
-        self.assertEqual(rows["trade_analytics"][0]["signal_id"], 243)
+        self.assertEqual(rows["trade_analytics"][0]["signal_id"], "243")
 
     def test_open_trades_are_repaired_too(self):
         """signal_id is independent of result_state — an OPEN trade still links."""
@@ -67,7 +67,7 @@ class TestOrphanTradeRepair(unittest.TestCase):
     def test_a_signal_already_used_by_another_trade_is_not_stolen(self):
         rows = {
             "trade_analytics": [
-                {"id": "t1", "signal_id": 243, "setup_type": "OI_WALL_REJECTION",
+                {"id": "t1", "signal_id": "243", "setup_type": "OI_WALL_REJECTION",
                  "entry_timestamp": "2026-07-23T03:49:20+00:00"},
                 {"id": "t2", "signal_id": None, "setup_type": "OI_WALL_REJECTION",
                  "entry_timestamp": "2026-07-23T03:49:21+00:00"},
@@ -81,6 +81,46 @@ class TestOrphanTradeRepair(unittest.TestCase):
         sb = _FakeSupabase(rows)
         self.assertEqual(_mod().repair_orphan_trades(sb, apply=True), 0)
         self.assertIsNone(rows["trade_analytics"][1]["signal_id"])
+
+    def test_modern_trade_claims_preserved_db_id_not_display_code(self):
+        rows = {
+            "trade_analytics": [
+                {
+                    "id": "modern", "signal_id": "243", "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-07-23T05:00:00+00:00",
+                    "market_context": {"signal_db_id": 999},
+                },
+                {
+                    "id": "legacy-orphan", "signal_id": None,
+                    "setup_type": "OI_WALL_REJECTION",
+                    "entry_timestamp": "2026-07-23T03:49:20+00:00",
+                },
+                {
+                    "id": "must-not-steal", "signal_id": None,
+                    "setup_type": "FAILED_BREAKOUT",
+                    "entry_timestamp": "2026-07-23T05:00:01+00:00",
+                },
+            ],
+            "ares_signals": [
+                {
+                    "id": 243, "setup_type": "OI_WALL_REJECTION",
+                    "timestamp": "2026-07-23T03:49:19+00:00",
+                    "created_at": "2026-07-23T03:49:19+00:00",
+                },
+                {
+                    "id": 999, "setup_type": "FAILED_BREAKOUT",
+                    "timestamp": "2026-07-23T05:00:00+00:00",
+                    "created_at": "2026-07-23T05:00:00+00:00",
+                },
+            ],
+        }
+        sb = _FakeSupabase(rows)
+
+        repaired = _mod().repair_orphan_trades(sb, apply=True)
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(rows["trade_analytics"][1]["signal_id"], "243")
+        self.assertIsNone(rows["trade_analytics"][2]["signal_id"])
 
     def test_far_from_any_signal_is_left_alone(self):
         rows = {
@@ -162,12 +202,12 @@ class TestFixturesAreNeverLinked(unittest.TestCase):
     def test_unlink_clears_a_previously_linked_fixture(self):
         rows = {"trade_analytics": [
             {"id": _FIXTURE_ID, "signal_id": 169},
-            {"id": "real-uuid", "signal_id": 243},
+            {"id": "real-uuid", "signal_id": "243"},
         ]}
         sb = _FakeSupabase(rows)
         self.assertEqual(_mod().unlink_fixture_trades(sb, apply=True), 1)
         self.assertIsNone(rows["trade_analytics"][0]["signal_id"])
-        self.assertEqual(rows["trade_analytics"][1]["signal_id"], 243,
+        self.assertEqual(rows["trade_analytics"][1]["signal_id"], "243",
                          "a real trade's link must not be touched")
 
     def test_unlink_is_a_noop_once_clean(self):

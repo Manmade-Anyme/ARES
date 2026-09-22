@@ -47,6 +47,10 @@ CREATE TABLE active_trades (
   target_1 numeric not null,
   target_2 numeric not null,
   state text not null default 'OPEN',
+  exit_price numeric,
+  exit_type text,
+  exit_timestamp timestamptz,
+  pnl_points_override numeric,
   added_time_ist text,
   created_at timestamptz default now()
 );
@@ -58,7 +62,7 @@ CREATE TABLE active_trades (
 
 CREATE TABLE trade_analytics (
   id uuid PRIMARY KEY,
-  signal_id bigint, -- Optional link to ares_signals
+  signal_id text, -- Optional link to ares_signals
   signal_uuid uuid CONSTRAINT fk_trade_analytics_signal_uuid REFERENCES ares_signals(signal_uuid),
   setup_type text NOT NULL,
   direction text NOT NULL,
