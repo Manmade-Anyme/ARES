@@ -231,7 +231,7 @@ def tick(engine, side, minute, prices):
 @pytest.mark.parametrize("side", ["CE", "PE"])
 def test_real_engine_never_emits_on_flat_two_point_candles(profile, side):
     engine = AresEngine()
-    distance = profile.oi_wall_initial_interaction_distance_pts
+    distance = 20.0
     flat = (-distance, 1 - distance, -1 - distance, -distance)
     assert [tick(engine, side, i, flat) for i in range(8)] == [None] * 8
 
@@ -541,7 +541,7 @@ def test_pre_interaction_tracked_wall_does_not_block_closer_opposite_wall(profil
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
 
     tracked_strike = 24100 if side == "CE" else 24000
-    outer_dist = (profile.oi_wall_initial_interaction_distance_pts * 2.0) - 1.0
+    outer_dist = (20.0 * 2.0) - 1.0
     spot1 = tracked_strike - outer_dist if side == "CE" else tracked_strike + outer_dist
     competing_strike = int(spot1 - 1.0) if side == "CE" else int(spot1 + 1.0)
 
