@@ -131,6 +131,31 @@ async def test_terminal_analytics_waits_for_active_trade_persistence(manager):
 
 
 @pytest.mark.asyncio
+async def test_terminal_analytics_runs_on_event_loop(monkeypatch):
+    sb = _FakeSupabase({"active_trades": [], "trade_analytics": []})
+    monkeypatch.setattr(position_manager, "create_client", lambda *_: sb)
+    monkeypatch.setattr(position_manager, "AnalyticsLogger", MagicMock)
+    monkeypatch.setattr(position_manager, "send_trade_update", AsyncMock())
+    pm = position_manager.PositionManager()
+    signal = make_signal(Direction.BULLISH)
+    loop = asyncio.get_running_loop()
+    running_loops = []
+
+    def log_exit(*_args, **_kwargs):
+        running_loops.append(asyncio.get_running_loop())
+
+    pm.analytics.log_exit = MagicMock(side_effect=log_exit)
+    pm.add_trade(signal, 24000.0)
+    await asyncio.gather(*tuple(pm._trade_writes.values()))
+
+    await pm.update_trades(signal.target_2)
+    await asyncio.gather(*tuple(pm._trade_writes.values()))
+    await asyncio.sleep(0)
+
+    assert running_loops == [loop]
+
+
+@pytest.mark.asyncio
 async def test_terminal_write_reports_analytics_failure_after_persisting(manager, capsys):
     pm, sb, executor = manager
     signal = make_signal(Direction.BULLISH)
@@ -144,6 +169,39 @@ async def test_terminal_write_reports_analytics_failure_after_persisting(manager
 
     assert sb.rows["active_trades"][0]["state"] == "CLOSED"
     assert "analytics unavailable" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_terminal_analytics_runs_when_active_persistence_fails(manager, monkeypatch, capsys):
+    pm, sb, executor = manager
+    signal = make_signal(Direction.BULLISH)
+
+    pm.add_trade(signal, 24000.0)
+    await executor.drain()
+    original_table = sb.table
+
+    def table(name):
+        query = original_table(name)
+        original_update = query.update
+
+        def update(payload):
+            if payload.get("state") == "CLOSED":
+                raise RuntimeError("active persistence unavailable")
+            return original_update(payload)
+
+        query.update = update
+        return query
+
+    monkeypatch.setattr(sb, "table", table)
+    pm.analytics.log_exit.reset_mock()
+
+    await pm.update_trades(signal.target_2)
+    await executor.drain()
+
+    pm.analytics.log_exit.assert_called_once_with(
+        pm.active_trades[0]["id"], signal.target_2, "T2_HIT"
+    )
+    assert "active persistence unavailable" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

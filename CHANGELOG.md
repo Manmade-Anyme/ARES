@@ -5,7 +5,7 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
-- **Terminal write ordering and startup reconciliation (MANM-151)**: Sequence terminal active-trade persistence before analytics exit logging, and filter active rows whose analytics record is already closed so a restart cannot reload a desynced trade for a duplicate exit.
+- **Terminal write ordering and startup reconciliation (MANM-151)**: Sequence terminal active-trade persistence before dispatching analytics exit logging back to the event loop, preserving entry-future synchronization and continuing analytics logging when active-state writes fail. Filter active rows whose analytics record is already closed so a restart cannot reload a desynced trade for a duplicate exit.
 - **Dry-run terminal label projection (MANM-151)**: Carry phase 0a's reconstructed terminal trades through phase 4 so dry-run output includes prospective ML label writes while preserving the no-database-writes guarantee.
 - **Startup and dry-run reconciliation (MANM-151)**: Isolated best-effort ML reconciliation from active-trade loading so table failures no longer disable live monitoring. Dry-run backfill now carries reconstructed analytics into join-key repair, matching apply-mode previews without writes or false rewrite warnings.
 - **Active-trade persistence ordering (MANM-151)**: Chain asynchronous inserts and state updates per trade so delayed OPEN/T1 writes cannot erase terminal state or cause exits to repeat after restart. Snapshot insert payloads before queuing, report executor failures, and release completed write chains. Regression tests cover both directions, target/stop exits, restart, independent trades, and a failed T1 update.

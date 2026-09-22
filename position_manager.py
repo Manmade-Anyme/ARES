@@ -223,6 +223,7 @@ class PositionManager:
 
         high = candle_high if candle_high is not None else spot_price
         low = candle_low if candle_low is not None else spot_price
+        event_loop = asyncio.get_event_loop()
 
         for trade in self.active_trades:
             if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
@@ -307,15 +308,12 @@ class PositionManager:
                 def _update(t_id=trade["id"], data=update_data):
                     self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
 
-                def _update_and_log_exit(
-                    update_fn=_update,
+                def _log_exit(
                     t_id=trade["id"],
-                    data=update_data,
                     exit_price=event_price,
                     final_state=update_type,
                     pnl_override=pnl_points_override,
                 ):
-                    update_fn(t_id, data)
                     try:
                         if pnl_override is not None:
                             self.analytics.log_exit(
@@ -328,6 +326,19 @@ class PositionManager:
                             self.analytics.log_exit(t_id, exit_price, final_state)
                     except Exception as e:
                         print(f"Failed to log trade exit to Analytics: {e}")
+
+                def _update_and_log_exit(
+                    update_fn=_update,
+                    log_fn=_log_exit,
+                ):
+                    try:
+                        update_fn()
+                    except Exception as e:
+                        print(f"Failed to persist active trade state: {e}")
+                    try:
+                        event_loop.call_soon_threadsafe(log_fn)
+                    except RuntimeError as e:
+                        print(f"Failed to schedule trade exit analytics: {e}")
 
                 try:
                     write = (
