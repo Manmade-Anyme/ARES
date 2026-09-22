@@ -86,7 +86,7 @@ BEGIN
   ) OR NOT EXISTS (
     SELECT 1 FROM trade_analytics
     WHERE id = p_trade_id
-      AND signal_id IS NOT DISTINCT FROM p_legacy_signal_id
+      AND signal_id IS NOT DISTINCT FROM p_legacy_signal_id::text
       AND signal_uuid IS NOT DISTINCT FROM p_signal_uuid
       AND setup_type IS NOT DISTINCT FROM p_setup_type
       AND direction IS NOT DISTINCT FROM p_direction

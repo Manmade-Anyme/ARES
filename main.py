@@ -110,9 +110,12 @@ async def _record_ml_snapshot(ml_collector, signal, **snapshot_fields):
     Ordinary feature snapshots remain fire-and-forget so the polling loop does
     not acquire a database round trip on every cycle.
     """
-    insert_future = ml_collector.snapshot(signal=signal, **snapshot_fields)
-    if signal is not None and insert_future is not None:
-        await insert_future
+    insert_coro = ml_collector.snapshot(signal=signal, **snapshot_fields)
+    if insert_coro is not None:
+        if signal is not None:
+            await insert_coro
+        else:
+            asyncio.ensure_future(insert_coro)
 
 async def run():
     """
