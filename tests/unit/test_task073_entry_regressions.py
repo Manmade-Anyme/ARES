@@ -391,7 +391,7 @@ def test_tracked_wall_not_displaced_by_closer_opposite_side_during_retest(profil
     spot2 = 24085.0 if side == "CE" else 24015.0
     c2 = OHLCVCandle(
         timestamp=datetime(2026, 9, 5, 9, 31),
-        open=spot2 - 3.0, high=spot2 + 5.0, low=spot2 - 5.0, close=spot2, volume=1000,
+        open=(spot2 + 3.0 if side == "CE" else spot2 - 3.0), high=spot2 + 5.0, low=spot2 - 5.0, close=spot2, volume=1000,
     )
     ch2 = [
         {

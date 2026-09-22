@@ -73,13 +73,14 @@ class OIWallDetector:
         interaction_dist: float,
     ) -> bool:
         is_bearish = (wall_option_type == "CE")
-        interacted = (
+        tested_wall = (
             (candle.high >= strike - interaction_dist)
             if is_bearish
             else (candle.low <= strike + interaction_dist)
         )
+        rejected = (candle.close < candle.open) if is_bearish else (candle.close > candle.open)
         defended = (candle.close <= strike) if is_bearish else (candle.close >= strike)
-        return bool(interacted and defended)
+        return bool(tested_wall and rejected and defended)
 
 
     def update(
