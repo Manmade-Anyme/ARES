@@ -12,6 +12,8 @@
 -- (PostgREST authenticates as `authenticator`) are untouched.
 ALTER ROLE postgres SET timezone TO 'Asia/Kolkata';
 
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
 CREATE TABLE ares_signals (
   id bigserial primary key,
   setup_type text,

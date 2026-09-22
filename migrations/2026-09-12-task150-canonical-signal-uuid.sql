@@ -1,6 +1,23 @@
 -- Bridge mode schema changes for MANM-150
 
-ALTER TABLE ares_signals ADD COLUMN IF NOT EXISTS signal_uuid uuid UNIQUE;
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+ALTER TABLE ares_signals ADD COLUMN IF NOT EXISTS signal_uuid uuid;
+UPDATE ares_signals
+SET signal_uuid = gen_random_uuid()
+WHERE signal_uuid IS NULL;
+ALTER TABLE ares_signals
+  ALTER COLUMN signal_uuid SET DEFAULT gen_random_uuid(),
+  ALTER COLUMN signal_uuid SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'uq_ares_signals_signal_uuid') THEN
+    CREATE UNIQUE INDEX uq_ares_signals_signal_uuid ON ares_signals (signal_uuid);
+  END IF;
+END
+$$;
+
 ALTER TABLE ares_signals ADD COLUMN IF NOT EXISTS display_id text;
 
 ALTER TABLE active_trades ADD COLUMN IF NOT EXISTS signal_uuid uuid;
