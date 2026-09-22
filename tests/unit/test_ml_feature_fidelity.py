@@ -9,6 +9,7 @@ These tests build chain rows from the fetcher's real key set, so a future shape 
 on either side fails here instead of silently zeroing the feature.
 """
 
+import asyncio
 import json
 import unittest
 from collections import deque
@@ -236,6 +237,11 @@ class TestSignalColumnsCarryEnumValues(unittest.IsolatedAsyncioTestCase):
                 signal=signal,
                 **kwargs,
             )
+            for _ in range(100):
+                if captured:
+                    break
+                await asyncio.sleep(0.001)
+        self.assertTrue(captured, "background snapshot insert did not complete")
         return captured
 
     async def test_each_setup_type_sets_exactly_its_own_flag(self):

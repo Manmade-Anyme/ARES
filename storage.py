@@ -215,9 +215,19 @@ class AnalyticsLogger:
         if getattr(signal, "db_id", None) is not None:
             market_context["signal_db_id"] = signal.db_id
 
+        mode = settings.signal_schema_mode
+        if mode == "bridge":
+            signal_fields = {
+                "signal_id": getattr(signal, "db_id", None),
+                "signal_uuid": str(signal.id),
+            }
+        elif mode == "greenfield":
+            signal_fields = {"signal_id": str(signal.id)}
+        else:
+            raise ValueError(f"Unsupported signal schema mode: {mode}")
+
         data = {
             "id": trade_id,
-            "signal_id": getattr(signal, "signal_id", None),
             "setup_type": signal.setup_type.value,
             "direction": signal.direction.value,
             "entry_timestamp": to_utc_iso(signal.timestamp),
@@ -226,6 +236,7 @@ class AnalyticsLogger:
             "market_context": market_context,
             "oi_data": oi_data
         }
+        data.update(signal_fields)
 
         def _insert():
             self.supabase.table("trade_analytics").insert(data).execute()
@@ -262,9 +273,9 @@ class AnalyticsLogger:
         def _update():
             mode = settings.signal_schema_mode
             if mode == "bridge":
-                fields = "entry_price, direction, signal_id, signal_uuid, setup_type, entry_timestamp"
+                fields = "entry_price,direction,signal_id,signal_uuid,setup_type,entry_timestamp"
             else:
-                fields = "entry_price, direction, signal_id, setup_type, entry_timestamp"
+                fields = "entry_price,direction,signal_id,setup_type,entry_timestamp"
                 
             import time
             for _ in range(3):
