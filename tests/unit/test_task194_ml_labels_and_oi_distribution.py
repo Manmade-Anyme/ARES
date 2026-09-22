@@ -173,8 +173,7 @@ class TestSignalIdIsJoinable(unittest.IsolatedAsyncioTestCase):
     async def test_snapshot_stores_db_id_not_the_random_display_id(self):
         sig = _signal(db_id=271)
         rec = await _snapshot_record(_collector(), signal=sig)
-        # The bug: str(signal.signal_id) — a random 4-digit string.
-        self.assertEqual(str(rec["signal_id"]), str(sig.signal_id))
+        self.assertEqual(str(rec["signal_id"]), str(sig.db_id))
 
     async def test_missing_db_id_writes_null_not_a_fake_key(self):
         """log_signal failed -> no row to join to. NULL is honest; a random id is not."""
