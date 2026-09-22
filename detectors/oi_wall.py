@@ -140,8 +140,7 @@ class OIWallDetector:
         # order-independence guarantee).
         selected_wall = None
         wall_option_type = None
-
-        interaction_dist = _setting_float("oi_wall_initial_interaction_distance_pts", 20.0)
+        interaction_dist = _setting_float("oi_wall_test_distance", 20.0)
         proximity_window = 2.0 * interaction_dist  # tracked wall still "reachable" from spot
 
         tracked_ce = bool(
