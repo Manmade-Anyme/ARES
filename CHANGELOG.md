@@ -3,6 +3,7 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
+- **Bugfix (MANM-110)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Removed
 - **Automatic BE time-stop from trade exits (MANM-108)**: Completely removed the timer-based break-even stop feature (`time_stop_minutes`, `_apply_time_stop`, and live `TIME_STOP` exit states). Open trades retain their original stop-loss until genuine target/SL execution. Historical `TIME_STOP` records in `ml_collection` are preserved and mapped to loss (`0`) in `classify_ares_outcome` during offline ML model retraining to avoid label bias.
