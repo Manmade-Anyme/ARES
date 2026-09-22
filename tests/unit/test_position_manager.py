@@ -48,6 +48,13 @@ else:
 
 from position_manager import PositionManager
 
+
+async def _flush_trade_writes(pm):
+    tasks = tuple(pm._trade_writes.values())
+    if tasks:
+        await asyncio.gather(*tasks)
+
+
 class TestPositionManager(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
@@ -255,6 +262,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         mock_send_trade_update.reset_mock()
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
             await pm.update_trades(23999.0)
+            await _flush_trade_writes(pm)
             self.assertEqual(trade["state"], "CLOSED")
             mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
             mock_log_exit.assert_called_with(
@@ -294,6 +302,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         mock_send_trade_update.reset_mock()
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
             await pm.update_trades(24001.0)
+            await _flush_trade_writes(pm)
             self.assertEqual(trade["state"], "CLOSED")
             mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
             mock_log_exit.assert_called_with(
@@ -347,6 +356,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         mock_send_trade_update.reset_mock()
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
             events = await pm.update_trades(23970.0)
+            await _flush_trade_writes(pm)
             self.assertEqual(trade["state"], "CLOSED")
             self.assertIn(("trade-old-bull", "SL_HIT"), events)
             mock_send_trade_update.assert_called_with(trade, 23975.0, "SL_HIT")
@@ -381,6 +391,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         mock_send_trade_update.reset_mock()
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
             events = await pm.update_trades(24030.0)
+            await _flush_trade_writes(pm)
             self.assertEqual(trade["state"], "CLOSED")
             self.assertIn(("trade-old-bear", "SL_HIT"), events)
             mock_send_trade_update.assert_called_with(trade, 24025.0, "SL_HIT")
@@ -538,6 +549,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
             events = await pm.update_trades(23990.0, candle_high=23995.0, candle_low=23970.0)
+            await _flush_trade_writes(pm)
 
         self.assertEqual(trade["state"], "CLOSED")
         self.assertIn(("trade-intrabar", "SL_HIT"), events)
@@ -569,6 +581,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
             # high goes to 24105 (past T2 = 24100), low goes to 23970 (past SL = 23975)
             events = await pm.update_trades(24080.0, candle_high=24105.0, candle_low=23970.0)
+            await _flush_trade_writes(pm)
 
         self.assertEqual(trade["state"], "CLOSED")
         self.assertIn(("trade-intrabar", "T2_HIT"), events)
@@ -590,6 +603,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
             # low goes to 24120 (past T2 = 24130), high goes to 24260 (past SL = 24250)
             events = await pm.update_trades(24200.0, candle_high=24260.0, candle_low=24120.0)
+            await _flush_trade_writes(pm)
 
         self.assertEqual(trade["state"], "CLOSED")
         self.assertIn(("trade-intrabar", "T2_HIT"), events)
@@ -604,6 +618,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
             await pm.update_trades(24120.0, candle_high=24125.0, candle_low=24095.0)
+            await _flush_trade_writes(pm)
 
         self.assertEqual(trade["state"], "CLOSED")
         # Exit recorded at T2 (24100), not the poll close (24120)
@@ -621,6 +636,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(pm.analytics, 'log_exit') as mock_log_exit:
             events = await pm.update_trades(24010.0, candle_high=24030.0, candle_low=24005.0)
+            await _flush_trade_writes(pm)
 
         self.assertEqual(trade["state"], "CLOSED")
         self.assertIn(("trade-intrabar", "SL_HIT"), events)

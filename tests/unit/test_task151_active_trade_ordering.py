@@ -106,6 +106,47 @@ async def test_terminal_state_survives_delayed_earlier_write(
 
 
 @pytest.mark.asyncio
+async def test_terminal_analytics_waits_for_active_trade_persistence(manager):
+    pm, sb, executor = manager
+    signal = make_signal(Direction.BULLISH)
+
+    pm.add_trade(signal, 24000.0)
+    await executor.drain()
+    pm.analytics.log_exit.reset_mock()
+
+    events = await pm.update_trades(signal.target_2)
+    await asyncio.sleep(0)
+
+    assert events == [(pm.active_trades[0]["id"], "T2_HIT")]
+    assert sb.rows["active_trades"][0]["state"] == "OPEN"
+    pm.analytics.log_exit.assert_not_called()
+
+    executor.complete_latest()
+    await asyncio.sleep(0)
+
+    assert sb.rows["active_trades"][0]["state"] == "CLOSED"
+    pm.analytics.log_exit.assert_called_once_with(
+        pm.active_trades[0]["id"], signal.target_2, "T2_HIT"
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_write_reports_analytics_failure_after_persisting(manager, capsys):
+    pm, sb, executor = manager
+    signal = make_signal(Direction.BULLISH)
+
+    pm.add_trade(signal, 24000.0)
+    await executor.drain()
+    pm.analytics.log_exit.side_effect = RuntimeError("analytics unavailable")
+
+    await pm.update_trades(signal.target_2)
+    await executor.drain()
+
+    assert sb.rows["active_trades"][0]["state"] == "CLOSED"
+    assert "analytics unavailable" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
 async def test_delayed_insert_uses_original_payload(manager):
     pm, sb, executor = manager
     signal = make_signal(Direction.BULLISH)
@@ -174,3 +215,100 @@ async def test_failed_t1_write_is_reported_and_does_not_block_terminal_write(
     assert sb.rows["active_trades"][0]["exit_type"] == "T2_HIT"
     assert "T1 persistence unavailable" in capsys.readouterr().out
     assert pm._trade_writes == {}
+
+
+def test_startup_filters_active_trade_already_closed_in_analytics(monkeypatch):
+    rows = {
+        "active_trades": [
+            {
+                "id": "trade-desynced", "state": "OPEN", "signal_id": "0042",
+                "setup_type": "OI_WALL_REJECTION", "direction": "BULLISH",
+                "entry_price": 24000.0, "stop_loss": 23975.0,
+                "target_1": 24050.0, "target_2": 24100.0,
+            },
+            {
+                "id": "trade-live", "state": "OPEN", "signal_id": "0043",
+                "setup_type": "OI_WALL_REJECTION", "direction": "BULLISH",
+                "entry_price": 24000.0, "stop_loss": 23975.0,
+                "target_1": 24050.0, "target_2": 24100.0,
+            },
+        ],
+        "trade_analytics": [{
+            "id": "trade-desynced", "result_state": "T2_HIT",
+            "exit_price": 24100.0,
+            "exit_timestamp": "2026-09-22T04:00:00+00:00",
+        }],
+    }
+    sb = _FakeSupabase(rows)
+    monkeypatch.setattr(position_manager, "create_client", lambda *_: sb)
+    monkeypatch.setattr(position_manager, "AnalyticsLogger", MagicMock)
+
+    pm = position_manager.PositionManager()
+
+    assert [trade["id"] for trade in pm.active_trades] == ["trade-live"]
+    assert rows["active_trades"][0]["state"] == "CLOSED"
+    assert rows["active_trades"][0]["exit_type"] == "T2_HIT"
+    assert any(
+        update[0] == "active_trades"
+        and update[1] == {"id": "trade-desynced"}
+        and update[2]["state"] == "CLOSED"
+        for update in sb.updates
+    )
+
+
+def test_startup_filters_desynced_trade_when_terminal_mark_write_fails(
+    monkeypatch, capsys
+):
+    rows = {
+        "active_trades": [{"id": "trade-desynced", "state": "OPEN"}],
+        "trade_analytics": [{
+            "id": "trade-desynced", "result_state": "T2_HIT",
+            "exit_price": 24100.0,
+            "exit_timestamp": "2026-09-22T04:00:00+00:00",
+        }],
+    }
+    sb = _FakeSupabase(rows)
+    original_table = sb.table
+
+    def table(name):
+        query = original_table(name)
+        if name == "active_trades":
+            def fail_update(payload):
+                raise RuntimeError("active state unavailable")
+
+            query.update = fail_update
+        return query
+
+    monkeypatch.setattr(position_manager, "create_client", lambda *_: sb)
+    monkeypatch.setattr(position_manager, "AnalyticsLogger", MagicMock)
+    monkeypatch.setattr(sb, "table", table)
+
+    pm = position_manager.PositionManager()
+
+    assert pm.active_trades == []
+    assert "active state unavailable" in capsys.readouterr().out
+
+
+def test_startup_keeps_active_trade_when_analytics_reconcile_query_fails(
+    monkeypatch, capsys
+):
+    rows = {
+        "active_trades": [{"id": "trade-live", "state": "OPEN"}],
+        "trade_analytics": [],
+    }
+    sb = _FakeSupabase(rows)
+    original_table = sb.table
+
+    def table(name):
+        if name == "trade_analytics":
+            raise RuntimeError("analytics table unavailable")
+        return original_table(name)
+
+    monkeypatch.setattr(position_manager, "create_client", lambda *_: sb)
+    monkeypatch.setattr(position_manager, "AnalyticsLogger", MagicMock)
+    monkeypatch.setattr(sb, "table", table)
+
+    pm = position_manager.PositionManager()
+
+    assert [trade["id"] for trade in pm.active_trades] == ["trade-live"]
+    assert "analytics table unavailable" in capsys.readouterr().out

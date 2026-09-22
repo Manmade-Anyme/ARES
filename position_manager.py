@@ -78,6 +78,54 @@ class PositionManager:
                 except Exception as e:
                     print(f"Failed to reconcile terminal trades during startup: {e}")
 
+            # A crash can leave active_trades one transition behind after the
+            # analytics exit write has committed. Reconcile those rows by
+            # trade id before loading memory so the same trade cannot exit
+            # twice after restart.
+            try:
+                terminal_states = {
+                    "CLOSED", "T2_HIT", "SL_HIT", "STOPPED_OUT",
+                    "STOPPED_OUT_AT_BE",
+                }
+                if any(
+                    record.get("state") not in ["CLOSED", "STOPPED_OUT"]
+                    for record in records
+                ):
+                    analytics_rows = self.supabase.table("trade_analytics").select(
+                        "id,result_state,exit_price,exit_timestamp,pnl_points"
+                    ).execute().data
+                    closed_by_id = {
+                        str(row["id"]): row
+                        for row in analytics_rows
+                        if row.get("id") is not None
+                        and row.get("result_state") in terminal_states
+                    }
+                    for record in records:
+                        if record.get("state") in ["CLOSED", "STOPPED_OUT"]:
+                            continue
+                        analytics_row = closed_by_id.get(str(record.get("id")))
+                        if analytics_row is None:
+                            continue
+                        final_state = analytics_row["result_state"]
+                        update_data = {
+                            "state": "STOPPED_OUT" if final_state == "STOPPED_OUT" else "CLOSED",
+                            "exit_type": final_state,
+                        }
+                        for field in ("exit_price", "exit_timestamp"):
+                            if analytics_row.get(field) is not None:
+                                update_data[field] = analytics_row[field]
+                        record.update(update_data)
+                        try:
+                            self.supabase.table("active_trades").update(
+                                update_data
+                            ).eq("id", record["id"]).execute()
+                        except Exception as e:
+                            print(
+                                f"Failed to mark desynced active trade {record['id']} terminal: {e}"
+                            )
+            except Exception as e:
+                print(f"Failed to reconcile active trades against analytics: {e}")
+
             valid_trades = [
                 record for record in records
                 if record.get("state") not in ["CLOSED", "STOPPED_OUT"]
@@ -258,28 +306,38 @@ class PositionManager:
                 # Push update to Supabase asynchronously
                 def _update(t_id=trade["id"], data=update_data):
                     self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
-                    
-                try:
-                    self._queue_trade_write(trade["id"], _update)
-                except Exception as e:
-                    print(f"Failed to update trade in Supabase: {e}")
 
-                # Update permanent Analytics table on exit (fill-at-level:
-                # the exit is recorded at the touched stop/target price)
-                if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
+                def _update_and_log_exit(
+                    update_fn=_update,
+                    t_id=trade["id"],
+                    data=update_data,
+                    exit_price=event_price,
+                    final_state=update_type,
+                    pnl_override=pnl_points_override,
+                ):
+                    update_fn(t_id, data)
                     try:
-                        if pnl_points_override is not None:
+                        if pnl_override is not None:
                             self.analytics.log_exit(
-                                trade["id"],
-                                event_price,
-                                update_type,
-                                pnl_points_override=pnl_points_override,
+                                t_id,
+                                exit_price,
+                                final_state,
+                                pnl_points_override=pnl_override,
                             )
                         else:
-                            self.analytics.log_exit(trade["id"], event_price, update_type)
+                            self.analytics.log_exit(t_id, exit_price, final_state)
                     except Exception as e:
                         print(f"Failed to log trade exit to Analytics: {e}")
 
+                try:
+                    write = (
+                        _update_and_log_exit
+                        if trade["state"] in ["CLOSED", "STOPPED_OUT"]
+                        else _update
+                    )
+                    self._queue_trade_write(trade["id"], write)
+                except Exception as e:
+                    print(f"Failed to update trade in Supabase: {e}")
                 # Send Discord alert
                 try:
                     await send_trade_update(trade, event_price, update_type)
