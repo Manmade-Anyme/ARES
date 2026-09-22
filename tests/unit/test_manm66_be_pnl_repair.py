@@ -8,6 +8,74 @@ from tests.unit.test_task194_ml_labels_and_oi_distribution import _FakeSupabase
 
 
 class TestBreakevenAfterT1Repair(unittest.TestCase):
+
+    def test_repair_stuck_open_trades(self):
+        from ml_signal import backfill_labels
+        rows = {
+            "trade_analytics": [
+                {
+                    "id": "t-open",
+                    "result_state": "OPEN",
+                    "entry_price": 24000.0,
+                    "direction": "BULLISH"
+                }
+            ],
+            "active_trades": [
+                {
+                    "id": "t-open",
+                    "exit_price": 24100.0,
+                    "exit_type": "T1_HIT",
+                    "exit_timestamp": "2026-08-25T08:42:00+00:00",
+                    "pnl_points_override": None
+                }
+            ]
+        }
+        sb = _FakeSupabase(rows)
+        repaired = backfill_labels.repair_stuck_open_trades(sb, apply=True)
+        self.assertEqual(repaired, 1)
+        self.assertEqual(rows["trade_analytics"][0]["result_state"], "T1_HIT")
+        self.assertEqual(rows["trade_analytics"][0]["pnl_points"], 100.0)
+        self.assertEqual(rows["trade_analytics"][0]["score"], 1)
+
+    def test_repair_recreates_missing_analytics_row_and_labels_ml(self):
+        from ml_signal import backfill_labels
+
+        rows = {
+            "trade_analytics": [],
+            "active_trades": [{
+                "id": "t-missing",
+                "signal_id": "0042",
+                "setup_type": "FAILED_BREAKOUT",
+                "direction": "BULLISH",
+                "entry_price": 24000.0,
+                "created_at": "2026-08-25T08:40:00+00:00",
+                "state": "CLOSED",
+                "exit_price": 24100.0,
+                "exit_type": "T2_HIT",
+                "exit_timestamp": "2026-08-25T08:42:00+00:00",
+                "pnl_points_override": None,
+            }],
+            "ml_collection": [{
+                "id": 1,
+                "signal_id": "0042",
+                "signal_setup_type": "FAILED_BREAKOUT",
+                "timestamp": "2026-08-25T08:40:01+00:00",
+                "trade_id": None,
+            }],
+        }
+        sb = _FakeSupabase(rows)
+
+        self.assertEqual(backfill_labels.repair_stuck_open_trades(sb, apply=True), 1)
+        self.assertEqual(backfill_labels.backfill_labels(sb, apply=True), 1)
+
+        analytics = rows["trade_analytics"][0]
+        self.assertEqual(analytics["id"], "t-missing")
+        self.assertEqual(analytics["result_state"], "T2_HIT")
+        self.assertEqual(analytics["score"], 2)
+        self.assertEqual(rows["ml_collection"][0]["trade_id"], "t-missing")
+        self.assertEqual(rows["ml_collection"][0]["trade_score"], 2)
+
+
     @staticmethod
     def _rows():
         return {
@@ -29,6 +97,7 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
                     "pnl_points": 0.0,
                     "entry_price": 24000.0,
                     "direction": "BEARISH",
+                    "setup_type": "TEST_SETUP",
                     "entry_timestamp": "2026-08-22T08:42:00+00:00",
                     "exit_price": 24000.0,
                 },
@@ -59,14 +128,14 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
             ],
             "ares_signals": [
                 {"id": 101, "target_1": 24060.0},
-                {"id": 102, "target_1": 23950.0},
+                {"id": 102, "target_1": 23950.0, "timestamp": "2026-08-22T08:42:00+00:00", "setup_type": "TEST_SETUP"},
                 {"id": 103, "target_1": 24020.0},
             ],
             "ml_collection": [
-                {"id": 1, "signal_id": "101", "trade_pnl": 0.0},
-                {"id": 2, "signal_id": "102", "trade_pnl": 0.0},
-                {"id": 3, "signal_id": "103", "trade_pnl": 12.0},
-                {"id": 4, "signal_id": "999", "trade_pnl": 0.0},
+                {"id": 1, "trade_id": "t-active", "signal_id": "101", "trade_pnl": 0.0},
+                {"id": 2, "trade_id": "t-fallback", "signal_id": "102", "trade_pnl": 0.0},
+                {"id": 3, "trade_id": "t-nonzero", "signal_id": "103", "trade_pnl": 12.0},
+                {"id": 4, "trade_id": "t-missing", "signal_id": "999", "trade_pnl": 0.0},
             ],
         }
 
@@ -149,6 +218,33 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
             1,
         )
         self.assertFalse(sb.updates)
+
+    def test_legacy_fallback_projects_timestamp_and_setup_fields(self):
+        from ml_signal import backfill_labels
+
+        rows = self._rows()
+        rows["active_trades"] = []
+        rows["trade_analytics"] = [rows["trade_analytics"][1]]
+        rows["ml_collection"] = [rows["ml_collection"][1]]
+        sb = _FakeSupabase(rows)
+
+        repaired = backfill_labels.repair_be_after_t1(sb, apply=False)
+
+        self.assertEqual(repaired, 1)
+
+    def test_legacy_fallback_normalizes_naive_ist_against_aware_utc(self):
+        from ml_signal import backfill_labels
+
+        rows = self._rows()
+        rows["active_trades"] = []
+        rows["trade_analytics"] = [rows["trade_analytics"][1]]
+        rows["ml_collection"] = [rows["ml_collection"][1]]
+        rows["ares_signals"][1]["timestamp"] = "2026-08-22T14:12:00"
+        sb = _FakeSupabase(rows)
+
+        repaired = backfill_labels.repair_be_after_t1(sb, apply=False)
+
+        self.assertEqual(repaired, 1)
 
 
 if __name__ == "__main__":
