@@ -3,7 +3,7 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
-- **Bugfix (MANM-110)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
+- **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Removed
 - **Automatic BE time-stop from trade exits (MANM-108)**: Completely removed the timer-based break-even stop feature (`time_stop_minutes`, `_apply_time_stop`, and live `TIME_STOP` exit states). Open trades retain their original stop-loss until genuine target/SL execution. Historical `TIME_STOP` records in `ml_collection` are preserved and mapped to loss (`0`) in `classify_ares_outcome` during offline ML model retraining to avoid label bias.
@@ -28,7 +28,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
-- **OI wall rejection silenced by mid-retest wall displacement (MANM-110)**:
+- **OI wall rejection silenced by mid-retest wall displacement (MANM-184)**:
   `detectors/oi_wall.py` now preserves the currently tracked wall when a
   qualifying opposite-side wall appears marginally closer to spot during the
   retest approach (within 2× `oi_wall_initial_interaction_distance_pts`).

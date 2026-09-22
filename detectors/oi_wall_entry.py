@@ -38,7 +38,6 @@ class OIWallEntryFilter:
         self.favourable_excursion_pts: float = 0.0
         self.retest_timestamp: Optional[datetime] = None
         self.retest_ready_timestamp: Optional[datetime] = None
-        self._retest_candidate: Optional[OHLCVCandle] = None
         self.rejection_reason: Optional[str] = None
         self._latest_bias: Optional[OIWallBias] = None
         self.latest_watchlist_event: Optional[OIWallBias] = None
@@ -51,7 +50,6 @@ class OIWallEntryFilter:
         self.favourable_excursion_pts = 0.0
         self.retest_timestamp = None
         self.retest_ready_timestamp = None
-        self._retest_candidate = None
         self.rejection_reason = None
         self.latest_watchlist_event = None
         self.state = "NO_WALL"
@@ -206,7 +204,6 @@ class OIWallEntryFilter:
             )
 
         # Track initial interaction (can happen on snapshot 1, 2, or later)
-        interaction_dist = _setting_float("oi_wall_initial_interaction_distance_pts", 20.0)
         req_persistence = _setting_int("oi_wall_persistence_snapshots", 3)
         min_excursion = _setting_float("oi_wall_min_excursion_pts", 12.0)
         retest_dist = _setting_float("oi_wall_retest_distance_pts", 20.0)
@@ -216,9 +213,7 @@ class OIWallEntryFilter:
 
         if self.initial_interaction_timestamp is None:
             # Original direction-candidate semantics
-            # Note: `spot` is not passed to `update` in OIWallEntryFilter, but we can use candle.close or we might need to add it?
-            # Wait, `spot` is in `detectors/oi_wall.py`. In `OIWallEntryFilter`, we only have `candle`.
-            # We can use candle close to calculate approach distance.
+            # Use candle.close as spot proxy (spot is only available in OIWallDetector).
             distance_to_wall = abs(strike - candle.close)
             approaching = distance_to_wall < approach_dist
             
@@ -336,7 +331,6 @@ class OIWallEntryFilter:
 
         elif outcome in ("SUPPRESSED_BY_COOLDOWN", "SUPPRESSED_BY_PRIORITY"):
             self.state = "RETEST_READY"
-            self._retest_candidate = None
             self.retest_timestamp = None
             self.retest_ready_timestamp = decision.retest_timestamp
             telemetry = OIWallTelemetry(
