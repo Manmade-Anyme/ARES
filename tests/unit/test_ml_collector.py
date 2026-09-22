@@ -127,6 +127,11 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         mock_signal.direction = "BEARISH"
         mock_signal.confidence = "HIGH"
 
+        def _mock_upsert(record, *args, **kwargs):
+            return [record]
+
+        collector._upsert_signal_snapshot = _mock_upsert
+
         await collector.snapshot(
             candle=candle,
             atm=atm,

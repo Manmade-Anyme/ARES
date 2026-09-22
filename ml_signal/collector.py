@@ -228,7 +228,7 @@ class MLCollector:
         record = {
             # A client-generated identity makes a retry safe when PostgREST
             # commits the first request but the response is lost.
-            "snapshot_uuid": str(uuid4()) if trade_id else None,
+            "snapshot_uuid": str(uuid4()) if signal_generated else None,
             "timestamp": to_utc_iso(ts),
             "spot": spot,
             "candle_features": json.dumps(candle_feats),
@@ -267,7 +267,7 @@ class MLCollector:
             self._insert(record)
             return
 
-        requires_barrier = bool(trade_id)
+        requires_barrier = signal_generated
         if not requires_barrier:
             future = loop.run_in_executor(None, self._insert, record)
             future.add_done_callback(self._report_background_insert_failure)

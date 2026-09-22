@@ -227,7 +227,16 @@ class TestSignalColumnsCarryEnumValues(unittest.IsolatedAsyncioTestCase):
         collector._signals_recorded = 0
 
         captured = {}
-        with patch.object(MLCollector, "_insert", lambda self, record: captured.update(record)):
+        
+        def mock_insert(self, record):
+            captured.update(record)
+            
+        def mock_upsert(self, record):
+            captured.update(record)
+            return [record]
+
+        with patch.object(MLCollector, "_insert", mock_insert), \
+             patch.object(MLCollector, "_upsert_signal_snapshot", mock_upsert):
             await collector.snapshot(
                 candle=_candle(),
                 atm=_atm(),

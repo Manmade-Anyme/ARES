@@ -94,6 +94,7 @@ async def _snapshot_record(collector, signal=None, chain=None):
     """Run snapshot and return the record it tried to insert."""
     captured = {}
     collector._insert = lambda rec: captured.update(rec)
+    collector._upsert_signal_snapshot = lambda rec: (captured.update(rec), [rec])[1]
     await collector.snapshot(
         candle=_candle(), atm=_ATM(),
         full_chain=chain if chain is not None else [_chain_row(24000, 100, 100)],
