@@ -23,3 +23,7 @@ tqdm
 joblib
 xgboost==3.0.5
 tzdata
+
+# ML Interpretability (Offline & Audit, required by MANM-156)
+shap>=0.47.0,<0.50.0
+matplotlib>=3.7.0,<4.0.0
