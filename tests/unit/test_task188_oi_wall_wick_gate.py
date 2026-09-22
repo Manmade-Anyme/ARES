@@ -109,8 +109,8 @@ class TestWickGateDropped(unittest.TestCase):
         self.assertEqual(self.filter.state, "INTERACTED")
 
 
-class TestConfirmationKept(unittest.TestCase):
-    """The next-candle confirmation is retained unchanged (TASK-188)."""
+class TestImmediateRetest(unittest.TestCase):
+    """The next-candle confirmation is removed (MANM-184)."""
 
     def setUp(self):
         self.detector = OIWallDetector()
@@ -118,7 +118,7 @@ class TestConfirmationKept(unittest.TestCase):
 
     @patch('detectors.oi_wall_entry.settings')
     @patch('detectors.oi_wall.settings')
-    def test_shallow_wick_candidate_fires_only_after_confirmation(self, mock_oi_settings, mock_entry_settings):
+    def test_shallow_wick_candidate_fires_immediately_on_retest(self, mock_oi_settings, mock_entry_settings):
         _settings(mock_oi_settings)
         _settings(mock_entry_settings)
         mock_entry_settings.oi_wall_persistence_snapshots = 1
@@ -149,21 +149,14 @@ class TestConfirmationKept(unittest.TestCase):
         )
         bias3 = self.detector.update(spot=24075.0, full_chain=CE_WALL_CHAIN, candle=candle3, levels=[])
         decision3 = self.filter.update(bias=bias3, candle=candle3, levels=[])
-        self.assertEqual(decision3.status, "WAITING")
-        candle4 = OHLCVCandle(
-            timestamp=t0 + timedelta(minutes=3),
-            open=24075.0, high=24076.0, low=24050.0, close=24055.0, volume=1000,
-        )
-        bias4 = self.detector.update(spot=24055.0, full_chain=CE_WALL_CHAIN, candle=candle4, levels=[])
-        decision4 = self.filter.update(bias=bias4, candle=candle4, levels=[])
-        self.assertEqual(decision4.status, "QUALIFIED")
-        signal = self.detector.build_signal(decision4, candle4, spot=24055.0, levels=[])
+        self.assertEqual(decision3.status, "QUALIFIED")
+        signal = self.detector.build_signal(decision3, candle3, spot=24075.0, levels=[])
         self.assertIsNotNone(signal, "confirmed shallow-wick candidate must fire")
         self.assertEqual(signal.option_type, "PE")
 
     @patch('detectors.oi_wall_entry.settings')
     @patch('detectors.oi_wall.settings')
-    def test_unconfirmed_shallow_wick_candidate_does_not_fire(self, mock_oi_settings, mock_entry_settings):
+    def test_breached_retest_expires(self, mock_oi_settings, mock_entry_settings):
         _settings(mock_oi_settings)
         _settings(mock_entry_settings)
         mock_entry_settings.oi_wall_persistence_snapshots = 1

@@ -43,7 +43,7 @@ def chain(side):
 
 
 GEOMETRY = [
-    (-25, -5, -30, -20),  # interaction in both profiles
+    (-20, -5, -30, -25),  # interaction in both profiles
     (-25, -23, -50, -45),  # excursion
     (-45, -40, -55, -50),  # persistence -> ready
     (-35, -5, -38, -22),  # later defended re-test, not confirmation
@@ -159,13 +159,12 @@ def test_tracked_wall_breach_evaluates_and_resets_detector(profile, side):
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])
-def test_defended_retest_waits_for_later_confirmation(profile, side):
+def test_defended_retest_qualifies_immediately(profile, side):
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
     decisions = [update(detector, entry_filter, side, i, p) for i, p in enumerate(GEOMETRY)]
-    assert [decision.status for decision in decisions] == ["WAITING"] * 4 + ["QUALIFIED"]
+    assert [decision.status for decision in decisions[:4]] == ["WAITING"] * 3 + ["QUALIFIED"]
     assert (
-        decisions[-1].retest_timestamp,
-        decisions[-1].telemetry.retest_timestamp,
+        decisions[3].retest_timestamp, decisions[3].telemetry.retest_timestamp,
     ) == (candle(side, 3, GEOMETRY[3]).timestamp,) * 2
 
 
@@ -191,18 +190,6 @@ def test_same_timestamp_cannot_confirm_retest(profile, side):
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])
-def test_failed_confirmation_requires_fresh_touch_before_recovery(profile, side):
-    detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
-    for index, prices in enumerate(GEOMETRY[:4]):
-        update(detector, entry_filter, side, index, prices)
-    update(detector, entry_filter, side, 4, (-40, -39, -42, -40))
-    unconfirmed = update(detector, entry_filter, side, 5, (-40, -35, -50, -45))
-    update(detector, entry_filter, side, 6, GEOMETRY[3])
-    confirmed = update(detector, entry_filter, side, 7, GEOMETRY[4])
-    assert (unconfirmed.status, confirmed.status) == ("WAITING", "QUALIFIED")
-
-
-@pytest.mark.parametrize("side", ["CE", "PE"])
 @pytest.mark.parametrize("outcome", ["SUPPRESSED_BY_COOLDOWN", "SUPPRESSED_BY_PRIORITY"])
 def test_suppression_requires_a_fresh_retest(profile, side, outcome):
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
@@ -210,8 +197,7 @@ def test_suppression_requires_a_fresh_retest(profile, side, outcome):
     # More follow-through is not a new wall touch.
     decision = update(detector, entry_filter, side, 5, (-40, -35, -55, -50))
     assert decision.status == "WAITING"
-    update(detector, entry_filter, side, 6, GEOMETRY[3])
-    assert update(detector, entry_filter, side, 7, GEOMETRY[4]).status == "QUALIFIED"
+    assert update(detector, entry_filter, side, 6, GEOMETRY[3]).status == "QUALIFIED"
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])
@@ -245,7 +231,7 @@ def tick(engine, side, minute, prices):
 @pytest.mark.parametrize("side", ["CE", "PE"])
 def test_real_engine_never_emits_on_flat_two_point_candles(profile, side):
     engine = AresEngine()
-    distance = profile.oi_wall_initial_interaction_distance_pts
+    distance = 20.0
     flat = (-distance, 1 - distance, -1 - distance, -distance)
     assert [tick(engine, side, i, flat) for i in range(8)] == [None] * 8
 
@@ -254,8 +240,8 @@ def test_real_engine_never_emits_on_flat_two_point_candles(profile, side):
 def test_real_engine_confirmation_keeps_central_risk_policy(profile, side):
     engine = AresEngine()
     signals = [tick(engine, side, i, prices) for i, prices in enumerate(GEOMETRY)]
-    assert signals[:4] == [None] * 4
-    signal = signals[4]
+    assert signals[:3] == [None] * 3
+    signal = signals[3]
     assert signal is not None
     assert (signal.setup_type, abs(signal.stop_loss - signal.trigger_price),
             abs(signal.target_1 - signal.trigger_price), abs(signal.target_2 - signal.trigger_price)) == (
@@ -405,7 +391,7 @@ def test_tracked_wall_not_displaced_by_closer_opposite_side_during_retest(profil
     spot2 = 24085.0 if side == "CE" else 24015.0
     c2 = OHLCVCandle(
         timestamp=datetime(2026, 9, 5, 9, 31),
-        open=spot2 - 3.0, high=spot2 + 5.0, low=spot2 - 5.0, close=spot2, volume=1000,
+        open=(spot2 + 3.0 if side == "CE" else spot2 - 3.0), high=spot2 + 5.0, low=spot2 - 5.0, close=spot2, volume=1000,
     )
     ch2 = [
         {
@@ -555,7 +541,7 @@ def test_pre_interaction_tracked_wall_does_not_block_closer_opposite_wall(profil
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
 
     tracked_strike = 24100 if side == "CE" else 24000
-    outer_dist = (profile.oi_wall_initial_interaction_distance_pts * 2.0) - 1.0
+    outer_dist = (20.0 * 2.0) - 1.0
     spot1 = tracked_strike - outer_dist if side == "CE" else tracked_strike + outer_dist
     competing_strike = int(spot1 - 1.0) if side == "CE" else int(spot1 + 1.0)
 

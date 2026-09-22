@@ -3,6 +3,7 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
+- **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
 - **Terminal write ordering and startup reconciliation (MANM-151)**: Sequence terminal active-trade persistence before dispatching analytics exit logging back to the event loop, preserving entry-future synchronization and continuing analytics logging when active-state writes fail. Filter active rows whose analytics record is already closed so a restart cannot reload a desynced trade for a duplicate exit.
