@@ -294,6 +294,22 @@ class TestCutoverMigration(unittest.TestCase):
         self.assertIn("create_trade_entry_greenfield", sql)
         self.assertIn("conflicting trade entry", sql.lower())
 
+    def test_cutover_blocks_unresolved_required_child_signal_uuids(self):
+        sql = Path("migrations/2026-09-12-task150-cutover-signal-uuid.sql").read_text()
+
+        first_rename = sql.index("ALTER TABLE active_trades RENAME COLUMN")
+        for predicate in (
+            "FROM active_trades WHERE signal_uuid IS NULL",
+            "FROM trade_analytics WHERE signal_uuid IS NULL",
+            "FROM ml_collection",
+            "signal_generated IS TRUE OR trade_id IS NOT NULL",
+        ):
+            self.assertIn(predicate, sql[:first_rename])
+        self.assertIn("RAISE EXCEPTION", sql[:first_rename])
+        self.assertLess(sql.index("LOCK TABLE"), sql.index("RAISE EXCEPTION"))
+        self.assertLess(sql.index("RAISE EXCEPTION"), sql.index("DROP FUNCTION"))
+        self.assertTrue(sql.rstrip().endswith("COMMIT;"))
+
 
 class TestSignalJoinPipeline(unittest.IsolatedAsyncioTestCase):
     async def test_bridge_pipeline_uses_one_canonical_signal_and_trade_key(self):

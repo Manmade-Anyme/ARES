@@ -1,10 +1,51 @@
 -- Cutover mode schema changes for MANM-150
 
+BEGIN;
+
+-- Freeze bridge writes so no unresolved child can appear after validation.
+LOCK TABLE ares_signals, active_trades, trade_analytics, ml_collection
+  IN ACCESS EXCLUSIVE MODE;
+
+-- Abort before renaming columns if the bridge backfill has not resolved every
+-- child row that requires a canonical signal relationship.  Final foreign keys
+-- reject dangling UUIDs, but nullable columns would otherwise let unresolved
+-- historical rows pass the cutover unnoticed.  Ordinary, non-signal ML cycle
+-- snapshots intentionally do not require a signal UUID.
+DO $$
+DECLARE
+  unresolved_active_trades bigint;
+  unresolved_trade_analytics bigint;
+  unresolved_ml_snapshots bigint;
+BEGIN
+  SELECT count(*) INTO unresolved_active_trades
+  FROM active_trades WHERE signal_uuid IS NULL;
+
+  SELECT count(*) INTO unresolved_trade_analytics
+  FROM trade_analytics WHERE signal_uuid IS NULL;
+
+  SELECT count(*) INTO unresolved_ml_snapshots
+  FROM ml_collection
+  WHERE signal_uuid IS NULL
+    AND (signal_generated IS TRUE OR trade_id IS NOT NULL);
+
+  IF unresolved_active_trades > 0
+     OR unresolved_trade_analytics > 0
+     OR unresolved_ml_snapshots > 0 THEN
+    RAISE EXCEPTION
+      'MANM-150 cutover blocked: unresolved signal UUIDs (active_trades=%, trade_analytics=%, required_ml_snapshots=%)',
+      unresolved_active_trades,
+      unresolved_trade_analytics,
+      unresolved_ml_snapshots;
+  END IF;
+END;
+$$;
+
 -- 1. Take schema lock and stop bridge-mode writers
 DROP FUNCTION IF EXISTS create_trade_entry_bridge(
   uuid, uuid, text, text, text, numeric, numeric, numeric, numeric,
   text, jsonb, jsonb, timestamptz, bigint
 );
+
 -- 2. Retain old bigint as legacy_id, promote signal_uuid to id
 ALTER TABLE ares_signals RENAME COLUMN id TO legacy_id;
 ALTER TABLE ares_signals RENAME COLUMN signal_uuid TO id;
@@ -92,3 +133,5 @@ GRANT EXECUTE ON FUNCTION create_trade_entry_greenfield(
   uuid, uuid, text, text, text, numeric, numeric, numeric, numeric,
   text, jsonb, jsonb, timestamptz
 ) TO authenticated, service_role;
+
+COMMIT;

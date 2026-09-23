@@ -47,6 +47,10 @@ All notable changes to the ARES trading system will be documented in this file.
   alerts fall back to presentation IDs without exposing canonical UUIDs. The
   unfinished historical-backfill CLI now fails closed instead of reporting a
   successful dry-run audit without executing validation queries.
+- **Signal UUID cutover guard (MANM-150)**: Block the bridge-to-greenfield
+  migration under an exclusive write lock before column renames when active
+  trades, analytics rows, or signal-bearing/trade-bound ML snapshots still
+  lack canonical signal UUIDs.
 - **OI wall rejection silenced by mid-retest wall displacement (MANM-110)**:
   `detectors/oi_wall.py` now preserves the currently tracked wall when a
   qualifying opposite-side wall appears marginally closer to spot during the
