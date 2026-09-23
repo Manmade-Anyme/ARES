@@ -124,22 +124,54 @@ async def test_position_manager_passes_candle_timestamp():
 def test_reports_excludes_flagged_records():
     mock_supabase = MagicMock()
     # Mock data returned by DB
-    mock_supabase.table().select().gte().lte().execute.return_value = MagicMock(data=[
+    query = mock_supabase.table().select().gte().lte().eq().order().order().range()
+    query.execute.side_effect = [MagicMock(data=[
         {"pnl_points": 10, "entry_timestamp": "2026-09-01T10:00:00+00:00", "exit_timestamp": "2026-09-01T10:05:00+00:00", "time_metrics_excluded": False},
         {"pnl_points": 20, "entry_timestamp": "2026-09-01T10:00:00+00:00", "exit_timestamp": "2026-09-01T09:55:00+00:00", "time_metrics_excluded": True}
-    ])
+    ])]
+    eq = mock_supabase.table().select().gte().lte().eq
+    eq.reset_mock()
     
     trades = fetch_closed_trades(mock_supabase, "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00")
     
     assert len(trades) == 1
     assert trades[0]["pnl_points"] == 10
+    eq.assert_called_once_with("time_metrics_excluded", False)
 
 def test_reports_excludes_inverted_timestamps():
     mock_supabase = MagicMock()
-    mock_supabase.table().select().gte().lte().execute.return_value = MagicMock(data=[
+    query = mock_supabase.table().select().gte().lte().eq().order().order().range()
+    query.execute.side_effect = [MagicMock(data=[
         {"pnl_points": 10, "entry_timestamp": "2026-09-01T10:05:00+00:00", "exit_timestamp": "2026-09-01T10:00:00+00:00", "time_metrics_excluded": False},
         {"pnl_points": 20, "entry_timestamp": "2026-09-01T10:00:00+00:00", "exit_timestamp": "2026-09-01T10:05:00+00:00", "time_metrics_excluded": False}
-    ])
+    ])]
     trades = fetch_closed_trades(mock_supabase, "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00")
     assert len(trades) == 1
     assert trades[0]["pnl_points"] == 20
+
+
+def test_reports_paginates_filtered_rows(monkeypatch):
+    monkeypatch.setattr("reports.REPORT_QUERY_PAGE_SIZE", 2)
+    mock_supabase = MagicMock()
+    ordered_query = mock_supabase.table().select().gte().lte().eq().order().order()
+    query = ordered_query.range()
+    ordered_query.range.reset_mock()
+    query.execute.side_effect = [
+        MagicMock(data=[
+            {"pnl_points": 10, "entry_timestamp": "2026-09-01T10:00:00+00:00", "exit_timestamp": "2026-09-01T10:05:00+00:00", "time_metrics_excluded": False},
+            {"pnl_points": 20, "entry_timestamp": "2026-09-01T10:10:00+00:00", "exit_timestamp": "2026-09-01T10:15:00+00:00", "time_metrics_excluded": False},
+        ]),
+        MagicMock(data=[
+            {"pnl_points": 30, "entry_timestamp": "2026-09-01T10:20:00+00:00", "exit_timestamp": "2026-09-01T10:25:00+00:00", "time_metrics_excluded": False},
+        ]),
+    ]
+
+    trades = fetch_closed_trades(
+        mock_supabase,
+        "2026-09-01T00:00:00+00:00",
+        "2026-09-02T00:00:00+00:00",
+    )
+
+    assert [trade["pnl_points"] for trade in trades] == [10, 20, 30]
+    assert query.execute.call_count == 2
+    assert [item.args for item in ordered_query.range.call_args_list] == [(0, 1), (2, 3)]

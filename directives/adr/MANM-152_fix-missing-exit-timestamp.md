@@ -286,7 +286,8 @@ sequenceDiagram
 Update all downstream analysis consumers to ignore records flagged with `time_metrics_excluded = true` or invalid chronological ordering:
 
 1. **`reports.py` (`fetch_closed_trades`)**:
-   - Add `.eq("time_metrics_excluded", False)` filter.
+   - Add `.eq("time_metrics_excluded", False)` before the PostgREST response limit is applied.
+   - Paginate until exhaustion with stable `exit_timestamp, id` ordering so excluded or capped rows cannot hide later valid trades.
    - Sanity check: Ensure `exit_timestamp >= entry_timestamp` before computing durations or aggregate metrics.
 
 2. **`ml_signal/train_offline.py` (`_sharpe_metrics`)**:
@@ -361,7 +362,7 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
      ```
 
 6. **`reports.py` & `ml_signal/train_offline.py`**:
-   - `reports.py`: filter out `time_metrics_excluded = true` in `fetch_closed_trades`.
+   - `reports.py`: filter out `time_metrics_excluded = true` in the database query, paginate the full report window with stable ordering, and retain the client-side chronology safeguard.
    - `ml_signal/train_offline.py`: change `_fetch_trade_exit_timestamps` to select and return `id,exit_timestamp,entry_timestamp,time_metrics_excluded`; merge all three metadata fields into each `ml_collection` row before `_sharpe_metrics` runs. In `_sharpe_metrics`, exclude records flagged with `time_metrics_excluded = true` or having inverted duration ($\text{exit} < \text{entry}$), and report the count of invalid chronology rows. Apply the same exclusion to training eligibility; if no eligible labeled rows remain, raise before fitting or writing model/report artifacts.
 
 7. **Regression Test Suite (`tests/unit/test_task152_exit_timestamp_validation.py`)**:
@@ -369,7 +370,7 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
    - Test 2: Inverted timestamp ($\text{exit} < \text{entry}$) is rejected or flagged as excluded.
    - Test 3: `position_manager.update_trades` passes candle timestamp through to `log_exit` and persists `exit_timestamp` into `active_trades`.
    - Test 4: `log_exit` retry mechanism successfully catches raced records.
-   - Test 5: Reporting and Sharpe calculations cleanly exclude `time_metrics_excluded` records, and offline training aborts without artifacts when every labeled row is excluded.
+   - Test 5: Reporting applies exclusions before response limits, retrieves valid records across multiple pages, and Sharpe calculations cleanly exclude `time_metrics_excluded` records; offline training aborts without artifacts when every labeled row is excluded.
    - Test 6: Verify full test suite passes with 100% coverage on new validation logic.
 
 ---
@@ -382,7 +383,7 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
 - [ ] `schema.sql` and `README.md` updated with new columns and constraints.
 - [ ] `PositionManager.update_trades` accepts `candle_timestamp` and propagates it to `log_exit` and `active_trades`.
 - [ ] `AnalyticsLogger.log_exit` accepts `exit_timestamp`, retries queries, and validates $\text{exit\_timestamp} \ge \text{entry\_timestamp}$.
-- [ ] `reports.py` and `ml_signal/train_offline.py` exclude flagged records from duration/Sharpe metrics.
+- [ ] `reports.py` excludes flagged records query-side with cap-safe pagination, and `ml_signal/train_offline.py` excludes them from duration/Sharpe metrics.
 - [ ] Offline training fails closed without persisting a model or report when anomaly exclusion removes every labeled row.
 - [ ] Comprehensive regression test suite added in `tests/unit/test_task152_exit_timestamp_validation.py`.
 - [ ] All unit and integration tests in the repository pass (`pytest`).
