@@ -428,6 +428,86 @@ class TestLiveRunnerServiceRoleEnforcement(unittest.TestCase):
             self.assertIsNone(runner.prediction_logger)
 
 
+class TestLiveRunnerPredictionLogging(unittest.IsolatedAsyncioTestCase):
+    async def test_log_prediction_delegates_to_prediction_logger(self):
+        from ml_signal.live import LiveRunner
+
+        runner = LiveRunner()
+        runner.prediction_logger = MagicMock()
+        payload = {
+            "probability": 0.82,
+            "confidence_tier": "HIGH",
+            "model_version": "v3.joblib",
+            "spot": 24250.0,
+            "features": {"trend": 1.0},
+            "signal_id": "test-uuid-99",
+            "trade_id": "test-trade-99",
+            "source": "continuous",
+            "timestamp": "2026-09-24T00:00:00Z",
+        }
+
+        await runner.log_prediction(payload)
+
+        runner.prediction_logger.log_prediction.assert_called_once_with(
+            probability=0.82,
+            confidence_tier="HIGH",
+            model_version="v3.joblib",
+            spot=24250.0,
+            feature_snapshot={"trend": 1.0},
+            signal_id="test-uuid-99",
+            trade_id="test-trade-99",
+            source="continuous",
+            timestamp="2026-09-24T00:00:00Z",
+        )
+
+    async def test_log_prediction_fallback_to_supabase_with_feature_translation(self):
+        from ml_signal.live import LiveRunner
+
+        runner = LiveRunner()
+        runner.prediction_logger = None
+        mock_supabase = MagicMock()
+        table_mock = MagicMock()
+        insert_mock = MagicMock()
+        mock_supabase.table.return_value = table_mock
+        table_mock.insert.return_value = insert_mock
+        runner._supabase = mock_supabase
+
+        payload = {
+            "probability": 0.65,
+            "confidence_tier": "MEDIUM",
+            "features": {"rsi": 55.0},
+        }
+
+        await runner.log_prediction(payload)
+
+        mock_supabase.table.assert_called_with(runner.config.supabase_table_predictions)
+        table_mock.insert.assert_called_once()
+        inserted_payload = table_mock.insert.call_args[0][0]
+        self.assertEqual(inserted_payload["feature_snapshot"], {"rsi": 55.0})
+        self.assertNotIn("features", inserted_payload)
+
+    async def test_log_prediction_noop_when_supabase_is_none(self):
+        from ml_signal.live import LiveRunner
+
+        runner = LiveRunner()
+        runner.prediction_logger = None
+        runner._supabase = None
+
+        await runner.log_prediction({"probability": 0.5})
+
+    async def test_log_prediction_fallback_suppresses_exceptions(self):
+        from ml_signal.live import LiveRunner
+
+        runner = LiveRunner()
+        runner.prediction_logger = None
+        mock_supabase = MagicMock()
+        mock_supabase.table.side_effect = RuntimeError("network down")
+        runner._supabase = mock_supabase
+
+        # Must not raise
+        await runner.log_prediction({"probability": 0.5})
+
+
 class TestEnginePredictionPersistenceOnSignalFailure(unittest.IsolatedAsyncioTestCase):
     async def test_prediction_persisted_even_if_signal_logging_fails(self):
         """Invariant: Even if storage.log_signal returns False, prediction is persisted with trade_id=None."""
