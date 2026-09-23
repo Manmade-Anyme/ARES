@@ -107,10 +107,8 @@ class TuningConfig:
     oi_wall_wick_min_range_pts: float = 2.0
     # TASK-073: Decoupled entry, persistence gating, and re-test filter settings
     oi_wall_persistence_snapshots: int = 3
-    oi_wall_initial_interaction_distance_pts: float = 20.0
     oi_wall_min_excursion_pts: float = 20.0
     oi_wall_retest_distance_pts: float = 20.0
-    oi_wall_retest_confirmation_candles: int = 1
     oi_wall_enable_watchlist_alert: bool = False
 
     # Exhaustion Detector
@@ -206,10 +204,8 @@ NON_EXPIRY_CONFIG = TuningConfig(
     oi_wall_test_distance=20.0,
     oi_wall_wick_rejection_ratio=0.4,
     oi_wall_persistence_snapshots=3,
-    oi_wall_initial_interaction_distance_pts=20.0,
     oi_wall_min_excursion_pts=20.0,
     oi_wall_retest_distance_pts=20.0,
-    oi_wall_retest_confirmation_candles=1,
     oi_wall_enable_watchlist_alert=False,
     exhaustion_volume_multiplier=2.5,
     exhaustion_body_ratio=0.35,
@@ -237,10 +233,8 @@ EXPIRY_CONFIG = TuningConfig(
     oi_wall_test_distance=10.0,
     oi_wall_wick_rejection_ratio=0.4,
     oi_wall_persistence_snapshots=3,
-    oi_wall_initial_interaction_distance_pts=10.0,
     oi_wall_min_excursion_pts=10.0,
     oi_wall_retest_distance_pts=10.0,
-    oi_wall_retest_confirmation_candles=1,
     oi_wall_enable_watchlist_alert=False,
 
     # Exhaustion — higher bar

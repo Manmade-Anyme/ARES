@@ -1,5 +1,11 @@
 # Backlog
 
+## High Priority
+- **MANM-150**: Fix broken signal-to-trade joins between `ares_signals`, `active_trades`, and analytics.
+  - [x] Create ADR (Architect) - Proposed in directives/adr/MANM-150_fix-signal-joins.md
+  - [x] Implement data model and insertion path changes (Code Generator)
+  - [x] Safe read-only validation query and backfill plan
+
 ## TASK-153: Implement prediction persistence in ml_predictions table for model auditing
 **Priority:** High
 **Acceptance Criteria:**
