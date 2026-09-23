@@ -105,6 +105,35 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
         self.assertIn("anomaly", analytics.get("market_context", {}))
         self.assertEqual(analytics["market_context"]["anomaly"]["type"], "unrecoverable_legacy_row")
 
+    def test_repair_uses_persisted_entry_timestamp_before_created_at(self):
+        from ml_signal import backfill_labels
+
+        rows = {
+            "trade_analytics": [],
+            "active_trades": [{
+                "id": "t-delayed-persistence",
+                "signal_id": "0045",
+                "setup_type": "FAILED_BREAKOUT",
+                "direction": "BULLISH",
+                "entry_price": 24000.0,
+                "entry_timestamp": "2026-08-25T08:30:00+00:00",
+                "created_at": "2026-08-25T08:40:00+00:00",
+                "state": "CLOSED",
+                "exit_price": 24100.0,
+                "exit_type": "T2_HIT",
+                "exit_timestamp": "2026-08-25T08:35:00+00:00",
+                "pnl_points_override": None,
+                "time_metrics_excluded": False,
+            }],
+        }
+        sb = _FakeSupabase(rows)
+
+        self.assertEqual(backfill_labels.repair_stuck_open_trades(sb, apply=True), 1)
+
+        analytics = rows["trade_analytics"][0]
+        self.assertEqual(analytics["entry_timestamp"], "2026-08-25T08:30:00+00:00")
+        self.assertFalse(analytics.get("time_metrics_excluded", False))
+
     def test_repair_dynamically_calculates_anomaly(self):
         from ml_signal import backfill_labels
 
