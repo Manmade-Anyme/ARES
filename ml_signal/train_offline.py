@@ -158,11 +158,9 @@ def _sharpe_metrics(df: pd.DataFrame, periods_per_year: int = 252) -> Dict[str, 
     pnl_valid = pnl.notna() & np.isfinite(pnl)
     metrics["sharpe_missing_exit_timestamps"] = int((pnl_valid & timestamps.isna()).sum())
     
-    valid_chronology = (timestamps >= entry_timestamps) | timestamps.isna() | entry_timestamps.isna()
-    # Actually we only care about valid chronology if both exist, but if one is missing it's invalid anyway for duration.
     # ADR says: valid_chronology = (exit_dt >= entry_dt)
-    valid_chronology = (timestamps >= entry_timestamps)
-    metrics["sharpe_invalid_chronology_count"] = int((~valid_chronology & timestamps.notna() & entry_timestamps.notna()).sum())
+    valid_chronology = (timestamps >= entry_timestamps) | entry_timestamps.isna()
+    metrics["sharpe_invalid_chronology_count"] = int((timestamps < entry_timestamps).sum())
     
     valid = pnl.notna() & timestamps.notna() & np.isfinite(pnl) & (~time_excluded) & valid_chronology
     if not valid.any():

@@ -771,7 +771,6 @@ def test_position_manager_clamps_early_event_ts():
     asyncio.run(run_update_sl())
     # The write should be queued
     assert pm._queue_trade_write.call_count == 1
-    write_fn = pm._queue_trade_write.call_args[0][1]
     
     # We can inspect the _log_exit closure if we mock the analytics?
     # Better to just test that the warning executes. We can mock print or use capsys if using pytest, but this is a simple check.
