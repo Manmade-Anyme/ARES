@@ -170,5 +170,64 @@ class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(called_with, [2.0, 2.0, 1.0])
 
 
-if __name__ == "__main__":
-    unittest.main()
+    @patch("main.AresEngine")
+    @patch("main.PriceFetcher")
+    @patch("main.OIFetcher")
+    @patch("main.LevelFetcher")
+    @patch("main.Storage")
+    @patch("main.PositionManager")
+    @patch("main.MLCollector")
+    @patch("main.TickFeed")
+    @patch("main.SignalPredictor")
+    @patch("main.is_expiry_day_from_api", return_value=False)
+    @patch("main.load_dhan_credentials_from_supabase")
+    @patch("main.asyncio.sleep", side_effect=Exception("StopLoop"))
+    async def test_main_loop_passes_candle_timestamp(
+        self, mock_sleep, mock_load, mock_is_expiry,
+        MockPredictor, MockFeed, MockML, MockPM, MockStorage, MockLevel, MockOI, MockPrice, MockEngine
+    ):
+        pm_instance = MockPM.return_value
+        pm_instance.update_trades = AsyncMock(return_value=[])
+        
+        price_instance = MockPrice.return_value
+        import types
+        from datetime import datetime, timezone
+        fake_candle = types.SimpleNamespace(timestamp=datetime(2026, 9, 1, 10, 5, 0, tzinfo=timezone.utc),
+                       open=24000.0, high=24010.0, low=23990.0, close=24000.0, volume=100)
+        price_instance.fetch_latest_candle = AsyncMock(return_value=fake_candle)
+        
+        oi_instance = MockOI.return_value
+        oi_instance.get_nearest_expiry = AsyncMock(return_value="2026-09-01")
+        mock_atm = MagicMock()
+        mock_atm.ce.iv = 15.0
+        oi_instance.fetch_chain = AsyncMock(return_value=(mock_atm, MagicMock()))
+        
+        engine_instance = MockEngine.return_value
+        engine_instance.is_cooldown = False
+        engine_instance.tick.return_value = None
+        
+        with patch("main.settings") as mock_settings, \
+             patch("main.datetime") as mock_dt:
+            
+            mock_dt.now.return_value = datetime(2026, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            
+            mock_settings.trading_start_time = "00:00"
+            mock_settings.trading_end_time = "23:59"
+            mock_settings.system_mode = "LIVE"
+            mock_settings.tick_exit_check_interval_seconds = 2.0
+            mock_settings.signal_cooldown_minutes = 5.0
+            mock_settings.yahoo_symbol = "^NSEI"
+            mock_settings.poll_interval_seconds = 60.0
+            try:
+                await main.run()
+            except Exception as e:
+                if str(e) != "StopLoop":
+                    raise
+        
+        pm_instance.update_trades.assert_awaited_with(
+            24000.0,
+            candle_high=24010.0,
+            candle_low=23990.0,
+            candle_timestamp=fake_candle.timestamp
+        )

@@ -298,9 +298,18 @@ class PositionManager:
                 continue
             
             event_ts = event_ts_base
-            if trade.get("entry_timestamp") and event_ts < trade["entry_timestamp"]:
-                print(f"Warning: event_ts {event_ts} precedes entry {trade['entry_timestamp']} for {trade['id']}, clamping.")
-                event_ts = trade["entry_timestamp"]
+            if trade.get("entry_timestamp"):
+                entry_ts_val = trade["entry_timestamp"]
+                def to_float(ts):
+                    if isinstance(ts, (int, float)):
+                        return float(ts)
+                    try:
+                        return datetime.fromisoformat(str(ts).replace('Z', '+00:00')).timestamp()
+                    except ValueError:
+                        return 0.0
+                if to_float(event_ts) < to_float(entry_ts_val):
+                    print(f"Warning: event_ts {event_ts} precedes entry {entry_ts_val} for {trade['id']}, clamping.")
+                    event_ts = entry_ts_val
 
             state_changed = False
             update_type = None

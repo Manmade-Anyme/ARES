@@ -1,10 +1,9 @@
 import pytest
 from datetime import datetime, timezone
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 import asyncio
 
 from position_manager import PositionManager
-from storage import AnalyticsLogger
 from reports import fetch_closed_trades
 
 
@@ -103,7 +102,7 @@ async def test_position_manager_passes_candle_timestamp():
     
     candle_ts = datetime(2026, 9, 1, 10, 5, 0, tzinfo=timezone.utc)
     
-    with patch("position_manager.send_trade_update") as mock_send_update:
+    with patch("position_manager.send_trade_update"):
         events = await pm.update_trades(125.0, candle_high=125.0, candle_low=120.0, candle_timestamp=candle_ts)
         assert len(events) == 1
         assert events[0][1] == "T2_HIT"
@@ -118,6 +117,9 @@ async def test_position_manager_passes_candle_timestamp():
         args, kwargs = mock_analytics.log_exit.call_args
         assert kwargs.get("exit_timestamp") == "2026-09-01T10:05:00+00:00"
 
+        # Check that active_trades update was called with the exit_timestamp
+        update_calls = pm.supabase.table().update.call_args_list
+        assert any(call.args[0].get("exit_timestamp") == "2026-09-01T10:05:00+00:00" for call in update_calls), "update missing exit_timestamp"
 
 def test_reports_excludes_flagged_records():
     mock_supabase = MagicMock()
@@ -131,3 +133,13 @@ def test_reports_excludes_flagged_records():
     
     assert len(trades) == 1
     assert trades[0]["pnl_points"] == 10
+
+def test_reports_excludes_inverted_timestamps():
+    mock_supabase = MagicMock()
+    mock_supabase.table().select().gte().lte().execute.return_value = MagicMock(data=[
+        {"pnl_points": 10, "entry_timestamp": "2026-09-01T10:05:00+00:00", "exit_timestamp": "2026-09-01T10:00:00+00:00", "time_metrics_excluded": False},
+        {"pnl_points": 20, "entry_timestamp": "2026-09-01T10:00:00+00:00", "exit_timestamp": "2026-09-01T10:05:00+00:00", "time_metrics_excluded": False}
+    ])
+    trades = fetch_closed_trades(mock_supabase, "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00")
+    assert len(trades) == 1
+    assert trades[0]["pnl_points"] == 20

@@ -272,6 +272,16 @@ class TestSharpeMetrics(unittest.TestCase):
         self.assertEqual(metrics["sharpe_status"], "insufficient_days")
         self.assertIsNone(metrics["sharpe_annualized"])
 
+    def test_invalid_chronology_count(self):
+        df = pd.DataFrame({
+            "timestamp": ["2026-08-03T04:00:00+00:00", "2026-08-04T04:00:00+00:00"],
+            "entry_timestamp": ["2026-08-03T10:00:00+00:00", "2026-08-04T10:00:00+00:00"],
+            "exit_timestamp": ["2026-08-03T09:00:00+00:00", "2026-08-04T11:00:00+00:00"],
+            "pnl_points": [10.0, 5.0],
+        })
+        metrics = _sharpe_metrics(df)
+        self.assertEqual(metrics["sharpe_invalid_chronology_count"], 1)
+
 
 class TestDetectorScoresFeature(unittest.TestCase):
     """TASK-4e: detector_scores fed from ml_collection into XGBoost training."""
@@ -868,8 +878,8 @@ class TestOfflineShapContract(unittest.TestCase):
         fake_dotenv = types.SimpleNamespace(load_dotenv=lambda path: None)
         with patch.dict(os.environ, {"SUPABASE_URL": "url", "SUPABASE_KEY": "key"}), \
                 patch.dict(sys.modules, {"supabase": fake_supabase, "dotenv": fake_dotenv}), \
-                patch("ml_signal.train_offline._fetch_ml_collection", return_value=[{"row": 1}]), \
-                patch("ml_signal.train_offline._fetch_trade_exit_timestamps", return_value={}), \
+                patch("ml_signal.train_offline._fetch_ml_collection", return_value=[{"row": 1, "trade_id": "t1"}]), \
+                patch("ml_signal.train_offline._fetch_trade_exit_timestamps", return_value={"t1": {"exit_timestamp": "2026-08-05T04:00:00+00:00", "entry_timestamp": "2026-08-05T03:00:00+00:00", "time_metrics_excluded": False}}), \
                 patch("ml_signal.dataset.build_real_outcome_frame", return_value=frame), \
                 patch("ml_signal.train_offline.feature_columns", return_value=["alpha"]), \
                 patch("ml_signal.predictor.get_next_model_version_and_path",
