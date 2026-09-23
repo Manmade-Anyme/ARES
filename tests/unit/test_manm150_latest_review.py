@@ -119,6 +119,60 @@ class TestExitChecksSurviveSnapshotFailure(unittest.IsolatedAsyncioTestCase):
 
 
 class TestPresentationIdentity(unittest.IsolatedAsyncioTestCase):
+    async def test_consumer_insert_uses_only_standardized_prediction_columns(self):
+        consumer = SignalConsumer()
+        consumer._supabase = MagicMock()
+        prediction = {
+            "timestamp": "2026-09-23T10:00:00+00:00",
+            "probability": 0.75,
+            "confidence_tier": "HIGH",
+            "model_version": "v2",
+            "signal_id": "canonical-uuid",
+            "trade_id": None,
+            "spot": 24000.0,
+            "source": "event_triggered",
+            "features": {"rsi": 42.0},
+            "signal_uuid": "canonical-uuid",
+            "signal_display_id": "4829",
+            "signal_setup_type": "OI_WALL_REJECTION",
+            "predictor_metadata": "must not reach PostgREST",
+        }
+
+        persisted = await consumer.log_prediction(prediction)
+
+        self.assertTrue(persisted)
+        payload = consumer._supabase.table.return_value.insert.call_args.args[0]
+        self.assertEqual(set(payload), {
+            "timestamp", "probability", "confidence_tier", "model_version",
+            "signal_id", "trade_id", "spot", "source", "feature_snapshot",
+        })
+        self.assertEqual(payload["feature_snapshot"], {"rsi": 42.0})
+
+    async def test_consumer_insert_prefers_canonical_feature_snapshot(self):
+        consumer = SignalConsumer()
+        consumer._supabase = MagicMock()
+
+        persisted = await consumer.log_prediction({
+            "features": {"legacy": True},
+            "feature_snapshot": {"canonical": True},
+        })
+
+        self.assertTrue(persisted)
+        payload = consumer._supabase.table.return_value.insert.call_args.args[0]
+        self.assertEqual(payload, {"feature_snapshot": {"canonical": True}})
+
+    async def test_consumer_reports_insert_failure_for_retry(self):
+        consumer = SignalConsumer()
+        consumer._supabase = MagicMock()
+        consumer._supabase.table.return_value.insert.return_value.execute.side_effect = (
+            RuntimeError("database unavailable")
+        )
+
+        with patch("builtins.print"):
+            persisted = await consumer.log_prediction({"probability": 0.75})
+
+        self.assertFalse(persisted)
+
     @patch("alerts.settings")
     @patch("alerts.httpx.AsyncClient")
     async def test_trade_update_falls_back_when_display_id_is_null(
@@ -177,7 +231,8 @@ class TestPresentationIdentity(unittest.IsolatedAsyncioTestCase):
 
         prediction = consumer.log_prediction.call_args.args[0]
         self.assertEqual(prediction["signal_id"], "canonical-uuid")
-        self.assertEqual(prediction["signal_display_id"], "4829")
+        self.assertNotIn("signal_display_id", prediction)
+        self.assertNotIn("signal_setup_type", prediction)
         self.assertEqual(send_alert.call_args.kwargs["signal_id"], "4829")
 
     @patch("ml_signal.signal_consumer.send_prediction_alert", new_callable=AsyncMock)
@@ -206,8 +261,10 @@ class TestPresentationIdentity(unittest.IsolatedAsyncioTestCase):
             await consumer.run("https://example.test", "key")
 
         prediction = consumer.log_prediction.call_args.args[0]
-        self.assertEqual(prediction["signal_id"], "321")
-        self.assertEqual(prediction["signal_uuid"], "canonical-uuid")
+        self.assertEqual(prediction["signal_id"], "canonical-uuid")
+        self.assertNotIn("signal_uuid", prediction)
+        self.assertNotIn("signal_display_id", prediction)
+        self.assertNotIn("signal_setup_type", prediction)
         self.assertEqual(consumer._processed_ids, {"canonical-uuid"})
         self.assertEqual(send_alert.call_args.kwargs["signal_id"], "4829")
 
