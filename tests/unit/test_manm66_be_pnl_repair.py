@@ -75,6 +75,65 @@ class TestBreakevenAfterT1Repair(unittest.TestCase):
         self.assertEqual(rows["ml_collection"][0]["trade_id"], "t-missing")
         self.assertEqual(rows["ml_collection"][0]["trade_score"], 2)
 
+    def test_repair_recreates_missing_analytics_row_and_preserves_anomaly(self):
+        from ml_signal import backfill_labels
+
+        rows = {
+            "trade_analytics": [],
+            "active_trades": [{
+                "id": "t-missing-anomaly",
+                "signal_id": "0043",
+                "setup_type": "FAILED_BREAKOUT",
+                "direction": "BEARISH",
+                "entry_price": 24000.0,
+                "created_at": "2026-08-25T08:40:00+00:00",
+                "state": "CLOSED",
+                "exit_price": 24100.0,
+                "exit_type": "SL_HIT",
+                "exit_timestamp": "2026-08-25T08:35:00+00:00",
+                "pnl_points_override": None,
+                "time_metrics_excluded": True,
+            }],
+        }
+        sb = _FakeSupabase(rows)
+
+        self.assertEqual(backfill_labels.repair_stuck_open_trades(sb, apply=True), 1)
+
+        analytics = rows["trade_analytics"][0]
+        self.assertEqual(analytics["id"], "t-missing-anomaly")
+        self.assertTrue(analytics.get("time_metrics_excluded"))
+        self.assertIn("anomaly", analytics.get("market_context", {}))
+        self.assertEqual(analytics["market_context"]["anomaly"]["type"], "unrecoverable_legacy_row")
+
+    def test_repair_dynamically_calculates_anomaly(self):
+        from ml_signal import backfill_labels
+
+        rows = {
+            "trade_analytics": [],
+            "active_trades": [{
+                "id": "t-missing-anomaly-dynamic",
+                "signal_id": "0044",
+                "setup_type": "FAILED_BREAKOUT",
+                "direction": "BEARISH",
+                "entry_price": 24000.0,
+                "created_at": "2026-08-25T08:40:00+00:00",
+                "state": "CLOSED",
+                "exit_price": 24100.0,
+                "exit_type": "SL_HIT",
+                "exit_timestamp": "2026-08-25T08:35:00+00:00",
+                "pnl_points_override": None,
+                "time_metrics_excluded": False,
+            }],
+        }
+        sb = _FakeSupabase(rows)
+
+        self.assertEqual(backfill_labels.repair_stuck_open_trades(sb, apply=True), 1)
+
+        analytics = rows["trade_analytics"][0]
+        self.assertEqual(analytics["id"], "t-missing-anomaly-dynamic")
+        self.assertTrue(analytics.get("time_metrics_excluded"))
+        self.assertIn("anomaly", analytics.get("market_context", {}))
+        self.assertEqual(analytics["market_context"]["anomaly"]["type"], "unrecoverable_legacy_row")
 
     @staticmethod
     def _rows():
