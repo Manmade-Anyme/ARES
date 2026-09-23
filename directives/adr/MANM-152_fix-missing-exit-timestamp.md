@@ -162,13 +162,24 @@ Create migration `migrations/2026-09-23-task152-exit-timestamp-validation-and-fl
    WHERE (exit_timestamp IS NULL AND result_state != 'OPEN')
       OR (exit_timestamp IS NOT NULL AND exit_timestamp < entry_timestamp);
 
+   UPDATE active_trades AS active
+   SET time_metrics_excluded = true
+   FROM trade_analytics AS analytics
+   WHERE active.id = analytics.id
+     AND analytics.time_metrics_excluded = true;
+
    UPDATE active_trades
    SET time_metrics_excluded = true
    WHERE (exit_timestamp IS NULL AND state IN ('CLOSED', 'STOPPED_OUT'))
       OR (exit_timestamp IS NOT NULL AND exit_timestamp < entry_timestamp);
    ```
 
-   This row is intentionally retained for auditability. It is explicitly exempted from time-based validation; its inverted timestamps are not silently treated as valid data.
+   Analytics exclusions are propagated by shared trade ID even when the active
+   row still has a stale `OPEN` or intermediate state. This allows subsequent
+   reconciliation to persist a terminal state without violating completeness
+   constraints. The independent active-row predicate remains necessary for
+   anomalies with no analytics counterpart. These rows are retained for
+   auditability; their invalid timestamps are not silently treated as valid.
 
 5. **Add Chronological & Completeness Constraints after repair/backfill**:
    ```sql

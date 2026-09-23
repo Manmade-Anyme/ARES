@@ -50,6 +50,16 @@ SET time_metrics_excluded = true,
 WHERE (exit_timestamp IS NULL AND result_state != 'OPEN')
    OR (exit_timestamp IS NOT NULL AND exit_timestamp < entry_timestamp);
 
+-- Propagate analytics anomalies by identity even when the durable active row
+-- is stale and still says OPEN.  Reconciliation can then close it without the
+-- terminal-completeness constraint rejecting the missing exit timestamp.
+UPDATE active_trades AS active
+SET time_metrics_excluded = true
+FROM trade_analytics AS analytics
+WHERE active.id = analytics.id
+  AND analytics.time_metrics_excluded = true;
+
+-- Also isolate active-only anomalies that have no analytics counterpart.
 UPDATE active_trades
 SET time_metrics_excluded = true
 WHERE (exit_timestamp IS NULL AND state IN ('CLOSED', 'STOPPED_OUT'))

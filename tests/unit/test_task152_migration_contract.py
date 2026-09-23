@@ -35,3 +35,17 @@ def test_active_exit_type_backfill_does_not_mark_open_trades_terminal():
     )
     assert f"analytics.result_state IN (\n                {terminal_states}" in MIGRATION
     assert "coalesce(active.exit_type, analytics.result_state)" not in MIGRATION
+
+
+def test_analytics_exclusions_propagate_to_matching_active_rows():
+    analytics_repair = "UPDATE trade_analytics\nSET time_metrics_excluded = true"
+    propagation = """UPDATE active_trades AS active
+SET time_metrics_excluded = true
+FROM trade_analytics AS analytics
+WHERE active.id = analytics.id
+  AND analytics.time_metrics_excluded = true;"""
+    active_constraint = "ADD CONSTRAINT chk_active_trades_exit_chronology"
+
+    assert propagation in MIGRATION
+    assert MIGRATION.index(analytics_repair) < MIGRATION.index(propagation)
+    assert MIGRATION.index(propagation) < MIGRATION.index(active_constraint)
