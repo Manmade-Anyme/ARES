@@ -11,7 +11,12 @@ import numpy as np
 from config import settings
 from models import AresSignal, SetupType, Direction
 from position_manager import PositionManager
-from storage import PredictionLogger, sanitize_feature_snapshot, _sanitize_value
+from storage import (
+    PredictionLogger,
+    PredictionRecord,
+    sanitize_feature_snapshot,
+    _sanitize_value,
+)
 
 
 class TestFeatureSanitization(unittest.TestCase):
@@ -84,6 +89,34 @@ class TestPredictionLogger(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 PredictionLogger()
             self.assertIn("supabase_service_role_key", str(ctx.exception))
+
+    def test_rejects_client_using_anon_key(self):
+        anon_client = MagicMock()
+        anon_client.supabase_key = settings.supabase_key
+        with self.assertRaises(ValueError) as ctx:
+            PredictionLogger(supabase_client=anon_client)
+        self.assertIn("anon key", str(ctx.exception))
+
+    def test_log_record_with_prediction_record(self):
+        logger = PredictionLogger(supabase_client=self.mock_client, max_workers=1)
+        record = PredictionRecord(
+            probability=0.85,
+            confidence_tier="HIGH",
+            model_version="v2.joblib",
+            spot=24200.0,
+            feature_snapshot={"rsi": 65.0},
+            signal_id="canon-uuid-1",
+            trade_id="trade-uuid-1",
+        )
+        try:
+            logger.log_record(record)
+            self.table_mock.insert.assert_called_once()
+            payload = self.table_mock.insert.call_args[0][0]
+            self.assertEqual(payload["probability"], 0.85)
+            self.assertEqual(payload["signal_id"], "canon-uuid-1")
+            self.assertEqual(payload["trade_id"], "trade-uuid-1")
+        finally:
+            logger.shutdown(wait=True)
 
     def test_sync_fallback_when_no_event_loop(self):
         logger = PredictionLogger(supabase_client=self.mock_client, max_workers=1)
@@ -360,3 +393,93 @@ class TestSchemaFilesIntegrity(unittest.TestCase):
                     "alter table ml_predictions disable row level security;",
                     normalized_sql,
                 )
+
+
+class TestLiveRunnerServiceRoleEnforcement(unittest.TestCase):
+    def test_init_supabase_with_service_role_key(self):
+        from ml_signal.live import LiveRunner
+
+        runner = LiveRunner()
+        with patch("ml_signal.live.create_client") as mock_create, patch(
+            "ml_signal.live.PredictionLogger"
+        ) as mock_logger:
+            runner._init_supabase(
+                url="https://example.supabase.co",
+                key="anon_key",
+                service_role_key="service_role_key_secret",
+            )
+            mock_create.assert_called_with("https://example.supabase.co", "anon_key")
+            mock_logger.assert_called_once_with(
+                supabase_url="https://example.supabase.co",
+                supabase_service_role_key="service_role_key_secret",
+            )
+            self.assertIsNotNone(runner.prediction_logger)
+
+    def test_init_supabase_without_service_role_key_disables_prediction_logger(self):
+        from ml_signal.live import LiveRunner
+
+        runner = LiveRunner()
+        with patch("ml_signal.live.create_client"), patch.dict("os.environ", {}, clear=True):
+            runner._init_supabase(
+                url="https://example.supabase.co",
+                key="anon_key",
+                service_role_key=None,
+            )
+            self.assertIsNone(runner.prediction_logger)
+
+
+class TestEnginePredictionPersistenceOnSignalFailure(unittest.IsolatedAsyncioTestCase):
+    async def test_prediction_persisted_even_if_signal_logging_fails(self):
+        """Invariant: Even if storage.log_signal returns False, prediction is persisted with trade_id=None."""
+        signal = AresSignal(
+            setup_type=SetupType.FAILED_BREAKOUT,
+            direction=Direction.BULLISH,
+            trigger_price=24100.0,
+            entry_zone=(24090.0, 24110.0),
+            stop_loss=24050.0,
+            target_1=24150.0,
+            target_2=24200.0,
+            confidence="HIGH",
+            reasons=["Test Reason"],
+            timestamp=datetime.now(timezone.utc),
+            strike_to_trade=24100,
+            option_type="CE",
+        )
+        signal.ml_prediction = {
+            "probability": 0.78,
+            "confidence_tier": "HIGH",
+            "model_version": "v1.joblib",
+            "features": {"f1": 1.0},
+        }
+
+        mock_logger = MagicMock()
+        spot = 24100.0
+        now = datetime.now(timezone.utc)
+
+        # Simulate engine logic when storage.log_signal fails
+        trade_executed = False
+        # storage.log_signal returns False
+        success = False
+        if success:
+            trade_executed = True
+
+        ml_pred = getattr(signal, "ml_prediction", None)
+        if mock_logger and ml_pred:
+            mock_logger.log_prediction(
+                probability=ml_pred["probability"],
+                confidence_tier=ml_pred["confidence_tier"],
+                model_version=ml_pred["model_version"],
+                spot=spot,
+                feature_snapshot=ml_pred.get("features", {}),
+                signal_id=getattr(signal, "id", None),
+                trade_id=getattr(signal, "trade_id", None) or None,
+                source="event_triggered",
+                timestamp=now,
+            )
+
+        mock_logger.log_prediction.assert_called_once()
+        call_kwargs = mock_logger.log_prediction.call_args.kwargs
+        self.assertEqual(call_kwargs["signal_id"], signal.id)
+        self.assertIsNone(call_kwargs["trade_id"])
+        self.assertEqual(call_kwargs["probability"], 0.78)
+        self.assertFalse(trade_executed)

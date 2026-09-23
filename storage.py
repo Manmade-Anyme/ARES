@@ -21,16 +21,21 @@ CREATE TABLE ares_signals (
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+import logging
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import numpy as np
 from supabase import create_client, Client
 
 from models import AresSignal
 from config import settings
 
+logger = logging.getLogger(__name__)
+
 IST = timezone(timedelta(hours=5, minutes=30))
+
 
 
 def to_utc_iso(ts: Any) -> str:
@@ -480,23 +485,68 @@ def sanitize_feature_snapshot(features: Dict[str, Any]) -> Dict[str, Any]:
     return {str(k): _sanitize_value(v) for k, v in features.items()}
 
 
+@dataclass
+class PredictionRecord:
+    """Represents a validated, strongly-typed ML prediction record."""
+    probability: float
+    confidence_tier: str
+    model_version: str
+    spot: float
+    feature_snapshot: Dict[str, Any]
+    signal_id: Optional[str] = None
+    trade_id: Optional[str] = None
+    source: str = "event_triggered"
+    timestamp: Optional[Union[datetime, str]] = None
+
+
 class PredictionLogger:
     """Handles asynchronous, non-blocking persistence of ML predictions to Supabase."""
 
-    def __init__(self, supabase_client: Optional[Client] = None, max_workers: int = 2):
+    def __init__(
+        self,
+        supabase_client: Optional[Client] = None,
+        supabase_url: Optional[str] = None,
+        supabase_service_role_key: Optional[str] = None,
+        max_workers: int = 2,
+    ):
         if supabase_client is not None:
+            # Enforce backend-only credential contract: reject anon-key client
+            anon_key = getattr(settings, "supabase_key", None)
+            client_key = getattr(supabase_client, "supabase_key", None)
+            if anon_key and client_key and client_key == anon_key:
+                raise ValueError(
+                    "PredictionLogger requires supabase_service_role_key; anon key client is not permitted."
+                )
             self.supabase = supabase_client
         else:
-            service_key = getattr(settings, "supabase_service_role_key", None)
+            url = supabase_url or getattr(settings, "supabase_url", "")
+            service_key = (
+                supabase_service_role_key
+                or getattr(settings, "supabase_service_role_key", None)
+            )
             if not service_key:
                 raise ValueError(
                     "PredictionLogger requires supabase_service_role_key; anon key is not permitted."
                 )
-            self.supabase = create_client(settings.supabase_url, service_key)
+            self.supabase = create_client(url, service_key)
 
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
-            thread_name_prefix="ml_pred_logger"
+            thread_name_prefix="ml_pred_logger",
+        )
+
+    def log_record(self, record: PredictionRecord) -> None:
+        """Dispatches an insert using a PredictionRecord instance."""
+        self.log_prediction(
+            probability=record.probability,
+            confidence_tier=record.confidence_tier,
+            model_version=record.model_version,
+            spot=record.spot,
+            feature_snapshot=record.feature_snapshot,
+            signal_id=record.signal_id,
+            trade_id=record.trade_id,
+            source=record.source,
+            timestamp=record.timestamp,
         )
 
     def log_prediction(
@@ -509,7 +559,7 @@ class PredictionLogger:
         signal_id: Optional[str] = None,
         trade_id: Optional[str] = None,
         source: str = "event_triggered",
-        timestamp: Optional[Any] = None,
+        timestamp: Optional[Union[datetime, str]] = None,
     ) -> None:
         """Dispatches an asynchronous insert to ml_predictions.
 
@@ -538,15 +588,14 @@ class PredictionLogger:
 
             self._executor.submit(self._insert_prediction, record)
         except Exception as exc:
-            print(f"PredictionLogger: dispatch error: {exc}")
+            logger.warning("PredictionLogger: dispatch error: %s", exc)
 
     def _insert_prediction(self, record: Dict[str, Any]) -> None:
         try:
             self.supabase.table("ml_predictions").insert(record).execute()
         except Exception as exc:
-            print(f"PredictionLogger: failed to persist prediction to ml_predictions: {exc}")
+            logger.warning("PredictionLogger: failed to persist prediction to ml_predictions: %s", exc)
 
     def shutdown(self, wait: bool = True) -> None:
         """Shut down the background executor."""
         self._executor.shutdown(wait=wait)
-

@@ -9,6 +9,7 @@ Usage:
 """
 
 import asyncio
+import logging
 import os
 from datetime import datetime
 from typing import Optional, Set
@@ -19,6 +20,9 @@ from config import settings
 from .config import MLConfig, DEFAULT_CONFIG
 from .predictor import SignalPredictor
 from .discord import send_prediction_alert
+
+logger = logging.getLogger(__name__)
+
 
 
 _PREDICTION_COLUMNS = {
@@ -47,8 +51,9 @@ class SignalConsumer:
         self._supabase: Optional[Client] = None
         self._processed_ids: Set[str] = set()
 
-    def _init_supabase(self, url: str, key: str):
-        self._supabase = create_client(url, key)
+    def _init_supabase(self, url: str, key: str, service_role_key: Optional[str] = None):
+        srv_key = service_role_key or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or key
+        self._supabase = create_client(url, srv_key)
 
     async def fetch_new_signals(self) -> list:
         if self._supabase is None:
@@ -92,7 +97,7 @@ class SignalConsumer:
                 self._supabase.table(self.config.supabase_table_predictions).insert(payload).execute()
                 return True
             except Exception as e:
-                print(f"Failed to log prediction: {e}")
+                logger.warning("Failed to log prediction: %s", e)
                 return False
 
         loop = asyncio.get_running_loop()
@@ -102,8 +107,17 @@ class SignalConsumer:
         self,
         supabase_url: str,
         supabase_key: str,
+        supabase_service_role_key: Optional[str] = None,
     ):
-        self._init_supabase(supabase_url, supabase_key)
+        """Run standalone signal consumer loop.
+
+        OPERATOR WARNING (ADR-153):
+        Production ARES uses in-process PredictionLogger inside main.py as the
+        sole authoritative writer for event_triggered predictions. Operators must
+        NOT run signal_consumer concurrently with main.py in production, as this
+        will produce duplicate prediction records and double-count calibration samples.
+        """
+        self._init_supabase(supabase_url, supabase_key, service_role_key=supabase_service_role_key)
         self.predictor.load_model()
 
         print(f"[ML Consumer] Starting signal consumer (poll={self.config.signal_poll_interval_seconds}s)")
@@ -196,6 +210,7 @@ async def main():
     await consumer.run(
         supabase_url=os.getenv("SUPABASE_URL", ""),
         supabase_key=os.getenv("SUPABASE_KEY", ""),
+        supabase_service_role_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
     )
 
 
