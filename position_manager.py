@@ -155,8 +155,10 @@ class PositionManager:
         trade_id = str(uuid.uuid4())
         
         # Prepare RPC payload
+        entry_timestamp = __import__("storage").to_utc_iso(signal.timestamp)
         trade_data = {
             "id": trade_id,
+            "entry_timestamp": entry_timestamp,
             "signal_id": str(signal.id),
             "signal_uuid": str(signal.id),
             "display_id": signal.display_id,
@@ -210,7 +212,6 @@ class PositionManager:
                 "pe_oi_change_pct": round(atm.pe.oi_change_pct, 2),
             }
 
-        entry_timestamp = __import__("storage").to_utc_iso(signal.timestamp)
         mode = settings.signal_schema_mode
         if mode not in {"bridge", "greenfield"}:
             raise ValueError(f"Unsupported signal schema mode: {mode}")
@@ -260,6 +261,7 @@ class PositionManager:
         spot_price: float,
         candle_high: Optional[float] = None,
         candle_low: Optional[float] = None,
+        candle_timestamp: Optional[datetime] = None,
     ) -> List[Tuple[str, str]]:
         """
         Loops through active trades and evaluates live price action against the active trailing stops.
@@ -289,9 +291,16 @@ class PositionManager:
         low = candle_low if candle_low is not None else spot_price
         event_loop = asyncio.get_event_loop()
 
+        event_ts_base = __import__("storage").to_utc_iso(candle_timestamp) if candle_timestamp else datetime.now(timezone.utc).isoformat()
+
         for trade in self.active_trades:
             if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
                 continue
+            
+            event_ts = event_ts_base
+            if trade.get("entry_timestamp") and event_ts < trade["entry_timestamp"]:
+                print(f"Warning: event_ts {event_ts} precedes entry {trade['entry_timestamp']} for {trade['id']}, clamping.")
+                event_ts = trade["entry_timestamp"]
 
             state_changed = False
             update_type = None
@@ -364,7 +373,7 @@ class PositionManager:
                 if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
                     update_data["exit_price"] = float(event_price)
                     update_data["exit_type"] = update_type
-                    update_data["exit_timestamp"] = datetime.now(timezone.utc).isoformat()
+                    update_data["exit_timestamp"] = event_ts
                     if pnl_points_override is not None:
                         update_data["pnl_points_override"] = float(pnl_points_override)
 
@@ -377,6 +386,7 @@ class PositionManager:
                     exit_price=event_price,
                     final_state=update_type,
                     pnl_override=pnl_points_override,
+                    exit_ts=event_ts,
                 ):
                     try:
                         if pnl_override is not None:
@@ -384,10 +394,11 @@ class PositionManager:
                                 t_id,
                                 exit_price,
                                 final_state,
+                                exit_timestamp=exit_ts,
                                 pnl_points_override=pnl_override,
                             )
                         else:
-                            self.analytics.log_exit(t_id, exit_price, final_state)
+                            self.analytics.log_exit(t_id, exit_price, final_state, exit_timestamp=exit_ts)
                     except Exception as e:
                         print(f"Failed to log trade exit to Analytics: {e}")
 

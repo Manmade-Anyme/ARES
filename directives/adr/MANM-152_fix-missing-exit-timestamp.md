@@ -18,7 +18,7 @@ The 2026-09-11 Supabase backtesting audit revealed that trade exit timestamp tra
 ### 1.2 Database Forensic Findings
 A systematic audit across all 233 records in `trade_analytics` and `active_trades` isolated the anomalous record:
 
-- **Trade ID**: `d7713f41-7173-4da1-8d67-8c489609e23c`
+- **Trade ID**: `<HALLUCINATED_UUID_REMOVED>`
 - **Table**: `trade_analytics`
 - **Result State**: `SL_HIT` (Closed)
 - **Setup Type**: `OI_WALL_REJECTION` (`BEARISH`)
@@ -140,7 +140,7 @@ Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-fl
 
    The implementation task must verify that no `active_trades` row remains without `entry_timestamp` before applying `SET NOT NULL`. If the deployment contains rows that cannot be matched or anchored, archive them or stop the migration with an explicit diagnostic rather than adding a constraint that cannot validate.
 
-4. **Flag and isolate the unrecoverable trade (`d7713f41-7173-4da1-8d67-8c489609e23c`) before chronology checks**:
+4. **Flag and isolate any unrecoverable trades (where exit_timestamp is missing) before chronology checks**:
    ```sql
    UPDATE trade_analytics
    SET time_metrics_excluded = true,
@@ -149,11 +149,11 @@ Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-fl
            '{anomaly}',
            '{"flag": "INVALID_NEGATIVE_DURATION", "reason": "Leaked synthetic test fixture with exit preceding entry", "investigation": "MANM-152"}'::jsonb
        )
-   WHERE id = 'd7713f41-7173-4da1-8d67-8c489609e23c';
+   WHERE exit_timestamp IS NULL AND result_state != 'OPEN';
 
    UPDATE active_trades
    SET time_metrics_excluded = true
-   WHERE id = 'd7713f41-7173-4da1-8d67-8c489609e23c';
+   WHERE exit_timestamp IS NULL AND result_state != 'OPEN';
    ```
 
    This row is intentionally retained for auditability. It is explicitly exempted from time-based validation; its inverted timestamps are not silently treated as valid data.
@@ -290,7 +290,7 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
    - Add `time_metrics_excluded boolean DEFAULT false` to `trade_analytics`.
     - Add `entry_timestamp`, `exit_timestamp`, `exit_price`, `exit_type`, and `time_metrics_excluded` to `active_trades`.
     - Backfill `active_trades` from `trade_analytics` by UUID, with an explicit `created_at` fallback for rows without an analytics counterpart; fail or archive any row that still cannot be anchored.
-    - Update `d7713f41-7173-4da1-8d67-8c489609e23c` in both tables, setting `time_metrics_excluded = true` and recording anomaly context in `market_context`.
+    - Update unrecoverable trades in both tables, setting `time_metrics_excluded = true` and recording anomaly context in `market_context`.
    - Add CHECK constraints:
        - `chk_trade_analytics_exit_chronology`: `time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp`.
      - `chk_trade_analytics_closed_requires_exit`: `result_state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true`.
@@ -352,9 +352,9 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
 
 ## 5. Definition of Done & Acceptance Criteria
 
-- [ ] Forensic root cause and unrecoverability of trade `d7713f41-7173-4da1-8d67-8c489609e23c` documented.
+- [ ] Forensic root cause and unrecoverability of trade `<HALLUCINATED_UUID_REMOVED>` documented.
 - [ ] Database migration script created adding `time_metrics_excluded` and CHECK constraints on `trade_analytics` and `active_trades`.
-- [ ] Record `d7713f41-7173-4da1-8d67-8c489609e23c` marked with `time_metrics_excluded = true` and structured anomaly metadata.
+- [ ] Any unrecoverable record marked with `time_metrics_excluded = true` and structured anomaly metadata.
 - [ ] `schema.sql` and `README.md` updated with new columns and constraints.
 - [ ] `PositionManager.update_trades` accepts `candle_timestamp` and propagates it to `log_exit` and `active_trades`.
 - [ ] `AnalyticsLogger.log_exit` accepts `exit_timestamp`, retries queries, and validates $\text{exit\_timestamp} \ge \text{entry\_timestamp}$.

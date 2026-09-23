@@ -391,7 +391,7 @@ class TestDetectorScoresFeature(unittest.TestCase):
         supabase = Supabase()
         exits = _fetch_trade_exit_timestamps(supabase)
         self.assertEqual(supabase.table_name, "trade_analytics")
-        self.assertEqual(query.selected_columns, "id,exit_timestamp")
+        self.assertEqual(query.selected_columns, "id,exit_timestamp,entry_timestamp,time_metrics_excluded")
         self.assertEqual(exits["trade-1"], "2026-08-05T04:00:00+00:00")
 
 

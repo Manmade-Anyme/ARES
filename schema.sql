@@ -44,6 +44,7 @@ CREATE TABLE active_trades (
   display_id text,
   setup_type text not null,
   direction text not null,
+  entry_timestamp timestamptz not null,
   entry_price numeric not null,
   stop_loss numeric not null,
   target_1 numeric not null,
@@ -54,7 +55,10 @@ CREATE TABLE active_trades (
   exit_timestamp timestamptz,
   pnl_points_override numeric,
   added_time_ist text,
-  created_at timestamptz default now()
+  time_metrics_excluded boolean NOT NULL DEFAULT false,
+  created_at timestamptz default now(),
+  CONSTRAINT chk_active_trades_exit_chronology CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp),
+  CONSTRAINT chk_active_trades_closed_requires_exit CHECK (state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
 );
 
 -- Note: If you encounter RLS errors (Code 42501), run these in the Supabase SQL Editor:
@@ -87,7 +91,10 @@ CREATE TABLE trade_analytics (
   market_context jsonb, -- { "reasons": [...], "spot_at_signal": 24500, "confidence": "HIGH", "options_sizing": { "suggested_lots": 1, "option_sl": 70.0, "option_target": 115.0, ... } }
   oi_data jsonb,        -- { "pcr": 0.8, "atm_ce_oi": 1200000, "atm_pe_oi": 1500000, "oi_change_pct": 5.2 }
   
-  created_at timestamptz DEFAULT now()
+  time_metrics_excluded boolean NOT NULL DEFAULT false,
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT chk_trade_analytics_exit_chronology CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp),
+  CONSTRAINT chk_trade_analytics_closed_requires_exit CHECK (result_state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
 );
 
 -- Index for temporal analysis

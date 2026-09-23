@@ -1,3 +1,11 @@
+def _check_log_exit(m, *a, **k):
+    from unittest.mock import ANY
+    k.setdefault('exit_timestamp', ANY)
+    m.assert_called_with(*a, **k)
+
+def _check_log_exit_once(m, *a, **k):
+    assert m.call_count == 1
+    _check_log_exit(m, *a, **k)
 import unittest
 from unittest.mock import MagicMock, patch
 import sys
@@ -271,7 +279,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             await _flush_trade_writes(pm)
             self.assertEqual(trade["state"], "CLOSED")
             mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
-            mock_log_exit.assert_called_with(
+            _check_log_exit(mock_log_exit, 
                 "trade-bullish", 24000.0, "STOPPED_OUT_AT_BE",
                 pnl_points_override=50.0,
             )
@@ -311,7 +319,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             await _flush_trade_writes(pm)
             self.assertEqual(trade["state"], "CLOSED")
             mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
-            mock_log_exit.assert_called_with(
+            _check_log_exit(mock_log_exit, 
                 "trade-bearish", 24000.0, "STOPPED_OUT_AT_BE",
                 pnl_points_override=50.0,
             )
@@ -366,7 +374,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(trade["state"], "CLOSED")
             self.assertIn(("trade-old-bull", "SL_HIT"), events)
             mock_send_trade_update.assert_called_with(trade, 23975.0, "SL_HIT")
-            mock_log_exit.assert_called_once_with("trade-old-bull", 23975.0, "SL_HIT")
+            _check_log_exit_once(mock_log_exit, "trade-old-bull", 23975.0, "SL_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -401,7 +409,7 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(trade["state"], "CLOSED")
             self.assertIn(("trade-old-bear", "SL_HIT"), events)
             mock_send_trade_update.assert_called_with(trade, 24025.0, "SL_HIT")
-            mock_log_exit.assert_called_once_with("trade-old-bear", 24025.0, "SL_HIT")
+            _check_log_exit_once(mock_log_exit, "trade-old-bear", 24025.0, "SL_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -560,7 +568,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trade["state"], "CLOSED")
         self.assertIn(("trade-intrabar", "SL_HIT"), events)
         mock_alert.assert_called_with(trade, 23975.0, "SL_HIT")
-        mock_log_exit.assert_called_with("trade-intrabar", 23975.0, "SL_HIT")
+        _check_log_exit(mock_log_exit, "trade-intrabar", 23975.0, "SL_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -591,7 +599,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(trade["state"], "CLOSED")
         self.assertIn(("trade-intrabar", "T2_HIT"), events)
-        mock_log_exit.assert_called_with("trade-intrabar", 24100.0, "T2_HIT")
+        _check_log_exit(mock_log_exit, "trade-intrabar", 24100.0, "T2_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -613,7 +621,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(trade["state"], "CLOSED")
         self.assertIn(("trade-intrabar", "T2_HIT"), events)
-        mock_log_exit.assert_called_with("trade-intrabar", 24130.0, "T2_HIT")
+        _check_log_exit(mock_log_exit, "trade-intrabar", 24130.0, "T2_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -628,7 +636,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(trade["state"], "CLOSED")
         # Exit recorded at T2 (24100), not the poll close (24120)
-        mock_log_exit.assert_called_with("trade-intrabar", 24100.0, "T2_HIT")
+        _check_log_exit(mock_log_exit, "trade-intrabar", 24100.0, "T2_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -646,7 +654,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(trade["state"], "CLOSED")
         self.assertIn(("trade-intrabar", "SL_HIT"), events)
-        mock_log_exit.assert_called_with("trade-intrabar", 24025.0, "SL_HIT")
+        _check_log_exit(mock_log_exit, "trade-intrabar", 24025.0, "SL_HIT")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')

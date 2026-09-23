@@ -388,7 +388,7 @@ async def run():
             # intrabar SL/target detection (TASK-172, audit item 11).
             try:
                 trade_events = await position_manager.update_trades(
-                    spot, candle_high=candle.high, candle_low=candle.low
+                    spot, candle_high=candle.high, candle_low=candle.low, candle_timestamp=candle.timestamp
                 )
                 # A stop-out frees the engine cooldown so the next setup can be
                 # taken immediately instead of waiting out the timer.

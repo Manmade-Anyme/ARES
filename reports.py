@@ -86,13 +86,24 @@ def fetch_closed_trades(supabase: Any, start_utc: str, end_utc: str) -> list[dic
     """
     response = (
         supabase.table("trade_analytics")
-        .select("setup_type, direction, pnl_points, result_state, market_context")
+        .select("setup_type, direction, pnl_points, result_state, market_context, entry_timestamp, exit_timestamp")
+        .eq("time_metrics_excluded", False)
         .gte("exit_timestamp", start_utc)
         .lte("exit_timestamp", end_utc)
         .execute()
     )
     rows = getattr(response, "data", None) or []
-    return [r for r in rows if r.get("pnl_points") is not None]
+    
+    valid_rows = []
+    for r in rows:
+        if r.get("pnl_points") is None:
+            continue
+        entry = r.get("entry_timestamp")
+        exit_ts = r.get("exit_timestamp")
+        if entry and exit_ts and exit_ts < entry:
+            continue
+        valid_rows.append(r)
+    return valid_rows
 
 
 def _option_rupees(trade: dict) -> float:
