@@ -117,6 +117,7 @@ class MLCollector:
         trade_id: Optional[str] = None,
         trade_binding_status: Optional[str] = None,
     ):
+        trade_id = trade_id or None
         candle_dict = self._candle_to_dict(candle)
         atm_ce_dict = self._option_row_to_dict(atm.ce)
         atm_pe_dict = self._option_row_to_dict(atm.pe)
