@@ -24,12 +24,25 @@ ALTER TABLE active_trades ADD COLUMN IF NOT EXISTS signal_uuid uuid;
 ALTER TABLE active_trades ADD COLUMN IF NOT EXISTS display_id text;
 ALTER TABLE trade_analytics ADD COLUMN IF NOT EXISTS signal_uuid uuid;
 
-ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS signal_uuid uuid;
-ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS signal_display_id text;
-ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS trade_binding_status text;
-ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS snapshot_uuid uuid;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ml_collection_snapshot_uuid
-  ON ml_collection (snapshot_uuid);
+-- ML tables are optional. Upgrade them when installed without preventing the
+-- core bridge RPC from being installed on deployments that disable ML.
+DO $$
+BEGIN
+  IF to_regclass('public.ml_collection') IS NOT NULL THEN
+    ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS signal_uuid uuid;
+    ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS signal_display_id text;
+    ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS trade_binding_status text;
+    ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS snapshot_uuid uuid;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ml_collection_snapshot_uuid
+      ON ml_collection (snapshot_uuid);
+  END IF;
+
+  IF to_regclass('public.ml_predictions') IS NOT NULL THEN
+    ALTER TABLE ml_predictions ADD COLUMN IF NOT EXISTS signal_uuid uuid;
+    ALTER TABLE ml_predictions ADD COLUMN IF NOT EXISTS signal_display_id text;
+  END IF;
+END;
+$$;
 
 DO $$
 BEGIN
@@ -41,7 +54,8 @@ BEGIN
     ALTER TABLE trade_analytics ADD CONSTRAINT fk_trade_analytics_signal_uuid
       FOREIGN KEY (signal_uuid) REFERENCES ares_signals(signal_uuid) NOT VALID;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_ml_collection_signal_uuid') THEN
+  IF to_regclass('public.ml_collection') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_ml_collection_signal_uuid') THEN
     ALTER TABLE ml_collection ADD CONSTRAINT fk_ml_collection_signal_uuid
       FOREIGN KEY (signal_uuid) REFERENCES ares_signals(signal_uuid) NOT VALID;
   END IF;

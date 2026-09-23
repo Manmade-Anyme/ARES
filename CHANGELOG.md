@@ -6,6 +6,10 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Optional ML bridge migration and prediction joins (MANM-150)**: Keep the
+  canonical UUID bridge migration deployable when optional ML tables are absent,
+  upgrade installed prediction tables additively, and persist event-consumer
+  prediction UUIDs according to the active bridge/greenfield schema mode.
 - **Terminal write ordering and startup reconciliation (MANM-151)**: Sequence terminal active-trade persistence before dispatching analytics exit logging back to the event loop, preserving entry-future synchronization and continuing analytics logging when active-state writes fail. Filter active rows whose analytics record is already closed so a restart cannot reload a desynced trade for a duplicate exit.
 - **Dry-run terminal label projection (MANM-151)**: Carry phase 0a's reconstructed terminal trades through phase 4 so dry-run output includes prospective ML label writes while preserving the no-database-writes guarantee.
 - **Startup and dry-run reconciliation (MANM-151)**: Isolated best-effort ML reconciliation from active-trade loading so table failures no longer disable live monitoring. Dry-run backfill now carries reconstructed analytics into join-key repair, matching apply-mode previews without writes or false rewrite warnings.

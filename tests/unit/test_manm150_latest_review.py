@@ -169,7 +169,7 @@ class TestPresentationIdentity(unittest.IsolatedAsyncioTestCase):
         }])
         consumer.log_prediction = AsyncMock()
 
-        with patch(
+        with patch("ml_signal.signal_consumer.settings.signal_schema_mode", "greenfield"), patch(
             "ml_signal.signal_consumer.asyncio.sleep",
             new=AsyncMock(side_effect=asyncio.CancelledError),
         ), self.assertRaises(asyncio.CancelledError):
@@ -178,4 +178,35 @@ class TestPresentationIdentity(unittest.IsolatedAsyncioTestCase):
         prediction = consumer.log_prediction.call_args.args[0]
         self.assertEqual(prediction["signal_id"], "canonical-uuid")
         self.assertEqual(prediction["signal_display_id"], "4829")
+        self.assertEqual(send_alert.call_args.kwargs["signal_id"], "4829")
+
+    @patch("ml_signal.signal_consumer.send_prediction_alert", new_callable=AsyncMock)
+    async def test_event_consumer_persists_bridge_canonical_uuid(self, send_alert):
+        consumer = SignalConsumer()
+        consumer._init_supabase = MagicMock()
+        consumer.predictor.load_model = MagicMock()
+        consumer.predictor.predict_from_raw = MagicMock(return_value={
+            "probability": 0.75, "confidence_tier": "HIGH",
+        })
+        consumer.fetch_new_signals = AsyncMock(return_value=[{
+            "id": 321,
+            "signal_uuid": "canonical-uuid",
+            "display_id": "4829",
+            "setup_type": "OI_WALL_REJECTION",
+            "market_context": {},
+            "spot_at_signal": 24000.0,
+            "timestamp": datetime.now(),
+        }])
+        consumer.log_prediction = AsyncMock()
+
+        with patch("ml_signal.signal_consumer.settings.signal_schema_mode", "bridge"), patch(
+            "ml_signal.signal_consumer.asyncio.sleep",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ), self.assertRaises(asyncio.CancelledError):
+            await consumer.run("https://example.test", "key")
+
+        prediction = consumer.log_prediction.call_args.args[0]
+        self.assertEqual(prediction["signal_id"], "321")
+        self.assertEqual(prediction["signal_uuid"], "canonical-uuid")
+        self.assertEqual(consumer._processed_ids, {"canonical-uuid"})
         self.assertEqual(send_alert.call_args.kwargs["signal_id"], "4829")

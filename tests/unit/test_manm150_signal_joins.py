@@ -289,6 +289,22 @@ class TestMLSnapshotOrdering(unittest.IsolatedAsyncioTestCase):
 
 
 class TestCutoverMigration(unittest.TestCase):
+    def test_bridge_migration_keeps_optional_ml_tables_optional(self):
+        sql = Path(
+            "migrations/2026-09-12-task150-canonical-signal-uuid.sql"
+        ).read_text()
+
+        self.assertIn("to_regclass('public.ml_collection') IS NOT NULL", sql)
+        self.assertIn("to_regclass('public.ml_predictions') IS NOT NULL", sql)
+        self.assertIn(
+            "ALTER TABLE ml_predictions ADD COLUMN IF NOT EXISTS signal_uuid uuid",
+            sql,
+        )
+        self.assertLess(
+            sql.index("to_regclass('public.ml_collection') IS NOT NULL"),
+            sql.index("CREATE OR REPLACE FUNCTION create_trade_entry_bridge"),
+        )
+
     def test_cutover_installs_greenfield_rpc_with_conflict_validation(self):
         sql = Path("migrations/2026-09-12-task150-cutover-signal-uuid.sql").read_text()
         self.assertIn("create_trade_entry_greenfield", sql)
