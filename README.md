@@ -387,6 +387,7 @@ CREATE TABLE IF NOT EXISTS active_trades (
   signal_id text,
   setup_type text not null,
   direction text not null,
+  entry_timestamp timestamptz not null,
   entry_price numeric not null,
   stop_loss numeric not null,
   target_1 numeric not null,
@@ -397,7 +398,10 @@ CREATE TABLE IF NOT EXISTS active_trades (
   exit_timestamp timestamptz,
   pnl_points_override numeric,
   added_time_ist text,
-  created_at timestamptz default now()
+  time_metrics_excluded boolean NOT NULL DEFAULT false,
+  created_at timestamptz default now(),
+  CONSTRAINT chk_active_trades_exit_chronology CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp),
+  CONSTRAINT chk_active_trades_closed_requires_exit CHECK (state NOT IN ('CLOSED', 'STOPPED_OUT') OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
 );
 
 CREATE TABLE IF NOT EXISTS trade_analytics (
@@ -414,7 +418,10 @@ CREATE TABLE IF NOT EXISTS trade_analytics (
   score integer,
   market_context jsonb,
   oi_data jsonb,
-  created_at timestamptz DEFAULT now()
+  time_metrics_excluded boolean NOT NULL DEFAULT false,
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT chk_trade_analytics_exit_chronology CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp),
+  CONSTRAINT chk_trade_analytics_closed_requires_exit CHECK (result_state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
 );
 
 CREATE INDEX IF NOT EXISTS idx_trade_analytics_entry ON trade_analytics (entry_timestamp DESC);

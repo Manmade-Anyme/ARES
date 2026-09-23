@@ -436,7 +436,8 @@ def repair_stuck_open_trades(
         sb,
         "active_trades",
         "id,signal_id,setup_type,direction,entry_price,created_at,"
-        "exit_price,exit_type,exit_timestamp,pnl_points_override",
+        "entry_timestamp,exit_price,exit_type,exit_timestamp,pnl_points_override,"
+        "time_metrics_excluded",
     )
     
     repairs = []
@@ -476,15 +477,31 @@ def repair_stuck_open_trades(
         }
         insert_data = None
         if is_missing:
+            entry_timestamp = a.get("entry_timestamp") or a.get("created_at")
             insert_data = {
                 "id": a["id"],
                 "signal_id": a.get("signal_id"),
                 "setup_type": a["setup_type"],
                 "direction": a["direction"],
-                "entry_timestamp": a["created_at"],
+                "entry_timestamp": entry_timestamp,
                 "entry_price": float(a["entry_price"]),
                 **terminal,
             }
+            is_anomaly = bool(a.get("time_metrics_excluded"))
+            if not is_anomaly and a.get("exit_timestamp") and entry_timestamp:
+                try:
+                    if a["exit_timestamp"] < entry_timestamp:
+                        is_anomaly = True
+                except TypeError:
+                    pass
+            if is_anomaly:
+                insert_data["time_metrics_excluded"] = True
+                insert_data["market_context"] = {
+                    "anomaly": {
+                        "type": "unrecoverable_legacy_row",
+                        "note": "Rebuilt from active_trades with anomaly flag preserved."
+                    }
+                }
             missing_analytics += 1
         if not apply and prospective_trades is not None:
             prospective = dict(insert_data if insert_data is not None else t)

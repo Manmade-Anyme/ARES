@@ -6,6 +6,13 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Deferred greenfield cutover compatibility (MANM-152)**: Persist and verify the required active-trade entry timestamp when the MANM-150 cutover installs its greenfield trade-entry RPC after this migration.
+- **Report anomaly pagination (MANM-152)**: Filter excluded trades in PostgREST before response limits and paginate weekly/monthly windows so later valid trades are not omitted.
+- **Rebuilt analytics entry time (MANM-152)**: Preserve the authoritative `active_trades.entry_timestamp` when startup reconciliation recreates missing analytics, retaining `created_at` only as a legacy fallback.
+- **Desynchronized anomaly propagation (MANM-152)**: Propagate excluded terminal analytics anomalies to matching active rows even when their durable state is still `OPEN`, allowing startup reconciliation to close them without violating exit completeness constraints.
+- **Open-trade migration safety (MANM-152)**: Keep `active_trades.exit_type` null when backfilling from an `OPEN` analytics row so reconciliation does not mistake a live trade for a terminal one.
+- **Empty offline-training exclusions (MANM-152)**: Abort model training and artifact persistence when anomaly filtering removes every eligible labeled trade.
+- **Exit timestamp migration review fixes (MANM-152)**: Flag inverted legacy rows before chronology validation, persist required entry timestamps through both schema-mode RPCs, and permit intermediate `T1_HIT` active trades without terminal exit telemetry.
 - **Optional ML cutover migration (MANM-150)**: Guard the cutover lock,
   unresolved-row validation, and canonical-column promotion when
   `ml_collection` is not installed, while preserving the full safety gate on

@@ -257,6 +257,7 @@ class AnalyticsLogger:
         trade_id: str,
         exit_price: float,
         final_state: str,
+        exit_timestamp: str | None = None,
         pnl_points_override: float | None = None,
     ) -> None:
         """
@@ -287,6 +288,22 @@ class AnalyticsLogger:
                 return
 
             record = response.data[0]
+            
+            # Timestamp validation
+            if exit_timestamp:
+                try:
+                    event_ts = to_utc_iso(exit_timestamp)
+                except Exception:
+                    event_ts = exit_timestamp
+            else:
+                event_ts = datetime.now(timezone.utc).isoformat()
+                
+            entry_ts = record.get("entry_timestamp")
+            time_metrics_excluded = False
+            if entry_ts and event_ts < entry_ts:
+                print(f"AnalyticsLogger: Exit timestamp {event_ts} precedes entry {entry_ts} for {trade_id}")
+                time_metrics_excluded = True
+
             entry_price = float(record["entry_price"])
             direction = record["direction"]
 
@@ -311,12 +328,14 @@ class AnalyticsLogger:
                 score = 0
 
             update_data = {
-                "exit_timestamp": datetime.now(timezone.utc).isoformat(),
+                "exit_timestamp": event_ts,
                 "exit_price": float(exit_price),
                 "pnl_points": pnl,
                 "score": score,
                 "result_state": final_state
             }
+            if time_metrics_excluded:
+                update_data["time_metrics_excluded"] = True
 
             self.supabase.table("trade_analytics").update(update_data).eq("id", trade_id).execute()
 
