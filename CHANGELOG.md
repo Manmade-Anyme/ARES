@@ -6,6 +6,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Deferred greenfield cutover compatibility (MANM-152)**: Persist and verify the required active-trade entry timestamp when the MANM-150 cutover installs its greenfield trade-entry RPC after this migration.
 - **Report anomaly pagination (MANM-152)**: Filter excluded trades in PostgREST before response limits and paginate weekly/monthly windows so later valid trades are not omitted.
 - **Rebuilt analytics entry time (MANM-152)**: Preserve the authoritative `active_trades.entry_timestamp` when startup reconciliation recreates missing analytics, retaining `created_at` only as a legacy fallback.
 - **Desynchronized anomaly propagation (MANM-152)**: Propagate excluded terminal analytics anomalies to matching active rows even when their durable state is still `OPEN`, allowing startup reconciliation to close them without violating exit completeness constraints.

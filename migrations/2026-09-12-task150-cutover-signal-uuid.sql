@@ -104,11 +104,12 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   INSERT INTO active_trades (
-    id, signal_id, display_id, setup_type, direction, entry_price,
+    id, signal_id, display_id, setup_type, direction, entry_timestamp, entry_price,
     stop_loss, target_1, target_2, state, added_time_ist
   ) VALUES (
     p_trade_id, p_signal_uuid, p_display_id, p_setup_type, p_direction,
-    p_entry_price, p_stop_loss, p_target_1, p_target_2, 'OPEN', p_added_time_ist
+    p_entry_timestamp, p_entry_price, p_stop_loss, p_target_1, p_target_2,
+    'OPEN', p_added_time_ist
   ) ON CONFLICT (id) DO NOTHING;
 
   INSERT INTO trade_analytics (
@@ -126,6 +127,7 @@ BEGIN
       AND display_id IS NOT DISTINCT FROM p_display_id
       AND setup_type IS NOT DISTINCT FROM p_setup_type
       AND direction IS NOT DISTINCT FROM p_direction
+      AND entry_timestamp IS NOT DISTINCT FROM p_entry_timestamp
       AND entry_price IS NOT DISTINCT FROM p_entry_price
       AND stop_loss IS NOT DISTINCT FROM p_stop_loss
       AND target_1 IS NOT DISTINCT FROM p_target_1

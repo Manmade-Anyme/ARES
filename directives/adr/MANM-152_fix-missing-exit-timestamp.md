@@ -316,6 +316,9 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
     - Backfill `active_trades` from `trade_analytics` by UUID, with an explicit `created_at` fallback for rows without an analytics counterpart; fail or archive any row that still cannot be anchored.
     - Update unrecoverable trades in both tables, setting `time_metrics_excluded = true` and recording anomaly context in `market_context`.
     - Redefine the installed bridge or greenfield trade-entry RPC so its active-trade insert and idempotency verification persist `p_entry_timestamp`.
+    - Update the deferred MANM-150 greenfield cutover migration as well, so a
+      deployment that applies MANM-152 in bridge mode later installs the same
+      timestamp-aware RPC during cutover.
    - Add CHECK constraints:
        - `chk_trade_analytics_exit_chronology`: `time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp`.
      - `chk_trade_analytics_closed_requires_exit`: `result_state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true`.
