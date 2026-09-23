@@ -26,3 +26,12 @@ def test_active_completeness_constraint_only_targets_terminal_states():
     )
     assert expected in MIGRATION
     assert "CHECK (state = 'OPEN' OR exit_timestamp IS NOT NULL" not in MIGRATION
+
+
+def test_active_exit_type_backfill_does_not_mark_open_trades_terminal():
+    terminal_states = (
+        "'CLOSED', 'T2_HIT', 'SL_HIT', 'STOPPED_OUT',\n"
+        "                'STOPPED_OUT_AT_BE'"
+    )
+    assert f"analytics.result_state IN (\n                {terminal_states}" in MIGRATION
+    assert "coalesce(active.exit_type, analytics.result_state)" not in MIGRATION

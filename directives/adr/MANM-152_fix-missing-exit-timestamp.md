@@ -127,7 +127,12 @@ Create migration `migrations/2026-09-23-task152-exit-timestamp-validation-and-fl
    SET entry_timestamp = analytics.entry_timestamp,
        exit_timestamp = analytics.exit_timestamp,
        exit_price = analytics.exit_price,
-       exit_type = analytics.result_state
+       exit_type = CASE
+           WHEN analytics.result_state IN (
+               'CLOSED', 'T2_HIT', 'SL_HIT', 'STOPPED_OUT',
+               'STOPPED_OUT_AT_BE'
+           ) THEN analytics.result_state
+       END
    FROM trade_analytics AS analytics
    WHERE active.id = analytics.id;
 
@@ -137,6 +142,11 @@ Create migration `migrations/2026-09-23-task152-exit-timestamp-validation-and-fl
    SET entry_timestamp = created_at
    WHERE entry_timestamp IS NULL;
    ```
+
+   Open and intermediate analytics rows must leave `active_trades.exit_type`
+   null. Reconciliation treats any non-null exit type as terminal and requires
+   the corresponding exit price, so copying a nonterminal state would make a
+   valid active trade unrecoverable.
 
    The implementation task must verify that no `active_trades` row remains without `entry_timestamp` before applying `SET NOT NULL`. If the deployment contains rows that cannot be matched or anchored, archive them or stop the migration with an explicit diagnostic rather than adding a constraint that cannot validate.
 

@@ -19,7 +19,15 @@ UPDATE active_trades AS active
 SET entry_timestamp = coalesce(active.entry_timestamp, analytics.entry_timestamp),
     exit_timestamp = coalesce(active.exit_timestamp, analytics.exit_timestamp),
     exit_price = coalesce(active.exit_price, analytics.exit_price),
-    exit_type = coalesce(active.exit_type, analytics.result_state)
+    exit_type = coalesce(
+        active.exit_type,
+        CASE
+            WHEN analytics.result_state IN (
+                'CLOSED', 'T2_HIT', 'SL_HIT', 'STOPPED_OUT',
+                'STOPPED_OUT_AT_BE'
+            ) THEN analytics.result_state
+        END
+    )
 FROM trade_analytics AS analytics
 WHERE active.id = analytics.id;
 
