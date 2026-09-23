@@ -58,7 +58,7 @@ CREATE TABLE active_trades (
   time_metrics_excluded boolean NOT NULL DEFAULT false,
   created_at timestamptz default now(),
   CONSTRAINT chk_active_trades_exit_chronology CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp),
-  CONSTRAINT chk_active_trades_closed_requires_exit CHECK (state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
+  CONSTRAINT chk_active_trades_closed_requires_exit CHECK (state NOT IN ('CLOSED', 'STOPPED_OUT') OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
 );
 
 -- Note: If you encounter RLS errors (Code 42501), run these in the Supabase SQL Editor:
@@ -121,11 +121,11 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   INSERT INTO active_trades (
-    id, signal_id, signal_uuid, display_id, setup_type, direction, entry_price,
+    id, signal_id, signal_uuid, display_id, setup_type, direction, entry_timestamp, entry_price,
     stop_loss, target_1, target_2, state, added_time_ist
   ) VALUES (
     p_trade_id, p_legacy_signal_id::text, p_signal_uuid, p_display_id,
-    p_setup_type, p_direction, p_entry_price,
+    p_setup_type, p_direction, p_entry_timestamp, p_entry_price,
     p_stop_loss, p_target_1, p_target_2, 'OPEN', p_added_time_ist
   ) ON CONFLICT (id) DO NOTHING;
 
@@ -145,6 +145,7 @@ BEGIN
       AND display_id IS NOT DISTINCT FROM p_display_id
       AND setup_type IS NOT DISTINCT FROM p_setup_type
       AND direction IS NOT DISTINCT FROM p_direction
+      AND entry_timestamp IS NOT DISTINCT FROM p_entry_timestamp
       AND entry_price IS NOT DISTINCT FROM p_entry_price
       AND stop_loss IS NOT DISTINCT FROM p_stop_loss
       AND target_1 IS NOT DISTINCT FROM p_target_1

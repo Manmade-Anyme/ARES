@@ -102,7 +102,7 @@ flowchart TD
 To guarantee 100% data integrity, eliminate inverted durations, and enforce strict trade finalization invariants across all components:
 
 ### 3.1 Database Migration & Anomaly Flagging
-Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-flagging.sql`. The migration must be ordered as **add nullable columns, backfill/repair legacy rows, then add constraints**, because PostgreSQL validates existing rows when a constraint is added:
+Create migration `migrations/2026-09-23-task152-exit-timestamp-validation-and-flagging.sql`. The migration must be ordered as **add nullable columns, backfill/repair legacy rows, then add constraints**, because PostgreSQL validates existing rows when a constraint is added:
 
 1. **Add Flagging Column to `trade_analytics`**:
    ```sql
@@ -140,7 +140,7 @@ Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-fl
 
    The implementation task must verify that no `active_trades` row remains without `entry_timestamp` before applying `SET NOT NULL`. If the deployment contains rows that cannot be matched or anchored, archive them or stop the migration with an explicit diagnostic rather than adding a constraint that cannot validate.
 
-4. **Flag and isolate any unrecoverable trades (where exit_timestamp is missing) before chronology checks**:
+4. **Flag and isolate terminal trades with missing timestamps and trades with inverted timestamps before chronology checks**:
    ```sql
    UPDATE trade_analytics
    SET time_metrics_excluded = true,
@@ -149,11 +149,13 @@ Create migration `migrations/2026-09-12-task152-exit-timestamp-validation-and-fl
            '{anomaly}',
            '{"flag": "INVALID_NEGATIVE_DURATION", "reason": "Leaked synthetic test fixture with exit preceding entry", "investigation": "MANM-152"}'::jsonb
        )
-   WHERE exit_timestamp IS NULL AND result_state != 'OPEN';
+   WHERE (exit_timestamp IS NULL AND result_state != 'OPEN')
+      OR (exit_timestamp IS NOT NULL AND exit_timestamp < entry_timestamp);
 
    UPDATE active_trades
    SET time_metrics_excluded = true
-   WHERE exit_timestamp IS NULL AND result_state != 'OPEN';
+   WHERE (exit_timestamp IS NULL AND state IN ('CLOSED', 'STOPPED_OUT'))
+      OR (exit_timestamp IS NOT NULL AND exit_timestamp < entry_timestamp);
    ```
 
    This row is intentionally retained for auditability. It is explicitly exempted from time-based validation; its inverted timestamps are not silently treated as valid data.
@@ -286,11 +288,12 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
 
 ### Task Breakdown for Code Generator
 
-1. **`migrations/2026-09-12-task152-exit-timestamp-validation-and-flagging.sql`**:
+1. **`migrations/2026-09-23-task152-exit-timestamp-validation-and-flagging.sql`**:
    - Add `time_metrics_excluded boolean DEFAULT false` to `trade_analytics`.
     - Add `entry_timestamp`, `exit_timestamp`, `exit_price`, `exit_type`, and `time_metrics_excluded` to `active_trades`.
     - Backfill `active_trades` from `trade_analytics` by UUID, with an explicit `created_at` fallback for rows without an analytics counterpart; fail or archive any row that still cannot be anchored.
     - Update unrecoverable trades in both tables, setting `time_metrics_excluded = true` and recording anomaly context in `market_context`.
+    - Redefine the installed bridge or greenfield trade-entry RPC so its active-trade insert and idempotency verification persist `p_entry_timestamp`.
    - Add CHECK constraints:
        - `chk_trade_analytics_exit_chronology`: `time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp`.
      - `chk_trade_analytics_closed_requires_exit`: `result_state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true`.
