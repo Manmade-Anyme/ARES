@@ -122,9 +122,9 @@ async def test_position_manager_passes_candle_timestamp():
 def test_reports_excludes_flagged_records():
     mock_supabase = MagicMock()
     # Mock data returned by DB
-    mock_supabase.table().select().eq().gte().lte().execute.return_value = MagicMock(data=[
-        {"pnl_points": 10, "entry_timestamp": "2026-09-01T10:00:00+00:00", "exit_timestamp": "2026-09-01T10:05:00+00:00"},
-        {"pnl_points": 20, "entry_timestamp": "2026-09-01T10:00:00+00:00", "exit_timestamp": "2026-09-01T09:55:00+00:00"}
+    mock_supabase.table().select().gte().lte().execute.return_value = MagicMock(data=[
+        {"pnl_points": 10, "entry_timestamp": "2026-09-01T10:00:00+00:00", "exit_timestamp": "2026-09-01T10:05:00+00:00", "time_metrics_excluded": False},
+        {"pnl_points": 20, "entry_timestamp": "2026-09-01T10:00:00+00:00", "exit_timestamp": "2026-09-01T09:55:00+00:00", "time_metrics_excluded": True}
     ])
     
     trades = fetch_closed_trades(mock_supabase, "2026-09-01T00:00:00+00:00", "2026-09-02T00:00:00+00:00")

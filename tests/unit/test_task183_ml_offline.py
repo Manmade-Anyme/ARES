@@ -907,3 +907,23 @@ class TestOfflineExclusions(unittest.TestCase):
         })
         model, metrics = run_training(df, ["f1", "f2"], min_samples=1)
         self.assertEqual(metrics["n_samples"], 90)
+
+class TestBuildRealOutcomeFrame(unittest.TestCase):
+    def test_metadata_columns_preserved(self):
+        from ml_signal.dataset import build_real_outcome_frame
+        rows = [
+            {
+                "timestamp": "2026-07-08T09:15:00+00:00",
+                "trade_outcome": "win",
+                "trade_pnl": 15.0,
+                "exit_timestamp": "2026-07-08T09:20:00+00:00",
+                "entry_timestamp": "2026-07-08T09:15:00+00:00",
+                "time_metrics_excluded": True,
+            }
+        ]
+        with patch("ml_signal.labeling.classify_ares_outcome", return_value=1):
+            df = build_real_outcome_frame(rows)
+        self.assertIn("time_metrics_excluded", df.columns)
+        self.assertIn("entry_timestamp", df.columns)
+        self.assertTrue(df.iloc[0]["time_metrics_excluded"])
+        self.assertEqual(df.iloc[0]["entry_timestamp"], "2026-07-08T09:15:00+00:00")

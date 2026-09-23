@@ -86,8 +86,7 @@ def fetch_closed_trades(supabase: Any, start_utc: str, end_utc: str) -> list[dic
     """
     response = (
         supabase.table("trade_analytics")
-        .select("setup_type, direction, pnl_points, result_state, market_context, entry_timestamp, exit_timestamp")
-        .eq("time_metrics_excluded", False)
+        .select("setup_type, direction, pnl_points, result_state, market_context, entry_timestamp, exit_timestamp, time_metrics_excluded")
         .gte("exit_timestamp", start_utc)
         .lte("exit_timestamp", end_utc)
         .execute()
@@ -96,6 +95,8 @@ def fetch_closed_trades(supabase: Any, start_utc: str, end_utc: str) -> list[dic
     
     valid_rows = []
     for r in rows:
+        if r.get("time_metrics_excluded") is True:
+            continue
         if r.get("pnl_points") is None:
             continue
         entry = r.get("entry_timestamp")
