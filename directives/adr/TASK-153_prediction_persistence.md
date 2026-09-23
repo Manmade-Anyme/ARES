@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS ml_predictions (
   model_version text not null,         -- e.g. 'v1', 'v2', 'v2.joblib'
 
   -- Entity Linkage
-  signal_id text,                      -- Display signal ID (e.g. '0042') or UUID
+  signal_id text,                      -- Canonical AresSignal.id UUID (never display_id)
   trade_id uuid,                       -- Links to active_trades.id / trade_analytics.id when executed
   
   -- Market Context
@@ -294,7 +294,9 @@ def sanitize_feature_snapshot(features: Dict[str, Any]) -> Dict[str, Any]:
 
 ### Entity Linkage Lifecycle (`signal_id` & `trade_id`)
 To prevent race conditions between trade entry and prediction logging:
-1. When a signal is generated, `signal.signal_id` is created (e.g. 4-digit display code or canonical identifier).
+1. When a signal is generated, `signal.id` is created as the canonical UUID. The deprecated
+   `signal.signal_id` property returns the collision-prone four-digit `signal.display_id` and
+   must never be used for persistence or joins.
 2. `PositionManager.add_trade` creates `trade_id = str(uuid.uuid4())`.
 3. `PositionManager.add_trade` must store `trade_id` directly onto `signal.trade_id`.
    - Update `models.AresSignal`: add `trade_id: Optional[str] = None`.
@@ -349,7 +351,8 @@ class PredictionLogger:
 @dataclass
 class AresSignal:
     ...
-    signal_id: str = field(default_factory=lambda: f"{random.randint(0, 9999):04d}")
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Canonical persistence/join key
+    display_id: str = field(default_factory=lambda: f"{random.randint(0, 9999):04d}")
     db_id: Optional[int] = None
     trade_id: Optional[str] = None  # UUID populated if a trade is executed by PositionManager
     ...
@@ -394,7 +397,8 @@ if ml_predictor and getattr(signal, "ml_prediction", None):
             model_version=signal.ml_prediction["model_version"],
             spot=spot,
             feature_snapshot=signal.ml_prediction.get("features", {}),
-            signal_id=getattr(signal, "signal_id", None),
+            # Persist the canonical UUID. display_id is presentation-only and may collide.
+            signal_id=getattr(signal, "id", None),
             trade_id=getattr(signal, "trade_id", None),
             source="event_triggered",
             timestamp=now,
