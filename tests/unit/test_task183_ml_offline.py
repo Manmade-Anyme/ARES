@@ -13,7 +13,6 @@ import tempfile
 import types
 import builtins
 from contextlib import redirect_stdout
-from datetime import datetime
 from unittest.mock import mock_open, patch
 
 import numpy as np
@@ -186,7 +185,6 @@ class TestChronologicalSplit(unittest.TestCase):
 class TestRunTrainingSmallDataGuard(unittest.TestCase):
     def test_tiny_dataset_does_not_crash(self):
         # a handful of separable rows; run_training must complete and return metrics
-        import numpy as np
         rng = list(range(40))
         df = pd.DataFrame({
             "timestamp": pd.to_datetime([f"2026-07-08T09:{i:02d}:00" for i in rng]),
@@ -319,7 +317,6 @@ class TestDetectorScoresFeature(unittest.TestCase):
         df = flatten_features([row_with, row_without])
 
         self.assertIn("detector_scores__failed_breakout", df.columns)
-        import numpy as np
         self.assertTrue(pd.isna(df.iloc[1]["detector_scores__failed_breakout"]),
                         "Pre-migration rows must have NaN, not 0.0")
 

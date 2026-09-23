@@ -2,7 +2,6 @@ import math
 from typing import Dict, List, Optional, Any
 
 import numpy as np
-import pandas as pd
 
 
 def compute_candle_features(candle: Dict[str, float]) -> Dict[str, float]:

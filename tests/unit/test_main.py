@@ -41,6 +41,21 @@ class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(insert_finished.done())
         insert_finished.cancel()
 
+    async def test_record_ml_snapshot_catches_exception(self):
+        # 1. Sync exception from snapshot() call
+        collector = MagicMock()
+        collector.snapshot = MagicMock(side_effect=Exception("sync error"))
+        with patch("builtins.print") as mock_print:
+            await main._record_ml_snapshot(collector, object(), spot=24000.0)
+            mock_print.assert_called_with("[-] _record_ml_snapshot failed: sync error")
+
+        # 2. Async exception from awaiting insert_coro
+        collector = MagicMock()
+        collector.snapshot.return_value = AsyncMock(side_effect=Exception("async error"))()
+        with patch("builtins.print") as mock_print:
+            await main._record_ml_snapshot(collector, object(), spot=24000.0)
+            mock_print.assert_called_with("[-] _record_ml_snapshot failed: async error")
+
     async def test_inactive_feed_sleeps_once_for_full_duration(self):
         tick_feed = MagicMock()
         tick_feed.is_active = False

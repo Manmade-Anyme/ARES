@@ -15,10 +15,15 @@ from typing import Optional, Set
 
 from supabase import create_client, Client
 
+from config import settings
 from .config import MLConfig, DEFAULT_CONFIG
 from .predictor import SignalPredictor
-from .features import build_feature_vector
 from .discord import send_prediction_alert
+
+
+def _display_id_for_alert(signal: dict) -> str:
+    """Return presentation identity without weakening canonical-key handling."""
+    return str(signal.get("display_id") or signal.get("id", ""))
 
 
 class SignalConsumer:
@@ -78,11 +83,19 @@ class SignalConsumer:
                 signals = await self.fetch_new_signals()
 
                 for signal in signals:
-                    signal_id = str(signal.get("id", ""))
-                    if signal_id in self._processed_ids:
+                    if settings.signal_schema_mode == "bridge":
+                        canonical_signal_id = str(
+                            signal.get("signal_uuid") or signal.get("id", "")
+                        )
+                        persisted_signal_id = str(signal.get("id", ""))
+                    else:
+                        canonical_signal_id = str(signal.get("id", ""))
+                        persisted_signal_id = canonical_signal_id
+                    signal_display_id = _display_id_for_alert(signal)
+                    if canonical_signal_id in self._processed_ids:
                         continue
 
-                    self._processed_ids.add(signal_id)
+                    self._processed_ids.add(canonical_signal_id)
 
                     features = signal.get("market_context", {})
                     spot = float(signal.get("spot_at_signal", signal.get("trigger_price", 0)))
@@ -115,7 +128,10 @@ class SignalConsumer:
                     )
 
                     result["source"] = "event_triggered"
-                    result["signal_id"] = signal_id
+                    result["signal_id"] = persisted_signal_id
+                    if settings.signal_schema_mode == "bridge":
+                        result["signal_uuid"] = canonical_signal_id
+                    result["signal_display_id"] = signal_display_id
                     result["signal_setup_type"] = signal.get("setup_type", "")
                     result["spot"] = spot
 
@@ -130,11 +146,11 @@ class SignalConsumer:
                         confidence_tier=tier,
                         spot=spot,
                         source="event_triggered",
-                        signal_id=signal_id,
+                        signal_id=signal_display_id,
                         signal_setup_type=signal.get("setup_type", ""),
                     )
 
-                    print(f"[ML Consumer] Signal #{signal_id} ({signal.get('setup_type', '?')}) "
+                    print(f"[ML Consumer] Signal #{signal_display_id} ({signal.get('setup_type', '?')}) "
                           f"→ Prob(T1)={proba:.2%}")
 
             except Exception as e:

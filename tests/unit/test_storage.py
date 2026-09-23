@@ -4,6 +4,7 @@ import asyncio
 import sys
 import importlib
 from datetime import datetime
+from types import SimpleNamespace
 from models import AresSignal, SetupType, Direction
 
 class MockSupabaseClient:
@@ -43,9 +44,9 @@ mock_create_patch.start()
 if 'storage' in sys.modules:
     importlib.reload(sys.modules['storage'])
 else:
-    import storage
+    pass
 
-from storage import Storage, AnalyticsLogger, load_dhan_credentials_from_supabase
+from storage import Storage, AnalyticsLogger, load_dhan_credentials_from_supabase  # noqa: E402
 
 class TestStorage(unittest.IsolatedAsyncioTestCase):
 
@@ -60,6 +61,15 @@ class TestStorage(unittest.IsolatedAsyncioTestCase):
         self.mock_client.execute_mock.side_effect = None
         self.mock_client.execute_mock.return_value.data = []
         self.mock_client.last_table = None
+
+        def persisted_insert(payload):
+            row = dict(payload)
+            row.setdefault("id", 321)
+            return SimpleNamespace(
+                execute=lambda: SimpleNamespace(data=[row])
+            )
+
+        self.mock_client.insert_mock.side_effect = persisted_insert
 
         self.storage = Storage()
         self.analytics = AnalyticsLogger()
@@ -88,7 +98,7 @@ class TestStorage(unittest.IsolatedAsyncioTestCase):
         signal.option_premium = 15.0
         signal.option_delta = 0.5
 
-        await self.storage.log_signal(signal, 24001.0)
+        self.assertTrue(await self.storage.log_signal(signal, 24001.0))
         self.assertEqual(self.mock_client.last_table, "ares_signals")
         self.mock_client.insert_mock.assert_called_once()
         inserted_data = self.mock_client.insert_mock.call_args[0][0]
@@ -113,7 +123,8 @@ class TestStorage(unittest.IsolatedAsyncioTestCase):
             strike_to_trade=24000,
             option_type="CE"
         )
-        await self.storage.log_signal(signal, 24001.0)
+        with self.assertRaisesRegex(RuntimeError, "Failed to persist signal"):
+            await self.storage.log_signal(signal, 24001.0)
         self.mock_client.insert_mock.assert_called_once()
 
     @patch('config.settings')
@@ -301,6 +312,15 @@ class TestSignalIdAndTimezones(unittest.IsolatedAsyncioTestCase):
         self.mock_client.execute_mock.return_value.data = []
         self.mock_client.insert_mock.return_value.execute.return_value = MagicMock(data=[])
 
+        def persisted_insert(payload):
+            row = dict(payload)
+            row.setdefault("id", 321)
+            return SimpleNamespace(
+                execute=lambda: SimpleNamespace(data=[row])
+            )
+
+        self.mock_client.insert_mock.side_effect = persisted_insert
+
         self.storage = Storage()
         self.analytics = AnalyticsLogger()
 
@@ -331,10 +351,13 @@ class TestSignalIdAndTimezones(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inserted["timestamp"], "2026-07-02T08:42:00+00:00")
 
     async def test_log_signal_captures_inserted_db_id(self):
-        self.mock_client.insert_mock.return_value.execute.return_value = MagicMock(
-            data=[{"id": 4242}]
-        )
         signal = self._make_signal()
+        self.mock_client.insert_mock.side_effect = lambda payload: SimpleNamespace(
+            execute=lambda: SimpleNamespace(data=[{
+                **payload,
+                "id": 4242,
+            }])
+        )
         await self.storage.log_signal(signal, 24001.0)
         self.assertEqual(signal.db_id, 4242)
 
@@ -346,7 +369,8 @@ class TestSignalIdAndTimezones(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
 
         inserted = self.mock_client.insert_mock.call_args[0][0]
-        self.assertEqual(inserted["signal_id"], signal.signal_id)
+        self.assertEqual(inserted["signal_id"], signal.db_id)
+        self.assertEqual(inserted["signal_uuid"], signal.id)
         self.assertEqual(inserted["entry_timestamp"], "2026-07-02T08:42:00+00:00")
 
     async def test_log_entry_signal_id_null_when_signal_insert_failed(self):
@@ -357,7 +381,19 @@ class TestSignalIdAndTimezones(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
 
         inserted = self.mock_client.insert_mock.call_args[0][0]
-        self.assertEqual(inserted["signal_id"], signal.signal_id)
+        self.assertIsNone(inserted["signal_id"])
+        self.assertEqual(inserted["signal_uuid"], signal.id)
+
+    async def test_log_entry_uses_canonical_uuid_in_greenfield_mode(self):
+        signal = self._make_signal()
+
+        with patch("storage.settings.signal_schema_mode", "greenfield"):
+            self.analytics.log_entry("trade-greenfield", signal, 24001.0, None)
+            await asyncio.sleep(0.05)
+
+        inserted = self.mock_client.insert_mock.call_args[0][0]
+        self.assertEqual(inserted["signal_id"], signal.id)
+        self.assertNotIn("signal_uuid", inserted)
 
     async def test_aware_timestamps_pass_through_unchanged(self):
         """Already-aware timestamps are only converted to UTC, never re-labeled."""

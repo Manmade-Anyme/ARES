@@ -286,7 +286,7 @@ def repair_join_key(
     print(f"  unmatchable (left as-is) : {len(unmatched)}")
     if contended:
         print(f"  CONTENDED (left as-is)   : {len(contended)}  rows={contended[:10]}")
-        print(f"    nearest signal was already claimed — inspect before trusting these")
+        print("    nearest signal was already claimed — inspect before trusting these")
     return fixed
 
 
@@ -342,8 +342,8 @@ def backfill_labels(
     if not apply and orphans:
         # Phase 2 wrote nothing in dry run, so this still counts orphans it would
         # have recovered. Say so rather than let the figure read as final.
-        print(f"    NOTE dry run: phase 2's recoveries are not reflected above."
-              f" Under --apply this number falls and 'attributable' rises.")
+        print("    NOTE dry run: phase 2's recoveries are not reflected above."
+              " Under --apply this number falls and 'attributable' rises.")
 
     # Display IDs are intentionally reusable. Pair each trade with at most one
     # unlabelled ML snapshot, using setup and entry time when a code is reused.

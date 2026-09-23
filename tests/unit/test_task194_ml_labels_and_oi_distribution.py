@@ -90,11 +90,12 @@ def _collector():
         return MLCollector("http://supabase.invalid", "key")
 
 
-def _snapshot_record(collector, signal=None, chain=None):
+async def _snapshot_record(collector, signal=None, chain=None):
     """Run snapshot and return the record it tried to insert."""
     captured = {}
     collector._insert = lambda rec: captured.update(rec)
-    collector.snapshot(
+    collector._upsert_signal_snapshot = lambda rec: (captured.update(rec), [rec])[1]
+    await collector.snapshot(
         candle=_candle(), atm=_ATM(),
         full_chain=chain if chain is not None else [_chain_row(24000, 100, 100)],
         levels=[], spot=24002.0, signal=signal,
@@ -104,7 +105,7 @@ def _snapshot_record(collector, signal=None, chain=None):
     return captured
 
 
-class TestOIDistributionCaptured(unittest.TestCase):
+class TestOIDistributionCaptured(unittest.IsolatedAsyncioTestCase):
     """Defect 2 — the chain's shape must survive, not just its sum."""
 
     def test_max_and_p85_are_exposed(self):
@@ -159,36 +160,34 @@ class TestOIDistributionCaptured(unittest.TestCase):
         self.assertIsNone(feats["p85_ce_oi"])
         self.assertEqual(feats["strikes_with_ce_oi"], 0)
 
-    def test_distribution_survives_the_collector_end_to_end(self):
+    async def test_distribution_survives_the_collector_end_to_end(self):
         chain = [_chain_row(23800 + i * 50, (i + 1) * 1000, 500) for i in range(8)]
-        rec = _snapshot_record(_collector(), chain=chain)
+        rec = await _snapshot_record(_collector(), chain=chain)
         oi = json.loads(rec["oi_features"])
         self.assertEqual(oi["max_ce_oi"], 8000)
         self.assertEqual(oi["strikes_with_ce_oi"], 8)
 
 
-class TestSignalIdIsJoinable(unittest.TestCase):
+class TestSignalIdIsJoinable(unittest.IsolatedAsyncioTestCase):
     """Defect 1 — the key that makes labels writable at all."""
 
-    def test_snapshot_stores_db_id_not_the_random_display_id(self):
+    async def test_snapshot_stores_db_id_not_the_random_display_id(self):
         sig = _signal(db_id=271)
-        rec = _snapshot_record(_collector(), signal=sig)
-        # The bug: str(signal.signal_id) — a random 4-digit string.
-        self.assertEqual(str(rec["signal_id"]), str(sig.signal_id))
+        rec = await _snapshot_record(_collector(), signal=sig)
+        self.assertEqual(str(rec["signal_id"]), str(sig.db_id))
 
-    def test_missing_db_id_still_writes_4_digit_signal_id(self):
+    async def test_missing_db_id_writes_null_not_a_fake_key(self):
         """log_signal failed -> no row to join to. NULL is honest; a random id is not."""
-        sig = _signal(db_id=None)
-        rec = _snapshot_record(_collector(), signal=sig)
-        self.assertEqual(str(rec["signal_id"]), str(sig.signal_id))
+        rec = await _snapshot_record(_collector(), signal=_signal(db_id=None))
+        self.assertIsNone(rec["signal_id"])
 
-    def test_no_signal_still_snapshots_with_null_key(self):
-        rec = _snapshot_record(_collector(), signal=None)
+    async def test_no_signal_still_snapshots_with_null_key(self):
+        rec = await _snapshot_record(_collector(), signal=None)
         self.assertIsNone(rec["signal_id"])
         self.assertFalse(rec["signal_generated"])
 
 
-class TestStructureSentinel(unittest.TestCase):
+class TestStructureSentinel(unittest.IsolatedAsyncioTestCase):
     """Defect 3 — 'no level found' must not masquerade as a 100-point distance."""
 
     def test_absent_levels_emit_none_not_100(self):
@@ -213,7 +212,7 @@ class TestStructureSentinel(unittest.TestCase):
         self.assertIsNone(f["dist_to_nearest_support"])
 
 
-class TestLabelBackfillOnTradeClose(unittest.TestCase):
+class TestLabelBackfillOnTradeClose(unittest.IsolatedAsyncioTestCase):
     """Defect 1, second half — closing a trade must write the label columns."""
 
     def _logger(self):
@@ -342,7 +341,7 @@ class _FakeSupabase:
         return _FakeTable(self, name)
 
 
-class TestBackfillGuards(unittest.TestCase):
+class TestBackfillGuards(unittest.IsolatedAsyncioTestCase):
     """The repair script mutates production; its guards need to be real."""
 
     def _mod(self):

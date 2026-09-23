@@ -24,7 +24,7 @@ from sklearn.metrics import (
 )
 
 from .config import MLConfig, DEFAULT_CONFIG
-from .dataset import build_labeled_frame, feature_columns
+from .dataset import feature_columns
 
 
 # NOTE: ml_signal/trainer.py already has train_xgboost/evaluate_model, but it
@@ -524,7 +524,7 @@ def main() -> None:
     supabase = create_client(url, key)
 
     config = DEFAULT_CONFIG
-    print(f"[*] Reading ml_collection (read-only)...")
+    print("[*] Reading ml_collection (read-only)...")
     rows = _fetch_ml_collection(supabase)
     exit_timestamps = _fetch_trade_exit_timestamps(supabase)
     for row in rows:

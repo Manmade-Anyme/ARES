@@ -1,6 +1,5 @@
 import unittest
 from unittest.mock import MagicMock, patch
-import asyncio
 from models import AresSignal, SetupType, Direction
 from datetime import datetime
 from options_math import (

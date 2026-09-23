@@ -6,6 +6,14 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Optional ML cutover migration (MANM-150)**: Guard the cutover lock,
+  unresolved-row validation, and canonical-column promotion when
+  `ml_collection` is not installed, while preserving the full safety gate on
+  deployments that enable ML collection.
+- **Optional ML bridge migration and prediction joins (MANM-150)**: Keep the
+  canonical UUID bridge migration deployable when optional ML tables are absent,
+  upgrade installed prediction tables additively, and persist event-consumer
+  prediction UUIDs according to the active bridge/greenfield schema mode.
 - **Terminal write ordering and startup reconciliation (MANM-151)**: Sequence terminal active-trade persistence before dispatching analytics exit logging back to the event loop, preserving entry-future synchronization and continuing analytics logging when active-state writes fail. Filter active rows whose analytics record is already closed so a restart cannot reload a desynced trade for a duplicate exit.
 - **Dry-run terminal label projection (MANM-151)**: Carry phase 0a's reconstructed terminal trades through phase 4 so dry-run output includes prospective ML label writes while preserving the no-database-writes guarantee.
 - **Startup and dry-run reconciliation (MANM-151)**: Isolated best-effort ML reconciliation from active-trade loading so table failures no longer disable live monitoring. Dry-run backfill now carries reconstructed analytics into join-key repair, matching apply-mode previews without writes or false rewrite warnings.
@@ -37,6 +45,20 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **Canonical signal join regression set (MANM-150)**: Completed bridge/greenfield
+  schema-mode dispatch, verified signal and atomic trade persistence, restored
+  entry-time ATM OI context, kept routine ML snapshots off the exit-processing
+  critical path, persisted canonical signal/trade binding fields, validated
+  idempotent RPC conflicts, and retained four-digit display IDs in trade alerts.
+  Signal-bound ML retries now upsert by a stable snapshot UUID, exhausted ML
+  writes no longer suppress same-candle exit checks, and migrated/event-consumer
+  alerts fall back to presentation IDs without exposing canonical UUIDs. The
+  unfinished historical-backfill CLI now fails closed instead of reporting a
+  successful dry-run audit without executing validation queries.
+- **Signal UUID cutover guard (MANM-150)**: Block the bridge-to-greenfield
+  migration under an exclusive write lock before column renames when active
+  trades, analytics rows, or signal-bearing/trade-bound ML snapshots still
+  lack canonical signal UUIDs.
 - **OI wall rejection silenced by mid-retest wall displacement (MANM-110)**:
   `detectors/oi_wall.py` now preserves the currently tracked wall when a
   qualifying opposite-side wall appears marginally closer to spot during the

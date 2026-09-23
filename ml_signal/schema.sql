@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS ml_predictions (
 
   -- Linking (optional — populated in event-triggered mode)
   signal_id text,
+  signal_uuid uuid,
+  signal_display_id text,
+  trade_binding_status text,
   signal_setup_type text,
   trade_id uuid,
 
@@ -45,6 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_pred_confidence ON ml_predictions (confidence_
 
 CREATE TABLE IF NOT EXISTS ml_collection (
   id bigserial primary key,
+  snapshot_uuid uuid UNIQUE,
   timestamp timestamptz not null,
   spot numeric,
 
@@ -60,6 +64,9 @@ CREATE TABLE IF NOT EXISTS ml_collection (
   -- Signal reference (filled if a signal fired this cycle)
   signal_generated boolean default false,
   signal_id text,
+  signal_uuid uuid,
+  signal_display_id text,
+  trade_binding_status text,
   signal_setup_type text,
   signal_direction text,
   signal_confidence text,

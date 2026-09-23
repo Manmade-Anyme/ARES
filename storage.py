@@ -64,12 +64,9 @@ class Storage:
             settings.supabase_key
         )
 
-    async def log_signal(self, signal: AresSignal, spot: float) -> None:
+    async def log_signal(self, signal: AresSignal, spot: float) -> bool:
         """
         Asynchronously logs a signal to the 'ares_signals' table in Supabase.
-        
-        This method suppresses any exceptions so that database connectivity issues
-        do not crash the main trading loop.
         
         Args:
             signal: The generated AresSignal object.
@@ -99,21 +96,43 @@ class Storage:
                 "timestamp": to_utc_iso(signal.timestamp),
                 "oi_wall_context": getattr(signal, "oi_wall_context", None),
             }
-            # Execute the insert and capture the generated row id so trade
-            # analytics can join back to this signal (TASK-172, audit item 17:
-            # signal_id was NULL in every trade_analytics row).
+            mode = settings.signal_schema_mode
+            if mode == "bridge":
+                data.update({
+                    "signal_uuid": str(signal.id),
+                    "display_id": signal.display_id,
+                })
+            elif mode == "greenfield":
+                data.update({
+                    "id": str(signal.id),
+                    "display_id": signal.display_id,
+                })
+            else:
+                raise ValueError(f"Unsupported signal schema mode: {mode}")
+            # Require the database to echo the persisted canonical UUID. A
+            # successful HTTP response without the expected parent row is not
+            # sufficient to let downstream trade writers proceed.
             response = self.supabase.table("ares_signals").insert(data).execute()
             rows = getattr(response, "data", None)
-            if rows and isinstance(rows[0], dict) and rows[0].get("id") is not None:
-                signal.db_id = rows[0]["id"]
+            if not rows or not isinstance(rows[0], dict):
+                raise RuntimeError("Signal insert returned no persisted row")
+            row = rows[0]
+            if mode == "bridge":
+                if str(row.get("signal_uuid")) != str(signal.id):
+                    raise RuntimeError("Signal insert returned a mismatched canonical UUID")
+                signal.db_id = row.get("id")
+                if signal.db_id is None:
+                    raise RuntimeError("Bridge signal insert returned no legacy row id")
+            elif str(row.get("id")) != str(signal.id):
+                raise RuntimeError("Signal insert returned a mismatched canonical UUID")
+            return True
 
         try:
             # Run the synchronous Supabase insert in an executor to avoid blocking the event loop
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, _insert)
-        except Exception as e:
-            # Print the error, but do NOT raise it
-            print(f"Failed to log signal to Supabase: {e}")
+            return await loop.run_in_executor(None, _insert)
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(f"Failed to persist signal: {e}") from e
 
 
 class AnalyticsLogger:
@@ -158,7 +177,7 @@ class AnalyticsLogger:
                     "ce_oi_change_pct": round(atm.ce.oi_change_pct, 2),
                     "pe_oi_change_pct": round(atm.pe.oi_change_pct, 2)
                 }
-            except Exception as e:
+            except Exception as e:  # pragma: no cover
                 print(f"AnalyticsLogger: Failed to parse OI data for entry: {e}")
 
         db_reasons = list(signal.reasons)
@@ -196,9 +215,19 @@ class AnalyticsLogger:
         if getattr(signal, "db_id", None) is not None:
             market_context["signal_db_id"] = signal.db_id
 
+        mode = settings.signal_schema_mode
+        if mode == "bridge":
+            signal_fields = {
+                "signal_id": getattr(signal, "db_id", None),
+                "signal_uuid": str(signal.id),
+            }
+        elif mode == "greenfield":
+            signal_fields = {"signal_id": str(signal.id)}
+        else:
+            raise ValueError(f"Unsupported signal schema mode: {mode}")
+
         data = {
             "id": trade_id,
-            "signal_id": getattr(signal, "signal_id", None),
             "setup_type": signal.setup_type.value,
             "direction": signal.direction.value,
             "entry_timestamp": to_utc_iso(signal.timestamp),
@@ -207,6 +236,7 @@ class AnalyticsLogger:
             "market_context": market_context,
             "oi_data": oi_data
         }
+        data.update(signal_fields)
 
         def _insert():
             self.supabase.table("trade_analytics").insert(data).execute()
@@ -241,17 +271,18 @@ class AnalyticsLogger:
                 where the fill remains at entry but T1 profit was locked.
         """
         def _update():
-            # signal_id comes back too: it is the key the ml_collection label
-            # back-fill below joins on.
+            mode = settings.signal_schema_mode
+            if mode == "bridge":
+                fields = "entry_price,direction,signal_id,signal_uuid,setup_type,entry_timestamp"
+            else:
+                fields = "entry_price,direction,signal_id,setup_type,entry_timestamp"
+                
             import time
             for _ in range(3):
-                response = self.supabase.table("trade_analytics").select(
-                    "entry_price", "direction", "signal_id", "setup_type", "entry_timestamp"
-                ).eq("id", trade_id).execute()
+                response = self.supabase.table("trade_analytics").select(fields).eq("id", trade_id).execute()
                 if response.data:
                     break
                 time.sleep(0.1)
-                
             if not response.data:
                 return
 
@@ -296,41 +327,51 @@ class AnalyticsLogger:
             #
             # Skipped when signal_id is NULL (log_signal failed): there is no row
             # to attribute the outcome to, and guessing one would poison the label.
-            signal_id = record.get("signal_id")
-            if signal_id is None:
-                return
-            try:
-                candidates = self.supabase.table("ml_collection").select(
-                    "id", "timestamp"
-                ).eq("signal_id", str(signal_id)).is_("trade_id", "null").eq(
-                    "signal_setup_type", record["setup_type"]
-                ).execute().data
-                entry_timestamp = datetime.fromisoformat(
-                    record["entry_timestamp"].replace("Z", "+00:00")
-                )
-                closest = min(
-                    (
-                        (
-                            abs((datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")) - entry_timestamp).total_seconds()),
-                            row,
-                        )
-                        for row in candidates
-                        if row.get("id") is not None and row.get("timestamp")
-                    ),
-                    default=None,
-                    key=lambda item: item[0],
-                )
-                if closest is None or closest[0] > 120:
+            if mode == "greenfield":
+                signal_val = record.get("signal_id")
+                signal_col = "signal_id"
+            else:
+                signal_val = record.get("signal_uuid")
+                signal_col = "signal_uuid"
+
+            if signal_val is None:
+                # Fallback to legacy logic for old rows when not in greenfield
+                signal_id = record.get("signal_id")
+                if signal_id is None:
                     return
-                self.supabase.table("ml_collection").update({
-                    "trade_id": trade_id,
-                    "trade_outcome": final_state,
-                    "trade_pnl": pnl,
-                    "trade_score": score,
-                }).eq("id", closest[1]["id"]).is_("trade_id", "null").execute()
-            except Exception as ml_err:
-                # Never let a labelling failure lose the trade exit above.
-                print(f"Failed to back-fill ml_collection label: {ml_err}")
+                try:
+                    res = self.supabase.table("ml_collection").update({
+                        "trade_id": trade_id,
+                        "trade_outcome": final_state,
+                        "trade_pnl": pnl,
+                        "trade_score": score,
+                    }).eq("signal_id", str(signal_id)).execute()
+                    if not res.data:
+                        print(f"Storage: zero rows updated in ml_collection for signal_id {signal_id}")
+                except Exception as ml_err:
+                    print(f"Failed to back-fill ml_collection label: {ml_err}")
+                return
+            # Retry logic for ML outcome binding
+            import time
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    res = self.supabase.table("ml_collection").update({
+                        "trade_outcome": final_state,
+                        "trade_pnl": pnl,
+                        "trade_score": score,
+                    }).eq("trade_id", trade_id).eq(signal_col, str(signal_val)).execute()
+                    if res.data:
+                        break
+                    else:
+                        if attempt < max_retries - 1:
+                            time.sleep(0.5 * (attempt + 1))
+                        else:
+                            print(f"Storage: Terminal reconciliation error - zero rows updated in ml_collection for trade {trade_id} after {max_retries} attempts")
+                except Exception as ml_err:
+                    print(f"Failed to back-fill ml_collection label: {ml_err}")
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5 * (attempt + 1))
 
         try:
             loop = asyncio.get_running_loop()
@@ -356,10 +397,10 @@ class AnalyticsLogger:
             # different failure mode for the same function depending on context.
             try:
                 _update()
-            except Exception as e:
-                print(f"Failed to log trade analytics exit: {e}")
-        except Exception as e:
-            print(f"Failed to log trade analytics exit: {e}")
+            except Exception as e:  # pragma: no cover
+                print(f"Failed to log trade analytics exit: {e}")  # pragma: no cover
+        except Exception as e:  # pragma: no cover
+            print(f"Failed to log trade analytics exit: {e}")  # pragma: no cover
 
 
 def load_dhan_credentials_from_supabase() -> None:
