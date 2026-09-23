@@ -341,14 +341,14 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
 
 6. **`reports.py` & `ml_signal/train_offline.py`**:
    - `reports.py`: filter out `time_metrics_excluded = true` in `fetch_closed_trades`.
-   - `ml_signal/train_offline.py`: change `_fetch_trade_exit_timestamps` to select and return `id,exit_timestamp,entry_timestamp,time_metrics_excluded`; merge all three metadata fields into each `ml_collection` row before `_sharpe_metrics` runs. In `_sharpe_metrics`, exclude records flagged with `time_metrics_excluded = true` or having inverted duration ($\text{exit} < \text{entry}$), and report the count of invalid chronology rows.
+   - `ml_signal/train_offline.py`: change `_fetch_trade_exit_timestamps` to select and return `id,exit_timestamp,entry_timestamp,time_metrics_excluded`; merge all three metadata fields into each `ml_collection` row before `_sharpe_metrics` runs. In `_sharpe_metrics`, exclude records flagged with `time_metrics_excluded = true` or having inverted duration ($\text{exit} < \text{entry}$), and report the count of invalid chronology rows. Apply the same exclusion to training eligibility; if no eligible labeled rows remain, raise before fitting or writing model/report artifacts.
 
 7. **Regression Test Suite (`tests/unit/test_task152_exit_timestamp_validation.py`)**:
    - Test 1: `log_exit` requires and validates `exit_timestamp`.
    - Test 2: Inverted timestamp ($\text{exit} < \text{entry}$) is rejected or flagged as excluded.
    - Test 3: `position_manager.update_trades` passes candle timestamp through to `log_exit` and persists `exit_timestamp` into `active_trades`.
    - Test 4: `log_exit` retry mechanism successfully catches raced records.
-   - Test 5: Reporting and Sharpe calculations cleanly exclude `time_metrics_excluded` records.
+   - Test 5: Reporting and Sharpe calculations cleanly exclude `time_metrics_excluded` records, and offline training aborts without artifacts when every labeled row is excluded.
    - Test 6: Verify full test suite passes with 100% coverage on new validation logic.
 
 ---
@@ -362,6 +362,7 @@ Implementation of ticket **MANM-152** is assigned to the **Code Generator Agent*
 - [ ] `PositionManager.update_trades` accepts `candle_timestamp` and propagates it to `log_exit` and `active_trades`.
 - [ ] `AnalyticsLogger.log_exit` accepts `exit_timestamp`, retries queries, and validates $\text{exit\_timestamp} \ge \text{entry\_timestamp}$.
 - [ ] `reports.py` and `ml_signal/train_offline.py` exclude flagged records from duration/Sharpe metrics.
+- [ ] Offline training fails closed without persisting a model or report when anomaly exclusion removes every labeled row.
 - [ ] Comprehensive regression test suite added in `tests/unit/test_task152_exit_timestamp_validation.py`.
 - [ ] All unit and integration tests in the repository pass (`pytest`).
 - [ ] Zero breaking changes to live trading loop execution.

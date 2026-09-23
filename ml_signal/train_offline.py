@@ -403,8 +403,9 @@ def run_training(
 ) -> Tuple[object, Dict[str, object]]:
     """
     Train + evaluate on a chronological split. Degrades gracefully on tiny data
-    (warns, marks metrics provisional, still trains). Optionally persists the
-    model and a JSON report. Returns (model, metrics).
+    (warns, marks metrics provisional, still trains), but aborts when anomaly
+    exclusion leaves no eligible rows. Optionally persists the model and a JSON
+    report. Returns (model, metrics).
     """
     sharpe = _sharpe_metrics(df)
 
@@ -413,6 +414,9 @@ def run_training(
         df_train = df[~time_excluded].copy()
     else:
         df_train = df
+
+    if df_train.empty:
+        raise ValueError("No training rows remain after applying time_metrics_excluded")
 
     n = len(df_train)
     provisional = n < min_samples

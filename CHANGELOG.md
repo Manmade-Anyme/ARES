@@ -6,6 +6,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Empty offline-training exclusions (MANM-152)**: Abort model training and artifact persistence when anomaly filtering removes every eligible labeled trade.
 - **Exit timestamp migration review fixes (MANM-152)**: Flag inverted legacy rows before chronology validation, persist required entry timestamps through both schema-mode RPCs, and permit intermediate `T1_HIT` active trades without terminal exit telemetry.
 - **Optional ML cutover migration (MANM-150)**: Guard the cutover lock,
   unresolved-row validation, and canonical-column promotion when

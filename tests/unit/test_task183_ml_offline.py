@@ -908,6 +908,31 @@ class TestOfflineExclusions(unittest.TestCase):
         model, metrics = run_training(df, ["f1", "f2"], min_samples=1)
         self.assertEqual(metrics["n_samples"], 90)
 
+    def test_run_training_aborts_without_saving_when_all_trades_are_excluded(self):
+        df = _training_frame(n=20, feature_names=["f1", "f2"])
+        df["time_metrics_excluded"] = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = os.path.join(directory, "model.joblib")
+            report_path = os.path.join(directory, "metrics.json")
+            with patch("ml_signal.train_offline._train_xgb") as train_xgb, \
+                    patch("ml_signal.train_offline.joblib.dump") as dump_model:
+                with self.assertRaisesRegex(
+                        ValueError,
+                        "No training rows remain after applying time_metrics_excluded"):
+                    run_training(
+                        df,
+                        ["f1", "f2"],
+                        min_samples=1,
+                        save_path=model_path,
+                        report_path=report_path,
+                    )
+
+            train_xgb.assert_not_called()
+            dump_model.assert_not_called()
+            self.assertFalse(os.path.exists(model_path))
+            self.assertFalse(os.path.exists(report_path))
+
 class TestBuildRealOutcomeFrame(unittest.TestCase):
     def test_metadata_columns_preserved(self):
         from ml_signal.dataset import build_real_outcome_frame
