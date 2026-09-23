@@ -56,12 +56,22 @@ class SignalConsumer:
         return await loop.run_in_executor(None, _query)
 
     async def log_prediction(self, prediction: dict):
+        """Persist prediction for standalone consumer mode.
+
+        NOTE (ADR-153): Production ARES uses in-process PredictionLogger inside
+        main.py as the sole authoritative writer for event_triggered predictions.
+        Operators must not run signal_consumer concurrently with main.py to avoid
+        duplicate rows.
+        """
         if self._supabase is None:
             return
 
         def _insert():
             try:
-                self._supabase.table(self.config.supabase_table_predictions).insert(prediction).execute()
+                payload = dict(prediction)
+                if "features" in payload and "feature_snapshot" not in payload:
+                    payload["feature_snapshot"] = payload.pop("features")
+                self._supabase.table(self.config.supabase_table_predictions).insert(payload).execute()
             except Exception as e:
                 print(f"Failed to log prediction: {e}")
 

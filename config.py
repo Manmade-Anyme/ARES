@@ -15,6 +15,7 @@ class Secrets(BaseSettings):
 
     supabase_url: str = ""
     supabase_key: str = ""
+    supabase_service_role_key: str = ""
     signal_schema_mode: str = "bridge"
 
     model_config = SettingsConfigDict(

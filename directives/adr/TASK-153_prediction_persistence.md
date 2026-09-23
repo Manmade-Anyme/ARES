@@ -1,6 +1,6 @@
 # ADR-153: Machine Learning Prediction Persistence in `ml_predictions` for Model Auditing & Drift Monitoring
 
-- **Status**: Proposed
+- **Status**: Implemented
 - **Date**: 2026-09-12
 - **Task ID**: TASK-153 / MANM-153
 - **Author**: Software Architect Agent (`d2d4e328-096d-4658-8d90-44aa7b51ed05`)

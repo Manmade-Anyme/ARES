@@ -6,7 +6,7 @@ from fetchers.price_fetcher import PriceFetcher
 from fetchers.oi_fetcher import OIFetcher
 from fetchers.level_fetcher import LevelFetcher
 from fetchers.tick_feed import TickFeed
-from storage import Storage, load_dhan_credentials_from_supabase
+from storage import Storage, PredictionLogger, load_dhan_credentials_from_supabase
 from position_manager import PositionManager
 from config import settings, detector_names, SESSION_DISPLAY
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
@@ -156,6 +156,12 @@ async def run():
         ml_predictor.load_model()
     except Exception:
         ml_predictor = None
+
+    try:
+        prediction_logger = PredictionLogger()
+    except Exception as pl_err:
+        print(f"{Y}[!] PredictionLogger: inactive ({pl_err}){RESET}")
+        prediction_logger = None
 
     # Make this dynamic via Yahoo Finance Oracle 
     try:
@@ -348,6 +354,22 @@ async def run():
                         signal.trade_binding_status = binding_status
                     except Exception as pm_err:
                         print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
+
+                if prediction_logger and ml_predictor and getattr(signal, "ml_prediction", None):
+                    try:
+                        prediction_logger.log_prediction(
+                            probability=signal.ml_prediction["probability"],
+                            confidence_tier=signal.ml_prediction["confidence_tier"],
+                            model_version=signal.ml_prediction["model_version"],
+                            spot=spot,
+                            feature_snapshot=signal.ml_prediction.get("features", {}),
+                            signal_id=getattr(signal, "id", None),
+                            trade_id=getattr(signal, "trade_id", None) or None,
+                            source="event_triggered",
+                            timestamp=now,
+                        )
+                    except Exception as log_err:
+                        print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Non-blocking prediction dispatch error: {log_err}{RESET}")
 
                 if signal is not None:
                     try:

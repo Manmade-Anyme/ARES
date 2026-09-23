@@ -153,6 +153,7 @@ class PositionManager:
                 return "", "DUPLICATE_SKIPPED" 
 
         trade_id = str(uuid.uuid4())
+        signal.trade_id = trade_id
         
         # Prepare RPC payload
         entry_timestamp = __import__("storage").to_utc_iso(signal.timestamp)

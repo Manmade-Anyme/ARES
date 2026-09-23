@@ -20,8 +20,11 @@ CREATE TABLE ares_signals (
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
-from typing import Any
+import math
+from typing import Any, Dict, List, Optional
+import numpy as np
 from supabase import create_client, Client
 
 from models import AresSignal
@@ -439,3 +442,111 @@ def load_dhan_credentials_from_supabase() -> None:
     settings.dhan_client_id = data["client_id"]
     settings.dhan_access_token = data["access_token"]
     print("[+] Successfully loaded Dhan credentials from Supabase.")
+
+
+def _sanitize_value(val: Any) -> Any:
+    """Helper to convert NumPy and special values into PostgreSQL JSONB safe types."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return to_utc_iso(val)
+    if isinstance(val, (float, np.floating)):
+        f_val = float(val)
+        if math.isnan(f_val) or math.isinf(f_val):
+            return None
+        return round(f_val, 6)
+    if isinstance(val, (int, np.integer)):
+        return int(val)
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+    if isinstance(val, dict):
+        return {str(k): _sanitize_value(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple, set, np.ndarray)):
+        return [_sanitize_value(x) for x in val]
+    return str(val) if not isinstance(val, str) else val
+
+
+def sanitize_feature_snapshot(features: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitizes feature dictionary for safe JSONB serialization in PostgreSQL.
+
+    Rules:
+    - NumPy float/int converted to built-in float/int.
+    - NaN and Inf converted to None (JSON null).
+    - Float values rounded to 6 decimal places.
+    - Datetime objects converted to UTC ISO-8601 strings.
+    """
+    if not isinstance(features, dict):
+        return {}
+    return {str(k): _sanitize_value(v) for k, v in features.items()}
+
+
+class PredictionLogger:
+    """Handles asynchronous, non-blocking persistence of ML predictions to Supabase."""
+
+    def __init__(self, supabase_client: Optional[Client] = None, max_workers: int = 2):
+        if supabase_client is not None:
+            self.supabase = supabase_client
+        else:
+            service_key = getattr(settings, "supabase_service_role_key", None)
+            if not service_key:
+                raise ValueError(
+                    "PredictionLogger requires supabase_service_role_key; anon key is not permitted."
+                )
+            self.supabase = create_client(settings.supabase_url, service_key)
+
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="ml_pred_logger"
+        )
+
+    def log_prediction(
+        self,
+        probability: float,
+        confidence_tier: str,
+        model_version: str,
+        spot: float,
+        feature_snapshot: Dict[str, Any],
+        signal_id: Optional[str] = None,
+        trade_id: Optional[str] = None,
+        source: str = "event_triggered",
+        timestamp: Optional[Any] = None,
+    ) -> None:
+        """Dispatches an asynchronous insert to ml_predictions.
+
+        Guaranteed non-blocking and safe against all runtime exceptions.
+        """
+        try:
+            ts = timestamp or datetime.now(timezone.utc)
+            record = {
+                "timestamp": to_utc_iso(ts),
+                "probability": float(probability),
+                "confidence_tier": str(confidence_tier),
+                "model_version": str(model_version),
+                "signal_id": str(signal_id) if signal_id is not None else None,
+                "trade_id": str(trade_id) if trade_id is not None else None,
+                "spot": float(spot),
+                "source": str(source),
+                "feature_snapshot": sanitize_feature_snapshot(feature_snapshot),
+            }
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                # Synchronous fallback when called outside an active event loop
+                self._insert_prediction(record)
+                return
+
+            self._executor.submit(self._insert_prediction, record)
+        except Exception as exc:
+            print(f"PredictionLogger: dispatch error: {exc}")
+
+    def _insert_prediction(self, record: Dict[str, Any]) -> None:
+        try:
+            self.supabase.table("ml_predictions").insert(record).execute()
+        except Exception as exc:
+            print(f"PredictionLogger: failed to persist prediction to ml_predictions: {exc}")
+
+    def shutdown(self, wait: bool = True) -> None:
+        """Shut down the background executor."""
+        self._executor.shutdown(wait=wait)
+

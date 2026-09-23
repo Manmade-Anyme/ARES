@@ -33,6 +33,7 @@ class LiveRunner:
         self.iv_history: deque = deque(maxlen=20)
         self._dhan = None
         self._supabase: Optional[Client] = None
+        self.prediction_logger: Optional[Any] = None
 
         self._total_predictions = 0
         self._high_count = 0
@@ -51,6 +52,12 @@ class LiveRunner:
 
     def _init_supabase(self, url: str, key: str):
         self._supabase = create_client(url, key)
+        try:
+            from storage import PredictionLogger
+            self.prediction_logger = PredictionLogger(supabase_client=self._supabase)
+        except Exception as e:
+            print(f"LiveRunner: PredictionLogger init failed: {e}")
+            self.prediction_logger = None
 
     async def fetch_candle(self, security_id: str, exchange: str, date: str) -> Optional[Dict[str, float]]:
         loop = asyncio.get_running_loop()
@@ -98,12 +105,29 @@ class LiveRunner:
         return response
 
     async def log_prediction(self, prediction: Dict[str, Any]):
+        if self.prediction_logger is not None:
+            self.prediction_logger.log_prediction(
+                probability=prediction.get("probability", 0.0),
+                confidence_tier=prediction.get("confidence_tier", "LOW"),
+                model_version=prediction.get("model_version", "v1"),
+                spot=prediction.get("spot", 0.0),
+                feature_snapshot=prediction.get("features", {}),
+                signal_id=prediction.get("signal_id"),
+                trade_id=prediction.get("trade_id"),
+                source=prediction.get("source", "continuous"),
+                timestamp=prediction.get("timestamp"),
+            )
+            return
+
         if self._supabase is None:
             return
 
         def _insert():
             try:
-                self._supabase.table(self.config.supabase_table_predictions).insert(prediction).execute()
+                payload = dict(prediction)
+                if "features" in payload and "feature_snapshot" not in payload:
+                    payload["feature_snapshot"] = payload.pop("features")
+                self._supabase.table(self.config.supabase_table_predictions).insert(payload).execute()
             except Exception as e:
                 print(f"Failed to log prediction: {e}")
 
