@@ -153,7 +153,6 @@ class PositionManager:
                 return "", "DUPLICATE_SKIPPED" 
 
         trade_id = str(uuid.uuid4())
-        signal.trade_id = trade_id
         
         # Prepare RPC payload
         entry_timestamp = __import__("storage").to_utc_iso(signal.timestamp)
@@ -249,6 +248,7 @@ class PositionManager:
             try:
                 success = await loop.run_in_executor(None, _insert)
                 if success:
+                    signal.trade_id = trade_id
                     self.active_trades.append(trade_data)
                     return trade_id, "BOUND"
             except Exception as e:

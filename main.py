@@ -353,6 +353,7 @@ async def run():
                         signal.trade_id = trade_id
                         signal.trade_binding_status = binding_status
                     except Exception as pm_err:
+                        signal.trade_id = None
                         print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
 
                 if prediction_logger and ml_predictor and getattr(signal, "ml_prediction", None):

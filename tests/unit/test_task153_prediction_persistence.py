@@ -255,6 +255,32 @@ class TestSignalTradeIdLinkage(unittest.IsolatedAsyncioTestCase):
         parsed_uuid = uuid.UUID(trade_id)
         self.assertEqual(str(parsed_uuid), trade_id)
 
+    async def test_position_manager_does_not_set_trade_id_on_failure(self):
+        pm = PositionManager()
+        pm.supabase = MagicMock()
+        pm.supabase.rpc.side_effect = RuntimeError("RPC connection failed")
+        pm.active_trades = []
+
+        signal = AresSignal(
+            setup_type=SetupType.FAILED_BREAKOUT,
+            direction=Direction.BULLISH,
+            trigger_price=24100.0,
+            entry_zone=(24090.0, 24110.0),
+            stop_loss=24050.0,
+            target_1=24150.0,
+            target_2=24200.0,
+            confidence="HIGH",
+            reasons=["Test Reason"],
+            timestamp=datetime.now(timezone.utc),
+            strike_to_trade=24100,
+            option_type="CE",
+        )
+
+        with self.assertRaises(RuntimeError):
+            await pm.add_trade(signal, 24100.0)
+
+        self.assertIsNone(signal.trade_id)
+
 
 class TestSchemaFilesIntegrity(unittest.TestCase):
     def test_migration_file_content(self):
