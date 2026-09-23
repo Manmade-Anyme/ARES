@@ -6,6 +6,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Clean-install prediction security (MANM-153)**: Apply the service-role-only RLS policies, privilege revocations, and sequence grants to both clean-install schemas as well as the upgrade migration.
 - **Canonical prediction signal migration (MANM-153)**: Backfill standardized `ml_predictions.signal_id` from bridge-mode `signal_uuid` so upgraded historical predictions retain canonical signal linkage.
 - **Standalone prediction schema compatibility (MANM-153)**: Restrict signal-consumer inserts to standardized `ml_predictions` columns, persist the canonical signal UUID in both schema modes, and retry signals whose prediction insert fails instead of marking them processed.
 - **Deferred greenfield cutover compatibility (MANM-152)**: Persist and verify the required active-trade entry timestamp when the MANM-150 cutover installs its greenfield trade-entry RPC after this migration.

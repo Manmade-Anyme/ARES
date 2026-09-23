@@ -492,7 +492,10 @@ Upon human approval of this ADR, assign implementation of **TASK-153** to the **
    - Enable RLS, revoke `PUBLIC`/`anon`/`authenticated` access, and add explicit `service_role` policies and sequence grants.
 
 2. **`schema.sql` & `ml_signal/schema.sql`**:
-   - Update `ml_predictions` table definition and index definitions to match Section 2.
+   - Update the `ml_predictions` table and index definitions to match Section 2.
+   - Apply the same RLS enablement, privilege revocations, sequence grant, and
+     service-role-only read/insert policies as the upgrade migration so clean
+     installations have the identical backend-only access contract.
 
 3. **`models.py`**:
    - Add `trade_id: Optional[str] = None` field to `AresSignal` dataclass.

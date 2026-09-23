@@ -36,6 +36,21 @@ CREATE INDEX IF NOT EXISTS idx_ml_pred_model_version ON ml_predictions (model_ve
 CREATE INDEX IF NOT EXISTS idx_ml_pred_confidence ON ml_predictions (confidence_tier);
 CREATE INDEX IF NOT EXISTS idx_ml_pred_source ON ml_predictions (source);
 
+-- Prediction rows contain backend audit data. Clean installations must enforce
+-- the same service-role-only contract as the TASK-153 upgrade migration.
+ALTER TABLE ml_predictions ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE ml_predictions FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON TABLE ml_predictions TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE ml_predictions_id_seq TO service_role;
+
+DROP POLICY IF EXISTS ml_predictions_service_read ON ml_predictions;
+CREATE POLICY ml_predictions_service_read
+  ON ml_predictions FOR SELECT TO service_role USING (true);
+
+DROP POLICY IF EXISTS ml_predictions_service_insert ON ml_predictions;
+CREATE POLICY ml_predictions_service_insert
+  ON ml_predictions FOR INSERT TO service_role WITH CHECK (true);
+
 
 -- ============================================================
 -- ml_collection: Training data gathered during live ARES runs.
@@ -92,6 +107,5 @@ CREATE INDEX IF NOT EXISTS idx_ml_collection_trade ON ml_collection (trade_id);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_outcome ON ml_collection (trade_outcome);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_oi_wall_strike ON ml_collection ((oi_wall_context ->> 'wall_strike'));
 
--- If you encounter RLS errors (Code 42501), run:
--- ALTER TABLE ml_predictions DISABLE ROW LEVEL SECURITY;
--- ALTER TABLE ml_collection DISABLE ROW LEVEL SECURITY;
+-- ml_predictions intentionally requires the backend service-role credential.
+-- Do not disable RLS to work around permission errors.

@@ -335,3 +335,28 @@ class TestSchemaFilesIntegrity(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS ml_predictions", sql)
         self.assertIn("feature_snapshot jsonb not null", sql)
         self.assertIn("trade_id uuid", sql)
+
+    def test_clean_install_schemas_secure_ml_predictions_for_service_role(self):
+        """Clean installs must enforce the same backend-only access as upgrades."""
+        expected_statements = (
+            "alter table ml_predictions enable row level security;",
+            "revoke all on table ml_predictions from public, anon, authenticated;",
+            "grant select, insert on table ml_predictions to service_role;",
+            "grant usage, select on sequence ml_predictions_id_seq to service_role;",
+            "drop policy if exists ml_predictions_service_read on ml_predictions;",
+            "create policy ml_predictions_service_read on ml_predictions "
+            "for select to service_role using (true);",
+            "drop policy if exists ml_predictions_service_insert on ml_predictions;",
+            "create policy ml_predictions_service_insert on ml_predictions "
+            "for insert to service_role with check (true);",
+        )
+
+        for schema_path in (Path("schema.sql"), Path("ml_signal/schema.sql")):
+            with self.subTest(schema=str(schema_path)):
+                normalized_sql = " ".join(schema_path.read_text().split()).lower()
+                for statement in expected_statements:
+                    self.assertIn(statement, normalized_sql)
+                self.assertNotIn(
+                    "alter table ml_predictions disable row level security;",
+                    normalized_sql,
+                )
