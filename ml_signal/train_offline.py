@@ -406,13 +406,21 @@ def run_training(
     (warns, marks metrics provisional, still trains). Optionally persists the
     model and a JSON report. Returns (model, metrics).
     """
-    n = len(df)
+    sharpe = _sharpe_metrics(df)
+
+    time_excluded = df.get("time_metrics_excluded", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    if time_excluded.any():
+        df_train = df[~time_excluded].copy()
+    else:
+        df_train = df
+
+    n = len(df_train)
     provisional = n < min_samples
     if provisional:
         print(f"[!] PROVISIONAL: {n} labeled samples (< {min_samples}). "
               f"Metrics are directional, not production-grade.")
 
-    train, test = chronological_split(df, train_frac=train_frac)
+    train, test = chronological_split(df_train, train_frac=train_frac)
 
     X_train, y_train = train[feature_cols], train[label_col]
     # Internal chronological val split for early stopping.
@@ -430,10 +438,10 @@ def run_training(
         "n_samples": int(n),
         "n_train": int(len(train)),
         "n_test": int(len(test)),
-        "pos_rate": float(df[label_col].mean()) if n else float("nan"),
+        "pos_rate": float(df_train[label_col].mean()) if n else float("nan"),
         "provisional": bool(provisional),
     })
-    metrics.update(_sharpe_metrics(df))
+    metrics.update(sharpe)
     metrics.update(_shap_metrics())
     if model_version is not None:
         metrics["model_version"] = model_version

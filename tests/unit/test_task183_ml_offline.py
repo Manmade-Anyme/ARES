@@ -207,6 +207,12 @@ class TestSharpeMetrics(unittest.TestCase):
                 "2026-08-05T04:00:00+00:00",
             ],
             "pnl_points": [10.0, -2.0, -4.0, 8.0],
+            "entry_timestamp": [
+                "2026-08-03T04:00:00+00:00",
+                "2026-08-03T05:00:00+00:00",
+                "2026-08-04T04:00:00+00:00",
+                "2026-08-05T04:00:00+00:00",
+            ],
             "exit_timestamp": [
                 "2026-08-03T04:00:00+00:00",
                 "2026-08-03T05:00:00+00:00",
@@ -233,6 +239,10 @@ class TestSharpeMetrics(unittest.TestCase):
                 "2026-08-03T04:00:00+00:00",
                 "2026-08-04T04:00:00+00:00",
             ],
+            "entry_timestamp": [
+                "2026-08-03T04:00:00+00:00",
+                "2026-08-04T04:00:00+00:00",
+            ],
             "exit_timestamp": [
                 "2026-08-05T04:00:00+00:00",
                 "2026-08-06T04:00:00+00:00",
@@ -254,6 +264,7 @@ class TestSharpeMetrics(unittest.TestCase):
     def test_requires_two_distinct_trading_days(self):
         df = pd.DataFrame({
             "timestamp": ["2026-08-03T04:00:00+00:00"],
+            "entry_timestamp": ["2026-08-03T04:00:00+00:00"],
             "exit_timestamp": ["2026-08-03T04:00:00+00:00"],
             "pnl_points": [10.0],
         })
@@ -378,7 +389,7 @@ class TestDetectorScoresFeature(unittest.TestCase):
 
             def execute(self):
                 return types.SimpleNamespace(data=[
-                    {"id": "trade-1", "exit_timestamp": "2026-08-05T04:00:00+00:00"},
+                    {"id": "trade-1", "exit_timestamp": "2026-08-05T04:00:00+00:00", "entry_timestamp": "2026-08-05T03:00:00+00:00", "time_metrics_excluded": False},
                 ])
 
         query = Query()
@@ -392,7 +403,11 @@ class TestDetectorScoresFeature(unittest.TestCase):
         exits = _fetch_trade_exit_timestamps(supabase)
         self.assertEqual(supabase.table_name, "trade_analytics")
         self.assertEqual(query.selected_columns, "id,exit_timestamp,entry_timestamp,time_metrics_excluded")
-        self.assertEqual(exits["trade-1"], "2026-08-05T04:00:00+00:00")
+        self.assertEqual(exits["trade-1"], {
+            "exit_timestamp": "2026-08-05T04:00:00+00:00",
+            "entry_timestamp": "2026-08-05T03:00:00+00:00",
+            "time_metrics_excluded": False
+        })
 
 
 def _training_frame(n=64, feature_names=None):
@@ -879,3 +894,16 @@ class TestOfflineShapContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestOfflineExclusions(unittest.TestCase):
+    def test_run_training_excludes_flagged_trades(self):
+        rng = list(range(100))
+        df = pd.DataFrame({
+            "timestamp": pd.date_range("2026-07-08", periods=100, freq="min"),
+            "f1": [i % 2 for i in rng],
+            "f2": [(i * 7) % 5 for i in rng],
+            "label": [i % 2 for i in rng],
+            "time_metrics_excluded": [True if i < 10 else False for i in rng],
+        })
+        model, metrics = run_training(df, ["f1", "f2"], min_samples=1)
+        self.assertEqual(metrics["n_samples"], 90)
