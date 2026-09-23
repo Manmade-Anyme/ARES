@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime
 import asyncio
 
@@ -488,7 +488,65 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta_feats["minutes_since_open"], 297.0)
         self.assertEqual(meta_feats["session_phase"], 2)
 
+    @patch("ml_signal.collector.settings")
+    async def test_snapshot_unsupported_schema_mode_raises(self, mock_settings):
+        mock_settings.signal_schema_mode = "unknown"
+        collector = MLCollector(self.url, self.key, self.config)
+        with self.assertRaisesRegex(ValueError, "Unsupported signal schema mode"):
+            await collector.snapshot(
+                candle=self._make_mock_candle(),
+                atm=self._make_mock_atm(),
+                full_chain=[], levels=[], spot=24120.0,
+                signal=MagicMock(),
+            )
 
+    @patch("ml_signal.collector.settings")
+    @patch("ml_signal.collector.asyncio.sleep", new_callable=AsyncMock)
+    async def test_snapshot_insert_no_row_raises(self, mock_sleep, mock_settings):
+        mock_settings.signal_schema_mode = "bridge"
+        collector = MLCollector(self.url, self.key, self.config)
+        collector._upsert_signal_snapshot = MagicMock(return_value=None)
+        
+        with self.assertRaisesRegex(RuntimeError, "Failed to persist signal-bound.*after 3 attempts"):
+            await collector.snapshot(
+                candle=self._make_mock_candle(),
+                atm=self._make_mock_atm(),
+                full_chain=[], levels=[], spot=24120.0,
+                signal=MagicMock(id="uuid-1"),
+            )
+        self.assertEqual(collector._upsert_signal_snapshot.call_count, 3)
+
+    @patch("ml_signal.collector.settings")
+    @patch("ml_signal.collector.asyncio.sleep", new_callable=AsyncMock)
+    async def test_snapshot_insert_mismatched_signal_raises(self, mock_sleep, mock_settings):
+        mock_settings.signal_schema_mode = "bridge"
+        collector = MLCollector(self.url, self.key, self.config)
+        collector._upsert_signal_snapshot = MagicMock(return_value=[{"signal_uuid": "wrong-uuid", "trade_id": "tid"}])
+        
+        with self.assertRaisesRegex(RuntimeError, "after 3 attempts"):
+            await collector.snapshot(
+                candle=self._make_mock_candle(),
+                atm=self._make_mock_atm(),
+                full_chain=[], levels=[], spot=24120.0,
+                signal=MagicMock(id="uuid-1"),
+                trade_id="tid",
+            )
+        
+    @patch("ml_signal.collector.settings")
+    @patch("ml_signal.collector.asyncio.sleep", new_callable=AsyncMock)
+    async def test_snapshot_insert_mismatched_trade_raises(self, mock_sleep, mock_settings):
+        mock_settings.signal_schema_mode = "bridge"
+        collector = MLCollector(self.url, self.key, self.config)
+        collector._upsert_signal_snapshot = MagicMock(return_value=[{"signal_uuid": "uuid-1", "trade_id": "wrong-tid"}])
+        
+        with self.assertRaisesRegex(RuntimeError, "after 3 attempts"):
+            await collector.snapshot(
+                candle=self._make_mock_candle(),
+                atm=self._make_mock_atm(),
+                full_chain=[], levels=[], spot=24120.0,
+                signal=MagicMock(id="uuid-1"),
+                trade_id="tid",
+            )
 
 if __name__ == '__main__':
     unittest.main()
