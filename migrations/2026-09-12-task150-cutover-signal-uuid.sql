@@ -3,8 +3,18 @@
 BEGIN;
 
 -- Freeze bridge writes so no unresolved child can appear after validation.
-LOCK TABLE ares_signals, active_trades, trade_analytics, ml_collection
+LOCK TABLE ares_signals, active_trades, trade_analytics
   IN ACCESS EXCLUSIVE MODE;
+
+-- ML collection is an optional subsystem. Lock it when installed without
+-- preventing core-only deployments from completing the cutover.
+DO $$
+BEGIN
+  IF to_regclass('public.ml_collection') IS NOT NULL THEN
+    EXECUTE 'LOCK TABLE ml_collection IN ACCESS EXCLUSIVE MODE';
+  END IF;
+END;
+$$;
 
 -- Abort before renaming columns if the bridge backfill has not resolved every
 -- child row that requires a canonical signal relationship.  Final foreign keys
@@ -15,7 +25,7 @@ DO $$
 DECLARE
   unresolved_active_trades bigint;
   unresolved_trade_analytics bigint;
-  unresolved_ml_snapshots bigint;
+  unresolved_ml_snapshots bigint := 0;
 BEGIN
   SELECT count(*) INTO unresolved_active_trades
   FROM active_trades WHERE signal_uuid IS NULL;
@@ -23,10 +33,12 @@ BEGIN
   SELECT count(*) INTO unresolved_trade_analytics
   FROM trade_analytics WHERE signal_uuid IS NULL;
 
-  SELECT count(*) INTO unresolved_ml_snapshots
-  FROM ml_collection
-  WHERE signal_uuid IS NULL
-    AND (signal_generated IS TRUE OR trade_id IS NOT NULL);
+  IF to_regclass('public.ml_collection') IS NOT NULL THEN
+    EXECUTE 'SELECT count(*) FROM ml_collection '
+            'WHERE signal_uuid IS NULL '
+            'AND (signal_generated IS TRUE OR trade_id IS NOT NULL)'
+      INTO unresolved_ml_snapshots;
+  END IF;
 
   IF unresolved_active_trades > 0
      OR unresolved_trade_analytics > 0
@@ -61,9 +73,16 @@ ALTER TABLE trade_analytics RENAME COLUMN signal_id TO legacy_signal_id;
 ALTER TABLE trade_analytics RENAME COLUMN signal_uuid TO signal_id;
 ALTER TABLE trade_analytics ADD CONSTRAINT fk_trade_analytics_signal FOREIGN KEY (signal_id) REFERENCES ares_signals(id);
 
-ALTER TABLE ml_collection RENAME COLUMN signal_id TO legacy_signal_id;
-ALTER TABLE ml_collection RENAME COLUMN signal_uuid TO signal_id;
-ALTER TABLE ml_collection ADD CONSTRAINT fk_ml_collection_signal FOREIGN KEY (signal_id) REFERENCES ares_signals(id);
+DO $$
+BEGIN
+  IF to_regclass('public.ml_collection') IS NOT NULL THEN
+    EXECUTE 'ALTER TABLE ml_collection RENAME COLUMN signal_id TO legacy_signal_id';
+    EXECUTE 'ALTER TABLE ml_collection RENAME COLUMN signal_uuid TO signal_id';
+    EXECUTE 'ALTER TABLE ml_collection ADD CONSTRAINT fk_ml_collection_signal '
+            'FOREIGN KEY (signal_id) REFERENCES ares_signals(id)';
+  END IF;
+END;
+$$;
 
 -- 4. Install the post-cutover RPC before greenfield writers resume.
 CREATE OR REPLACE FUNCTION create_trade_entry_greenfield(

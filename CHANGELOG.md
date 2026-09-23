@@ -6,6 +6,10 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Optional ML cutover migration (MANM-150)**: Guard the cutover lock,
+  unresolved-row validation, and canonical-column promotion when
+  `ml_collection` is not installed, while preserving the full safety gate on
+  deployments that enable ML collection.
 - **Optional ML bridge migration and prediction joins (MANM-150)**: Keep the
   canonical UUID bridge migration deployable when optional ML tables are absent,
   upgrade installed prediction tables additively, and persist event-consumer

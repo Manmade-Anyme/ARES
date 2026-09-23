@@ -317,7 +317,7 @@ class TestCutoverMigration(unittest.TestCase):
         for predicate in (
             "FROM active_trades WHERE signal_uuid IS NULL",
             "FROM trade_analytics WHERE signal_uuid IS NULL",
-            "FROM ml_collection",
+            "SELECT count(*) FROM ml_collection",
             "signal_generated IS TRUE OR trade_id IS NOT NULL",
         ):
             self.assertIn(predicate, sql[:first_rename])
@@ -325,6 +325,18 @@ class TestCutoverMigration(unittest.TestCase):
         self.assertLess(sql.index("LOCK TABLE"), sql.index("RAISE EXCEPTION"))
         self.assertLess(sql.index("RAISE EXCEPTION"), sql.index("DROP FUNCTION"))
         self.assertTrue(sql.rstrip().endswith("COMMIT;"))
+
+    def test_cutover_keeps_ml_collection_optional(self):
+        sql = Path("migrations/2026-09-12-task150-cutover-signal-uuid.sql").read_text()
+
+        self.assertNotIn(
+            "LOCK TABLE ares_signals, active_trades, trade_analytics, ml_collection",
+            sql,
+        )
+        self.assertIn("to_regclass('public.ml_collection') IS NOT NULL", sql)
+        self.assertIn("EXECUTE 'LOCK TABLE ml_collection", sql)
+        self.assertIn("EXECUTE 'SELECT count(*) FROM ml_collection", sql)
+        self.assertIn("EXECUTE 'ALTER TABLE ml_collection RENAME COLUMN", sql)
 
 
 class TestSignalJoinPipeline(unittest.IsolatedAsyncioTestCase):
