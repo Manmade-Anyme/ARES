@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS ml_predictions (
   model_version text not null,         -- e.g. 'v1', 'v2', 'v2.joblib'
 
   -- Entity Linkage
-  signal_id text,                      -- Display signal ID (e.g. '0042') or UUID
+  signal_id text,                      -- Canonical AresSignal.id UUID (never display_id)
   trade_id uuid,                       -- Links to active_trades.id / trade_analytics.id when executed
   
   -- Market Context
@@ -204,4 +204,3 @@ CREATE INDEX IF NOT EXISTS idx_ml_pred_trade ON ml_predictions (trade_id);
 CREATE INDEX IF NOT EXISTS idx_ml_pred_model_version ON ml_predictions (model_version);
 CREATE INDEX IF NOT EXISTS idx_ml_pred_confidence ON ml_predictions (confidence_tier);
 CREATE INDEX IF NOT EXISTS idx_ml_pred_source ON ml_predictions (source);
-

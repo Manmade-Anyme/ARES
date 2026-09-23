@@ -74,7 +74,9 @@ CREATE INDEX IF NOT EXISTS idx_ml_pred_source ON ml_predictions (source);
 ```
 
 ### Database Migration: `migrations/2026-09-12-task153-ml-predictions-schema.sql`
-Because `ml_predictions` contains 0 rows in production, column renaming is completely non-breaking. To guarantee safe execution across all environments:
+To guarantee safe execution across greenfield and upgraded bridge-mode environments,
+the migration preserves legacy columns and copies any historical canonical
+`signal_uuid` values into the standardized `signal_id` column:
 
 ```sql
 -- =====================================================================
@@ -139,6 +141,23 @@ ALTER TABLE ml_predictions
    ADD COLUMN IF NOT EXISTS source text,
    ADD COLUMN IF NOT EXISTS feature_snapshot jsonb,
    ADD COLUMN IF NOT EXISTS created_at timestamptz;
+
+-- Bridge-mode installations stored the canonical UUID separately while
+-- signal_id held a legacy display/row identifier. Normalize those rows before
+-- signal_id is indexed and treated as the canonical linkage. Keep the legacy
+-- column for the separately managed bridge cutover.
+DO $$
+BEGIN
+   IF EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'ml_predictions'
+        AND column_name = 'signal_uuid'
+   ) THEN
+      EXECUTE 'UPDATE ml_predictions SET signal_id = signal_uuid::text WHERE signal_uuid IS NOT NULL AND signal_id IS DISTINCT FROM signal_uuid::text';
+   END IF;
+END $$;
 
 UPDATE ml_predictions
 SET feature_snapshot = '{}'::jsonb

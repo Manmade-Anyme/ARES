@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS ml_predictions (
   model_version text not null,         -- e.g. 'v1', 'v2', 'v2.joblib'
 
   -- Entity Linkage
-  signal_id text,                      -- Display signal ID (e.g. '0042') or UUID
+  signal_id text,                      -- Canonical AresSignal.id UUID (never display_id)
   trade_id uuid,                       -- Links to active_trades.id / trade_analytics.id when executed
   
   -- Market Context

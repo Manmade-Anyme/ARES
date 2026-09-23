@@ -296,6 +296,32 @@ class TestSchemaFilesIntegrity(unittest.TestCase):
         self.assertIn("idx_ml_pred_signal", sql)
         self.assertIn("idx_ml_pred_trade", sql)
 
+    def test_migration_backfills_canonical_id_from_legacy_signal_uuid(self):
+        sql = Path(
+            "migrations/2026-09-12-task153-ml-predictions-schema.sql"
+        ).read_text()
+        normalized_sql = " ".join(sql.split()).lower()
+
+        self.assertIn("table_schema = current_schema()", normalized_sql)
+        self.assertIn("column_name = 'signal_uuid'", normalized_sql)
+        self.assertIn(
+            "update ml_predictions set signal_id = signal_uuid::text "
+            "where signal_uuid is not null "
+            "and signal_id is distinct from signal_uuid::text",
+            normalized_sql,
+        )
+        backfill_position = normalized_sql.index(
+            "update ml_predictions set signal_id = signal_uuid::text"
+        )
+        self.assertLess(
+            normalized_sql.index("add column if not exists signal_id text"),
+            backfill_position,
+        )
+        self.assertLess(
+            backfill_position,
+            normalized_sql.index("create index if not exists idx_ml_pred_signal"),
+        )
+
     def test_schema_sql_has_ml_predictions(self):
         schema_path = Path("schema.sql")
         sql = schema_path.read_text()
