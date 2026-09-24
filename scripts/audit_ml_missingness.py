@@ -31,6 +31,10 @@ from supabase import create_client
 from config import settings
 from ml_signal.dataset import infer_feature_version_from_timestamp
 
+# Commit 08c36e3 (TASK-195) committed at 2026-07-31T16:09:48Z eliminated literal 100.0 sentinel injection.
+# Rows prior to this boundary carrying 100.0 are legacy sentinels; rows at or after are legitimate market distances.
+TASK195_SENTINEL_CUTOFF = pd.Timestamp("2026-07-31T16:09:48Z")
+
 
 
 def _load_json(val: Any) -> Dict[str, Any]:
@@ -171,18 +175,24 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         dist_res = struct.get("dist_to_nearest_resistance")
 
         # Sentinel checks:
-        # Before TASK-194/195 (Epochs 1-2, < 2026-07-31T13:14:34Z), missing levels were injected as literal 100.0 sentinels.
-        # After TASK-194/195 (Epochs 3-4), missing levels evaluate to None/NaN, so an exact 100.0 reading reflects
+        # Prior to TASK-195 commit 08c36e3 (2026-07-31T16:09:48Z), missing levels were injected as literal 100.0 sentinels.
+        # After TASK-195, missing levels evaluate to None/NaN, so an exact 100.0 reading reflects
         # a legitimate 100-point physical market distance between spot and an existing level.
-        is_legacy_epoch = fv <= 2
+        is_pre_task195 = False
+        if ts is not None and not pd.isna(ts):
+            ts_utc = ts.tz_convert("UTC") if ts.tzinfo is not None else ts.tz_localize("UTC")
+            is_pre_task195 = ts_utc < TASK195_SENTINEL_CUTOFF
+        else:
+            is_pre_task195 = fv <= 2
+
         if dist_sup == 100.0:
-            if is_legacy_epoch:
+            if is_pre_task195:
                 sentinels_detected["legacy_100_support"] += 1
             else:
                 sentinels_detected["real_100_support"] += 1
 
         if dist_res == 100.0:
-            if is_legacy_epoch:
+            if is_pre_task195:
                 sentinels_detected["legacy_100_resistance"] += 1
             else:
                 sentinels_detected["real_100_resistance"] += 1
@@ -305,8 +315,8 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append(f"| `trend_continuation` detector | {o['missing_trend_continuation']:,} | {o['pct_missing_trend_continuation']}% | Schema Evolution & Enum Key Fix (Commit 782a240) |")
     md.append("")
     md.append("### Sentinel & Fabricated Value Verification")
-    md.append(f"- **Legacy 100.0 Sentinels Remaining (Epochs 1-2):** Support: `{s['legacy_100_support']}`, Resistance: `{s['legacy_100_resistance']}`")
-    md.append(f"- **Legitimate 100.0 Market Distances (Epochs 3-4):** Support: `{s['real_100_support']}`, Resistance: `{s['real_100_resistance']}`")
+    md.append(f"- **Legacy 100.0 Sentinels Remaining (Pre-TASK-195):** Support: `{s['legacy_100_support']}`, Resistance: `{s['legacy_100_resistance']}`")
+    md.append(f"- **Legitimate 100.0 Market Distances (Post-TASK-195):** Support: `{s['real_100_support']}`, Resistance: `{s['real_100_resistance']}`")
     md.append(f"- **Negative Distance Sentinels:** `{s['negative_sentinels']}`")
     total_sentinels = s["legacy_100_support"] + s["legacy_100_resistance"] + s["negative_sentinels"]
     if total_sentinels == 0:
@@ -334,7 +344,18 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
             f"{v['missing_resistance_pct']}% | {v['missing_trend_continuation_pct']}% |"
         )
     md.append("")
-    md.append("> **Key Finding:** In Version 4 (Modern Complete Suite), `net_delta`, OI shape, and `trend_continuation` missingness drops to **0.0%**. Structural distance missingness in v4 reflects genuine physical market conditions (e.g. trading at All-Time Highs with no resistance levels overhead).")
+    v4_entry = next((v for v in audit_res.get("by_version", []) if v.get("feature_version") == 4), None)
+    if v4_entry is not None and v4_entry.get("rows", 0) > 0:
+        md.append(
+            f"> **Key Finding (Version 4 Modern Suite):** Measured missingness in v4 is "
+            f"`net_delta`: {v4_entry['missing_net_delta_pct']}%, "
+            f"OI shape: {v4_entry['missing_oi_shape_pct']}%, "
+            f"`trend_continuation`: {v4_entry['missing_trend_continuation_pct']}%. "
+            f"Structural distance missingness reflects physical market conditions "
+            f"(support: {v4_entry['missing_support_pct']}%, resistance: {v4_entry['missing_resistance_pct']}%)."
+        )
+    else:
+        md.append("> **Key Finding:** Version 4 records are not present in the evaluated sample.")
     md.append("")
     md.append("---")
     md.append("")

@@ -435,11 +435,24 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
         from scripts.audit_ml_missingness import analyze_records
 
         rows = [
-            # Legacy row (fv=1) with 100.0 support sentinel
+            # Legacy row (fv=1) with 100.0 support and resistance sentinel
             {
                 "timestamp": "2026-07-20T10:00:00Z",
                 "feature_version": 1,
                 "structure_features": {"dist_to_nearest_support": 100.0, "dist_to_nearest_resistance": 100.0},
+            },
+            # Epoch 3 row written BEFORE TASK-195 cutoff (2026-07-31 14:00 UTC < 16:09:48Z cutoff)
+            # Old collector was still generating 100.0 sentinels -> flagged as legacy_100_support
+            {
+                "timestamp": "2026-07-31T14:00:00Z",
+                "feature_version": 3,
+                "structure_features": {"dist_to_nearest_support": 100.0},
+            },
+            # Post-TASK-195 row (2026-07-31 17:00 UTC >= 16:09:48Z cutoff) with genuine 100.0 market distance
+            {
+                "timestamp": "2026-07-31T17:00:00Z",
+                "feature_version": 3,
+                "structure_features": {"dist_to_nearest_support": 100.0},
             },
             # Modern row (fv=4) with legitimate 100.0 market distances
             {
@@ -468,11 +481,11 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
 
         res = analyze_records(rows)
         s = res["sentinels"]
-        # Legacy row (v1) increments legacy_100_support and legacy_100_resistance
-        self.assertEqual(s["legacy_100_support"], 1)
+        # Legacy rows (v1 row + pre-TASK-195 v3 row) increment legacy_100_support
+        self.assertEqual(s["legacy_100_support"], 2)
         self.assertEqual(s["legacy_100_resistance"], 1)
-        # Modern row (v4) increments real_100_support and real_100_resistance
-        self.assertEqual(s["real_100_support"], 1)
+        # Modern rows (post-TASK-195 v3 row + v4 row) increment real_100_support and real_100_resistance
+        self.assertEqual(s["real_100_support"], 2)
         self.assertEqual(s["real_100_resistance"], 1)
         # Negative distance flagged
         self.assertEqual(s["negative_sentinels"], 1)
@@ -547,13 +560,40 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
                 content = f.read()
             # Verify clean PASS for 0 legacy sentinels
             self.assertIn("PASS. Zero legacy sentinels", content)
-            self.assertIn("Legitimate 100.0 Market Distances (Epochs 3-4):", content)
+            self.assertIn("Legitimate 100.0 Market Distances (Post-TASK-195):", content)
             # Verify dynamically derived session observations
             self.assertIn("AFTERNOON_CLOSE (14:00-15:30)` (40.0%)", content)
             self.assertIn("MORNING_OPEN (09:15-10:15)` (25.0%)", content)
+            # Verify dynamically derived v4 key finding
+            self.assertIn("Key Finding (Version 4 Modern Suite):", content)
+            self.assertIn("`net_delta`: 0.0%", content)
         finally:
             if os.path.exists(test_filename):
                 os.remove(test_filename)
+
+        # Also verify when v4 is absent
+        mock_no_v4 = dict(mock_audit_res)
+        mock_no_v4["by_version"] = [
+            {
+                "feature_version": 1,
+                "rows": 10,
+                "pct_of_total": 100.0,
+                "missing_net_delta_pct": 100.0,
+                "missing_oi_shape_pct": 100.0,
+                "missing_support_pct": 50.0,
+                "missing_resistance_pct": 50.0,
+                "missing_trend_continuation_pct": 100.0,
+            }
+        ]
+        test_no_v4 = "test_audit_no_v4.md"
+        try:
+            generate_markdown_report(mock_no_v4, test_no_v4)
+            with open(test_no_v4, "r") as f:
+                content_no_v4 = f.read()
+            self.assertIn("Version 4 records are not present in the evaluated sample", content_no_v4)
+        finally:
+            if os.path.exists(test_no_v4):
+                os.remove(test_no_v4)
 
     def test_get_market_session(self):
         from scripts.audit_ml_missingness import get_market_session
