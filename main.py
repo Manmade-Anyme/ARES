@@ -1,12 +1,13 @@
 import asyncio
 from datetime import datetime, time
+import logging
 
 from engine import AresEngine
 from fetchers.price_fetcher import PriceFetcher
 from fetchers.oi_fetcher import OIFetcher
 from fetchers.level_fetcher import LevelFetcher
 from fetchers.tick_feed import TickFeed
-from storage import Storage, load_dhan_credentials_from_supabase
+from storage import Storage, PredictionLogger, load_dhan_credentials_from_supabase
 from position_manager import PositionManager
 from config import settings, detector_names, SESSION_DISPLAY
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
@@ -16,6 +17,8 @@ from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
 from ml_signal.predictor import SignalPredictor
 from options_math import process_options_calculation
+
+logger = logging.getLogger("ares.main")
 
 # ANSI Color Codes for Premium Terminal UI
 G = "\033[92m"  # Green
@@ -64,6 +67,16 @@ def format_signal_console(signal, spot):
         print(f"     {W}• {r}{RESET}")
     print(f"{color}{B}━" * 65 + RESET + "\n")
 
+
+async def _persist_ml_snapshot_before_exit_checks(collector, **snapshot):
+    """Keep risk-management checks live when ML persistence is unavailable."""
+    try:
+        await collector.snapshot(**snapshot)
+        return True
+    except Exception as exc:
+        print(f"MLCollector: signal-bound snapshot persistence failed: {exc}")
+        return False
+
 async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine):
     """
     Sleeps for `total_seconds` (the REST poll interval), but when the
@@ -92,6 +105,23 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                     engine.clear_cooldown()
             except Exception as e:
                 print(f"[-] Tick-driven exit check failed: {e}")
+
+
+async def _record_ml_snapshot(ml_collector, signal, **snapshot_fields):
+    """Persist signal snapshots before exits can label them.
+
+    Ordinary feature snapshots remain fire-and-forget so the polling loop does
+    not acquire a database round trip on every cycle.
+    """
+    try:
+        insert_coro = ml_collector.snapshot(signal=signal, **snapshot_fields)
+        if insert_coro is not None:
+            if signal is not None:
+                await insert_coro
+            else:
+                asyncio.ensure_future(insert_coro)
+    except Exception as e:
+        print(f"[-] _record_ml_snapshot failed: {e}")
 
 async def run():
     """
@@ -127,8 +157,14 @@ async def run():
     ml_predictor = SignalPredictor()
     try:
         ml_predictor.load_model()
-    except Exception as e:
+    except Exception:
         ml_predictor = None
+
+    try:
+        prediction_logger = PredictionLogger()
+    except Exception as pl_err:
+        print(f"{Y}[!] PredictionLogger: inactive ({pl_err}){RESET}")
+        prediction_logger = None
 
     # Make this dynamic via Yahoo Finance Oracle 
     try:
@@ -305,22 +341,49 @@ async def run():
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
 
                 format_signal_console(signal, spot)
+                trade_executed = False
                 try:
-                    await storage.log_signal(signal, spot)
+                    if await storage.log_signal(signal, spot):
+                        trade_executed = True
+                    else:
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Engine: Failed to log signal, aborting trade entry.{RESET}")
                 except Exception as db_err:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
 
-                # Every fired signal is a live trade now (TASK-182 removed the
-                # observation-only gate).
-                try:
-                    position_manager.add_trade(signal, spot, atm=atm)
-                except Exception as pm_err:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
+                if trade_executed:
+                    try:
+                        trade_id, binding_status = await position_manager.add_trade(signal, spot, atm=atm)
+                        signal.trade_id = trade_id
+                        signal.trade_binding_status = binding_status
+                    except Exception as pm_err:
+                        signal.trade_id = None
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
 
-                try:
-                    await send_discord(signal, spot)
-                except Exception as alert_err:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
+                # Log ML prediction asynchronously if model scored this signal (ADR-153)
+                # Invariant: Persists on every inference event even if storage.log_signal fails or trade is aborted.
+                ml_pred = getattr(signal, "ml_prediction", None)
+                if prediction_logger and ml_predictor and ml_pred:
+                    try:
+                        prediction_logger.log_prediction(
+                            probability=ml_pred["probability"],
+                            confidence_tier=ml_pred["confidence_tier"],
+                            model_version=ml_pred["model_version"],
+                            spot=spot,
+                            feature_snapshot=ml_pred.get("features", {}),
+                            signal_id=getattr(signal, "id", None),
+                            trade_id=getattr(signal, "trade_id", None) or None,
+                            source="event_triggered",
+                            timestamp=now,
+                        )
+                    except Exception as log_err:
+                        logger.warning("Non-blocking prediction dispatch error: %s", log_err)
+                        print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Non-blocking prediction dispatch error: {log_err}{RESET}")
+
+                if trade_executed:
+                    try:
+                        await send_discord(signal, spot)
+                    except Exception as alert_err:
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
 
             # ML Data Collection: log a feature snapshot every cycle, signal or not.
             #
@@ -330,26 +393,32 @@ async def run():
             # db_id=None on every row, which is why the label columns were never
             # writable. Nothing in that block mutates candle/atm/full_chain/levels
             # — only the signal's own sizing fields — so the features are identical.
-            ml_collector.snapshot(
+            await _record_ml_snapshot(
+                ml_collector,
+                signal,
                 candle=candle,
                 atm=atm,
                 full_chain=full_chain,
                 levels=levels,
                 spot=spot,
-                signal=signal,
                 pdh=pdh,
                 pdl=pdl,
                 is_expiry=is_expiry,
                 dte=days_to_expiry(expiry_date),
                 timestamp=now,
                 oi_wall_context=engine.latest_oi_wall_context,
+                trade_id=getattr(signal, "trade_id", None) if signal else None,
+                trade_binding_status=(
+                    getattr(signal, "trade_binding_status", "UNRESOLVED")
+                    if signal else "NOT_APPLICABLE"
+                ),
             )
 
             # Update active trades with new spot price. Candle high/low enable
             # intrabar SL/target detection (TASK-172, audit item 11).
             try:
                 trade_events = await position_manager.update_trades(
-                    spot, candle_high=candle.high, candle_low=candle.low
+                    spot, candle_high=candle.high, candle_low=candle.low, candle_timestamp=candle.timestamp
                 )
                 # A stop-out frees the engine cooldown so the next setup can be
                 # taken immediately instead of waiting out the timer.
@@ -410,5 +479,5 @@ if __name__ == "__main__":
         print(f"\n{R}🚨 FATAL ERROR: ARES crashed! {fatal_error}{RESET}", flush=True)
         try:
             asyncio.run(send_error_alert(f"FATAL SYSTEM CRASH: {fatal_error}"))
-        except:
+        except Exception:
             pass

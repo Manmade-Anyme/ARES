@@ -3,9 +3,11 @@ import json
 from collections import deque
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+from uuid import uuid4
 
 from supabase import create_client, Client
 
+from config import settings
 from models import SetupType
 from storage import to_utc_iso
 from .config import MLConfig, DEFAULT_CONFIG
@@ -98,7 +100,7 @@ class MLCollector:
                 prices.append(float(lvl.get("price", 0)))
         return prices
 
-    def snapshot(
+    async def snapshot(
         self,
         candle,
         atm,
@@ -112,7 +114,10 @@ class MLCollector:
         dte: Optional[int] = None,
         timestamp: Optional[datetime] = None,
         oi_wall_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
+        trade_id: Optional[str] = None,
+        trade_binding_status: Optional[str] = None,
+    ):
+        trade_id = trade_id or None
         candle_dict = self._candle_to_dict(candle)
         atm_ce_dict = self._option_row_to_dict(atm.ce)
         atm_pe_dict = self._option_row_to_dict(atm.pe)
@@ -183,17 +188,18 @@ class MLCollector:
         )
 
         signal_generated = signal is not None
-        # db_id (ares_signals.id), NOT signal_id — the latter is a RANDOM 4-digit
-        # display code (models.AresSignal: f"{random.randint(0, 9999):04d}") used
-        # only in Discord alerts. trade_analytics.signal_id stores db_id, so
-        # writing signal_id here left the two tables un-joinable: 0 of 119 prod
-        # rows overlapped, and the trade_outcome/trade_pnl/trade_id columns had
-        # no key to be written against on any row ever collected.
-        #
-        # None when db_id is unset (log_signal failed, or no signal): a NULL is
-        # honest about having nothing to join to; a fabricated key is not.
+        # Bridge mode retains the legacy bigint key only for reconciliation;
+        # signal_uuid is canonical. Greenfield mode writes the same UUID to
+        # signal_id after the cutover migration promotes that column.
         db_id = getattr(signal, "db_id", None) if signal_generated else None
-        signal_id = str(db_id) if db_id is not None else None
+        mode = settings.signal_schema_mode
+        if mode not in {"bridge", "greenfield"}:
+            raise ValueError(f"Unsupported signal schema mode: {mode}")
+        signal_id = (
+            str(db_id) if mode == "bridge" and db_id is not None
+            else str(signal.id) if mode == "greenfield" and signal_generated
+            else None
+        )
         # Enum members must be stored by .value — str(SetupType.X) yields
         # "SetupType.X", which silently broke the detector_scores one-hot below
         # for every row ever collected. See tests/unit/test_ml_feature_fidelity.py.
@@ -221,6 +227,9 @@ class MLCollector:
         }
 
         record = {
+            # A client-generated identity makes a retry safe when PostgREST
+            # commits the first request but the response is lost.
+            "snapshot_uuid": str(uuid4()) if signal_generated else None,
             "timestamp": to_utc_iso(ts),
             "spot": spot,
             "candle_features": json.dumps(candle_feats),
@@ -232,6 +241,12 @@ class MLCollector:
             "meta_features": json.dumps(meta_feats),
             "signal_generated": signal_generated,
             "signal_id": signal_id,
+            "signal_display_id": signal.display_id if signal_generated else None,
+            "trade_binding_status": (
+                trade_binding_status
+                or ("UNRESOLVED" if signal_generated else "NOT_APPLICABLE")
+            ),
+            "trade_id": trade_id or None,
             "signal_setup_type": signal_setup,
             "signal_direction": signal_direction,
             "signal_confidence": signal_confidence,
@@ -240,6 +255,8 @@ class MLCollector:
             "raw_atm_oi": json.dumps({"ce": atm_ce_dict, "pe": atm_pe_dict}),
             "oi_wall_context": oi_wall_context,
         }
+        if mode == "bridge":
+            record["signal_uuid"] = str(signal.id) if signal_generated else None
 
         self._total_snapshots += 1
         if signal_generated:
@@ -247,9 +264,43 @@ class MLCollector:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._insert, record)
         except RuntimeError:
             self._insert(record)
+            return
+
+        requires_barrier = signal_generated
+        if not requires_barrier:
+            future = loop.run_in_executor(None, self._insert, record)
+            future.add_done_callback(self._report_background_insert_failure)
+            return
+
+        for attempt in range(3):
+            try:
+                rows = await loop.run_in_executor(
+                    None, self._upsert_signal_snapshot, record
+                )
+                if not rows:
+                    raise RuntimeError("ML snapshot insert returned no persisted row")
+                row = rows[0] if isinstance(rows, list) else rows
+                canonical = row.get("signal_uuid" if mode == "bridge" else "signal_id")
+                if str(canonical) != str(signal.id):
+                    raise RuntimeError("ML snapshot insert returned a mismatched signal UUID")
+                if str(row.get("trade_id")) != str(trade_id):
+                    raise RuntimeError("ML snapshot insert returned a mismatched trade UUID")
+                return
+            except Exception as exc:
+                if attempt == 2:
+                    raise RuntimeError(
+                        "Failed to persist signal-bound ML snapshot after 3 attempts"
+                    ) from exc
+                await asyncio.sleep(0.25 * (attempt + 1))
+
+    @staticmethod
+    def _report_background_insert_failure(future) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            print(f"MLCollector: background snapshot insert failed: {exc}")
 
     def check_table_exists(self) -> bool:
         try:
@@ -258,11 +309,17 @@ class MLCollector:
         except Exception:
             return False
 
-    def _insert(self, record: Dict[str, Any]) -> None:
-        try:
-            self.supabase.table("ml_collection").insert(record).execute()
-        except Exception:
-            pass
+    def _insert(self, record: Dict[str, Any]):
+        response = self.supabase.table("ml_collection").insert(record).execute()
+        return getattr(response, "data", None)
+
+    def _upsert_signal_snapshot(self, record: Dict[str, Any]):
+        response = (
+            self.supabase.table("ml_collection")
+            .upsert(record, on_conflict="snapshot_uuid")
+            .execute()
+        )
+        return getattr(response, "data", None)
 
     @property
     def stats(self) -> Dict[str, Any]:

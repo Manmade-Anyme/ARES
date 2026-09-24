@@ -1,5 +1,5 @@
 # Session Checkpoint
-**Date:** 2026-09-12  
+**Date:** 2026-09-24  
 **Session:** MANM-154 (Audit and resolve feature-versioning and missing-data inconsistency in ml_collection)  
 
 ## Completed This Session
@@ -16,20 +16,27 @@
     - Invariant rule: missing data MUST be stored as `None`/`null` and flattened to `np.nan`.
     - Dual-track training policy: Baseline invariant models (v1-v4) vs enriched production models (v3+/v4) with explicit presence indicators (`has_nearest_support`, etc.).
     - File-level implementation specification for Code Generator Agent.
+- **Previous Session Merged**:
+  - Successfully integrated completed TASK-153 (`TASK-153_prediction_persistence.md`) from `origin/main` into the branch.
 - **Documentation & Tracking**:
   - Updated `directives/adr/INDEX.md` with MANM-154.
   - Initialized `tasks/BACKLOG.md` and `tasks/SPRINT_PLAN.md`.
   - Synced documentation to `docs/Ares Build Log.md` and Obsidian vault.
 
 ## Open Tasks
-- [ ] Human review and approval of ADR MANM-154.
-- [ ] Hand off implementation to Code Generator Agent (migration SQL, `collector.py`, `signal_consumer.py`, `dataset.py`, `train_offline.py`, and `audit_ml_missingness.py`).
-- [ ] QA verification and unit test execution.
+- [x] Resolve merge conflict with `origin/main` (PR #118).
+- [ ] Implement `feature_version` column and migration (`migrations/2026-09-24-manm154-feature-versioning.sql`).
+- [ ] Update `collector.py` and `signal_consumer.py` to assign current feature version.
+- [ ] Update `dataset.py` and `train_offline.py` for feature version filtering and missingness indicator features.
+- [ ] Run missingness audit script and generate final report.
+- [ ] QA test verification.
 
 ## Blockers
-- Awaiting human review and approval of ADR MANM-154 before code generation starts.
+- None.
 
 ## Agent States
-- **Software Architect**: Investigated missingness root causes, defined schema versioning and missing data contracts, authored ADR MANM-154, and opened Pull Request.
+- **Software Architect**: Completed ADR MANM-154 and schema versioning design.
 - **Project Manager**: Outlined intent directive in `directives/MANM-154_audit_missing_data.md`.
-- **Code Generator**: Idle, awaiting human ADR approval.
+- **Code Generator**: In progress with merge conflict resolution and implementation.
+- **QA**: Ready to validate tests upon implementation.
+

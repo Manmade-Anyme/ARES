@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
 
 import joblib
-import numpy as np
 import pandas as pd
 
 from .config import MLConfig, DEFAULT_CONFIG

@@ -3,11 +3,45 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
+- **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
+
+### Fixed
+- **ML prediction lifecycle & runner security (MANM-153)**: Guaranteed prediction persistence in main engine loop even when signal logging fails or trade entry is aborted. Enforced service-role credential contract in `PredictionLogger` across injected clients and standalone runners (`live.py`, `signal_consumer.py`), introduced strongly-typed `PredictionRecord` dataclass, replaced raw print statements with structured logging, and added operator warning prohibiting concurrent execution of `signal_consumer` alongside `main.py`.
+- **ML prediction executor dispatch & boolean sanitization (MANM-153)**: Reordered `_sanitize_value` type branches so boolean values (`bool`, `np.bool_`) are preserved rather than cast to integers (`1`/`0`). Dispatched all `PredictionLogger.log_prediction` calls to `_executor.submit` uniformly, eliminating blocking inline synchronous execution when invoked outside an active event loop.
+- **LiveRunner anonymous prediction fallback removal (MANM-153)**: Removed the legacy direct anonymous insert fallback in `LiveRunner.log_prediction` and cleared `_supabase` when persistence is inactive, ensuring `LiveRunner` returns immediately when `PredictionLogger` is not configured and never performs doomed unauthorized inserts against `ml_predictions` using the anon key.
+- **Sensitive credential & PII redaction in feature sanitization (MANM-153)**: Implemented recursive prohibited key redaction in `sanitize_feature_snapshot()` and `_sanitize_value()`, filtering out credentials, tokens, secrets, client/account IDs, names (`customer_name`, `user_name`), email addresses (`email_address`), IP variants (`source_ip`, `client_ip`, `ip`), phone numbers, and user identities from serialized JSONB snapshots, strictly enforcing documented zero-PII security invariants.
+- **Scope migration column detection to target schema (MANM-153)**: Qualified all `information_schema.columns` inspection queries with `table_schema = current_schema()` in `migrations/2026-09-12-task153-ml-predictions-schema.sql` to avoid false negatives on multi-schema databases when renaming legacy `features` to `feature_snapshot`.
+- **Clean-install prediction security (MANM-153)**: Apply the service-role-only RLS policies, privilege revocations, and sequence grants to both clean-install schemas as well as the upgrade migration.
+- **Canonical prediction signal migration (MANM-153)**: Backfill standardized `ml_predictions.signal_id` from bridge-mode `signal_uuid` so upgraded historical predictions retain canonical signal linkage.
+- **Standalone prediction schema compatibility (MANM-153)**: Restrict signal-consumer inserts to standardized `ml_predictions` columns, persist the canonical signal UUID in both schema modes, and retry signals whose prediction insert fails instead of marking them processed.
+- **Deferred greenfield cutover compatibility (MANM-152)**: Persist and verify the required active-trade entry timestamp when the MANM-150 cutover installs its greenfield trade-entry RPC after this migration.
+- **Report anomaly pagination (MANM-152)**: Filter excluded trades in PostgREST before response limits and paginate weekly/monthly windows so later valid trades are not omitted.
+- **Rebuilt analytics entry time (MANM-152)**: Preserve the authoritative `active_trades.entry_timestamp` when startup reconciliation recreates missing analytics, retaining `created_at` only as a legacy fallback.
+- **Desynchronized anomaly propagation (MANM-152)**: Propagate excluded terminal analytics anomalies to matching active rows even when their durable state is still `OPEN`, allowing startup reconciliation to close them without violating exit completeness constraints.
+- **Open-trade migration safety (MANM-152)**: Keep `active_trades.exit_type` null when backfilling from an `OPEN` analytics row so reconciliation does not mistake a live trade for a terminal one.
+- **Empty offline-training exclusions (MANM-152)**: Abort model training and artifact persistence when anomaly filtering removes every eligible labeled trade.
+- **Exit timestamp migration review fixes (MANM-152)**: Flag inverted legacy rows before chronology validation, persist required entry timestamps through both schema-mode RPCs, and permit intermediate `T1_HIT` active trades without terminal exit telemetry.
+- **Optional ML cutover migration (MANM-150)**: Guard the cutover lock,
+  unresolved-row validation, and canonical-column promotion when
+  `ml_collection` is not installed, while preserving the full safety gate on
+  deployments that enable ML collection.
+- **Optional ML bridge migration and prediction joins (MANM-150)**: Keep the
+  canonical UUID bridge migration deployable when optional ML tables are absent,
+  upgrade installed prediction tables additively, and persist event-consumer
+  prediction UUIDs according to the active bridge/greenfield schema mode.
+- **Terminal write ordering and startup reconciliation (MANM-151)**: Sequence terminal active-trade persistence before dispatching analytics exit logging back to the event loop, preserving entry-future synchronization and continuing analytics logging when active-state writes fail. Filter active rows whose analytics record is already closed so a restart cannot reload a desynced trade for a duplicate exit.
+- **Dry-run terminal label projection (MANM-151)**: Carry phase 0a's reconstructed terminal trades through phase 4 so dry-run output includes prospective ML label writes while preserving the no-database-writes guarantee.
+- **Startup and dry-run reconciliation (MANM-151)**: Isolated best-effort ML reconciliation from active-trade loading so table failures no longer disable live monitoring. Dry-run backfill now carries reconstructed analytics into join-key repair, matching apply-mode previews without writes or false rewrite warnings.
+- **Active-trade persistence ordering (MANM-151)**: Chain asynchronous inserts and state updates per trade so delayed OPEN/T1 writes cannot erase terminal state or cause exits to repeat after restart. Snapshot insert payloads before queuing, report executor failures, and release completed write chains. Regression tests cover both directions, target/stop exits, restart, independent trades, and a failed T1 update.
+- **Backfill review fixes (MANM-151)**: Reconcile terminal trades and recreate missing analytics before repairing ML join keys, preserving display IDs during crash recovery. Require a matching setup for the singleton label fallback so reused display IDs cannot label another setup's snapshot. Added CLI apply/dry-run, repeat-run, and setup fallback regressions.
+- **Trade ML Linkage (MANM-151)**: Standardized `trade_analytics.signal_id` to use the 4-digit display code (text). Added PostgreSQL migrations to cast that identifier safely and add terminal telemetry columns (`exit_price`, `exit_type`, `exit_timestamp`, `pnl_points_override`) to `active_trades`. Analytics entry and exit writes are ordered per trade, and signal-bearing ML snapshots now finish inserting before same-cycle exits can label them. Live and batch ML backfills select one exact row using display ID, setup, and entry-time correlation, normalizing legacy naive-IST timestamps to UTC; repeated runs skip trades that already own an ML row and propagate `trade_score` with the other labels. Orphan recovery reserves modern signals by the preserved database ID rather than the reusable display code. Startup automatically reconciles terminal telemetry into analytics and ML labels after a crash, including recreating a missing analytics entry when the original insert never committed. `repair_be_after_t1` now projects and uses the metadata required for safe fallback resolution.
+
 
 ### Removed
 - **Automatic BE time-stop from trade exits (MANM-108)**: Completely removed the timer-based break-even stop feature (`time_stop_minutes`, `_apply_time_stop`, and live `TIME_STOP` exit states). Open trades retain their original stop-loss until genuine target/SL execution. Historical `TIME_STOP` records in `ml_collection` are preserved and mapped to loss (`0`) in `classify_ares_outcome` during offline ML model retraining to avoid label bias.
 
 ### Added
+- **ML Prediction Persistence & Auditing Schema (MANM-153)**: Standardized `ml_predictions` schema in Supabase with `feature_snapshot jsonb`, `trade_id uuid`, `signal_id text`, `source text`, and query optimization indexes (`idx_ml_pred_timestamp`, `idx_ml_pred_signal`, `idx_ml_pred_trade`, `idx_ml_pred_model_version`, `idx_ml_pred_confidence`, `idx_ml_pred_source`). Added `PredictionLogger` in `storage.py` backed by a private bounded `ThreadPoolExecutor(max_workers=2)` for 100% non-blocking prediction persistence with full runtime exception suppression and synchronous fallback. Implemented pure `sanitize_feature_snapshot` converting NumPy types, rounding floats to 6 decimals, and guarding against NaN/Inf. Linked `trade_id` from `PositionManager.add_trade` onto `AresSignal` for single-step atomic persistence in `main.py` without secondary updates or race conditions. Added idempotent database migration `migrations/2026-09-12-task153-ml-predictions-schema.sql` with service-role RLS policies, documented 90-day retention and privacy policy in `docs/data_retention_and_privacy.md`, and added full unit test suite with 100% component coverage.
 - **Weekly Sharpe and SHAP Discord report**: Saturday ML training now records a
   zero-risk-free-rate annualized active-trading-day Sharpe diagnostic from
   realized NIFTY spot P&L grouped by each trade's IST exit date. The workflow posts only the metrics and SHAP chart
@@ -27,6 +61,20 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Research & Documentation Workflow Standard (MANM-5)**: Established the end-to-end workflow pipeline connecting technical spikes, architecture decisions (ADRs), PRD generation (`to-prd`), tracer-bullet vertical slice backlog creation (`to-issues`), and continuous documentation sync. Added standardized templates in `directives/templates/` (`RESEARCH_SPIKE_TEMPLATE.md`, `ARCHITECTURE_ADR_TEMPLATE.md`, `PRD_TEMPLATE.md`, `VERTICAL_SLICE_ISSUE_TEMPLATE.md`, `RELEASE_DOC_SYNC_TEMPLATE.md`) and the master specification in `docs/RESEARCH_AND_DOCUMENTATION_WORKFLOW.md`. Synchronized workflows and task log to the local Obsidian knowledge vault (`~/Documents/Obsidian/Projects/Ares/`).
 
 ### Fixed
+- **Canonical signal join regression set (MANM-150)**: Completed bridge/greenfield
+  schema-mode dispatch, verified signal and atomic trade persistence, restored
+  entry-time ATM OI context, kept routine ML snapshots off the exit-processing
+  critical path, persisted canonical signal/trade binding fields, validated
+  idempotent RPC conflicts, and retained four-digit display IDs in trade alerts.
+  Signal-bound ML retries now upsert by a stable snapshot UUID, exhausted ML
+  writes no longer suppress same-candle exit checks, and migrated/event-consumer
+  alerts fall back to presentation IDs without exposing canonical UUIDs. The
+  unfinished historical-backfill CLI now fails closed instead of reporting a
+  successful dry-run audit without executing validation queries.
+- **Signal UUID cutover guard (MANM-150)**: Block the bridge-to-greenfield
+  migration under an exclusive write lock before column renames when active
+  trades, analytics rows, or signal-bearing/trade-bound ML snapshots still
+  lack canonical signal UUIDs.
 - **OI wall rejection silenced by mid-retest wall displacement (MANM-110)**:
   `detectors/oi_wall.py` now preserves the currently tracked wall when a
   qualifying opposite-side wall appears marginally closer to spot during the
