@@ -1,7 +1,7 @@
 # MANM-154: Missingness & Feature-Versioning Audit Report
 
-**Audit Generated:** 2026-09-24 09:33:06Z
-**Total Records Evaluated:** 17,777
+**Audit Generated:** 2026-09-24 09:51:53Z
+**Total Records Evaluated:** 17,795
 
 ---
 
@@ -9,11 +9,11 @@
 
 | Target Feature Category | Missing Count | % Missing | Root Cause Classification |
 |---|---|---|---|
-| `net_delta` (`greek_features`) | 8,996 | 50.6% | Schema Evolution (TASK-4c introduced 2026-08-21) |
-| OI Shape fields (`oi_features`) | 3,729 | 20.98% | Schema Evolution (TASK-194 introduced 2026-07-31) |
-| `dist_to_nearest_support` | 6,672 | 37.53% | Market Regime & Sentinel Cleanup (TASK-195) |
-| `dist_to_nearest_resistance` | 2,865 | 16.12% | Market Regime (ATH Pivot Invariance) & Sentinel Cleanup |
-| `trend_continuation` detector | 2,606 | 14.66% | Schema Evolution & Enum Key Fix (Commit 782a240) |
+| `net_delta` (`greek_features`) | 8,996 | 50.55% | Schema Evolution (TASK-4c introduced 2026-08-21) |
+| OI Shape fields (`oi_features`) | 3,729 | 20.96% | Schema Evolution (TASK-194 introduced 2026-07-31) |
+| `dist_to_nearest_support` | 6,690 | 37.59% | Market Regime & Sentinel Cleanup (TASK-195) |
+| `dist_to_nearest_resistance` | 2,865 | 16.1% | Market Regime (ATH Pivot Invariance) & Sentinel Cleanup |
+| `trend_continuation` detector | 2,606 | 14.64% | Schema Evolution & Enum Key Fix (Commit 782a240) |
 
 ### Sentinel & Fabricated Value Verification
 - **Legacy 100.0 Sentinels Remaining (Pre-TASK-195):** Support: `0`, Resistance: `0`
@@ -27,12 +27,12 @@
 
 | Feature Version | Epoch Description | Sample Count | % Total | `net_delta` Miss% | OI Shape Miss% | Support Miss% | Resist Miss% | Trend Miss% |
 |---|---|---|---|---|---|---|---|---|
-| Version 1 | v1 Legacy Inception (< Jul 28) | 2,405 | 13.53% | 100.0% | 100.0% | 43.0% | 18.3% | 100.0% |
-| Version 2 | v2 Dynamic Setup Enums (Jul 28-31) | 1,324 | 7.45% | 100.0% | 100.0% | 0.1% | 62.7% | 15.2% |
-| Version 3 | v3 OI Shape Suite (Jul 31 - Aug 21) | 5,264 | 29.61% | 100.0% | 0.0% | 39.8% | 14.0% | 0.0% |
-| Version 4 | v4 Full Modern Suite (Aug 21+) | 8,784 | 49.41% | 0.0% | 0.0% | 40.3% | 9.8% | 0.0% |
+| Version 1 | v1 Legacy Inception (< Jul 28) | 2,405 | 13.52% | 100.0% | 100.0% | 43.0% | 18.3% | 100.0% |
+| Version 2 | v2 Dynamic Setup Enums (Jul 28-31) | 1,324 | 7.44% | 100.0% | 100.0% | 0.1% | 62.7% | 15.2% |
+| Version 3 | v3 OI Shape Suite (Jul 31 - Aug 21) | 5,264 | 29.58% | 100.0% | 0.0% | 39.8% | 14.0% | 0.0% |
+| Version 4 | v4 Full Modern Suite (Aug 21+) | 8,802 | 49.46% | 0.0% | 0.0% | 40.4% | 9.8% | 0.0% |
 
-> **Key Finding (Version 4 Modern Suite):** Measured missingness in v4 is `net_delta`: 0.0%, OI shape: 0.0%, `trend_continuation`: 0.0%. Structural distance missingness reflects physical market conditions (support: 40.3%, resistance: 9.8%).
+> **Key Finding (Version 4 Modern Suite):** Measured missingness in v4 is `net_delta`: 0.0%, OI shape: 0.0%, `trend_continuation`: 0.0%. Structural distance missingness reflects physical market conditions (support: 40.4%, resistance: 9.8%).
 
 ---
 
@@ -40,15 +40,71 @@
 
 | Market Session Phase | Sample Count | % Total | `net_delta` Miss% | OI Shape Miss% | Support Miss% | Resist Miss% | Trend Miss% |
 |---|---|---|---|---|---|---|---|
-| `AFTERNOON_CLOSE (14:00-15:30)` | 4,201 | 23.63% | 50.6% | 21.1% | 40.5% | 15.1% | 14.7% |
-| `MID_DAY (10:15-14:00)` | 10,710 | 60.25% | 50.5% | 20.9% | 38.4% | 16.3% | 14.6% |
-| `MORNING_OPEN (09:15-10:15)` | 2,866 | 16.12% | 51.0% | 21.2% | 30.1% | 16.9% | 14.9% |
+| `AFTERNOON_CLOSE (14:00-15:30)` | 4,219 | 23.71% | 50.3% | 21.0% | 40.8% | 15.1% | 14.6% |
+| `MID_DAY (10:15-14:00)` | 10,710 | 60.19% | 50.5% | 20.9% | 38.4% | 16.3% | 14.6% |
+| `MORNING_OPEN (09:15-10:15)` | 2,866 | 16.11% | 51.0% | 21.2% | 30.1% | 16.9% | 14.9% |
 
-> **Session Observation:** Structural distance missingness varies by phase: support missingness peaks during `AFTERNOON_CLOSE (14:00-15:30)` (40.5%), while resistance missingness peaks during `MORNING_OPEN (09:15-10:15)` (16.9%).
+> **Session Observation:** Structural distance missingness varies by phase: support missingness peaks during `AFTERNOON_CLOSE (14:00-15:30)` (40.8%), while resistance missingness peaks during `MORNING_OPEN (09:15-10:15)` (16.9%).
 
 ---
 
-## 4. Weekly Temporal Progression
+## 4. Daily Missingness Breakdown
+
+| Date | Sample Count | Active Versions | `net_delta` Miss% | OI Shape Miss% | Support Miss% | Resist Miss% | Trend Miss% |
+|---|---|---|---|---|---|---|---|
+| `2026-07-20` | 384 | v1 | 100.0% | 100.0% | 0.0% | 0.0% | 100.0% |
+| `2026-07-21` | 375 | v1 | 100.0% | 100.0% | 0.0% | 0.0% | 100.0% |
+| `2026-07-22` | 374 | v1 | 100.0% | 100.0% | 99.2% | 0.0% | 100.0% |
+| `2026-07-23` | 374 | v1 | 100.0% | 100.0% | 83.4% | 0.0% | 100.0% |
+| `2026-07-24` | 372 | v1 | 100.0% | 100.0% | 94.6% | 0.0% | 100.0% |
+| `2026-07-27` | 361 | v1 | 100.0% | 100.0% | 0.0% | 96.7% | 100.0% |
+| `2026-07-28` | 368 | v1,v2 | 100.0% | 100.0% | 0.0% | 38.0% | 99.5% |
+| `2026-07-29` | 373 | v2 | 100.0% | 100.0% | 0.0% | 97.9% | 0.0% |
+| `2026-07-30` | 374 | v2 | 100.0% | 100.0% | 0.3% | 22.2% | 0.0% |
+| `2026-07-31` | 374 | v2 | 100.0% | 100.0% | 0.0% | 88.8% | 0.0% |
+| `2026-08-01` | 1 | v3 | 100.0% | 0.0% | 0.0% | 100.0% | 0.0% |
+| `2026-08-03` | 374 | v3 | 100.0% | 0.0% | 0.0% | 97.3% | 0.0% |
+| `2026-08-04` | 374 | v3 | 100.0% | 0.0% | 51.1% | 0.0% | 0.0% |
+| `2026-08-05` | 374 | v3 | 100.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+| `2026-08-06` | 293 | v3 | 100.0% | 0.0% | 0.0% | 0.3% | 0.0% |
+| `2026-08-07` | 370 | v3 | 100.0% | 0.0% | 88.1% | 0.0% | 0.0% |
+| `2026-08-10` | 374 | v3 | 100.0% | 0.0% | 1.6% | 0.0% | 0.0% |
+| `2026-08-11` | 371 | v3 | 100.0% | 0.0% | 99.5% | 0.0% | 0.0% |
+| `2026-08-12` | 372 | v3 | 100.0% | 0.0% | 93.0% | 0.0% | 0.0% |
+| `2026-08-13` | 374 | v3 | 100.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+| `2026-08-14` | 374 | v3 | 100.0% | 0.0% | 2.1% | 0.0% | 0.0% |
+| `2026-08-17` | 374 | v3 | 100.0% | 0.0% | 43.6% | 0.0% | 0.0% |
+| `2026-08-18` | 370 | v3 | 100.0% | 0.0% | 86.5% | 0.0% | 0.0% |
+| `2026-08-19` | 374 | v3 | 100.0% | 0.0% | 98.1% | 0.0% | 0.0% |
+| `2026-08-20` | 373 | v3 | 100.0% | 0.0% | 0.0% | 98.7% | 0.0% |
+| `2026-08-21` | 374 | v3,v4 | 33.4% | 0.0% | 0.0% | 0.3% | 0.0% |
+| `2026-08-24` | 373 | v4 | 0.0% | 0.0% | 65.4% | 3.8% | 0.0% |
+| `2026-08-25` | 373 | v4 | 0.0% | 0.0% | 32.7% | 0.0% | 0.0% |
+| `2026-08-26` | 373 | v4 | 0.0% | 0.0% | 0.0% | 14.7% | 0.0% |
+| `2026-08-27` | 373 | v4 | 0.0% | 0.0% | 92.0% | 0.0% | 0.0% |
+| `2026-08-28` | 373 | v4 | 0.0% | 0.0% | 6.4% | 0.0% | 0.0% |
+| `2026-08-31` | 372 | v4 | 0.0% | 0.0% | 93.5% | 0.0% | 0.0% |
+| `2026-09-01` | 372 | v4 | 0.0% | 0.0% | 25.0% | 1.3% | 0.0% |
+| `2026-09-02` | 367 | v4 | 0.0% | 0.0% | 97.5% | 0.0% | 0.0% |
+| `2026-09-03` | 372 | v4 | 0.0% | 0.0% | 0.0% | 66.9% | 0.0% |
+| `2026-09-04` | 372 | v4 | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+| `2026-09-07` | 367 | v4 | 0.0% | 0.0% | 97.0% | 0.0% | 0.0% |
+| `2026-09-08` | 372 | v4 | 0.0% | 0.0% | 98.9% | 0.0% | 0.0% |
+| `2026-09-09` | 371 | v4 | 0.0% | 0.0% | 97.6% | 0.0% | 0.0% |
+| `2026-09-10` | 374 | v4 | 0.0% | 0.0% | 58.0% | 0.0% | 0.0% |
+| `2026-09-11` | 374 | v4 | 0.0% | 0.0% | 71.9% | 0.0% | 0.0% |
+| `2026-09-15` | 373 | v4 | 0.0% | 0.0% | 20.1% | 6.7% | 0.0% |
+| `2026-09-16` | 372 | v4 | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+| `2026-09-17` | 373 | v4 | 0.0% | 0.0% | 0.0% | 50.1% | 0.0% |
+| `2026-09-18` | 372 | v4 | 0.0% | 0.0% | 0.0% | 7.0% | 0.0% |
+| `2026-09-21` | 373 | v4 | 0.0% | 0.0% | 0.0% | 79.6% | 0.0% |
+| `2026-09-22` | 372 | v4 | 0.0% | 0.0% | 4.3% | 0.8% | 0.0% |
+| `2026-09-23` | 373 | v4 | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+| `2026-09-24` | 364 | v4 | 0.0% | 0.0% | 99.7% | 0.0% | 0.0% |
+
+---
+
+## 5. Weekly Temporal Progression
 
 | Year-Week | Sample Count | Active Versions | `net_delta` Miss% | OI Shape Miss% | Support Miss% | Resist Miss% | Trend Miss% |
 |---|---|---|---|---|---|---|---|
@@ -61,11 +117,11 @@
 | `2026-W35` | 1,855 | v4 | 0.0% | 0.0% | 43.1% | 13.7% | 0.0% |
 | `2026-W36` | 1,858 | v4 | 0.0% | 0.0% | 84.6% | 0.0% | 0.0% |
 | `2026-W37` | 1,490 | v4 | 0.0% | 0.0% | 5.0% | 16.0% | 0.0% |
-| `2026-W38` | 1,464 | v4 | 0.0% | 0.0% | 24.7% | 20.5% | 0.0% |
+| `2026-W38` | 1,482 | v4 | 0.0% | 0.0% | 25.6% | 20.2% | 0.0% |
 
 ---
 
-## 5. Architectural Recommendations for Model Training
+## 6. Architectural Recommendations for Model Training
 
 ### 1. Exclusion vs Imputation vs Indicator Features
 - **Exclusion (Drop Rows): REJECTED as a global strategy.** Dropping rows with missing features would eliminate >60% of historical samples, including valuable market regimes from June and July 2026. Furthermore, realized trade outcomes are scarce (<150 closed trades total); dropping early trades would starve the model of training signal.
@@ -82,7 +138,7 @@
 
 ---
 
-## 6. Implementation Verification
+## 7. Implementation Verification
 - `feature_version` column added to schema and migration script created.
 - `MLCollector.snapshot` stamps `feature_version = 4` on all new rows.
 - `signal_consumer.py` synthetic zero injection bug (MANM-49) eliminated; missing options evaluate to `None`/`NaN`.

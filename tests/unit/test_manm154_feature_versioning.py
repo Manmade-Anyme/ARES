@@ -489,6 +489,11 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
         self.assertEqual(s["real_100_resistance"], 1)
         # Negative distance flagged
         self.assertEqual(s["negative_sentinels"], 1)
+        # Verify by_date aggregation exists and captures unique dates
+        self.assertIn("by_date", res)
+        dates_recorded = [d["date"] for d in res["by_date"]]
+        self.assertIn("2026-07-20", dates_recorded)
+        self.assertIn("2026-09-10", dates_recorded)
 
     def test_generate_markdown_report_supports_filename_without_dir(self):
         from scripts.audit_ml_missingness import generate_markdown_report
@@ -548,6 +553,18 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
                     "missing_trend_continuation_pct": 0.0,
                 },
             ],
+            "by_date": [
+                {
+                    "date": "2026-09-10",
+                    "rows": 10,
+                    "feature_versions": [4],
+                    "missing_net_delta_pct": 0.0,
+                    "missing_oi_shape_pct": 0.0,
+                    "missing_support_pct": 30.0,
+                    "missing_resistance_pct": 10.0,
+                    "missing_trend_continuation_pct": 0.0,
+                }
+            ],
             "by_week": [],
         }
 
@@ -567,6 +584,10 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
             # Verify dynamically derived v4 key finding
             self.assertIn("Key Finding (Version 4 Modern Suite):", content)
             self.assertIn("`net_delta`: 0.0%", content)
+            # Verify Daily Missingness Breakdown table
+            self.assertIn("## 4. Daily Missingness Breakdown", content)
+            self.assertIn("`2026-09-10`", content)
+            self.assertIn("## 5. Weekly Temporal Progression", content)
         finally:
             if os.path.exists(test_filename):
                 os.remove(test_filename)

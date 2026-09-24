@@ -266,7 +266,22 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "missing_trend_continuation_pct": round(grp["missing_trend_continuation"].mean() * 100, 1),
         })
 
-    # 4. Weekly/Monthly temporal progression
+    # 4. Daily breakdown (by date)
+    by_date = []
+    for dt, grp in df.groupby("date"):
+        n = len(grp)
+        by_date.append({
+            "date": str(dt),
+            "rows": n,
+            "feature_versions": sorted(list(grp["feature_version"].unique())),
+            "missing_net_delta_pct": round(grp["missing_net_delta"].mean() * 100, 1),
+            "missing_oi_shape_pct": round(grp["missing_oi_shape"].mean() * 100, 1),
+            "missing_support_pct": round(grp["missing_support"].mean() * 100, 1),
+            "missing_resistance_pct": round(grp["missing_resistance"].mean() * 100, 1),
+            "missing_trend_continuation_pct": round(grp["missing_trend_continuation"].mean() * 100, 1),
+        })
+
+    # 5. Weekly/Monthly temporal progression
     df["year_week"] = df["timestamp"].dt.strftime("%Y-W%W")
     by_week = []
     for week, grp in df.groupby("year_week"):
@@ -287,6 +302,7 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "sentinels": sentinels_detected,
         "by_version": by_version,
         "by_session": by_session,
+        "by_date": by_date,
         "by_week": by_week,
     }
 
@@ -381,7 +397,21 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append("")
     md.append("---")
     md.append("")
-    md.append("## 4. Weekly Temporal Progression")
+    md.append("## 4. Daily Missingness Breakdown")
+    md.append("")
+    md.append("| Date | Sample Count | Active Versions | `net_delta` Miss% | OI Shape Miss% | Support Miss% | Resist Miss% | Trend Miss% |")
+    md.append("|---|---|---|---|---|---|---|---|")
+    for d in audit_res.get("by_date", []):
+        v_str = ",".join(f"v{v}" for v in d["feature_versions"])
+        md.append(
+            f"| `{d['date']}` | {d['rows']:,} | {v_str} | "
+            f"{d['missing_net_delta_pct']}% | {d['missing_oi_shape_pct']}% | {d['missing_support_pct']}% | "
+            f"{d['missing_resistance_pct']}% | {d['missing_trend_continuation_pct']}% |"
+        )
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## 5. Weekly Temporal Progression")
     md.append("")
     md.append("| Year-Week | Sample Count | Active Versions | `net_delta` Miss% | OI Shape Miss% | Support Miss% | Resist Miss% | Trend Miss% |")
     md.append("|---|---|---|---|---|---|---|---|")
@@ -395,7 +425,7 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append("")
     md.append("---")
     md.append("")
-    md.append("## 5. Architectural Recommendations for Model Training")
+    md.append("## 6. Architectural Recommendations for Model Training")
     md.append("")
     md.append("### 1. Exclusion vs Imputation vs Indicator Features")
     md.append("- **Exclusion (Drop Rows): REJECTED as a global strategy.** Dropping rows with missing features would eliminate >60% of historical samples, including valuable market regimes from June and July 2026. Furthermore, realized trade outcomes are scarce (<150 closed trades total); dropping early trades would starve the model of training signal.")
@@ -412,7 +442,7 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append("")
     md.append("---")
     md.append("")
-    md.append("## 6. Implementation Verification")
+    md.append("## 7. Implementation Verification")
     md.append("- `feature_version` column added to schema and migration script created.")
     md.append("- `MLCollector.snapshot` stamps `feature_version = 4` on all new rows.")
     md.append("- `signal_consumer.py` synthetic zero injection bug (MANM-49) eliminated; missing options evaluate to `None`/`NaN`.")
