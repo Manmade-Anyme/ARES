@@ -87,10 +87,15 @@ class LevelFetcher:
 
             # CE Walls (Resistance - usually above spot)
             if strike >= spot_price:
-                ce_oi = row["ce_oi"]
-                ce_oi_change_pct = row["ce_oi_change_pct"]
+                ce_oi = row.get("ce_oi")
+                ce_oi_change_pct = row.get("ce_oi_change_pct")
                 
-                if ce_oi > oi_wall_threshold and ce_oi_change_pct > settings.oi_wall_min_oi_change_pct:
+                if (
+                    ce_oi is not None
+                    and ce_oi_change_pct is not None
+                    and ce_oi > oi_wall_threshold
+                    and ce_oi_change_pct > settings.oi_wall_min_oi_change_pct
+                ):
                     strength = 2 if ce_oi > (oi_wall_threshold * 2) else 1
                     add_level(ResistanceLevel(
                         price=strike,
@@ -100,10 +105,15 @@ class LevelFetcher:
 
             # PE Walls (Support - usually below spot)
             if strike <= spot_price:
-                pe_oi = row["pe_oi"]
-                pe_oi_change_pct = row["pe_oi_change_pct"]
+                pe_oi = row.get("pe_oi")
+                pe_oi_change_pct = row.get("pe_oi_change_pct")
                 
-                if pe_oi > oi_wall_threshold and pe_oi_change_pct > settings.oi_wall_min_oi_change_pct:
+                if (
+                    pe_oi is not None
+                    and pe_oi_change_pct is not None
+                    and pe_oi > oi_wall_threshold
+                    and pe_oi_change_pct > settings.oi_wall_min_oi_change_pct
+                ):
                     strength = 2 if pe_oi > (oi_wall_threshold * 2) else 1
                     add_level(ResistanceLevel(
                         price=strike,

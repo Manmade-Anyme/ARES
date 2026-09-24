@@ -320,7 +320,8 @@ def build_feature_vector(
     if use:
         iv_ce = atm_ce.get("iv") if isinstance(atm_ce, dict) else None
         iv_pe = atm_pe.get("iv") if isinstance(atm_pe, dict) else None
-        current_iv = iv_ce if iv_ce is not None else iv_pe
+        # Keep IV source aligned with MLCollector (collector.py:163) and iv_history
+        current_iv = iv_ce
         iv_feats = compute_iv_features(
             current_iv=current_iv,
             iv_ce=iv_ce,

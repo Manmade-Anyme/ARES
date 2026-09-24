@@ -1215,5 +1215,166 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
             self.assertEqual(cm.exception.code, 1)
 
 
+class TestLevelFetcherMissingOI(unittest.TestCase):
+    def test_build_levels_with_missing_oi(self):
+        from fetchers.level_fetcher import LevelFetcher
+        level_fetcher = LevelFetcher()
+
+        full_chain = [
+            {
+                "strike": 24100,
+                "ce_oi": None,
+                "ce_oi_change_pct": None,
+                "pe_oi": 500000,
+                "pe_oi_change_pct": 25.0,
+            },
+            {
+                "strike": 23900,
+                "ce_oi": 600000,
+                "ce_oi_change_pct": 30.0,
+                "pe_oi": None,
+                "pe_oi_change_pct": None,
+            },
+            {
+                "strike": 24200,
+                "ce_oi": 300000,
+                "ce_oi_change_pct": 15.0,
+                "pe_oi": None,
+                "pe_oi_change_pct": None,
+            },
+            {
+                "strike": 23800,
+                "ce_oi": None,
+                "ce_oi_change_pct": None,
+                "pe_oi": 300000,
+                "pe_oi_change_pct": 15.0,
+            },
+            {
+                "strike": 24000,
+                "ce_oi": None,
+                "ce_oi_change_pct": None,
+                "pe_oi": None,
+                "pe_oi_change_pct": None,
+            },
+        ]
+        # Spot is 24000
+        levels = level_fetcher.build_levels(
+            spot_price=24000.0,
+            full_chain=full_chain,
+            oi_wall_threshold=100000,
+        )
+        # 24100 >= 24000 but ce_oi is None -> skipped
+        # 23900 <= 24000 but pe_oi is None -> skipped
+        # 24200 CE qualifies as wall
+        # 23800 PE qualifies as wall
+        self.assertEqual(len(levels), 2)
+        sources = {lvl.source for lvl in levels}
+        self.assertIn("oi_wall_ce", sources)
+        self.assertIn("oi_wall_pe", sources)
+
+
+class TestAuditNullVsInjectedZero(unittest.TestCase):
+    def test_null_options_payload_not_flagged_as_zero_injection(self):
+        from scripts.audit_ml_missingness import is_zero_injected_option_payload
+
+        # Clean null payload from MLCollector
+        clean_null_raw = {
+            "ce": {"iv": None, "oi": None, "gamma": None, "vega": None},
+            "pe": {"iv": None, "oi": None, "gamma": None, "vega": None},
+        }
+        self.assertFalse(is_zero_injected_option_payload(raw_atm_oi=clean_null_raw))
+
+        # Partial null payload
+        partial_null_raw = {
+            "ce": {"iv": None, "oi": 1000, "gamma": None, "vega": None},
+            "pe": {"iv": None, "oi": None, "gamma": None, "vega": None},
+        }
+        self.assertFalse(is_zero_injected_option_payload(raw_atm_oi=partial_null_raw))
+
+        # Synthetic zeros payload (MANM-49)
+        synthetic_zero_raw = {
+            "ce": {"iv": 0, "oi": 0, "gamma": 0, "vega": 0},
+            "pe": {"iv": 0, "oi": 0, "gamma": 0, "vega": 0},
+        }
+        self.assertTrue(is_zero_injected_option_payload(raw_atm_oi=synthetic_zero_raw))
+
+    def test_derived_features_null_vs_zero_injection(self):
+        from scripts.audit_ml_missingness import is_zero_injected_option_payload
+
+        # Derived features with nulls
+        clean_derived_oi = {
+            "total_ce_oi": None,
+            "total_pe_oi": None,
+            "atm_ce_oi": None,
+            "atm_pe_oi": None,
+        }
+        clean_derived_greek = {
+            "total_vega": None,
+            "gamma_theta_ratio": None,
+        }
+        self.assertFalse(is_zero_injected_option_payload(
+            raw_atm_oi=None,
+            oi_features=clean_derived_oi,
+            greek_features=clean_derived_greek
+        ))
+
+        # Derived features with synthetic zeros
+        zero_derived_oi = {
+            "total_ce_oi": 0,
+            "total_pe_oi": 0,
+            "atm_ce_oi": 0,
+            "atm_pe_oi": 0,
+        }
+        zero_derived_greek = {
+            "total_vega": 0.0,
+            "gamma_theta_ratio": 0.0,
+        }
+        self.assertTrue(is_zero_injected_option_payload(
+            raw_atm_oi=None,
+            oi_features=zero_derived_oi,
+            greek_features=zero_derived_greek
+        ))
+
+
+class TestServingIVConsistency(unittest.TestCase):
+    def test_serving_iv_aligned_with_collector_when_ce_missing(self):
+        candle = {
+            "open": 24000.0,
+            "high": 24050.0,
+            "low": 23980.0,
+            "close": 24020.0,
+            "volume": 50000,
+            "vwap": 24010.0,
+            "timestamp": datetime(2026, 9, 12, 10, 0, 0, tzinfo=timezone.utc),
+        }
+        atm_ce = {"iv": None, "oi": 100000}
+        atm_pe = {"iv": 15.0, "oi": 95000}
+
+        features = build_feature_vector(
+            candle=candle,
+            volume_history=[50000],
+            iv_history=[14.0, 14.2, 14.5],
+            atm_ce=atm_ce,
+            atm_pe=atm_pe,
+            total_ce_oi=100000,
+            total_pe_oi=95000,
+            all_ce_oi=[100000],
+            all_pe_oi=[95000],
+            levels=[],
+            timestamp=datetime(2026, 9, 12, 10, 0, 0, tzinfo=timezone.utc),
+            spot=24020.0,
+        )
+
+        # Serving current_iv is aligned with CE IV (None), matching MLCollector:
+        self.assertIsNone(features["iv_features__iv_level"])
+        self.assertIsNone(features["iv_features__iv_change_1"])
+        self.assertIsNone(features["iv_features__iv_change_5"])
+        self.assertIsNone(features["iv_features__iv_acceleration"])
+        self.assertIsNone(features["iv_features__iv_percentile"])
+        # iv_ce_pe_spread requires both CE and PE IV, so is None
+        self.assertIsNone(features["iv_features__iv_ce_pe_spread"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

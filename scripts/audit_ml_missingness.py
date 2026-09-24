@@ -95,10 +95,17 @@ def is_zero_injected_option_payload(
             pe = raw.get("pe")
             if isinstance(ce, dict) and isinstance(pe, dict) and ce and pe:
                 check_keys = ["iv", "oi", "gamma", "vega"]
-                ce_is_zero = all(float(ce.get(k, 1) or 0) == 0.0 for k in check_keys if k in ce)
-                pe_is_zero = all(float(pe.get(k, 1) or 0) == 0.0 for k in check_keys if k in pe)
-                if ce_is_zero and pe_is_zero and any(k in ce for k in check_keys):
-                    return True
+                # Must be explicitly non-null numeric zero, not null/None (which satisfies the clean missing contract)
+                ce_present = [ce[k] for k in check_keys if k in ce and ce[k] is not None]
+                pe_present = [pe[k] for k in check_keys if k in pe and pe[k] is not None]
+                if ce_present and pe_present:
+                    try:
+                        ce_is_zero = all(not isinstance(v, bool) and float(v) == 0.0 for v in ce_present)
+                        pe_is_zero = all(not isinstance(v, bool) and float(v) == 0.0 for v in pe_present)
+                        if ce_is_zero and pe_is_zero:
+                            return True
+                    except (ValueError, TypeError):
+                        pass
 
     # 2. Check derived oi_features and greek_features if populated with synthetic zeros
     greek = greek_features or {}
@@ -108,9 +115,15 @@ def is_zero_injected_option_payload(
         tot_pe = oi.get("total_pe_oi")
         atm_ce = oi.get("atm_ce_oi")
         atm_pe = oi.get("atm_pe_oi")
+        vega = greek.get("total_vega")
+        gamma_theta = greek.get("gamma_theta_ratio")
         if (
-            tot_ce == 0 and tot_pe == 0 and atm_ce == 0 and atm_pe == 0 and
-            greek.get("total_vega") == 0.0 and greek.get("gamma_theta_ratio") == 0.0
+            tot_ce is not None and not isinstance(tot_ce, bool) and tot_ce == 0 and
+            tot_pe is not None and not isinstance(tot_pe, bool) and tot_pe == 0 and
+            atm_ce is not None and not isinstance(atm_ce, bool) and atm_ce == 0 and
+            atm_pe is not None and not isinstance(atm_pe, bool) and atm_pe == 0 and
+            vega is not None and not isinstance(vega, bool) and vega == 0.0 and
+            gamma_theta is not None and not isinstance(gamma_theta, bool) and gamma_theta == 0.0
         ):
             return True
 
