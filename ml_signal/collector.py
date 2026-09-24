@@ -10,7 +10,7 @@ from supabase import create_client, Client
 from config import settings
 from models import SetupType
 from storage import to_utc_iso
-from .config import MLConfig, DEFAULT_CONFIG
+from .config import MLConfig, DEFAULT_CONFIG, CURRENT_FEATURE_VERSION
 from .features import (
     compute_candle_features,
     compute_volume_features,
@@ -232,6 +232,7 @@ class MLCollector:
             "snapshot_uuid": str(uuid4()) if signal_generated else None,
             "timestamp": to_utc_iso(ts),
             "spot": spot,
+            "feature_version": getattr(self.config, "feature_version", CURRENT_FEATURE_VERSION),
             "candle_features": json.dumps(candle_feats),
             "volume_features": json.dumps(vol_feats),
             "iv_features": json.dumps(iv_feats),

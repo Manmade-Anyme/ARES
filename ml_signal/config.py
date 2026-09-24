@@ -1,8 +1,14 @@
 from dataclasses import dataclass
 
 
+CURRENT_FEATURE_VERSION: int = 4
+
+
 @dataclass
 class MLConfig:
+
+    # Feature & schema versioning (MANM-154)
+    feature_version: int = CURRENT_FEATURE_VERSION
 
     # Model
     model_path: str = "ml_signal/models/v1.joblib"

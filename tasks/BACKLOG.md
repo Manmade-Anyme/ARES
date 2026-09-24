@@ -5,9 +5,10 @@
   - [x] Create intent document for MANM-154 (PM)
   - [x] Investigate `ml_collection` missing data (Architect)
   - [x] Write ADR on handling schema versioning and missing data (Architect) - Proposed in directives/adr/MANM-154_feature-versioning-missing-data.md
-  - [ ] Implement `feature_version` metadata and enforce `NULL`/`NaN` in storage (Code Generator)
-  - [ ] Produce missingness audit report (Code Generator / Architect)
-  - [ ] Review implementation and ensure tests pass (QA & PR Reviewer)
+  - [x] Implement `feature_version` metadata and enforce `NULL`/`NaN` in storage (Code Generator)
+  - [x] Produce missingness audit report (Code Generator / Architect)
+  - [x] Review implementation and ensure tests pass (QA & PR Reviewer)
+
 
 - **MANM-150**: Fix broken signal-to-trade joins between `ares_signals`, `active_trades`, and analytics.
   - [x] Create ADR (Architect) - Proposed in directives/adr/MANM-150_fix-signal-joins.md

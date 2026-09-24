@@ -252,10 +252,10 @@ def build_feature_vector(
     candle: Dict[str, float],
     volume_history: List[int],
     iv_history: Optional[List[float]],
-    atm_ce: Dict[str, Any],
-    atm_pe: Dict[str, Any],
-    total_ce_oi: int,
-    total_pe_oi: int,
+    atm_ce: Optional[Dict[str, Any]],
+    atm_pe: Optional[Dict[str, Any]],
+    total_ce_oi: Optional[int],
+    total_pe_oi: Optional[int],
     all_ce_oi: Optional[List[int]],
     all_pe_oi: Optional[List[int]],
     levels: List[float],
@@ -281,42 +281,76 @@ def build_feature_vector(
 
     use = getattr(config, "use_iv_features", True)
     if use:
-        iv_feats = compute_iv_features(
-            current_iv=atm_ce.get("iv", 0),
-            iv_ce=atm_ce.get("iv", 0),
-            iv_pe=atm_pe.get("iv", 0),
-            iv_history=iv_history,
-        )
+        if atm_ce is not None and atm_pe is not None:
+            iv_feats = compute_iv_features(
+                current_iv=atm_ce.get("iv", 0),
+                iv_ce=atm_ce.get("iv", 0),
+                iv_pe=atm_pe.get("iv", 0),
+                iv_history=iv_history,
+            )
+        else:
+            iv_feats = {
+                "iv_level": None,
+                "iv_ce_pe_spread": None,
+                "iv_change_1": None,
+                "iv_change_5": None,
+                "iv_acceleration": None,
+                "iv_percentile": None,
+            }
         features.update({f"iv_features__{k}": v for k, v in iv_feats.items()})
 
     use = getattr(config, "use_oi_features", True)
     if use:
-        oi_feats = compute_oi_features(
-            atm_ce_oi=atm_ce.get("oi", 0),
-            atm_pe_oi=atm_pe.get("oi", 0),
-            total_ce_oi=total_ce_oi,
-            total_pe_oi=total_pe_oi,
-            ce_oi_change_pct=atm_ce.get("oi_change_pct", 0),
-            pe_oi_change_pct=atm_pe.get("oi_change_pct", 0),
-            all_ce_oi=all_ce_oi,
-            all_pe_oi=all_pe_oi,
-        )
+        if atm_ce is not None and atm_pe is not None and total_ce_oi is not None and total_pe_oi is not None:
+            oi_feats = compute_oi_features(
+                atm_ce_oi=atm_ce.get("oi", 0),
+                atm_pe_oi=atm_pe.get("oi", 0),
+                total_ce_oi=total_ce_oi,
+                total_pe_oi=total_pe_oi,
+                ce_oi_change_pct=atm_ce.get("oi_change_pct", 0),
+                pe_oi_change_pct=atm_pe.get("oi_change_pct", 0),
+                all_ce_oi=all_ce_oi,
+                all_pe_oi=all_pe_oi,
+            )
+        else:
+            oi_feats = {
+                "pcr_oi": None,
+                "oi_bias": None,
+                "atm_ce_oi_change_pct": None,
+                "atm_pe_oi_change_pct": None,
+                "oi_concentration": None,
+                "atm_total_oi": None,
+                "strikes_with_ce_oi": None,
+                "max_ce_oi": None,
+                "p85_ce_oi": None,
+                "strikes_with_pe_oi": None,
+                "max_pe_oi": None,
+                "p85_pe_oi": None,
+            }
         features.update({f"oi_features__{k}": v for k, v in oi_feats.items()})
 
     use = getattr(config, "use_greek_features", True)
     if use:
-        greek_feats = compute_greek_features(
-            atm_ce_gamma=atm_ce.get("gamma", 0),
-            atm_pe_gamma=atm_pe.get("gamma", 0),
-            atm_ce_theta=atm_ce.get("theta", 0),
-            atm_pe_theta=atm_pe.get("theta", 0),
-            atm_ce_vega=atm_ce.get("vega", 0),
-            atm_pe_vega=atm_pe.get("vega", 0),
-            atm_ce_delta=atm_ce.get("delta"),  # None if key absent (old row → NaN)
-            atm_pe_delta=atm_pe.get("delta"),  # None if key absent (old row → NaN)
-            spot=spot,
-        )
+        if atm_ce is not None and atm_pe is not None:
+            greek_feats = compute_greek_features(
+                atm_ce_gamma=atm_ce.get("gamma", 0),
+                atm_pe_gamma=atm_pe.get("gamma", 0),
+                atm_ce_theta=atm_ce.get("theta", 0),
+                atm_pe_theta=atm_pe.get("theta", 0),
+                atm_ce_vega=atm_ce.get("vega", 0),
+                atm_pe_vega=atm_pe.get("vega", 0),
+                atm_ce_delta=atm_ce.get("delta"),  # None if key absent (old row → NaN)
+                atm_pe_delta=atm_pe.get("delta"),  # None if key absent (old row → NaN)
+                spot=spot,
+            )
+        else:
+            greek_feats = {
+                "gamma_theta_ratio": None,
+                "total_vega": None,
+                "net_delta": None,
+            }
         features.update({f"greek_features__{k}": v for k, v in greek_feats.items()})
+
 
     use = getattr(config, "use_structure_features", True)
     if use:

@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS ml_collection (
   trade_pnl numeric,
   trade_score integer,
 
+  -- Feature & schema version metadata (MANM-154)
+  feature_version integer NOT NULL DEFAULT 4,
+
   -- Raw market snapshot for repro
   raw_candle jsonb,
   raw_atm_oi jsonb,
@@ -102,6 +105,7 @@ CREATE TABLE IF NOT EXISTS ml_collection (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ml_collection_timestamp ON ml_collection (timestamp desc);
+CREATE INDEX IF NOT EXISTS idx_ml_collection_feature_version ON ml_collection (feature_version);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_signal ON ml_collection (signal_id);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_trade ON ml_collection (trade_id);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_outcome ON ml_collection (trade_outcome);

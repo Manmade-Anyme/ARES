@@ -23,20 +23,32 @@
   - Initialized `tasks/BACKLOG.md` and `tasks/SPRINT_PLAN.md`.
   - Synced documentation to `docs/Ares Build Log.md` and Obsidian vault.
 
+- **Implementation & Validation Completed (MANM-154)**:
+  - Added `CURRENT_FEATURE_VERSION = 4` to `ml_signal/config.py` and `MLConfig.feature_version`.
+  - Added `feature_version integer NOT NULL DEFAULT 4` and index to `ml_signal/schema.sql`.
+  - Created idempotent migration `migrations/2026-09-24-manm154-feature-versioning.sql` categorizing historical records into 4 schema epochs.
+  - Updated `MLCollector.snapshot` to stamp `feature_version` on all new rows.
+  - Eliminated zero-injection bug MANM-49 in `signal_consumer.py`, `features.py`, and `predictor.py` when options context is absent.
+  - In `ml_signal/dataset.py`, extracted `feature_version` as metadata, excluded it from tree feature inputs, and generated 3 structural presence indicators (`structure__has_nearest_support`, `structure__has_nearest_resistance`, `greek__has_net_delta`).
+  - Updated `ml_signal/train_offline.py` to record `missingness_by_feature_version`.
+  - Created and executed audit script `scripts/audit_ml_missingness.py`, auditing all 17,551 live rows and writing report `reports/ml/manm154_missingness_audit_report.md`.
+  - Authored comprehensive unit tests in `tests/unit/test_manm154_feature_versioning.py` (7/7 passed).
+
 ## Open Tasks
 - [x] Resolve merge conflict with `origin/main` (PR #118).
-- [ ] Implement `feature_version` column and migration (`migrations/2026-09-24-manm154-feature-versioning.sql`).
-- [ ] Update `collector.py` and `signal_consumer.py` to assign current feature version.
-- [ ] Update `dataset.py` and `train_offline.py` for feature version filtering and missingness indicator features.
-- [ ] Run missingness audit script and generate final report.
-- [ ] QA test verification.
+- [x] Implement `feature_version` column and migration (`migrations/2026-09-24-manm154-feature-versioning.sql`).
+- [x] Update `collector.py` and `signal_consumer.py` to assign current feature version and enforce NULL/NaN invariants.
+- [x] Update `dataset.py` and `train_offline.py` for feature version metadata, timestamp epoch fallback, and indicator features.
+- [x] Run missingness audit script and generate final report (`reports/ml/manm154_missingness_audit_report.md`).
+- [x] QA test verification.
 
 ## Blockers
-- None.
+- None. Ready for PR Review.
 
 ## Agent States
 - **Software Architect**: Completed ADR MANM-154 and schema versioning design.
 - **Project Manager**: Outlined intent directive in `directives/MANM-154_audit_missing_data.md`.
-- **Code Generator**: In progress with merge conflict resolution and implementation.
-- **QA**: Ready to validate tests upon implementation.
+- **Code Generator**: Implementation completed.
+- **QA**: Verified with 7/7 component tests passing.
+
 
