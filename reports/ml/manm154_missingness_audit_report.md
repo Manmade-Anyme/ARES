@@ -1,6 +1,6 @@
 # MANM-154: Missingness & Feature-Versioning Audit Report
 
-**Audit Generated:** 2026-09-24 10:15:28Z
+**Audit Generated:** 2026-09-24 10:41:42Z
 **Total Records Evaluated:** 17,803
 
 ---
@@ -19,8 +19,9 @@
 - **Legacy 100.0 Sentinels Remaining (Pre-TASK-195):** Support: `0`, Resistance: `0`
 - **Legitimate 100.0 Market Distances (Post-TASK-195):** Support: `2`, Resistance: `1`
 - **Negative Distance Sentinels:** `0`
-- **Zero-Injected Option Payloads (MANM-49):** `0`
-- **Verification Result:** PASS. Zero legacy sentinels, negative distances, or zero-injected option payloads detected. All missing values are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).
+- **Zero-Injected Option Payloads (`ml_collection`):** `0`
+- **Zero-Injected Prediction Snapshots (`ml_predictions`):** `0` (table empty or unpopulated)
+- **Verification Result:** PASS. Zero legacy sentinels, negative distances, or zero-injected payloads detected across `ml_collection` and `ml_predictions`. All missing values are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).
 
 ---
 

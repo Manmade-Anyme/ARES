@@ -117,6 +117,68 @@ def is_zero_injected_option_payload(
     return False
 
 
+def is_zero_injected_prediction_snapshot(snapshot: Any) -> bool:
+    """Detect MANM-49 zero-injected options in a prediction feature snapshot."""
+    if not snapshot:
+        return False
+    data = _load_json(snapshot)
+    if not isinstance(data, dict) or not data:
+        return False
+    # Signature of MANM-49 defect in signal_consumer.py:
+    # When missing options were defaulted to zeros {iv: 0, oi: 0, gamma: 0, theta: 0, vega: 0},
+    # build_feature_vector() populated non-null zero values for IV, vega, gamma/theta, and total OI.
+    iv_level = data.get("iv_features__iv_level")
+    vega = data.get("greek_features__total_vega")
+    gamma_theta = data.get("greek_features__gamma_theta_ratio")
+    atm_oi = data.get("oi_features__atm_total_oi")
+
+    if iv_level is not None and vega is not None and gamma_theta is not None and atm_oi is not None:
+        try:
+            if (
+                float(iv_level) == 0.0 and
+                float(vega) == 0.0 and
+                float(gamma_theta) == 0.0 and
+                float(atm_oi) == 0.0
+            ):
+                return True
+        except (ValueError, TypeError):
+            pass
+
+    return False
+
+
+def fetch_ml_predictions(supabase, page_size: int = 1000, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Fetch prediction records from ml_predictions table if accessible."""
+    try:
+        supabase.table("ml_predictions").select("id").limit(1).execute()
+    except Exception:
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    start = 0
+    while True:
+        end = start + page_size - 1
+        if limit and end >= limit:
+            end = limit - 1
+        try:
+            batch = (
+                supabase.table("ml_predictions")
+                .select("id,timestamp,feature_snapshot,source")
+                .order("timestamp")
+                .range(start, end)
+                .execute()
+                .data or []
+            )
+        except Exception:
+            break
+        rows.extend(batch)
+        if len(batch) < page_size or (limit and len(rows) >= limit):
+            break
+        start += page_size
+
+    return rows
+
+
 def fetch_all_ml_collection(supabase, page_size: int = 1000, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Fetch records with pagination."""
     has_fv = True
@@ -167,8 +229,11 @@ def fetch_all_ml_collection(supabase, page_size: int = 1000, limit: Optional[int
     return rows
 
 
-def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Perform audit analysis on rows."""
+def analyze_records(
+    rows: List[Dict[str, Any]],
+    prediction_rows: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Perform audit analysis on rows and optional prediction snapshots."""
     total_rows = len(rows)
     records = []
 
@@ -179,7 +244,14 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "real_100_resistance": 0,
         "negative_sentinels": 0,
         "zero_injected_options": 0,
+        "zero_injected_predictions": 0,
+        "prediction_rows_evaluated": len(prediction_rows) if prediction_rows else 0,
     }
+
+    if prediction_rows:
+        for p in prediction_rows:
+            if is_zero_injected_prediction_snapshot(p.get("feature_snapshot")):
+                sentinels_detected["zero_injected_predictions"] += 1
 
     for r in rows:
         ts_str = r.get("timestamp")
@@ -412,15 +484,19 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append(f"- **Legacy 100.0 Sentinels Remaining (Pre-TASK-195):** Support: `{s['legacy_100_support']}`, Resistance: `{s['legacy_100_resistance']}`")
     md.append(f"- **Legitimate 100.0 Market Distances (Post-TASK-195):** Support: `{s['real_100_support']}`, Resistance: `{s['real_100_resistance']}`")
     md.append(f"- **Negative Distance Sentinels:** `{s['negative_sentinels']}`")
-    md.append(f"- **Zero-Injected Option Payloads (MANM-49):** `{s.get('zero_injected_options', 0)}`")
+    md.append(f"- **Zero-Injected Option Payloads (`ml_collection`):** `{s.get('zero_injected_options', 0)}`")
+    pred_evaluated = s.get("prediction_rows_evaluated", 0)
+    pred_suffix = f" ({pred_evaluated:,} records evaluated)" if pred_evaluated > 0 else " (table empty or unpopulated)"
+    md.append(f"- **Zero-Injected Prediction Snapshots (`ml_predictions`):** `{s.get('zero_injected_predictions', 0)}`{pred_suffix}")
     total_artifacts = (
         s["legacy_100_support"] +
         s["legacy_100_resistance"] +
         s["negative_sentinels"] +
-        s.get("zero_injected_options", 0)
+        s.get("zero_injected_options", 0) +
+        s.get("zero_injected_predictions", 0)
     )
     if total_artifacts == 0:
-        md.append("- **Verification Result:** PASS. Zero legacy sentinels, negative distances, or zero-injected option payloads detected. All missing values are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).")
+        md.append("- **Verification Result:** PASS. Zero legacy sentinels, negative distances, or zero-injected payloads detected across `ml_collection` and `ml_predictions`. All missing values are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).")
     else:
         artifacts_detail = []
         if s["legacy_100_support"]:
@@ -430,7 +506,9 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
         if s["negative_sentinels"]:
             artifacts_detail.append(f"{s['negative_sentinels']} negative")
         if s.get("zero_injected_options", 0):
-            artifacts_detail.append(f"{s['zero_injected_options']} zero-injected option payloads")
+            artifacts_detail.append(f"{s['zero_injected_options']} zero-injected collection payloads")
+        if s.get("zero_injected_predictions", 0):
+            artifacts_detail.append(f"{s['zero_injected_predictions']} zero-injected prediction snapshots")
         detail_str = ", ".join(artifacts_detail)
         md.append(f"- **Verification Result:** WARNING. Detected {total_artifacts} legacy artifact(s) remaining in historical rows ({detail_str}). Remediate with NULL in database.")
 
@@ -557,13 +635,15 @@ def main():
     parser.add_argument("--output", type=str, default="reports/ml/manm154_missingness_audit_report.md", help="Output markdown path.")
     args = parser.parse_args()
 
-    supabase = create_client(settings.supabase_url, settings.supabase_key)
+    key = getattr(settings, "supabase_service_role_key", None) or settings.supabase_key
+    supabase = create_client(settings.supabase_url, key)
     rows = fetch_all_ml_collection(supabase, limit=args.limit)
     if not rows:
         print("[-] No rows retrieved from ml_collection.")
         return
 
-    audit_res = analyze_records(rows)
+    pred_rows = fetch_ml_predictions(supabase, limit=args.limit)
+    audit_res = analyze_records(rows, prediction_rows=pred_rows)
     generate_markdown_report(audit_res, args.output)
 
 

@@ -520,6 +520,15 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
         self.assertIn("2026-07-20", dates_recorded)
         self.assertIn("2026-09-10", dates_recorded)
 
+        # Verify prediction rows auditing
+        pred_rows = [
+            {"timestamp": "2026-09-12T10:00:00Z", "feature_snapshot": {"iv_features__iv_level": 0, "greek_features__total_vega": 0, "greek_features__gamma_theta_ratio": 0, "oi_features__atm_total_oi": 0}},
+            {"timestamp": "2026-09-12T10:01:00Z", "feature_snapshot": {"iv_features__iv_level": 12.5, "greek_features__total_vega": 20.0, "greek_features__gamma_theta_ratio": 0.05, "oi_features__atm_total_oi": 50000}},
+        ]
+        res_with_preds = analyze_records(rows, prediction_rows=pred_rows)
+        self.assertEqual(res_with_preds["sentinels"]["prediction_rows_evaluated"], 2)
+        self.assertEqual(res_with_preds["sentinels"]["zero_injected_predictions"], 1)
+
     def test_is_zero_injected_option_payload(self):
         from scripts.audit_ml_missingness import is_zero_injected_option_payload
 
@@ -546,6 +555,47 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
         self.assertFalse(is_zero_injected_option_payload(None, {}, {}))
         self.assertFalse(is_zero_injected_option_payload(None, {"total_vega": 5.0}, {"total_ce_oi": 1000}))
 
+    def test_is_zero_injected_prediction_snapshot(self):
+        from scripts.audit_ml_missingness import is_zero_injected_prediction_snapshot
+
+        # Clean snapshot (None for absent option features)
+        clean = {
+            "iv_features__iv_level": None,
+            "greek_features__total_vega": None,
+            "greek_features__gamma_theta_ratio": None,
+            "oi_features__atm_total_oi": None,
+        }
+        self.assertFalse(is_zero_injected_prediction_snapshot(clean))
+
+        # Zero-injected MANM-49 snapshot
+        poisoned = {
+            "iv_features__iv_level": 0.0,
+            "greek_features__total_vega": 0.0,
+            "greek_features__gamma_theta_ratio": 0.0,
+            "oi_features__atm_total_oi": 0,
+        }
+        self.assertTrue(is_zero_injected_prediction_snapshot(poisoned))
+
+        # Legitimate market snapshot
+        market = {
+            "iv_features__iv_level": 12.3,
+            "greek_features__total_vega": 15.0,
+            "greek_features__gamma_theta_ratio": 0.005,
+            "oi_features__atm_total_oi": 1000000,
+        }
+        self.assertFalse(is_zero_injected_prediction_snapshot(market))
+
+        # Edge cases: None, empty dict, non-dict, non-numeric values
+        self.assertFalse(is_zero_injected_prediction_snapshot(None))
+        self.assertFalse(is_zero_injected_prediction_snapshot({}))
+        self.assertFalse(is_zero_injected_prediction_snapshot("invalid-json"))
+        self.assertFalse(is_zero_injected_prediction_snapshot({
+            "iv_features__iv_level": "not_a_number",
+            "greek_features__total_vega": 0,
+            "greek_features__gamma_theta_ratio": 0,
+            "oi_features__atm_total_oi": 0,
+        }))
+
     def test_generate_markdown_report_supports_filename_without_dir(self):
         from scripts.audit_ml_missingness import generate_markdown_report
 
@@ -570,6 +620,8 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
                 "real_100_resistance": 1,
                 "negative_sentinels": 0,
                 "zero_injected_options": 0,
+                "zero_injected_predictions": 0,
+                "prediction_rows_evaluated": 5,
             },
             "by_version": [
                 {
@@ -628,8 +680,9 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
             with open(test_filename, "r") as f:
                 content = f.read()
             # Verify clean PASS for 0 legacy sentinels and zero-injected options
-            self.assertIn("PASS. Zero legacy sentinels, negative distances, or zero-injected option payloads detected", content)
-            self.assertIn("Zero-Injected Option Payloads (MANM-49):", content)
+            self.assertIn("PASS. Zero legacy sentinels, negative distances, or zero-injected payloads detected across `ml_collection` and `ml_predictions`", content)
+            self.assertIn("Zero-Injected Option Payloads (`ml_collection`):", content)
+            self.assertIn("Zero-Injected Prediction Snapshots (`ml_predictions`):", content)
             self.assertIn("Legitimate 100.0 Market Distances (Post-TASK-195):", content)
             # Verify dynamically derived session observations
             self.assertIn("AFTERNOON_CLOSE (14:00-15:30)` (40.0%)", content)
@@ -763,6 +816,8 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
                 "real_100_resistance": 0,
                 "negative_sentinels": 1,
                 "zero_injected_options": 1,
+                "zero_injected_predictions": 1,
+                "prediction_rows_evaluated": 10,
             },
             "by_version": [
                 {
@@ -796,26 +851,61 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
             self.assertTrue(os.path.exists(test_file))
             with open(test_file, "r") as f:
                 content = f.read()
-            self.assertIn("WARNING. Detected 4 legacy artifact(s) remaining in historical rows (1 legacy support, 1 legacy resistance, 1 negative, 1 zero-injected option payloads)", content)
+            self.assertIn("WARNING. Detected 5 legacy artifact(s) remaining in historical rows (1 legacy support, 1 legacy resistance, 1 negative, 1 zero-injected collection payloads, 1 zero-injected prediction snapshots)", content)
             self.assertIn("2026-W37", content)
         finally:
             if os.path.exists(test_dir):
                 shutil.rmtree(test_dir)
 
+    def test_fetch_ml_predictions_pagination_and_probe(self):
+        from scripts.audit_ml_missingness import fetch_ml_predictions
+
+        mock_sb = MagicMock()
+        # Probe success
+        mock_sb.table.return_value.select.return_value.limit.return_value.execute.return_value = MagicMock()
+        page1 = [{"timestamp": "2026-09-10T10:00:00Z", "feature_snapshot": {}}, {"timestamp": "2026-09-10T10:01:00Z", "feature_snapshot": {}}]
+        mock_sb.table.return_value.select.return_value.order.return_value.range.return_value.execute.side_effect = [
+            MagicMock(data=page1),
+            MagicMock(data=[]),
+        ]
+
+        rows = fetch_ml_predictions(mock_sb, page_size=2)
+        self.assertEqual(len(rows), 2)
+
+        # Exercise limit branch
+        mock_sb.table.return_value.select.return_value.order.return_value.range.return_value.execute.side_effect = [
+            MagicMock(data=[page1[0]])
+        ]
+        rows_limited = fetch_ml_predictions(mock_sb, limit=1, page_size=100)
+        self.assertEqual(len(rows_limited), 1)
+
+        # Batch query exception during pagination
+        mock_sb.table.return_value.select.return_value.order.return_value.range.return_value.execute.side_effect = Exception("Network err")
+        rows_err = fetch_ml_predictions(mock_sb, page_size=100)
+        self.assertEqual(len(rows_err), 0)
+
+        # Probe failure fallback (table missing or RLS blocked)
+        mock_sb.table.return_value.select.return_value.limit.return_value.execute.side_effect = Exception("No table")
+        rows2 = fetch_ml_predictions(mock_sb, limit=1, page_size=100)
+        self.assertEqual(len(rows2), 0)
+
     @patch("scripts.audit_ml_missingness.create_client")
     @patch("scripts.audit_ml_missingness.fetch_all_ml_collection")
+    @patch("scripts.audit_ml_missingness.fetch_ml_predictions")
     @patch("scripts.audit_ml_missingness.generate_markdown_report")
-    def test_main_cli(self, mock_gen, mock_fetch, mock_create):
+    def test_main_cli(self, mock_gen, mock_fetch_preds, mock_fetch, mock_create):
         from scripts.audit_ml_missingness import main
 
         # Case 1: rows empty
         mock_fetch.return_value = []
+        mock_fetch_preds.return_value = []
         with patch("sys.argv", ["audit_ml_missingness.py", "--limit", "10"]):
             main()
             mock_gen.assert_not_called()
 
         # Case 2: rows returned
         mock_fetch.return_value = [{"timestamp": "2026-09-10T10:00:00Z", "feature_version": 4}]
+        mock_fetch_preds.return_value = []
         with patch("sys.argv", ["audit_ml_missingness.py", "--limit", "10", "--output", "test_main_report.md"]):
             main()
             mock_gen.assert_called_once()
