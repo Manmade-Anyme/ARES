@@ -139,8 +139,8 @@ def compute_oi_features(
         atm_total_oi = None
         features["atm_total_oi"] = None
 
-    if atm_total_oi is not None and (all_ce_oi is not None or all_pe_oi is not None):
-        all_total_oi = (all_ce_oi or []) + (all_pe_oi or [])
+    if atm_total_oi is not None and all_ce_oi is not None and all_pe_oi is not None:
+        all_total_oi = all_ce_oi + all_pe_oi
         total_oi = sum(all_total_oi) if all_total_oi else 0
         features["oi_concentration"] = atm_total_oi / total_oi if total_oi > 0 else 0.0
     else:
@@ -406,4 +406,3 @@ def build_feature_vector(
     )
 
     return features
-

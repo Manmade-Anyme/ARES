@@ -92,6 +92,85 @@ class TestMANM154FeatureVersioningConfigAndCollector(unittest.TestCase):
 
 
 class TestMANM154ZeroInjectionPrevention(unittest.TestCase):
+    def test_chain_aggregates_preserve_missing_oi(self):
+        """A partial chain must not be represented as complete OI aggregates."""
+        collector = MLCollector.__new__(MLCollector)
+        totals = collector._compute_totals_from_chain(
+            [
+                {"strike": 24000, "ce_oi": 100, "pe_oi": 200},
+                {"strike": 24100, "ce_oi": None, "pe_oi": 300},
+            ]
+        )
+
+        self.assertIsNone(totals["total_ce_oi"])
+        self.assertIsNone(totals["all_ce_oi"])
+        self.assertEqual(totals["total_pe_oi"], 500)
+        self.assertEqual(totals["all_pe_oi"], [200, 300])
+
+        feats = build_feature_vector(
+            candle={
+                "open": 24000.0,
+                "high": 24050.0,
+                "low": 23980.0,
+                "close": 24020.0,
+                "volume": 1000,
+            },
+            volume_history=[1000],
+            iv_history=None,
+            atm_ce={"oi": 100},
+            atm_pe={"oi": 200},
+            total_ce_oi=totals["total_ce_oi"],
+            total_pe_oi=totals["total_pe_oi"],
+            all_ce_oi=totals["all_ce_oi"],
+            all_pe_oi=totals["all_pe_oi"],
+            levels=[],
+            timestamp=datetime.now(timezone.utc),
+            spot=24020.0,
+        )
+
+        self.assertIsNone(feats["oi_features__pcr_oi"])
+        self.assertIsNone(feats["oi_features__oi_concentration"])
+        self.assertIsNone(feats["oi_features__strikes_with_ce_oi"])
+        self.assertIsNone(feats["oi_features__max_ce_oi"])
+        self.assertIsNone(feats["oi_features__p85_ce_oi"])
+        self.assertEqual(feats["oi_features__strikes_with_pe_oi"], 2)
+        self.assertEqual(feats["oi_features__max_pe_oi"], 300)
+
+    def test_chain_aggregates_distinguish_zero_from_absence(self):
+        collector = MLCollector.__new__(MLCollector)
+
+        observed_zero = collector._compute_totals_from_chain(
+            [
+                {"strike": 24000, "ce_oi": 0, "pe_oi": 200},
+                {"strike": 24100, "ce_oi": 100, "pe_oi": 0},
+            ]
+        )
+        self.assertEqual(observed_zero["total_ce_oi"], 100)
+        self.assertEqual(observed_zero["all_ce_oi"], [0, 100])
+        self.assertEqual(observed_zero["total_pe_oi"], 200)
+        self.assertEqual(observed_zero["all_pe_oi"], [200, 0])
+
+        missing_pe = collector._compute_totals_from_chain(
+            [
+                {"strike": 24000, "ce_oi": 100, "pe_oi": 200},
+                {"strike": 24100, "ce_oi": 300},
+            ]
+        )
+        self.assertEqual(missing_pe["total_ce_oi"], 400)
+        self.assertEqual(missing_pe["all_ce_oi"], [100, 300])
+        self.assertIsNone(missing_pe["total_pe_oi"])
+        self.assertIsNone(missing_pe["all_pe_oi"])
+
+        self.assertEqual(
+            collector._compute_totals_from_chain([]),
+            {
+                "total_ce_oi": None,
+                "total_pe_oi": None,
+                "all_ce_oi": None,
+                "all_pe_oi": None,
+            },
+        )
+
     def test_build_feature_vector_with_none_options_does_not_raise(self):
         """Verify that passing None for options context does not crash and yields None instead of synthetic zeros."""
         candle = {
@@ -1136,5 +1215,3 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

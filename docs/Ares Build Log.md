@@ -17,6 +17,7 @@ Audited historical missing data across 17,551 `ml_collection` records, authored 
 - Added `feature_version` integer column (`DEFAULT 4`) and index `idx_ml_collection_feature_version` in `ml_signal/schema.sql` and `migrations/2026-09-24-manm154-feature-versioning.sql` with 4 historical epochs: v1 (Legacy, <2026-07-28), v2 (Setup Enums, 2026-07-28 to 2026-07-31), v3 (OI Shape & Joins, 2026-07-31 to 2026-08-21), and v4 (Full Modern Suite, 2026-08-21+).
 - Updated `MLCollector.snapshot` to stamp `feature_version = 4` on all new rows.
 - Eliminated synthetic zero injection (MANM-49) in `signal_consumer.py`, `features.py`, and `predictor.py`. Missing options now evaluate to `None`/`np.nan`.
+- Preserved missing OI in chain aggregates: an omitted CE or PE value invalidates only that side's total and distribution, and cross-side PCR/concentration remain missing until both sides are complete. Genuine observed zero OI remains valid.
 - Updated `ml_signal/dataset.py` to extract `feature_version` as metadata, exclude it from tree model features (in `_META_COLS`), and generate 3 boolean structural presence indicators (`structure__has_nearest_support`, `structure__has_nearest_resistance`, `greek__has_net_delta`).
 - Added standalone audit script `scripts/audit_ml_missingness.py` and published `reports/ml/manm154_missingness_audit_report.md`.
 - Updated `ml_signal/train_offline.py` to report `missingness_by_feature_version`.

@@ -76,24 +76,39 @@ class MLCollector:
         total_pe_oi = 0
         all_ce_oi: List[int] = []
         all_pe_oi: List[int] = []
+        ce_complete = bool(full_chain)
+        pe_complete = bool(full_chain)
 
         # OIFetcher.fetch_chain emits FLAT rows ("ce_oi"/"pe_oi"), not nested
         # {"ce": {"oi": ...}} — reading the nested shape silently zeroed every total
         # and pinned pcr_oi to its 1.0 divide-guard. See tests/unit/test_ml_feature_fidelity.py.
         for strike_data in full_chain:
-            if isinstance(strike_data, dict):
-                ce_oi = int(strike_data.get("ce_oi", 0) or 0)
-                pe_oi = int(strike_data.get("pe_oi", 0) or 0)
+            if not isinstance(strike_data, dict):
+                ce_complete = False
+                pe_complete = False
+                continue
+
+            ce_oi = strike_data.get("ce_oi")
+            if ce_oi is None:
+                ce_complete = False
+            else:
+                ce_oi = int(ce_oi)
                 total_ce_oi += ce_oi
                 all_ce_oi.append(ce_oi)
+
+            pe_oi = strike_data.get("pe_oi")
+            if pe_oi is None:
+                pe_complete = False
+            else:
+                pe_oi = int(pe_oi)
                 total_pe_oi += pe_oi
                 all_pe_oi.append(pe_oi)
 
         return {
-            "total_ce_oi": total_ce_oi,
-            "total_pe_oi": total_pe_oi,
-            "all_ce_oi": all_ce_oi,
-            "all_pe_oi": all_pe_oi,
+            "total_ce_oi": total_ce_oi if ce_complete else None,
+            "total_pe_oi": total_pe_oi if pe_complete else None,
+            "all_ce_oi": all_ce_oi if ce_complete else None,
+            "all_pe_oi": all_pe_oi if pe_complete else None,
         }
 
     @staticmethod
