@@ -168,3 +168,54 @@ BEGIN
   RETURN p_trade_id;
 END;
 $$;
+
+-- =====================================================================
+-- ml_predictions: Machine learning model prediction persistence for
+-- auditing, calibration (Brier scores), and concept drift monitoring.
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS ml_predictions (
+  id bigserial primary key,
+  timestamp timestamptz not null,
+
+  -- Prediction Metrics
+  probability numeric not null,
+  confidence_tier text not null,       -- 'HIGH' | 'MEDIUM' | 'LOW'
+  model_version text not null,         -- e.g. 'v1', 'v2', 'v2.joblib'
+
+  -- Entity Linkage
+  signal_id text,                      -- Canonical AresSignal.id UUID (never display_id)
+  trade_id uuid,                       -- Links to active_trades.id / trade_analytics.id when executed
+  
+  -- Market Context
+  spot numeric not null,
+  source text not null default 'event_triggered', -- 'event_triggered' | 'continuous'
+
+  -- Feature Payload
+  feature_snapshot jsonb not null,     -- Canonical key-value dictionary of model input features
+
+  created_at timestamptz not null default now()
+);
+
+-- Query optimization indexes
+CREATE INDEX IF NOT EXISTS idx_ml_pred_timestamp ON ml_predictions (timestamp desc);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_signal ON ml_predictions (signal_id);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_trade ON ml_predictions (trade_id);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_model_version ON ml_predictions (model_version);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_confidence ON ml_predictions (confidence_tier);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_source ON ml_predictions (source);
+
+-- Prediction rows contain backend audit data. Clean installations must enforce
+-- the same service-role-only contract as the TASK-153 upgrade migration.
+ALTER TABLE ml_predictions ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE ml_predictions FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON TABLE ml_predictions TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE ml_predictions_id_seq TO service_role;
+
+DROP POLICY IF EXISTS ml_predictions_service_read ON ml_predictions;
+CREATE POLICY ml_predictions_service_read
+  ON ml_predictions FOR SELECT TO service_role USING (true);
+
+DROP POLICY IF EXISTS ml_predictions_service_insert ON ml_predictions;
+CREATE POLICY ml_predictions_service_insert
+  ON ml_predictions FOR INSERT TO service_role WITH CHECK (true);

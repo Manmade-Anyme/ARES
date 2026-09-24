@@ -9,18 +9,22 @@ Usage:
 """
 
 import asyncio
+import logging
 import os
 from collections import deque
 from datetime import datetime
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
 
 from dhanhq import dhanhq
 from supabase import create_client, Client
 
 from detectors.expiry_detector import days_to_expiry
+from storage import PredictionLogger
 from .config import MLConfig, DEFAULT_CONFIG
 from .predictor import SignalPredictor
 from .discord import send_prediction_alert, send_summary_alert
+
+logger = logging.getLogger(__name__)
 
 
 class LiveRunner:
@@ -33,6 +37,7 @@ class LiveRunner:
         self.iv_history: deque = deque(maxlen=20)
         self._dhan = None
         self._supabase: Optional[Client] = None
+        self.prediction_logger: Optional["PredictionLogger"] = None
 
         self._total_predictions = 0
         self._high_count = 0
@@ -49,8 +54,25 @@ class LiveRunner:
         except ImportError:
             self._dhan = dhanhq(client_id, access_token)
 
-    def _init_supabase(self, url: str, key: str):
+    def _init_supabase(self, url: str, key: str, service_role_key: Optional[str] = None):
         self._supabase = create_client(url, key)
+        try:
+            srv_key = service_role_key or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+            if not srv_key:
+                logger.warning(
+                    "LiveRunner: SUPABASE_SERVICE_ROLE_KEY not configured; prediction persistence inactive."
+                )
+                self.prediction_logger = None
+                self._supabase = None
+                return
+            self.prediction_logger = PredictionLogger(
+                supabase_url=url,
+                supabase_service_role_key=srv_key,
+            )
+        except Exception as e:
+            logger.warning("LiveRunner: PredictionLogger init failed: %s", e)
+            self.prediction_logger = None
+            self._supabase = None
 
     async def fetch_candle(self, security_id: str, exchange: str, date: str) -> Optional[Dict[str, float]]:
         loop = asyncio.get_running_loop()
@@ -98,17 +120,23 @@ class LiveRunner:
         return response
 
     async def log_prediction(self, prediction: Dict[str, Any]):
-        if self._supabase is None:
+        if self.prediction_logger is None:
             return
 
-        def _insert():
-            try:
-                self._supabase.table(self.config.supabase_table_predictions).insert(prediction).execute()
-            except Exception as e:
-                print(f"Failed to log prediction: {e}")
-
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _insert)
+        try:
+            self.prediction_logger.log_prediction(
+                probability=prediction.get("probability", 0.0),
+                confidence_tier=prediction.get("confidence_tier", "LOW"),
+                model_version=prediction.get("model_version", "v1"),
+                spot=prediction.get("spot", 0.0),
+                feature_snapshot=prediction.get("feature_snapshot", prediction.get("features", {})),
+                signal_id=prediction.get("signal_id"),
+                trade_id=prediction.get("trade_id"),
+                source=prediction.get("source", "continuous"),
+                timestamp=prediction.get("timestamp"),
+            )
+        except Exception as e:
+            logger.warning("LiveRunner: Failed to log prediction: %s", e)
 
     def _parse_option_chain(self, oc_response: Optional[Dict[str, Any]], spot: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         atm_ce = {"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0}
@@ -152,12 +180,13 @@ class LiveRunner:
         dhan_access_token: str,
         supabase_url: str,
         supabase_key: str,
+        supabase_service_role_key: Optional[str] = None,
         security_id: str = "13",
         exchange_segment: str = "IDX_I",
         expiry: str = "",
     ):
         self._init_dhan(dhan_client_id, dhan_access_token)
-        self._init_supabase(supabase_url, supabase_key)
+        self._init_supabase(supabase_url, supabase_key, service_role_key=supabase_service_role_key)
         self.predictor.load_model()
 
         print(f"[ML Signal] Starting continuous prediction loop (poll={self.config.poll_interval_seconds}s)")
@@ -276,6 +305,7 @@ async def main():
 
     supabase_url = os.getenv("SUPABASE_URL", "")
     supabase_key = os.getenv("SUPABASE_KEY", "")
+    supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
     if not supabase_url or not supabase_key:
         raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
@@ -297,6 +327,7 @@ async def main():
         dhan_access_token=dhan_access_token,
         supabase_url=supabase_url,
         supabase_key=supabase_key,
+        supabase_service_role_key=supabase_service_role_key,
         security_id=os.getenv("SECURITY_ID", "13"),
         exchange_segment=os.getenv("EXCHANGE_SEGMENT", "IDX_I"),
         expiry=os.getenv("EXPIRY", ""),

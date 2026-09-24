@@ -20,14 +20,23 @@ CREATE TABLE ares_signals (
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Any
+import logging
+import math
+import re
+from typing import Any, Dict, List, Optional, Union
+import numpy as np
 from supabase import create_client, Client
 
 from models import AresSignal
 from config import settings
 
+logger = logging.getLogger(__name__)
+
 IST = timezone(timedelta(hours=5, minutes=30))
+
 
 
 def to_utc_iso(ts: Any) -> str:
@@ -439,3 +448,226 @@ def load_dhan_credentials_from_supabase() -> None:
     settings.dhan_client_id = data["client_id"]
     settings.dhan_access_token = data["access_token"]
     print("[+] Successfully loaded Dhan credentials from Supabase.")
+
+
+PROHIBITED_FEATURE_KEYS: frozenset = frozenset({
+    "access_token",
+    "token",
+    "client_id",
+    "dhan_client_id",
+    "dhan_access_token",
+    "api_key",
+    "api_secret",
+    "secret",
+    "password",
+    "account_id",
+    "user_id",
+    "broker_id",
+    "ip_address",
+    "ip",
+    "credentials",
+    "auth",
+    "authorization",
+    "session_id",
+    "email",
+    "name",
+    "phone",
+    "mobile",
+    "identity",
+})
+
+SENSITIVE_KEY_SUBSTRINGS: tuple = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "client_id",
+    "account_id",
+    "broker_id",
+    "user_id",
+    "credentials",
+    "credential",
+    "auth",
+    "session",
+    "jwt",
+    "email",
+    "name",
+    "phone",
+    "mobile",
+    "identity",
+    "ip_address",
+    "ip_addr",
+    "ipv4",
+    "ipv6",
+)
+
+
+def _is_prohibited_key(key: Any) -> bool:
+    """Returns True if key matches prohibited PII, credential, or identity names."""
+    if not isinstance(key, str):
+        key = str(key)
+    normalized = key.strip().lower()
+    if normalized in PROHIBITED_FEATURE_KEYS:
+        return True
+    if any(sub in normalized for sub in SENSITIVE_KEY_SUBSTRINGS):
+        return True
+    tokens = set(re.split(r"[^a-z0-9]+", normalized))
+    if "ip" in tokens:
+        return True
+    return False
+
+
+def _sanitize_value(val: Any) -> Any:
+    """Helper to convert NumPy and special values into PostgreSQL JSONB safe types."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return to_utc_iso(val)
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+    if isinstance(val, (float, np.floating)):
+        f_val = float(val)
+        if math.isnan(f_val) or math.isinf(f_val):
+            return None
+        return round(f_val, 6)
+    if isinstance(val, (int, np.integer)):
+        return int(val)
+    if isinstance(val, dict):
+        return {
+            str(k): _sanitize_value(v)
+            for k, v in val.items()
+            if not _is_prohibited_key(k)
+        }
+    if isinstance(val, (list, tuple, set, np.ndarray)):
+        return [_sanitize_value(x) for x in val]
+    return str(val) if not isinstance(val, str) else val
+
+
+def sanitize_feature_snapshot(features: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitizes feature dictionary for safe JSONB serialization in PostgreSQL.
+
+    Rules:
+    - Strips/redacts prohibited credentials and PII (tokens, secrets, client_id, etc.).
+    - NumPy float/int converted to built-in float/int.
+    - NaN and Inf converted to None (JSON null).
+    - Float values rounded to 6 decimal places.
+    - Datetime objects converted to UTC ISO-8601 strings.
+    """
+    if not isinstance(features, dict):
+        return {}
+    return {
+        str(k): _sanitize_value(v)
+        for k, v in features.items()
+        if not _is_prohibited_key(k)
+    }
+
+
+@dataclass
+class PredictionRecord:
+    """Represents a validated, strongly-typed ML prediction record."""
+    probability: float
+    confidence_tier: str
+    model_version: str
+    spot: float
+    feature_snapshot: Dict[str, Any]
+    signal_id: Optional[str] = None
+    trade_id: Optional[str] = None
+    source: str = "event_triggered"
+    timestamp: Optional[Union[datetime, str]] = None
+
+
+class PredictionLogger:
+    """Handles asynchronous, non-blocking persistence of ML predictions to Supabase."""
+
+    def __init__(
+        self,
+        supabase_client: Optional[Client] = None,
+        supabase_url: Optional[str] = None,
+        supabase_service_role_key: Optional[str] = None,
+        max_workers: int = 2,
+    ):
+        if supabase_client is not None:
+            # Enforce backend-only credential contract: reject anon-key client
+            anon_key = getattr(settings, "supabase_key", None)
+            client_key = getattr(supabase_client, "supabase_key", None)
+            if anon_key and client_key and client_key == anon_key:
+                raise ValueError(
+                    "PredictionLogger requires supabase_service_role_key; anon key client is not permitted."
+                )
+            self.supabase = supabase_client
+        else:
+            url = supabase_url or getattr(settings, "supabase_url", "")
+            service_key = (
+                supabase_service_role_key
+                or getattr(settings, "supabase_service_role_key", None)
+            )
+            if not service_key:
+                raise ValueError(
+                    "PredictionLogger requires supabase_service_role_key; anon key is not permitted."
+                )
+            self.supabase = create_client(url, service_key)
+
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="ml_pred_logger",
+        )
+
+    def log_record(self, record: PredictionRecord) -> None:
+        """Dispatches an insert using a PredictionRecord instance."""
+        self.log_prediction(
+            probability=record.probability,
+            confidence_tier=record.confidence_tier,
+            model_version=record.model_version,
+            spot=record.spot,
+            feature_snapshot=record.feature_snapshot,
+            signal_id=record.signal_id,
+            trade_id=record.trade_id,
+            source=record.source,
+            timestamp=record.timestamp,
+        )
+
+    def log_prediction(
+        self,
+        probability: float,
+        confidence_tier: str,
+        model_version: str,
+        spot: float,
+        feature_snapshot: Dict[str, Any],
+        signal_id: Optional[str] = None,
+        trade_id: Optional[str] = None,
+        source: str = "event_triggered",
+        timestamp: Optional[Union[datetime, str]] = None,
+    ) -> None:
+        """Dispatches an asynchronous insert to ml_predictions.
+
+        Guaranteed non-blocking and safe against all runtime exceptions.
+        """
+        try:
+            ts = timestamp or datetime.now(timezone.utc)
+            record = {
+                "timestamp": to_utc_iso(ts),
+                "probability": float(probability),
+                "confidence_tier": str(confidence_tier),
+                "model_version": str(model_version),
+                "signal_id": str(signal_id) if signal_id is not None else None,
+                "trade_id": str(trade_id) if trade_id is not None else None,
+                "spot": float(spot),
+                "source": str(source),
+                "feature_snapshot": sanitize_feature_snapshot(feature_snapshot),
+            }
+
+            self._executor.submit(self._insert_prediction, record)
+        except Exception as exc:
+            logger.warning("PredictionLogger: dispatch error: %s", exc)
+
+    def _insert_prediction(self, record: Dict[str, Any]) -> None:
+        try:
+            self.supabase.table("ml_predictions").insert(record).execute()
+        except Exception as exc:
+            logger.warning("PredictionLogger: failed to persist prediction to ml_predictions: %s", exc)
+
+    def shutdown(self, wait: bool = True) -> None:
+        """Shut down the background executor."""
+        self._executor.shutdown(wait=wait)

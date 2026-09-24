@@ -9,6 +9,7 @@ Usage:
 """
 
 import asyncio
+import logging
 import os
 from datetime import datetime
 from typing import Optional, Set
@@ -19,6 +20,22 @@ from config import settings
 from .config import MLConfig, DEFAULT_CONFIG
 from .predictor import SignalPredictor
 from .discord import send_prediction_alert
+
+logger = logging.getLogger(__name__)
+
+
+
+_PREDICTION_COLUMNS = {
+    "timestamp",
+    "probability",
+    "confidence_tier",
+    "model_version",
+    "signal_id",
+    "trade_id",
+    "spot",
+    "source",
+    "feature_snapshot",
+}
 
 
 def _display_id_for_alert(signal: dict) -> str:
@@ -34,8 +51,9 @@ class SignalConsumer:
         self._supabase: Optional[Client] = None
         self._processed_ids: Set[str] = set()
 
-    def _init_supabase(self, url: str, key: str):
-        self._supabase = create_client(url, key)
+    def _init_supabase(self, url: str, key: str, service_role_key: Optional[str] = None):
+        srv_key = service_role_key or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or key
+        self._supabase = create_client(url, srv_key)
 
     async def fetch_new_signals(self) -> list:
         if self._supabase is None:
@@ -55,25 +73,51 @@ class SignalConsumer:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _query)
 
-    async def log_prediction(self, prediction: dict):
+    async def log_prediction(self, prediction: dict) -> bool:
+        """Persist prediction for standalone consumer mode.
+
+        NOTE (ADR-153): Production ARES uses in-process PredictionLogger inside
+        main.py as the sole authoritative writer for event_triggered predictions.
+        Operators must not run signal_consumer concurrently with main.py to avoid
+        duplicate rows.
+        """
         if self._supabase is None:
-            return
+            return False
 
         def _insert():
             try:
-                self._supabase.table(self.config.supabase_table_predictions).insert(prediction).execute()
+                payload = dict(prediction)
+                if "features" in payload and "feature_snapshot" not in payload:
+                    payload["feature_snapshot"] = payload.pop("features")
+                payload = {
+                    key: value
+                    for key, value in payload.items()
+                    if key in _PREDICTION_COLUMNS
+                }
+                self._supabase.table(self.config.supabase_table_predictions).insert(payload).execute()
+                return True
             except Exception as e:
-                print(f"Failed to log prediction: {e}")
+                logger.warning("Failed to log prediction: %s", e)
+                return False
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _insert)
+        return await loop.run_in_executor(None, _insert)
 
     async def run(
         self,
         supabase_url: str,
         supabase_key: str,
+        supabase_service_role_key: Optional[str] = None,
     ):
-        self._init_supabase(supabase_url, supabase_key)
+        """Run standalone signal consumer loop.
+
+        OPERATOR WARNING (ADR-153):
+        Production ARES uses in-process PredictionLogger inside main.py as the
+        sole authoritative writer for event_triggered predictions. Operators must
+        NOT run signal_consumer concurrently with main.py in production, as this
+        will produce duplicate prediction records and double-count calibration samples.
+        """
+        self._init_supabase(supabase_url, supabase_key, service_role_key=supabase_service_role_key)
         self.predictor.load_model()
 
         print(f"[ML Consumer] Starting signal consumer (poll={self.config.signal_poll_interval_seconds}s)")
@@ -87,15 +131,11 @@ class SignalConsumer:
                         canonical_signal_id = str(
                             signal.get("signal_uuid") or signal.get("id", "")
                         )
-                        persisted_signal_id = str(signal.get("id", ""))
                     else:
                         canonical_signal_id = str(signal.get("id", ""))
-                        persisted_signal_id = canonical_signal_id
                     signal_display_id = _display_id_for_alert(signal)
                     if canonical_signal_id in self._processed_ids:
                         continue
-
-                    self._processed_ids.add(canonical_signal_id)
 
                     features = signal.get("market_context", {})
                     spot = float(signal.get("spot_at_signal", signal.get("trigger_price", 0)))
@@ -128,14 +168,11 @@ class SignalConsumer:
                     )
 
                     result["source"] = "event_triggered"
-                    result["signal_id"] = persisted_signal_id
-                    if settings.signal_schema_mode == "bridge":
-                        result["signal_uuid"] = canonical_signal_id
-                    result["signal_display_id"] = signal_display_id
-                    result["signal_setup_type"] = signal.get("setup_type", "")
+                    result["signal_id"] = canonical_signal_id
                     result["spot"] = spot
 
-                    await self.log_prediction(result)
+                    if await self.log_prediction(result):
+                        self._processed_ids.add(canonical_signal_id)
 
                     proba = result["probability"]
                     tier = result["confidence_tier"]
@@ -173,6 +210,7 @@ async def main():
     await consumer.run(
         supabase_url=os.getenv("SUPABASE_URL", ""),
         supabase_key=os.getenv("SUPABASE_KEY", ""),
+        supabase_service_role_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
     )
 
 

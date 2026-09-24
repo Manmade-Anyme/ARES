@@ -1,12 +1,13 @@
 import asyncio
 from datetime import datetime, time
+import logging
 
 from engine import AresEngine
 from fetchers.price_fetcher import PriceFetcher
 from fetchers.oi_fetcher import OIFetcher
 from fetchers.level_fetcher import LevelFetcher
 from fetchers.tick_feed import TickFeed
-from storage import Storage, load_dhan_credentials_from_supabase
+from storage import Storage, PredictionLogger, load_dhan_credentials_from_supabase
 from position_manager import PositionManager
 from config import settings, detector_names, SESSION_DISPLAY
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
@@ -16,6 +17,8 @@ from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
 from ml_signal.predictor import SignalPredictor
 from options_math import process_options_calculation
+
+logger = logging.getLogger("ares.main")
 
 # ANSI Color Codes for Premium Terminal UI
 G = "\033[92m"  # Green
@@ -156,6 +159,12 @@ async def run():
         ml_predictor.load_model()
     except Exception:
         ml_predictor = None
+
+    try:
+        prediction_logger = PredictionLogger()
+    except Exception as pl_err:
+        print(f"{Y}[!] PredictionLogger: inactive ({pl_err}){RESET}")
+        prediction_logger = None
 
     # Make this dynamic via Yahoo Finance Oracle 
     try:
@@ -332,24 +341,45 @@ async def run():
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
 
                 format_signal_console(signal, spot)
-                success = False
+                trade_executed = False
                 try:
-                    success = await storage.log_signal(signal, spot)
+                    if await storage.log_signal(signal, spot):
+                        trade_executed = True
+                    else:
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Engine: Failed to log signal, aborting trade entry.{RESET}")
                 except Exception as db_err:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
 
-                if not success:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Engine: Failed to log signal, aborting trade entry.{RESET}")
-                    signal = None
-                else:
+                if trade_executed:
                     try:
                         trade_id, binding_status = await position_manager.add_trade(signal, spot, atm=atm)
                         signal.trade_id = trade_id
                         signal.trade_binding_status = binding_status
                     except Exception as pm_err:
+                        signal.trade_id = None
                         print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
 
-                if signal is not None:
+                # Log ML prediction asynchronously if model scored this signal (ADR-153)
+                # Invariant: Persists on every inference event even if storage.log_signal fails or trade is aborted.
+                ml_pred = getattr(signal, "ml_prediction", None)
+                if prediction_logger and ml_predictor and ml_pred:
+                    try:
+                        prediction_logger.log_prediction(
+                            probability=ml_pred["probability"],
+                            confidence_tier=ml_pred["confidence_tier"],
+                            model_version=ml_pred["model_version"],
+                            spot=spot,
+                            feature_snapshot=ml_pred.get("features", {}),
+                            signal_id=getattr(signal, "id", None),
+                            trade_id=getattr(signal, "trade_id", None) or None,
+                            source="event_triggered",
+                            timestamp=now,
+                        )
+                    except Exception as log_err:
+                        logger.warning("Non-blocking prediction dispatch error: %s", log_err)
+                        print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Non-blocking prediction dispatch error: {log_err}{RESET}")
+
+                if trade_executed:
                     try:
                         await send_discord(signal, spot)
                     except Exception as alert_err:

@@ -3,20 +3,22 @@
 **Session:** #7
 
 ## Completed This Session
-- PM Agent created directive `MANM-150_fix-signal-joins.md` for fixing signal-to-trade joins.
-- Software Architect Agent drafted `directives/adr/MANM-150_fix-signal-joins.md` and updated `directives/adr/INDEX.md`.
+- **PM Agent**: Created directive `TASK-153_prediction_persistence.md` for adding ML prediction logging.
+- **Architect Agent**: Drafted `ADR-153` (`directives/adr/TASK-153_prediction_persistence.md`) covering non-blocking prediction persistence, schema updates, entity linkage (`trade_id` & `signal_id`), feature sanitization, and data retention/privacy policies. Updated `directives/adr/INDEX.md`.
+- **Code Generator Agent**: Implemented `PredictionLogger`, feature sanitization, `AresSignal.trade_id` linkage, `main.py` non-blocking prediction logging hook, `live.py` integration, migration SQL, schema updates, and data retention documentation.
+- **QA Agent**: Created unit tests in `tests/unit/test_task153_prediction_persistence.py` (14/14 passed, 100% component coverage, 630/630 full suite passing, 0 regressions).
 
 ## Open Tasks
-- TASK-MANM-150 [Fix broken signal-to-trade joins] — status: in-progress (ADR drafted, awaiting human approval before Code Generator dispatch)
+- TASK-153 Implement prediction persistence in ml_predictions table for model auditing — assigned to PR Reviewer (PR Review Phase), status: completed
 
 ## Blockers
-- Awaiting human approval of ADR-150.
+- None. Ready for human PR review.
 
 ## Agent States
-- Architect: Completed ADR-150 drafting.
-- Code Generator: idle (gated on human ADR approval)
-- QA: idle
-- PM: Initiated MANM-150 and waiting on ADR review.
+- Architect: Completed ADR-153.
+- Code Generator: Completed implementation.
+- QA: Passed with 100% test pass rate and zero regressions.
+- Documentation: CHANGELOG, data retention docs, and task checkpoints synchronized.
 
 ## Resume Instructions
-Upon human approval of ADR-150, dispatch Code Generator Agent to implement the client-side UUID canonical join key, database migration, isolated validation script, and test suite additions.
+Review and merge PR #114.

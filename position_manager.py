@@ -248,6 +248,7 @@ class PositionManager:
             try:
                 success = await loop.run_in_executor(None, _insert)
                 if success:
+                    signal.trade_id = trade_id
                     self.active_trades.append(trade_data)
                     return trade_id, "BOUND"
             except Exception as e:

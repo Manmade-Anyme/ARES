@@ -17,3 +17,4 @@
 | TASK-073-R1 | 2026-09-05 | Replay evidence audit and repair contract (`TASK-073_replay-evidence-remediation.md`) | Superseded by human replay-waiver direction; no runtime changes |
 | TASK-108 | 2026-09-09 | Remove automatic BE time-stop from trade exits | Approved |
 | MANM-152 | 2026-09-12 | Trade Exit Timestamp Validation, Anomaly Flagging, and Lifecycle Invariants | Proposed |
+| TASK-153 | 2026-09-12 | Machine Learning Prediction Persistence in ml_predictions | Implemented |
