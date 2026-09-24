@@ -60,7 +60,22 @@ jobs:
       # until it hits `context deadline exceeded` (~10m) and fails the deploy.
       # The runner has Docker and the image is a trivial slim-python build, so a
       # local build removes that infra dependency entirely.
-      - run: flyctl deploy --local-only
+      - name: Deploy to Fly
+        run: |
+          # Registry pushes occasionally time out after a successful local build.
+          # Retry those transient transport failures, but preserve a failure when
+          # all attempts are exhausted.
+          for attempt in 1 2 3; do
+            if flyctl deploy --local-only; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+
+            sleep "$((attempt * 15))"
+          done
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
