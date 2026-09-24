@@ -115,8 +115,8 @@ class AresEngine:
         candle: OHLCVCandle,
         full_chain: List[Dict[str, Any]],
         atm: ATMStrikes,
-        iv_change_pct: float,
-        levels: List[ResistanceLevel],
+        iv_change_pct: Optional[float] = None,
+        levels: List[ResistanceLevel] = None,
         pdh: Optional[float] = None,
         pdl: Optional[float] = None,
     ) -> Optional[AresSignal]:
@@ -136,7 +136,7 @@ class AresEngine:
             candle: The latest closed OHLCV candle.
             full_chain: The complete NIFTY option chain from OIFetcher.
             atm: The ATM strikes context including spot price and ATM IV/OI.
-            iv_change_pct: The percentage change in ATM Implied Volatility.
+            iv_change_pct: Optional percentage change in ATM Implied Volatility.
             levels: A list of ResistanceLevel objects (structural levels + OI walls) used for target calculation.
             pdh: Previous day high, used by the trend-continuation detector's
                 regime rule. Optional — the detector no-ops without it.
@@ -146,6 +146,7 @@ class AresEngine:
         Returns:
             An AresSignal if a detector triggers and cooldown is clear, otherwise None.
         """
+        levels = levels or []
         # 1. Update buffers
         self.candle_buffer.append(candle)
         if atm and atm.ce and atm.ce.iv is not None:

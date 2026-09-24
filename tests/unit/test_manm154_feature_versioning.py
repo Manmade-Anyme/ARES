@@ -526,6 +526,8 @@ class TestMANM154MigrationSQL(unittest.TestCase):
 
         self.assertIn("ALTER TABLE ml_collection ADD COLUMN IF NOT EXISTS feature_version integer NOT NULL DEFAULT 4;", content)
         self.assertIn("CREATE INDEX IF NOT EXISTS idx_ml_collection_feature_version ON ml_collection (feature_version);", content)
+        self.assertIn("to_regclass('public.ml_collection')", content)
+        self.assertIn("DO $$", content)
         self.assertIn("2026-07-28T06:32:37Z", content)
         self.assertIn("2026-07-31T13:14:34Z", content)
         self.assertIn("2026-08-21T05:46:35Z", content)

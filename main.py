@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, time
 import logging
+from typing import Optional, Tuple
 
 from engine import AresEngine
 from fetchers.price_fetcher import PriceFetcher
@@ -66,6 +67,25 @@ def format_signal_console(signal, spot):
     for r in signal.reasons:
         print(f"     {W}• {r}{RESET}")
     print(f"{color}{B}━" * 65 + RESET + "\n")
+
+
+def compute_iv_change_pct(
+    current_iv: Optional[float],
+    prev_iv: Optional[float],
+) -> Tuple[Optional[float], Optional[float]]:
+    """Compute percentage change in ATM IV without corrupting state on missing readings.
+
+    Returns:
+        tuple[iv_change_pct, next_prev_iv]:
+        - If current_iv is None: returns (None, prev_iv), keeping previous valid IV intact.
+        - If prev_iv is None or non-positive: returns (0.0, current_iv).
+        - Otherwise: returns (((current_iv - prev_iv) / prev_iv) * 100.0, current_iv).
+    """
+    if current_iv is None:
+        return None, prev_iv
+    if prev_iv is None or prev_iv <= 0:
+        return 0.0, current_iv
+    return ((current_iv - prev_iv) / prev_iv) * 100.0, current_iv
 
 
 async def _persist_ml_snapshot_before_exit_checks(collector, **snapshot):
@@ -273,12 +293,9 @@ async def run():
                 oi_wall_threshold=settings.oi_wall_min_oi
             )
             
-            # Compute IV change percentage
-            current_iv = atm.ce.iv
-            if prev_iv is None: 
-                prev_iv = current_iv
-            iv_change_pct = ((current_iv - prev_iv) / prev_iv) * 100.0 if prev_iv > 0 else 0.0
-            prev_iv = current_iv
+            # Compute IV change percentage safely (TASK-154 missing data resilience)
+            current_iv = atm.ce.iv if (atm and atm.ce) else None
+            iv_change_pct, prev_iv = compute_iv_change_pct(current_iv, prev_iv)
             
             # Run the engine
             signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
