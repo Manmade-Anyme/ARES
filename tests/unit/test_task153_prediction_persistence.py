@@ -457,6 +457,17 @@ class TestSchemaFilesIntegrity(unittest.TestCase):
             normalized_sql.index("create index if not exists idx_ml_pred_signal"),
         )
 
+    def test_migration_scopes_column_checks_to_current_schema(self):
+        sql = Path(
+            "migrations/2026-09-12-task153-ml-predictions-schema.sql"
+        ).read_text()
+        normalized_sql = " ".join(sql.split()).lower()
+
+        count_info_schema = normalized_sql.count("from information_schema.columns")
+        count_current_schema = normalized_sql.count("table_schema = current_schema()")
+        self.assertGreater(count_info_schema, 0)
+        self.assertEqual(count_info_schema, count_current_schema)
+
     def test_schema_sql_has_ml_predictions(self):
         schema_path = Path("schema.sql")
         sql = schema_path.read_text()

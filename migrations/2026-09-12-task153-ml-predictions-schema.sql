@@ -22,10 +22,14 @@ BEGIN
   -- Handle migration from legacy column name 'features' to 'feature_snapshot'
   IF EXISTS (
     SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'ml_predictions' AND column_name = 'features'
+    WHERE table_schema = current_schema()
+      AND table_name = 'ml_predictions'
+      AND column_name = 'features'
   ) AND NOT EXISTS (
     SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'ml_predictions' AND column_name = 'feature_snapshot'
+    WHERE table_schema = current_schema()
+      AND table_name = 'ml_predictions'
+      AND column_name = 'feature_snapshot'
   ) THEN
     ALTER TABLE ml_predictions RENAME COLUMN features TO feature_snapshot;
   END IF;
@@ -33,7 +37,9 @@ BEGIN
   -- Ensure trade_id column exists
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'ml_predictions' AND column_name = 'trade_id'
+    WHERE table_schema = current_schema()
+      AND table_name = 'ml_predictions'
+      AND column_name = 'trade_id'
   ) THEN
     ALTER TABLE ml_predictions ADD COLUMN trade_id uuid;
   END IF;
@@ -41,7 +47,9 @@ BEGIN
   -- Ensure source column has NOT NULL and default
   IF EXISTS (
     SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'ml_predictions' AND column_name = 'source'
+    WHERE table_schema = current_schema()
+      AND table_name = 'ml_predictions'
+      AND column_name = 'source'
   ) THEN
     ALTER TABLE ml_predictions ALTER COLUMN source SET DEFAULT 'event_triggered';
   END IF;
