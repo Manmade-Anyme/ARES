@@ -94,6 +94,54 @@ class TestFeatureSanitization(unittest.TestCase):
         self.assertEqual(sanitize_feature_snapshot(None), {})
         self.assertEqual(sanitize_feature_snapshot("invalid"), {})
 
+    def test_sanitize_feature_snapshot_redacts_prohibited_and_sensitive_keys(self):
+        raw_features = {
+            "rsi": 65.5,
+            "access_token": "secret_token_123",
+            "client_id": "DHAN12345",
+            "dhan_access_token": "token_dhan",
+            "api_secret": "secret_key_abc",
+            "password": "super_secret_pw",
+            "account_id": "ACC987",
+            "user_id": "U12345",
+            "broker_id": "BROKER99",
+            "ip_address": "192.168.1.100",
+            "credentials": {"token": "sub_token"},
+            "nested": {
+                "candle_body": 12.5,
+                "access_token": "inner_token",
+                "client_id": "inner_client",
+                "nested_api_secret": "inner_secret",
+            },
+            "list_of_dicts": [
+                {"open": 24000.0, "secret_key": "bad"},
+                {"high": 24050.0},
+            ],
+        }
+
+        sanitized = sanitize_feature_snapshot(raw_features)
+
+        # Quantitative market features preserved
+        self.assertEqual(sanitized["rsi"], 65.5)
+        self.assertEqual(sanitized["nested"], {"candle_body": 12.5})
+        self.assertEqual(sanitized["list_of_dicts"], [{"open": 24000.0}, {"high": 24050.0}])
+
+        # Prohibited keys strictly stripped
+        prohibited_keys = [
+            "access_token",
+            "client_id",
+            "dhan_access_token",
+            "api_secret",
+            "password",
+            "account_id",
+            "user_id",
+            "broker_id",
+            "ip_address",
+            "credentials",
+        ]
+        for key in prohibited_keys:
+            self.assertNotIn(key, sanitized)
+
 
 class TestPredictionLogger(unittest.TestCase):
     def setUp(self):

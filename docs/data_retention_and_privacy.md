@@ -65,7 +65,7 @@ The machine learning tables store strictly quantitative market data and algorith
 
 - **Prohibited Data:** No broker account IDs, Dhan client IDs, access tokens, API secrets, IP addresses, names, or user identities are ever serialized into `feature_snapshot` or any database column.
 - **Microstructure Features Only:** Input features are derived purely from public exchange data (spot prices, candlestick OHLCV, VWAP, option chain open interest, implied volatility, Greeks, and structural support/resistance levels).
-- **Sanitization Verification:** The `sanitize_feature_snapshot()` routine strips non-whitelisted keys and guarantees valid serialization without credential leakage.
+- **Sanitization Verification:** The `sanitize_feature_snapshot()` routine strips prohibited and sensitive keys (including `access_token`, `client_id`, API secrets, passwords, account identifiers, and IP addresses) both at the root level and within nested structures, guaranteeing valid JSONB serialization without credential or PII leakage.
 
 ### 4.2. Row Level Security (RLS) & Access Control
 

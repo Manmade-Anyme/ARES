@@ -449,6 +449,50 @@ def load_dhan_credentials_from_supabase() -> None:
     print("[+] Successfully loaded Dhan credentials from Supabase.")
 
 
+PROHIBITED_FEATURE_KEYS: frozenset = frozenset({
+    "access_token",
+    "token",
+    "client_id",
+    "dhan_client_id",
+    "dhan_access_token",
+    "api_key",
+    "api_secret",
+    "secret",
+    "password",
+    "account_id",
+    "user_id",
+    "broker_id",
+    "ip_address",
+    "credentials",
+    "auth",
+    "authorization",
+    "session_id",
+})
+
+SENSITIVE_KEY_SUBSTRINGS: tuple = (
+    "token",
+    "secret",
+    "password",
+    "api_key",
+    "client_id",
+    "account_id",
+    "user_id",
+    "broker_id",
+    "credentials",
+    "auth",
+)
+
+
+def _is_prohibited_key(key: Any) -> bool:
+    """Returns True if key matches prohibited PII, credential, or authentication names."""
+    if not isinstance(key, str):
+        key = str(key)
+    normalized = key.strip().lower()
+    if normalized in PROHIBITED_FEATURE_KEYS:
+        return True
+    return any(sub in normalized for sub in SENSITIVE_KEY_SUBSTRINGS)
+
+
 def _sanitize_value(val: Any) -> Any:
     """Helper to convert NumPy and special values into PostgreSQL JSONB safe types."""
     if val is None:
@@ -465,7 +509,11 @@ def _sanitize_value(val: Any) -> Any:
     if isinstance(val, (int, np.integer)):
         return int(val)
     if isinstance(val, dict):
-        return {str(k): _sanitize_value(v) for k, v in val.items()}
+        return {
+            str(k): _sanitize_value(v)
+            for k, v in val.items()
+            if not _is_prohibited_key(k)
+        }
     if isinstance(val, (list, tuple, set, np.ndarray)):
         return [_sanitize_value(x) for x in val]
     return str(val) if not isinstance(val, str) else val
@@ -475,6 +523,7 @@ def sanitize_feature_snapshot(features: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitizes feature dictionary for safe JSONB serialization in PostgreSQL.
 
     Rules:
+    - Strips/redacts prohibited credentials and PII (tokens, secrets, client_id, etc.).
     - NumPy float/int converted to built-in float/int.
     - NaN and Inf converted to None (JSON null).
     - Float values rounded to 6 decimal places.
@@ -482,7 +531,11 @@ def sanitize_feature_snapshot(features: Dict[str, Any]) -> Dict[str, Any]:
     """
     if not isinstance(features, dict):
         return {}
-    return {str(k): _sanitize_value(v) for k, v in features.items()}
+    return {
+        str(k): _sanitize_value(v)
+        for k, v in features.items()
+        if not _is_prohibited_key(k)
+    }
 
 
 @dataclass
