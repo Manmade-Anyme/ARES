@@ -60,79 +60,106 @@ def compute_volume_features(
 
 
 def compute_iv_features(
-    current_iv: float,
-    iv_ce: float,
-    iv_pe: float,
+    current_iv: Optional[float] = None,
+    iv_ce: Optional[float] = None,
+    iv_pe: Optional[float] = None,
     iv_history: Optional[List[float]] = None,
-) -> Dict[str, float]:
-    features = {
+) -> Dict[str, Optional[float]]:
+    features: Dict[str, Optional[float]] = {
         "iv_level": current_iv,
-        "iv_ce_pe_spread": abs(iv_ce - iv_pe),
+        "iv_ce_pe_spread": abs(iv_ce - iv_pe) if (iv_ce is not None and iv_pe is not None) else None,
     }
 
-    if iv_history and len(iv_history) >= 2:
-        features["iv_change_1"] = current_iv - iv_history[-1]
-    else:
-        features["iv_change_1"] = 0.0
+    if current_iv is not None:
+        if iv_history and len(iv_history) >= 2:
+            features["iv_change_1"] = current_iv - iv_history[-1]
+        else:
+            features["iv_change_1"] = 0.0
 
-    if iv_history and len(iv_history) >= 5:
-        features["iv_change_5"] = current_iv - iv_history[-5]
-    else:
-        features["iv_change_5"] = 0.0
+        if iv_history and len(iv_history) >= 5:
+            features["iv_change_5"] = current_iv - iv_history[-5]
+        else:
+            features["iv_change_5"] = 0.0
 
-    # Acceleration must include the current bar, so append it to the prior history
-    # rather than differencing history against itself.
-    if iv_history and len(iv_history) >= 2:
-        series = list(iv_history) + [current_iv]
-        changes = [series[i] - series[i - 1] for i in range(1, len(series))]
-        features["iv_acceleration"] = changes[-1] - changes[-2] if len(changes) >= 2 else 0.0
-    else:
-        features["iv_acceleration"] = 0.0
+        # Acceleration must include the current bar, so append it to the prior history
+        # rather than differencing history against itself.
+        if iv_history and len(iv_history) >= 2:
+            series = list(iv_history) + [current_iv]
+            changes = [series[i] - series[i - 1] for i in range(1, len(series))]
+            features["iv_acceleration"] = changes[-1] - changes[-2] if len(changes) >= 2 else 0.0
+        else:
+            features["iv_acceleration"] = 0.0
 
-    if iv_history and len(iv_history) >= 20:
-        hv = np.array(iv_history)
-        percentile = (hv < current_iv).mean() * 100
-        features["iv_percentile"] = percentile
+        if iv_history and len(iv_history) >= 20:
+            hv = np.array(iv_history)
+            percentile = float((hv < current_iv).mean() * 100)
+            features["iv_percentile"] = percentile
+        else:
+            features["iv_percentile"] = 50.0
     else:
-        features["iv_percentile"] = 50.0
+        features["iv_change_1"] = None
+        features["iv_change_5"] = None
+        features["iv_acceleration"] = None
+        features["iv_percentile"] = None
 
     return features
 
 
 def compute_oi_features(
-    atm_ce_oi: int,
-    atm_pe_oi: int,
-    total_ce_oi: int,
-    total_pe_oi: int,
-    ce_oi_change_pct: float,
-    pe_oi_change_pct: float,
+    atm_ce_oi: Optional[int] = None,
+    atm_pe_oi: Optional[int] = None,
+    total_ce_oi: Optional[int] = None,
+    total_pe_oi: Optional[int] = None,
+    ce_oi_change_pct: Optional[float] = None,
+    pe_oi_change_pct: Optional[float] = None,
     all_ce_oi: Optional[List[int]] = None,
     all_pe_oi: Optional[List[int]] = None,
-) -> Dict[str, float]:
-    features = {
+) -> Dict[str, Optional[float]]:
+    features: Dict[str, Optional[float]] = {
         # None, not 1.0 — a missing chain must stay distinguishable from a genuinely
         # neutral PCR, otherwise a zeroed total reads as a real market reading.
-        "pcr_oi": total_pe_oi / total_ce_oi if total_ce_oi > 0 else None,
-        "oi_bias": ce_oi_change_pct - pe_oi_change_pct,
+        "pcr_oi": (
+            total_pe_oi / total_ce_oi
+            if (total_ce_oi is not None and total_pe_oi is not None and total_ce_oi > 0)
+            else None
+        ),
+        "oi_bias": (
+            ce_oi_change_pct - pe_oi_change_pct
+            if (ce_oi_change_pct is not None and pe_oi_change_pct is not None)
+            else None
+        ),
         "atm_ce_oi_change_pct": ce_oi_change_pct,
         "atm_pe_oi_change_pct": pe_oi_change_pct,
     }
 
-    atm_total_oi = atm_ce_oi + atm_pe_oi
-    all_total_oi = (all_ce_oi or [0]) + (all_pe_oi or [0])
-    total_oi = sum(all_total_oi) if all_total_oi else 1
-    features["oi_concentration"] = atm_total_oi / total_oi if total_oi > 0 else 0
-    features["atm_total_oi"] = atm_total_oi
+    if atm_ce_oi is not None and atm_pe_oi is not None:
+        atm_total_oi = atm_ce_oi + atm_pe_oi
+        features["atm_total_oi"] = atm_total_oi
+    else:
+        atm_total_oi = None
+        features["atm_total_oi"] = None
+
+    if atm_total_oi is not None and (all_ce_oi is not None or all_pe_oi is not None):
+        all_total_oi = (all_ce_oi or []) + (all_pe_oi or [])
+        total_oi = sum(all_total_oi) if all_total_oi else 0
+        features["oi_concentration"] = atm_total_oi / total_oi if total_oi > 0 else 0.0
+    else:
+        features["oi_concentration"] = None
 
     # The chain's SHAPE, not just its sum. Without this the "wall = OI >= p85 of
     # strikes with non-zero OI" rule cannot be validated against history, and the
     # fact that `oi_wall_min_oi = 4_000_000` sits above the entire live chain for
     # most of a weekly cycle stays invisible. Sum alone hid both.
     for side, values in (("ce", all_ce_oi), ("pe", all_pe_oi)):
-        live = [int(v) for v in (values or []) if v]
-        features[f"strikes_with_{side}_oi"] = len(live)
-        features[f"max_{side}_oi"] = max(live) if live else None
-        features[f"p85_{side}_oi"] = _percentile_nearest_rank(live, 0.85)
+        if values is not None:
+            live = [int(v) for v in values if v]
+            features[f"strikes_with_{side}_oi"] = len(live)
+            features[f"max_{side}_oi"] = max(live) if live else None
+            features[f"p85_{side}_oi"] = _percentile_nearest_rank(live, 0.85)
+        else:
+            features[f"strikes_with_{side}_oi"] = None
+            features[f"max_{side}_oi"] = None
+            features[f"p85_{side}_oi"] = None
 
     return features
 
@@ -153,24 +180,34 @@ def _percentile_nearest_rank(values: List[int], q: float) -> Optional[int]:
 
 
 def compute_greek_features(
-    atm_ce_gamma: float,
-    atm_pe_gamma: float,
-    atm_ce_theta: float,
-    atm_pe_theta: float,
-    atm_ce_vega: float,
-    atm_pe_vega: float,
-    spot: float,
+    atm_ce_gamma: Optional[float] = None,
+    atm_pe_gamma: Optional[float] = None,
+    atm_ce_theta: Optional[float] = None,
+    atm_pe_theta: Optional[float] = None,
+    atm_ce_vega: Optional[float] = None,
+    atm_pe_vega: Optional[float] = None,
+    spot: float = 0.0,
     atm_ce_delta: Optional[float] = None,  # CE delta ∈ [0, 1]; None = old row → NaN
     atm_pe_delta: Optional[float] = None,  # PE delta ∈ [-1, 0]; None = old row → NaN
-) -> Dict[str, float]:
-    total_gamma = atm_ce_gamma + atm_pe_gamma
-    total_theta = abs(atm_ce_theta) + abs(atm_pe_theta)
-    total_vega = atm_ce_vega + atm_pe_vega
+) -> Dict[str, Optional[float]]:
+    features: Dict[str, Optional[float]] = {}
 
-    features = {
-        "gamma_theta_ratio": total_gamma / (total_theta / spot) if (total_theta / spot) != 0 else 0,
-        "total_vega": total_vega,
-    }
+    if (
+        atm_ce_gamma is not None and atm_pe_gamma is not None and
+        atm_ce_theta is not None and atm_pe_theta is not None and
+        spot > 0
+    ):
+        total_gamma = atm_ce_gamma + atm_pe_gamma
+        total_theta = abs(atm_ce_theta) + abs(atm_pe_theta)
+        denom = total_theta / spot
+        features["gamma_theta_ratio"] = total_gamma / denom if denom != 0 else 0.0
+    else:
+        features["gamma_theta_ratio"] = None
+
+    if atm_ce_vega is not None and atm_pe_vega is not None:
+        features["total_vega"] = atm_ce_vega + atm_pe_vega
+    else:
+        features["total_vega"] = None
 
     # net_delta > 0 = directional bias bullish; < 0 = bearish; ~0 = balanced.
     # CE delta is positive (0→1), PE delta is negative (-1→0), so:
@@ -182,7 +219,7 @@ def compute_greek_features(
     if atm_ce_delta is not None and atm_pe_delta is not None:
         features["net_delta"] = atm_ce_delta - abs(atm_pe_delta)
     else:
-        features["net_delta"] = None  # type: ignore[assignment]
+        features["net_delta"] = None
 
     return features
 
@@ -281,74 +318,58 @@ def build_feature_vector(
 
     use = getattr(config, "use_iv_features", True)
     if use:
-        if atm_ce is not None and atm_pe is not None:
-            iv_feats = compute_iv_features(
-                current_iv=atm_ce.get("iv", 0),
-                iv_ce=atm_ce.get("iv", 0),
-                iv_pe=atm_pe.get("iv", 0),
-                iv_history=iv_history,
-            )
-        else:
-            iv_feats = {
-                "iv_level": None,
-                "iv_ce_pe_spread": None,
-                "iv_change_1": None,
-                "iv_change_5": None,
-                "iv_acceleration": None,
-                "iv_percentile": None,
-            }
+        iv_ce = atm_ce.get("iv") if isinstance(atm_ce, dict) else None
+        iv_pe = atm_pe.get("iv") if isinstance(atm_pe, dict) else None
+        current_iv = iv_ce if iv_ce is not None else iv_pe
+        iv_feats = compute_iv_features(
+            current_iv=current_iv,
+            iv_ce=iv_ce,
+            iv_pe=iv_pe,
+            iv_history=iv_history,
+        )
         features.update({f"iv_features__{k}": v for k, v in iv_feats.items()})
 
     use = getattr(config, "use_oi_features", True)
     if use:
-        if atm_ce is not None and atm_pe is not None and total_ce_oi is not None and total_pe_oi is not None:
-            oi_feats = compute_oi_features(
-                atm_ce_oi=atm_ce.get("oi", 0),
-                atm_pe_oi=atm_pe.get("oi", 0),
-                total_ce_oi=total_ce_oi,
-                total_pe_oi=total_pe_oi,
-                ce_oi_change_pct=atm_ce.get("oi_change_pct", 0),
-                pe_oi_change_pct=atm_pe.get("oi_change_pct", 0),
-                all_ce_oi=all_ce_oi,
-                all_pe_oi=all_pe_oi,
-            )
-        else:
-            oi_feats = {
-                "pcr_oi": None,
-                "oi_bias": None,
-                "atm_ce_oi_change_pct": None,
-                "atm_pe_oi_change_pct": None,
-                "oi_concentration": None,
-                "atm_total_oi": None,
-                "strikes_with_ce_oi": None,
-                "max_ce_oi": None,
-                "p85_ce_oi": None,
-                "strikes_with_pe_oi": None,
-                "max_pe_oi": None,
-                "p85_pe_oi": None,
-            }
+        atm_ce_oi = atm_ce.get("oi") if isinstance(atm_ce, dict) else None
+        atm_pe_oi = atm_pe.get("oi") if isinstance(atm_pe, dict) else None
+        ce_oi_change_pct = atm_ce.get("oi_change_pct") if isinstance(atm_ce, dict) else None
+        pe_oi_change_pct = atm_pe.get("oi_change_pct") if isinstance(atm_pe, dict) else None
+
+        oi_feats = compute_oi_features(
+            atm_ce_oi=atm_ce_oi,
+            atm_pe_oi=atm_pe_oi,
+            total_ce_oi=total_ce_oi,
+            total_pe_oi=total_pe_oi,
+            ce_oi_change_pct=ce_oi_change_pct,
+            pe_oi_change_pct=pe_oi_change_pct,
+            all_ce_oi=all_ce_oi,
+            all_pe_oi=all_pe_oi,
+        )
         features.update({f"oi_features__{k}": v for k, v in oi_feats.items()})
 
     use = getattr(config, "use_greek_features", True)
     if use:
-        if atm_ce is not None and atm_pe is not None:
-            greek_feats = compute_greek_features(
-                atm_ce_gamma=atm_ce.get("gamma", 0),
-                atm_pe_gamma=atm_pe.get("gamma", 0),
-                atm_ce_theta=atm_ce.get("theta", 0),
-                atm_pe_theta=atm_pe.get("theta", 0),
-                atm_ce_vega=atm_ce.get("vega", 0),
-                atm_pe_vega=atm_pe.get("vega", 0),
-                atm_ce_delta=atm_ce.get("delta"),  # None if key absent (old row → NaN)
-                atm_pe_delta=atm_pe.get("delta"),  # None if key absent (old row → NaN)
-                spot=spot,
-            )
-        else:
-            greek_feats = {
-                "gamma_theta_ratio": None,
-                "total_vega": None,
-                "net_delta": None,
-            }
+        atm_ce_gamma = atm_ce.get("gamma") if isinstance(atm_ce, dict) else None
+        atm_pe_gamma = atm_pe.get("gamma") if isinstance(atm_pe, dict) else None
+        atm_ce_theta = atm_ce.get("theta") if isinstance(atm_ce, dict) else None
+        atm_pe_theta = atm_pe.get("theta") if isinstance(atm_pe, dict) else None
+        atm_ce_vega = atm_ce.get("vega") if isinstance(atm_ce, dict) else None
+        atm_pe_vega = atm_pe.get("vega") if isinstance(atm_pe, dict) else None
+        atm_ce_delta = atm_ce.get("delta") if isinstance(atm_ce, dict) else None
+        atm_pe_delta = atm_pe.get("delta") if isinstance(atm_pe, dict) else None
+
+        greek_feats = compute_greek_features(
+            atm_ce_gamma=atm_ce_gamma,
+            atm_pe_gamma=atm_pe_gamma,
+            atm_ce_theta=atm_ce_theta,
+            atm_pe_theta=atm_pe_theta,
+            atm_ce_vega=atm_ce_vega,
+            atm_pe_vega=atm_pe_vega,
+            spot=spot,
+            atm_ce_delta=atm_ce_delta,
+            atm_pe_delta=atm_pe_delta,
+        )
         features.update({f"greek_features__{k}": v for k, v in greek_feats.items()})
 
 

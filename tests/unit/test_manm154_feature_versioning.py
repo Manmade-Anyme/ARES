@@ -127,6 +127,92 @@ class TestMANM154ZeroInjectionPrevention(unittest.TestCase):
         self.assertIsNone(feats.get("oi_features__max_ce_oi"))
         self.assertIsNone(feats.get("iv_features__iv_level"))
 
+    def test_build_feature_vector_with_partial_options_preserves_none(self):
+        """Verify that partial option payloads (missing specific metrics) propagate None without defaulting to 0."""
+        candle = {
+            "open": 24000.0,
+            "high": 24050.0,
+            "low": 23980.0,
+            "close": 24020.0,
+            "volume": 1000,
+        }
+        # Payloads with only OI; IV and Greeks omitted completely
+        atm_ce = {"oi": 1000}
+        atm_pe = {"oi": 2000}
+
+        feats = build_feature_vector(
+            candle=candle,
+            volume_history=[1000],
+            iv_history=None,
+            atm_ce=atm_ce,
+            atm_pe=atm_pe,
+            total_ce_oi=None,
+            total_pe_oi=None,
+            all_ce_oi=None,
+            all_pe_oi=None,
+            levels=[24100.0],
+            timestamp=datetime.now(timezone.utc),
+            spot=24020.0,
+        )
+
+        # OI totals are computed from the provided fields
+        self.assertEqual(feats["oi_features__atm_total_oi"], 3000)
+        # Missing OI change percentages are None, not defaulted to 0.0
+        self.assertIsNone(feats["oi_features__atm_ce_oi_change_pct"])
+        self.assertIsNone(feats["oi_features__atm_pe_oi_change_pct"])
+        self.assertIsNone(feats["oi_features__oi_bias"])
+        self.assertIsNone(feats["oi_features__pcr_oi"])
+
+        # Missing IV features are None, not defaulted to 0.0
+        self.assertIsNone(feats["iv_features__iv_level"])
+        self.assertIsNone(feats["iv_features__iv_ce_pe_spread"])
+
+        # Missing Greeks are None, not defaulted to 0.0
+        self.assertIsNone(feats["greek_features__gamma_theta_ratio"])
+        self.assertIsNone(feats["greek_features__total_vega"])
+        self.assertIsNone(feats["greek_features__net_delta"])
+        self.assertEqual(feats["greek__has_net_delta"], 0.0)
+
+    def test_build_feature_vector_with_isolated_greeks_and_iv(self):
+        """Verify individual metrics are computed when present while absent metrics remain None."""
+        candle = {
+            "open": 24000.0,
+            "high": 24050.0,
+            "low": 23980.0,
+            "close": 24020.0,
+            "volume": 1000,
+        }
+        # CE has iv and vega; PE has only vega (missing iv)
+        atm_ce = {"iv": 14.5, "vega": 5.0}
+        atm_pe = {"vega": 6.0}
+
+        feats = build_feature_vector(
+            candle=candle,
+            volume_history=[1000],
+            iv_history=None,
+            atm_ce=atm_ce,
+            atm_pe=atm_pe,
+            total_ce_oi=None,
+            total_pe_oi=None,
+            all_ce_oi=None,
+            all_pe_oi=None,
+            levels=[24100.0],
+            timestamp=datetime.now(timezone.utc),
+            spot=24020.0,
+        )
+
+        # Vega was present on both sides -> computed
+        self.assertEqual(feats["greek_features__total_vega"], 11.0)
+        # Gamma and Theta missing -> None
+        self.assertIsNone(feats["greek_features__gamma_theta_ratio"])
+        # Delta missing -> None
+        self.assertIsNone(feats["greek_features__net_delta"])
+
+        # Current IV is present from CE
+        self.assertEqual(feats["iv_features__iv_level"], 14.5)
+        # Spread is None because PE IV is missing
+        self.assertIsNone(feats["iv_features__iv_ce_pe_spread"])
+
     def test_build_feature_vector_generates_presence_indicators(self):
         """Verify serving path generates structure and greek presence indicators to prevent training-serving skew."""
         candle = {

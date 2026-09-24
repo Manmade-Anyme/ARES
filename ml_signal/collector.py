@@ -51,14 +51,22 @@ class MLCollector:
 
     @staticmethod
     def _option_row_to_dict(option) -> Dict[str, Any]:
+        if option is None:
+            return {}
+        def _get_float(name):
+            val = getattr(option, name, None)
+            return float(val) if val is not None else None
+        def _get_int(name):
+            val = getattr(option, name, None)
+            return int(val) if val is not None else None
         return {
-            "iv": float(getattr(option, "iv", 0)),
-            "oi": int(getattr(option, "oi", 0)),
-            "oi_change_pct": float(getattr(option, "oi_change_pct", 0)),
-            "gamma": float(getattr(option, "gamma", 0)),
-            "theta": float(getattr(option, "theta", 0)),
-            "vega": float(getattr(option, "vega", 0)),
-            "delta": float(getattr(option, "delta", 0)),  # CE: [0,1]; PE: [-1,0]
+            "iv": _get_float("iv"),
+            "oi": _get_int("oi"),
+            "oi_change_pct": _get_float("oi_change_pct"),
+            "gamma": _get_float("gamma"),
+            "theta": _get_float("theta"),
+            "vega": _get_float("vega"),
+            "delta": _get_float("delta"),  # CE: [0,1]; PE: [-1,0]
         }
 
     def _compute_totals_from_chain(
@@ -137,9 +145,9 @@ class MLCollector:
         )
 
         iv_feats = compute_iv_features(
-            current_iv=atm_ce_dict["iv"],
-            iv_ce=atm_ce_dict["iv"],
-            iv_pe=atm_pe_dict["iv"],
+            current_iv=atm_ce_dict.get("iv"),
+            iv_ce=atm_ce_dict.get("iv"),
+            iv_pe=atm_pe_dict.get("iv"),
             iv_history=list(self.iv_history),
         )
 
@@ -147,29 +155,30 @@ class MLCollector:
         # Appending first made iv_change_1 a self-vs-self diff (structurally 0.0
         # forever), capped iv_percentile at 95.0, duplicated the last volume in
         # vol_slope_5 and biased vol_ratio toward 1.0.
-        self.volume_history.append(candle_dict["volume"])
-        self.iv_history.append(atm_ce_dict["iv"])
+        self.volume_history.append(candle_dict.get("volume", 0))
+        if atm_ce_dict.get("iv") is not None:
+            self.iv_history.append(atm_ce_dict["iv"])
 
         oi_feats = compute_oi_features(
-            atm_ce_oi=atm_ce_dict["oi"],
-            atm_pe_oi=atm_pe_dict["oi"],
-            total_ce_oi=oi_totals["total_ce_oi"],
-            total_pe_oi=oi_totals["total_pe_oi"],
-            ce_oi_change_pct=atm_ce_dict["oi_change_pct"],
-            pe_oi_change_pct=atm_pe_dict["oi_change_pct"],
-            all_ce_oi=oi_totals["all_ce_oi"],
-            all_pe_oi=oi_totals["all_pe_oi"],
+            atm_ce_oi=atm_ce_dict.get("oi"),
+            atm_pe_oi=atm_pe_dict.get("oi"),
+            total_ce_oi=oi_totals.get("total_ce_oi"),
+            total_pe_oi=oi_totals.get("total_pe_oi"),
+            ce_oi_change_pct=atm_ce_dict.get("oi_change_pct"),
+            pe_oi_change_pct=atm_pe_dict.get("oi_change_pct"),
+            all_ce_oi=oi_totals.get("all_ce_oi"),
+            all_pe_oi=oi_totals.get("all_pe_oi"),
         )
 
         greek_feats = compute_greek_features(
-            atm_ce_gamma=atm_ce_dict["gamma"],
-            atm_pe_gamma=atm_pe_dict["gamma"],
-            atm_ce_theta=atm_ce_dict["theta"],
-            atm_pe_theta=atm_pe_dict["theta"],
-            atm_ce_vega=atm_ce_dict["vega"],
-            atm_pe_vega=atm_pe_dict["vega"],
-            atm_ce_delta=atm_ce_dict["delta"],  # forwarded from OptionRow.delta
-            atm_pe_delta=atm_pe_dict["delta"],  # forwarded from OptionRow.delta
+            atm_ce_gamma=atm_ce_dict.get("gamma"),
+            atm_pe_gamma=atm_pe_dict.get("gamma"),
+            atm_ce_theta=atm_ce_dict.get("theta"),
+            atm_pe_theta=atm_pe_dict.get("theta"),
+            atm_ce_vega=atm_ce_dict.get("vega"),
+            atm_pe_vega=atm_pe_dict.get("vega"),
+            atm_ce_delta=atm_ce_dict.get("delta"),  # forwarded from OptionRow.delta
+            atm_pe_delta=atm_pe_dict.get("delta"),  # forwarded from OptionRow.delta
             spot=spot,
         )
 
