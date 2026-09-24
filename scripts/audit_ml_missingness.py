@@ -147,12 +147,25 @@ def is_zero_injected_prediction_snapshot(snapshot: Any) -> bool:
     return False
 
 
-def fetch_ml_predictions(supabase, page_size: int = 1000, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Fetch prediction records from ml_predictions table if accessible."""
+def fetch_ml_predictions(
+    supabase,
+    page_size: int = 1000,
+    limit: Optional[int] = None,
+    raise_on_error: bool = False,
+) -> Optional[List[Dict[str, Any]]]:
+    """Fetch prediction records from ml_predictions table if accessible.
+
+    Returns:
+        List of records if query succeeds (empty list if table has 0 rows).
+        None if table could not be queried (e.g. RLS permission error, missing table).
+    """
     try:
         supabase.table("ml_predictions").select("id").limit(1).execute()
-    except Exception:
-        return []
+    except Exception as e:
+        if raise_on_error:
+            raise
+        print(f"[-] Could not query ml_predictions ({type(e).__name__}: {e}). Table will be excluded from audit.")
+        return None
 
     rows: List[Dict[str, Any]] = []
     start = 0
@@ -169,8 +182,11 @@ def fetch_ml_predictions(supabase, page_size: int = 1000, limit: Optional[int] =
                 .execute()
                 .data or []
             )
-        except Exception:
-            break
+        except Exception as e:
+            if raise_on_error:
+                raise
+            print(f"[-] Error querying batch from ml_predictions ({type(e).__name__}: {e}). Table will be excluded from audit.")
+            return None
         rows.extend(batch)
         if len(batch) < page_size or (limit and len(rows) >= limit):
             break
@@ -237,6 +253,15 @@ def analyze_records(
     total_rows = len(rows)
     records = []
 
+    pred_status = "ok" if prediction_rows is not None else "unavailable"
+    pred_count = len(prediction_rows) if prediction_rows is not None else None
+    zero_preds = 0 if prediction_rows is not None else None
+
+    if prediction_rows:
+        for p in prediction_rows:
+            if is_zero_injected_prediction_snapshot(p.get("feature_snapshot")):
+                zero_preds += 1
+
     sentinels_detected = {
         "legacy_100_support": 0,
         "legacy_100_resistance": 0,
@@ -244,14 +269,10 @@ def analyze_records(
         "real_100_resistance": 0,
         "negative_sentinels": 0,
         "zero_injected_options": 0,
-        "zero_injected_predictions": 0,
-        "prediction_rows_evaluated": len(prediction_rows) if prediction_rows else 0,
+        "zero_injected_predictions": zero_preds,
+        "prediction_rows_evaluated": pred_count,
+        "predictions_status": pred_status,
     }
-
-    if prediction_rows:
-        for p in prediction_rows:
-            if is_zero_injected_prediction_snapshot(p.get("feature_snapshot")):
-                sentinels_detected["zero_injected_predictions"] += 1
 
     for r in rows:
         ts_str = r.get("timestamp")
@@ -485,18 +506,30 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append(f"- **Legitimate 100.0 Market Distances (Post-TASK-195):** Support: `{s['real_100_support']}`, Resistance: `{s['real_100_resistance']}`")
     md.append(f"- **Negative Distance Sentinels:** `{s['negative_sentinels']}`")
     md.append(f"- **Zero-Injected Option Payloads (`ml_collection`):** `{s.get('zero_injected_options', 0)}`")
-    pred_evaluated = s.get("prediction_rows_evaluated", 0)
-    pred_suffix = f" ({pred_evaluated:,} records evaluated)" if pred_evaluated > 0 else " (table empty or unpopulated)"
-    md.append(f"- **Zero-Injected Prediction Snapshots (`ml_predictions`):** `{s.get('zero_injected_predictions', 0)}`{pred_suffix}")
+    pred_status = s.get("predictions_status", "ok" if s.get("prediction_rows_evaluated") is not None else "unavailable")
+    pred_evaluated = s.get("prediction_rows_evaluated")
+    zero_preds = s.get("zero_injected_predictions")
+
+    if pred_status != "ok" or pred_evaluated is None:
+        md.append("- **Zero-Injected Prediction Snapshots (`ml_predictions`):** UNAVAILABLE (table inaccessible or insufficient service_role permissions; excluded from audit)")
+    elif pred_evaluated == 0:
+        md.append(f"- **Zero-Injected Prediction Snapshots (`ml_predictions`):** `0` (table empty or unpopulated)")
+    else:
+        md.append(f"- **Zero-Injected Prediction Snapshots (`ml_predictions`):** `{zero_preds}` ({pred_evaluated:,} records evaluated)")
+
+    pred_artifacts = zero_preds if (pred_status == "ok" and zero_preds is not None) else 0
     total_artifacts = (
         s["legacy_100_support"] +
         s["legacy_100_resistance"] +
         s["negative_sentinels"] +
         s.get("zero_injected_options", 0) +
-        s.get("zero_injected_predictions", 0)
+        pred_artifacts
     )
     if total_artifacts == 0:
-        md.append("- **Verification Result:** PASS. Zero legacy sentinels, negative distances, or zero-injected payloads detected across `ml_collection` and `ml_predictions`. All missing values are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).")
+        if pred_status == "ok" and pred_evaluated is not None:
+            md.append("- **Verification Result:** PASS. Zero legacy sentinels, negative distances, or zero-injected payloads detected across `ml_collection` and `ml_predictions`. All missing values are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).")
+        else:
+            md.append("- **Verification Result:** PASS (ml_collection only; ml_predictions excluded). Zero legacy sentinels, negative distances, or zero-injected payloads detected in `ml_collection`. All missing values are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels). `ml_predictions` could not be read and was excluded from this verdict.")
     else:
         artifacts_detail = []
         if s["legacy_100_support"]:
@@ -507,10 +540,11 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
             artifacts_detail.append(f"{s['negative_sentinels']} negative")
         if s.get("zero_injected_options", 0):
             artifacts_detail.append(f"{s['zero_injected_options']} zero-injected collection payloads")
-        if s.get("zero_injected_predictions", 0):
+        if pred_status == "ok" and s.get("zero_injected_predictions"):
             artifacts_detail.append(f"{s['zero_injected_predictions']} zero-injected prediction snapshots")
         detail_str = ", ".join(artifacts_detail)
-        md.append(f"- **Verification Result:** WARNING. Detected {total_artifacts} legacy artifact(s) remaining in historical rows ({detail_str}). Remediate with NULL in database.")
+        excluded_suffix = " (`ml_predictions` excluded from audit)" if pred_status != "ok" else ""
+        md.append(f"- **Verification Result:** WARNING. Detected {total_artifacts} legacy artifact(s) remaining in historical rows ({detail_str}). Remediate with NULL in database.{excluded_suffix}")
 
     md.append("")
     md.append("---")
@@ -633,7 +667,16 @@ def main():
     parser = argparse.ArgumentParser(description="Audit ml_collection missing data.")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of rows to audit.")
     parser.add_argument("--output", type=str, default="reports/ml/manm154_missingness_audit_report.md", help="Output markdown path.")
+    parser.add_argument(
+        "--fail-on-predictions-error",
+        action="store_true",
+        default=False,
+        help="Exit with non-zero code if ml_predictions cannot be read.",
+    )
     args = parser.parse_args()
+
+    if not getattr(settings, "supabase_service_role_key", None):
+        print("[!] Warning: SUPABASE_SERVICE_ROLE_KEY is not configured. ml_predictions read may fail due to table RLS.")
 
     key = getattr(settings, "supabase_service_role_key", None) or settings.supabase_key
     supabase = create_client(settings.supabase_url, key)
@@ -642,7 +685,17 @@ def main():
         print("[-] No rows retrieved from ml_collection.")
         return
 
-    pred_rows = fetch_ml_predictions(supabase, limit=args.limit)
+    pred_rows = fetch_ml_predictions(
+        supabase,
+        limit=args.limit,
+        raise_on_error=args.fail_on_predictions_error,
+    )
+    if pred_rows is None:
+        print("[!] Warning: ml_predictions could not be queried; excluding from audit verdict.")
+        if args.fail_on_predictions_error:
+            print("[-] Exiting with code 1 due to --fail-on-predictions-error.")
+            sys.exit(1)
+
     audit_res = analyze_records(rows, prediction_rows=pred_rows)
     generate_markdown_report(audit_res, args.output)
 

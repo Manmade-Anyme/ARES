@@ -514,11 +514,13 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
         # In Row 7, net_delta and oi_shape are poisoned by zero-injected options, so missing = True
         self.assertEqual(res["overall"]["missing_net_delta"], 8)
         self.assertEqual(res["overall"]["missing_oi_shape"], 8)
-        # Verify by_date aggregation exists and captures unique dates
         self.assertIn("by_date", res)
         dates_recorded = [d["date"] for d in res["by_date"]]
         self.assertIn("2026-07-20", dates_recorded)
         self.assertIn("2026-09-10", dates_recorded)
+        self.assertEqual(res["sentinels"]["predictions_status"], "unavailable")
+        self.assertIsNone(res["sentinels"]["prediction_rows_evaluated"])
+        self.assertIsNone(res["sentinels"]["zero_injected_predictions"])
 
         # Verify prediction rows auditing
         pred_rows = [
@@ -526,6 +528,7 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
             {"timestamp": "2026-09-12T10:01:00Z", "feature_snapshot": {"iv_features__iv_level": 12.5, "greek_features__total_vega": 20.0, "greek_features__gamma_theta_ratio": 0.05, "oi_features__atm_total_oi": 50000}},
         ]
         res_with_preds = analyze_records(rows, prediction_rows=pred_rows)
+        self.assertEqual(res_with_preds["sentinels"]["predictions_status"], "ok")
         self.assertEqual(res_with_preds["sentinels"]["prediction_rows_evaluated"], 2)
         self.assertEqual(res_with_preds["sentinels"]["zero_injected_predictions"], 1)
 
@@ -722,6 +725,40 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
             if os.path.exists(test_no_v4):
                 os.remove(test_no_v4)
 
+        # Verify report when ml_predictions is unavailable (RLS / permission denied)
+        mock_unavail = dict(mock_audit_res)
+        mock_unavail["sentinels"] = dict(mock_audit_res["sentinels"])
+        mock_unavail["sentinels"]["predictions_status"] = "unavailable"
+        mock_unavail["sentinels"]["prediction_rows_evaluated"] = None
+        mock_unavail["sentinels"]["zero_injected_predictions"] = None
+        test_unavail = "test_audit_pred_unavail.md"
+        try:
+            generate_markdown_report(mock_unavail, test_unavail)
+            with open(test_unavail, "r") as f:
+                content_unavail = f.read()
+            self.assertIn("Zero-Injected Prediction Snapshots (`ml_predictions`):** UNAVAILABLE", content_unavail)
+            self.assertIn("PASS (ml_collection only; ml_predictions excluded)", content_unavail)
+        finally:
+            if os.path.exists(test_unavail):
+                os.remove(test_unavail)
+
+        # Verify report when ml_predictions is accessible but empty (0 rows)
+        mock_empty = dict(mock_audit_res)
+        mock_empty["sentinels"] = dict(mock_audit_res["sentinels"])
+        mock_empty["sentinels"]["predictions_status"] = "ok"
+        mock_empty["sentinels"]["prediction_rows_evaluated"] = 0
+        mock_empty["sentinels"]["zero_injected_predictions"] = 0
+        test_empty = "test_audit_pred_empty.md"
+        try:
+            generate_markdown_report(mock_empty, test_empty)
+            with open(test_empty, "r") as f:
+                content_empty = f.read()
+            self.assertIn("`0` (table empty or unpopulated)", content_empty)
+            self.assertIn("detected across `ml_collection` and `ml_predictions`", content_empty)
+        finally:
+            if os.path.exists(test_empty):
+                os.remove(test_empty)
+
     def test_get_market_session(self):
         from scripts.audit_ml_missingness import get_market_session
 
@@ -879,15 +916,23 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
         rows_limited = fetch_ml_predictions(mock_sb, limit=1, page_size=100)
         self.assertEqual(len(rows_limited), 1)
 
-        # Batch query exception during pagination
+        # Batch query exception during pagination returns None
         mock_sb.table.return_value.select.return_value.order.return_value.range.return_value.execute.side_effect = Exception("Network err")
         rows_err = fetch_ml_predictions(mock_sb, page_size=100)
-        self.assertEqual(len(rows_err), 0)
+        self.assertIsNone(rows_err)
 
-        # Probe failure fallback (table missing or RLS blocked)
+        # Batch query exception with raise_on_error=True raises
+        with self.assertRaises(Exception):
+            fetch_ml_predictions(mock_sb, page_size=100, raise_on_error=True)
+
+        # Probe failure fallback (table missing or RLS blocked) returns None
         mock_sb.table.return_value.select.return_value.limit.return_value.execute.side_effect = Exception("No table")
         rows2 = fetch_ml_predictions(mock_sb, limit=1, page_size=100)
-        self.assertEqual(len(rows2), 0)
+        self.assertIsNone(rows2)
+
+        # Probe failure with raise_on_error=True raises
+        with self.assertRaises(Exception):
+            fetch_ml_predictions(mock_sb, limit=1, page_size=100, raise_on_error=True)
 
     @patch("scripts.audit_ml_missingness.create_client")
     @patch("scripts.audit_ml_missingness.fetch_all_ml_collection")
@@ -909,6 +954,20 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
         with patch("sys.argv", ["audit_ml_missingness.py", "--limit", "10", "--output", "test_main_report.md"]):
             main()
             mock_gen.assert_called_once()
+
+        # Case 3: rows returned, predictions unavailable without --fail-on-predictions-error (succeeds, excluded from verdict)
+        mock_fetch.return_value = [{"timestamp": "2026-09-10T10:00:00Z", "feature_version": 4}]
+        mock_fetch_preds.return_value = None
+        mock_gen.reset_mock()
+        with patch("sys.argv", ["audit_ml_missingness.py", "--limit", "10", "--output", "test_main_report.md"]):
+            main()
+            mock_gen.assert_called_once()
+
+        # Case 4: rows returned, predictions unavailable with --fail-on-predictions-error (exits 1)
+        with patch("sys.argv", ["audit_ml_missingness.py", "--limit", "10", "--fail-on-predictions-error"]):
+            with self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 1)
 
 
 if __name__ == "__main__":

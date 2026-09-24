@@ -1,6 +1,6 @@
 # MANM-154: Missingness & Feature-Versioning Audit Report
 
-**Audit Generated:** 2026-09-24 10:41:42Z
+**Audit Generated:** 2026-09-24 10:53:46Z
 **Total Records Evaluated:** 17,803
 
 ---
