@@ -169,6 +169,62 @@ class TestOIFetcherRemediation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(atm2.ce.oi_prev, 0)
         self.assertEqual(atm2.ce.oi_change_pct, 0.0)
 
+    @patch("fetchers.oi_fetcher.dhanhq")
+    async def test_fetch_chain_invalidates_stale_oi_snapshot_after_gap(self, mock_dhanhq):
+        """Verify that a missing OI reading invalidates the snapshot so the first post-gap change is unknown."""
+        mock_client = MagicMock()
+        mock_dhanhq.return_value = mock_client
+        fetcher = OIFetcher()
+
+        # Cycle 1: valid OI = 1000
+        mock_client.option_chain.return_value = {
+            "status": "success",
+            "data": {
+                "oc": {
+                    "24000.000000": {
+                        "ce": {"last_price": 100.0, "oi": 1000},
+                        "pe": {"last_price": 95.0, "oi": 1000}
+                    }
+                }
+            }
+        }
+        atm1, _ = await fetcher.fetch_chain(spot_price=24000.0, expiry="2026-07-07")
+        self.assertEqual(atm1.ce.oi, 1000)
+        self.assertIsNone(atm1.ce.oi_prev)
+        self.assertIsNone(atm1.ce.oi_change_pct)
+        self.assertEqual(fetcher._prev_oi_snapshot["24000_CE"], 1000)
+
+        # Cycle 2: gap (ce oi is omitted from payload)
+        mock_client.option_chain.return_value["data"]["oc"]["24000.000000"]["ce"] = {"last_price": 105.0}
+        atm2, _ = await fetcher.fetch_chain(spot_price=24000.0, expiry="2026-07-07")
+        self.assertIsNone(atm2.ce.oi)
+        self.assertIsNone(atm2.ce.oi_prev)
+        self.assertIsNone(atm2.ce.oi_change_pct)
+        # Snapshot for 24000_CE must be invalidated/removed
+        self.assertNotIn("24000_CE", fetcher._prev_oi_snapshot)
+
+        # Cycle 3: post-gap recovery with oi = 1500
+        mock_client.option_chain.return_value["data"]["oc"]["24000.000000"]["ce"] = {
+            "last_price": 110.0,
+            "oi": 1500
+        }
+        atm3, _ = await fetcher.fetch_chain(spot_price=24000.0, expiry="2026-07-07")
+        self.assertEqual(atm3.ce.oi, 1500)
+        # Baseline was invalidated during gap, so change is unknown (None), NOT a stale 50% jump!
+        self.assertIsNone(atm3.ce.oi_prev)
+        self.assertIsNone(atm3.ce.oi_change_pct)
+        self.assertEqual(fetcher._prev_oi_snapshot["24000_CE"], 1500)
+
+        # Cycle 4: subsequent regular cycle with oi = 1650
+        mock_client.option_chain.return_value["data"]["oc"]["24000.000000"]["ce"] = {
+            "last_price": 115.0,
+            "oi": 1650
+        }
+        atm4, _ = await fetcher.fetch_chain(spot_price=24000.0, expiry="2026-07-07")
+        self.assertEqual(atm4.ce.oi, 1650)
+        self.assertEqual(atm4.ce.oi_prev, 1500)
+        self.assertEqual(atm4.ce.oi_change_pct, 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()

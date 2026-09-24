@@ -1291,7 +1291,22 @@ class TestAuditNullVsInjectedZero(unittest.TestCase):
         }
         self.assertFalse(is_zero_injected_option_payload(raw_atm_oi=partial_null_raw))
 
-        # Synthetic zeros payload (MANM-49)
+        # Partial payload with one real zero (e.g. gamma=0) among nulls:
+        # Not a full MANM-49 signature {iv:0, oi:0, gamma:0, vega:0}, must NOT be flagged
+        single_zero_among_nulls = {
+            "ce": {"iv": None, "oi": None, "gamma": 0, "vega": None},
+            "pe": {"iv": None, "oi": None, "gamma": 0, "vega": None},
+        }
+        self.assertFalse(is_zero_injected_option_payload(raw_atm_oi=single_zero_among_nulls))
+
+        # Payload with non-numeric value in signature keys (raises ValueError/TypeError)
+        invalid_type_raw = {
+            "ce": {"iv": "invalid", "oi": 0, "gamma": 0, "vega": 0},
+            "pe": {"iv": 0, "oi": 0, "gamma": 0, "vega": 0},
+        }
+        self.assertFalse(is_zero_injected_option_payload(raw_atm_oi=invalid_type_raw))
+
+        # Synthetic zeros payload (MANM-49) where all four signature keys are explicitly zero
         synthetic_zero_raw = {
             "ce": {"iv": 0, "oi": 0, "gamma": 0, "vega": 0},
             "pe": {"iv": 0, "oi": 0, "gamma": 0, "vega": 0},

@@ -95,17 +95,21 @@ def is_zero_injected_option_payload(
             pe = raw.get("pe")
             if isinstance(ce, dict) and isinstance(pe, dict) and ce and pe:
                 check_keys = ["iv", "oi", "gamma", "vega"]
-                # Must be explicitly non-null numeric zero, not null/None (which satisfies the clean missing contract)
-                ce_present = [ce[k] for k in check_keys if k in ce and ce[k] is not None]
-                pe_present = [pe[k] for k in check_keys if k in pe and pe[k] is not None]
-                if ce_present and pe_present:
+                # Must require every signature field in check_keys to be present, non-null, and explicitly numeric zero
+                def _is_all_signature_keys_zero(contract_dict: dict) -> bool:
                     try:
-                        ce_is_zero = all(not isinstance(v, bool) and float(v) == 0.0 for v in ce_present)
-                        pe_is_zero = all(not isinstance(v, bool) and float(v) == 0.0 for v in pe_present)
-                        if ce_is_zero and pe_is_zero:
-                            return True
+                        return all(
+                            k in contract_dict
+                            and contract_dict[k] is not None
+                            and not isinstance(contract_dict[k], bool)
+                            and float(contract_dict[k]) == 0.0
+                            for k in check_keys
+                        )
                     except (ValueError, TypeError):
-                        pass
+                        return False
+
+                if _is_all_signature_keys_zero(ce) and _is_all_signature_keys_zero(pe):
+                    return True
 
     # 2. Check derived oi_features and greek_features if populated with synthetic zeros
     greek = greek_features or {}

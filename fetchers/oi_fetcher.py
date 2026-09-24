@@ -247,15 +247,19 @@ class OIFetcher:
             
             ce_key = f"{strike}_CE"
             if ce_oi is not None:
-                ce_oi_prev = self._prev_oi_snapshot.get(ce_key, ce_oi)
-                if ce_oi_prev == 0:
+                ce_oi_prev = self._prev_oi_snapshot.get(ce_key)
+                if ce_oi_prev is None:
+                    # First observation or first post-gap cycle: baseline is unobserved
+                    ce_oi_change_pct = None
+                elif ce_oi_prev == 0:
                     ce_oi_change_pct = 0.0
                 else:
                     ce_oi_change_pct = ((ce_oi - ce_oi_prev) / ce_oi_prev) * 100.0
                 # Update snapshot for next cycle
                 self._prev_oi_snapshot[ce_key] = ce_oi
             else:
-                ce_oi_prev = self._prev_oi_snapshot.get(ce_key)
+                self._prev_oi_snapshot.pop(ce_key, None)
+                ce_oi_prev = None
                 ce_oi_change_pct = None
             
             # ---------------------------
@@ -273,15 +277,19 @@ class OIFetcher:
             
             pe_key = f"{strike}_PE"
             if pe_oi is not None:
-                pe_oi_prev = self._prev_oi_snapshot.get(pe_key, pe_oi)
-                if pe_oi_prev == 0:
+                pe_oi_prev = self._prev_oi_snapshot.get(pe_key)
+                if pe_oi_prev is None:
+                    # First observation or first post-gap cycle: baseline is unobserved
+                    pe_oi_change_pct = None
+                elif pe_oi_prev == 0:
                     pe_oi_change_pct = 0.0
                 else:
                     pe_oi_change_pct = ((pe_oi - pe_oi_prev) / pe_oi_prev) * 100.0
                 # Update snapshot for next cycle
                 self._prev_oi_snapshot[pe_key] = pe_oi
             else:
-                pe_oi_prev = self._prev_oi_snapshot.get(pe_key)
+                self._prev_oi_snapshot.pop(pe_key, None)
+                pe_oi_prev = None
                 pe_oi_change_pct = None
             
             # Append to full chain list
