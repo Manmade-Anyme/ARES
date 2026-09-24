@@ -480,6 +480,22 @@ class TestLiveRunnerServiceRoleEnforcement(unittest.TestCase):
                 service_role_key=None,
             )
             self.assertIsNone(runner.prediction_logger)
+            self.assertIsNone(runner._supabase)
+
+    def test_init_supabase_clears_clients_on_logger_init_failure(self):
+        from ml_signal.live import LiveRunner
+
+        runner = LiveRunner()
+        with patch("ml_signal.live.create_client"), patch(
+            "ml_signal.live.PredictionLogger", side_effect=Exception("Failed to connect")
+        ):
+            runner._init_supabase(
+                url="https://example.supabase.co",
+                key="anon_key",
+                service_role_key="service_role_key_secret",
+            )
+            self.assertIsNone(runner.prediction_logger)
+            self.assertIsNone(runner._supabase)
 
 
 class TestLiveRunnerPredictionLogging(unittest.IsolatedAsyncioTestCase):
@@ -514,16 +530,12 @@ class TestLiveRunnerPredictionLogging(unittest.IsolatedAsyncioTestCase):
             timestamp="2026-09-24T00:00:00Z",
         )
 
-    async def test_log_prediction_fallback_to_supabase_with_feature_translation(self):
+    async def test_log_prediction_noop_when_prediction_logger_is_none(self):
         from ml_signal.live import LiveRunner
 
         runner = LiveRunner()
         runner.prediction_logger = None
         mock_supabase = MagicMock()
-        table_mock = MagicMock()
-        insert_mock = MagicMock()
-        mock_supabase.table.return_value = table_mock
-        table_mock.insert.return_value = insert_mock
         runner._supabase = mock_supabase
 
         payload = {
@@ -532,31 +544,16 @@ class TestLiveRunnerPredictionLogging(unittest.IsolatedAsyncioTestCase):
             "features": {"rsi": 55.0},
         }
 
+        # Must not perform any database operations or fallback to anonymous client
         await runner.log_prediction(payload)
+        mock_supabase.table.assert_not_called()
 
-        mock_supabase.table.assert_called_with(runner.config.supabase_table_predictions)
-        table_mock.insert.assert_called_once()
-        inserted_payload = table_mock.insert.call_args[0][0]
-        self.assertEqual(inserted_payload["feature_snapshot"], {"rsi": 55.0})
-        self.assertNotIn("features", inserted_payload)
-
-    async def test_log_prediction_noop_when_supabase_is_none(self):
+    async def test_log_prediction_suppresses_exceptions(self):
         from ml_signal.live import LiveRunner
 
         runner = LiveRunner()
-        runner.prediction_logger = None
-        runner._supabase = None
-
-        await runner.log_prediction({"probability": 0.5})
-
-    async def test_log_prediction_fallback_suppresses_exceptions(self):
-        from ml_signal.live import LiveRunner
-
-        runner = LiveRunner()
-        runner.prediction_logger = None
-        mock_supabase = MagicMock()
-        mock_supabase.table.side_effect = RuntimeError("network down")
-        runner._supabase = mock_supabase
+        runner.prediction_logger = MagicMock()
+        runner.prediction_logger.log_prediction.side_effect = RuntimeError("network down")
 
         # Must not raise
         await runner.log_prediction({"probability": 0.5})

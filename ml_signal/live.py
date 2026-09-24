@@ -63,6 +63,7 @@ class LiveRunner:
                     "LiveRunner: SUPABASE_SERVICE_ROLE_KEY not configured; prediction persistence inactive."
                 )
                 self.prediction_logger = None
+                self._supabase = None
                 return
             self.prediction_logger = PredictionLogger(
                 supabase_url=url,
@@ -71,6 +72,7 @@ class LiveRunner:
         except Exception as e:
             logger.warning("LiveRunner: PredictionLogger init failed: %s", e)
             self.prediction_logger = None
+            self._supabase = None
 
     async def fetch_candle(self, security_id: str, exchange: str, date: str) -> Optional[Dict[str, float]]:
         loop = asyncio.get_running_loop()
@@ -118,7 +120,10 @@ class LiveRunner:
         return response
 
     async def log_prediction(self, prediction: Dict[str, Any]):
-        if self.prediction_logger is not None:
+        if self.prediction_logger is None:
+            return
+
+        try:
             self.prediction_logger.log_prediction(
                 probability=prediction.get("probability", 0.0),
                 confidence_tier=prediction.get("confidence_tier", "LOW"),
@@ -130,22 +135,8 @@ class LiveRunner:
                 source=prediction.get("source", "continuous"),
                 timestamp=prediction.get("timestamp"),
             )
-            return
-
-        if self._supabase is None:
-            return
-
-        def _insert():
-            try:
-                payload = dict(prediction)
-                if "features" in payload and "feature_snapshot" not in payload:
-                    payload["feature_snapshot"] = payload.pop("features")
-                self._supabase.table(self.config.supabase_table_predictions).insert(payload).execute()
-            except Exception as e:
-                logger.warning("Failed to log prediction: %s", e)
-
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _insert)
+        except Exception as e:
+            logger.warning("LiveRunner: Failed to log prediction: %s", e)
 
     def _parse_option_chain(self, oc_response: Optional[Dict[str, Any]], spot: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         atm_ce = {"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0}
