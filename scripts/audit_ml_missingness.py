@@ -75,6 +75,48 @@ def get_market_session(ts: Optional[datetime]) -> str:
         return "UNKNOWN"
 
 
+def is_zero_injected_option_payload(
+    raw_atm_oi: Any,
+    greek_features: Optional[Dict[str, Any]] = None,
+    oi_features: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Detect fabricated all-zero options payloads (defect MANM-49).
+
+    In real NIFTY option markets, ATM CE and PE cannot simultaneously have 0 IV,
+    0 open interest, and 0 vega/gamma. When signal_consumer.py or legacy ingestion
+    encountered missing options data, it defaulted to synthetic zeros
+    {iv: 0, oi: 0, gamma: 0, theta: 0, vega: 0}.
+    """
+    # 1. Check raw_atm_oi payload if present
+    if raw_atm_oi is not None:
+        raw = _load_json(raw_atm_oi)
+        if isinstance(raw, dict) and raw:
+            ce = raw.get("ce")
+            pe = raw.get("pe")
+            if isinstance(ce, dict) and isinstance(pe, dict) and ce and pe:
+                check_keys = ["iv", "oi", "gamma", "vega"]
+                ce_is_zero = all(float(ce.get(k, 1) or 0) == 0.0 for k in check_keys if k in ce)
+                pe_is_zero = all(float(pe.get(k, 1) or 0) == 0.0 for k in check_keys if k in pe)
+                if ce_is_zero and pe_is_zero and any(k in ce for k in check_keys):
+                    return True
+
+    # 2. Check derived oi_features and greek_features if populated with synthetic zeros
+    greek = greek_features or {}
+    oi = oi_features or {}
+    if greek and oi:
+        tot_ce = oi.get("total_ce_oi")
+        tot_pe = oi.get("total_pe_oi")
+        atm_ce = oi.get("atm_ce_oi")
+        atm_pe = oi.get("atm_pe_oi")
+        if (
+            tot_ce == 0 and tot_pe == 0 and atm_ce == 0 and atm_pe == 0 and
+            greek.get("total_vega") == 0.0 and greek.get("gamma_theta_ratio") == 0.0
+        ):
+            return True
+
+    return False
+
+
 def fetch_all_ml_collection(supabase, page_size: int = 1000, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Fetch records with pagination."""
     has_fv = True
@@ -83,12 +125,20 @@ def fetch_all_ml_collection(supabase, page_size: int = 1000, limit: Optional[int
     except Exception:
         has_fv = False
 
+    has_raw_atm_oi = True
+    try:
+        supabase.table("ml_collection").select("raw_atm_oi").limit(1).execute()
+    except Exception:
+        has_raw_atm_oi = False
+
     cols = [
         "id", "timestamp", "spot", "greek_features", "oi_features",
         "structure_features", "detector_scores", "raw_candle"
     ]
     if has_fv:
         cols.append("feature_version")
+    if has_raw_atm_oi:
+        cols.append("raw_atm_oi")
     
     col_str = ",".join(cols)
     rows: List[Dict[str, Any]] = []
@@ -128,6 +178,7 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "real_100_support": 0,
         "real_100_resistance": 0,
         "negative_sentinels": 0,
+        "zero_injected_options": 0,
     }
 
     for r in rows:
@@ -151,11 +202,22 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         struct = _load_json(r.get("structure_features"))
         detectors = _load_json(r.get("detector_scores"))
 
-        # Check net_delta
-        net_delta = greek.get("net_delta")
-        has_net_delta = net_delta is not None and not pd.isna(net_delta)
+        # Check zero-injected options (MANM-49 defect)
+        is_zero_options = is_zero_injected_option_payload(
+            r.get("raw_atm_oi"), greek_features=greek, oi_features=oi
+        )
+        if is_zero_options:
+            sentinels_detected["zero_injected_options"] += 1
 
-        # Check OI shape (all 6 CE and PE fields must be present)
+        # Check net_delta (must not be poisoned by zero-injected options)
+        net_delta = greek.get("net_delta")
+        has_net_delta = (
+            net_delta is not None and
+            not pd.isna(net_delta) and
+            not is_zero_options
+        )
+
+        # Check OI shape (all 6 CE and PE fields must be present and not zero-injected)
         strikes_ce = oi.get("strikes_with_ce_oi")
         max_ce = oi.get("max_ce_oi")
         p85_ce = oi.get("p85_ce_oi")
@@ -166,9 +228,9 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             strikes_ce is not None and max_ce is not None and p85_ce is not None and
             strikes_pe is not None and max_pe is not None and p85_pe is not None and
             not pd.isna(strikes_ce) and not pd.isna(max_ce) and not pd.isna(p85_ce) and
-            not pd.isna(strikes_pe) and not pd.isna(max_pe) and not pd.isna(p85_pe)
+            not pd.isna(strikes_pe) and not pd.isna(max_pe) and not pd.isna(p85_pe) and
+            not is_zero_options
         )
-
 
         # Check support & resistance distance
         dist_sup = struct.get("dist_to_nearest_support")
@@ -185,6 +247,11 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         else:
             is_pre_task195 = fv <= 2
 
+        is_legacy_sup = (dist_sup == 100.0 and is_pre_task195)
+        is_legacy_res = (dist_res == 100.0 and is_pre_task195)
+        is_neg_sup = dist_sup is not None and not pd.isna(dist_sup) and dist_sup < 0
+        is_neg_res = dist_res is not None and not pd.isna(dist_res) and dist_res < 0
+
         if dist_sup == 100.0:
             if is_pre_task195:
                 sentinels_detected["legacy_100_support"] += 1
@@ -197,11 +264,22 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             else:
                 sentinels_detected["real_100_resistance"] += 1
 
-        if (dist_sup is not None and dist_sup < 0) or (dist_res is not None and dist_res < 0):
+        if is_neg_sup or is_neg_res:
             sentinels_detected["negative_sentinels"] += 1
 
-        has_dist_support = dist_sup is not None and not pd.isna(dist_sup)
-        has_dist_resistance = dist_res is not None and not pd.isna(dist_res)
+        # Values classified as legacy 100.0 sentinels or negative distances must be treated as missing
+        has_dist_support = (
+            dist_sup is not None and
+            not pd.isna(dist_sup) and
+            not is_legacy_sup and
+            not is_neg_sup
+        )
+        has_dist_resistance = (
+            dist_res is not None and
+            not pd.isna(dist_res) and
+            not is_legacy_res and
+            not is_neg_res
+        )
 
         # Check trend continuation detector score
         trend_score = detectors.get("trend_continuation")
@@ -334,11 +412,27 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append(f"- **Legacy 100.0 Sentinels Remaining (Pre-TASK-195):** Support: `{s['legacy_100_support']}`, Resistance: `{s['legacy_100_resistance']}`")
     md.append(f"- **Legitimate 100.0 Market Distances (Post-TASK-195):** Support: `{s['real_100_support']}`, Resistance: `{s['real_100_resistance']}`")
     md.append(f"- **Negative Distance Sentinels:** `{s['negative_sentinels']}`")
-    total_sentinels = s["legacy_100_support"] + s["legacy_100_resistance"] + s["negative_sentinels"]
-    if total_sentinels == 0:
-        md.append("- **Verification Result:** PASS. Zero legacy sentinels or negative distances detected. All missing distances are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).")
+    md.append(f"- **Zero-Injected Option Payloads (MANM-49):** `{s.get('zero_injected_options', 0)}`")
+    total_artifacts = (
+        s["legacy_100_support"] +
+        s["legacy_100_resistance"] +
+        s["negative_sentinels"] +
+        s.get("zero_injected_options", 0)
+    )
+    if total_artifacts == 0:
+        md.append("- **Verification Result:** PASS. Zero legacy sentinels, negative distances, or zero-injected option payloads detected. All missing values are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).")
     else:
-        md.append(f"- **Verification Result:** WARNING. Detected {total_sentinels} legacy sentinel artifact(s) remaining in historical rows ({s['legacy_100_support']} support, {s['legacy_100_resistance']} resistance, {s['negative_sentinels']} negative). Remediate with NULL in database.")
+        artifacts_detail = []
+        if s["legacy_100_support"]:
+            artifacts_detail.append(f"{s['legacy_100_support']} legacy support")
+        if s["legacy_100_resistance"]:
+            artifacts_detail.append(f"{s['legacy_100_resistance']} legacy resistance")
+        if s["negative_sentinels"]:
+            artifacts_detail.append(f"{s['negative_sentinels']} negative")
+        if s.get("zero_injected_options", 0):
+            artifacts_detail.append(f"{s['zero_injected_options']} zero-injected option payloads")
+        detail_str = ", ".join(artifacts_detail)
+        md.append(f"- **Verification Result:** WARNING. Detected {total_artifacts} legacy artifact(s) remaining in historical rows ({detail_str}). Remediate with NULL in database.")
 
     md.append("")
     md.append("---")

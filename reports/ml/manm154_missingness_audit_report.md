@@ -1,7 +1,7 @@
 # MANM-154: Missingness & Feature-Versioning Audit Report
 
-**Audit Generated:** 2026-09-24 09:51:53Z
-**Total Records Evaluated:** 17,795
+**Audit Generated:** 2026-09-24 10:15:28Z
+**Total Records Evaluated:** 17,803
 
 ---
 
@@ -9,17 +9,18 @@
 
 | Target Feature Category | Missing Count | % Missing | Root Cause Classification |
 |---|---|---|---|
-| `net_delta` (`greek_features`) | 8,996 | 50.55% | Schema Evolution (TASK-4c introduced 2026-08-21) |
-| OI Shape fields (`oi_features`) | 3,729 | 20.96% | Schema Evolution (TASK-194 introduced 2026-07-31) |
-| `dist_to_nearest_support` | 6,690 | 37.59% | Market Regime & Sentinel Cleanup (TASK-195) |
-| `dist_to_nearest_resistance` | 2,865 | 16.1% | Market Regime (ATH Pivot Invariance) & Sentinel Cleanup |
+| `net_delta` (`greek_features`) | 8,996 | 50.53% | Schema Evolution (TASK-4c introduced 2026-08-21) |
+| OI Shape fields (`oi_features`) | 3,729 | 20.95% | Schema Evolution (TASK-194 introduced 2026-07-31) |
+| `dist_to_nearest_support` | 6,698 | 37.62% | Market Regime & Sentinel Cleanup (TASK-195) |
+| `dist_to_nearest_resistance` | 2,865 | 16.09% | Market Regime (ATH Pivot Invariance) & Sentinel Cleanup |
 | `trend_continuation` detector | 2,606 | 14.64% | Schema Evolution & Enum Key Fix (Commit 782a240) |
 
 ### Sentinel & Fabricated Value Verification
 - **Legacy 100.0 Sentinels Remaining (Pre-TASK-195):** Support: `0`, Resistance: `0`
 - **Legitimate 100.0 Market Distances (Post-TASK-195):** Support: `2`, Resistance: `1`
 - **Negative Distance Sentinels:** `0`
-- **Verification Result:** PASS. Zero legacy sentinels or negative distances detected. All missing distances are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).
+- **Zero-Injected Option Payloads (MANM-49):** `0`
+- **Verification Result:** PASS. Zero legacy sentinels, negative distances, or zero-injected option payloads detected. All missing values are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).
 
 ---
 
@@ -27,12 +28,12 @@
 
 | Feature Version | Epoch Description | Sample Count | % Total | `net_delta` Miss% | OI Shape Miss% | Support Miss% | Resist Miss% | Trend Miss% |
 |---|---|---|---|---|---|---|---|---|
-| Version 1 | v1 Legacy Inception (< Jul 28) | 2,405 | 13.52% | 100.0% | 100.0% | 43.0% | 18.3% | 100.0% |
+| Version 1 | v1 Legacy Inception (< Jul 28) | 2,405 | 13.51% | 100.0% | 100.0% | 43.0% | 18.3% | 100.0% |
 | Version 2 | v2 Dynamic Setup Enums (Jul 28-31) | 1,324 | 7.44% | 100.0% | 100.0% | 0.1% | 62.7% | 15.2% |
-| Version 3 | v3 OI Shape Suite (Jul 31 - Aug 21) | 5,264 | 29.58% | 100.0% | 0.0% | 39.8% | 14.0% | 0.0% |
-| Version 4 | v4 Full Modern Suite (Aug 21+) | 8,802 | 49.46% | 0.0% | 0.0% | 40.4% | 9.8% | 0.0% |
+| Version 3 | v3 OI Shape Suite (Jul 31 - Aug 21) | 5,264 | 29.57% | 100.0% | 0.0% | 39.8% | 14.0% | 0.0% |
+| Version 4 | v4 Full Modern Suite (Aug 21+) | 8,810 | 49.49% | 0.0% | 0.0% | 40.5% | 9.8% | 0.0% |
 
-> **Key Finding (Version 4 Modern Suite):** Measured missingness in v4 is `net_delta`: 0.0%, OI shape: 0.0%, `trend_continuation`: 0.0%. Structural distance missingness reflects physical market conditions (support: 40.4%, resistance: 9.8%).
+> **Key Finding (Version 4 Modern Suite):** Measured missingness in v4 is `net_delta`: 0.0%, OI shape: 0.0%, `trend_continuation`: 0.0%. Structural distance missingness reflects physical market conditions (support: 40.5%, resistance: 9.8%).
 
 ---
 
@@ -40,11 +41,11 @@
 
 | Market Session Phase | Sample Count | % Total | `net_delta` Miss% | OI Shape Miss% | Support Miss% | Resist Miss% | Trend Miss% |
 |---|---|---|---|---|---|---|---|
-| `AFTERNOON_CLOSE (14:00-15:30)` | 4,219 | 23.71% | 50.3% | 21.0% | 40.8% | 15.1% | 14.6% |
-| `MID_DAY (10:15-14:00)` | 10,710 | 60.19% | 50.5% | 20.9% | 38.4% | 16.3% | 14.6% |
-| `MORNING_OPEN (09:15-10:15)` | 2,866 | 16.11% | 51.0% | 21.2% | 30.1% | 16.9% | 14.9% |
+| `AFTERNOON_CLOSE (14:00-15:30)` | 4,227 | 23.74% | 50.2% | 20.9% | 40.9% | 15.0% | 14.6% |
+| `MID_DAY (10:15-14:00)` | 10,710 | 60.16% | 50.5% | 20.9% | 38.4% | 16.3% | 14.6% |
+| `MORNING_OPEN (09:15-10:15)` | 2,866 | 16.1% | 51.0% | 21.2% | 30.1% | 16.9% | 14.9% |
 
-> **Session Observation:** Structural distance missingness varies by phase: support missingness peaks during `AFTERNOON_CLOSE (14:00-15:30)` (40.8%), while resistance missingness peaks during `MORNING_OPEN (09:15-10:15)` (16.9%).
+> **Session Observation:** Structural distance missingness varies by phase: support missingness peaks during `AFTERNOON_CLOSE (14:00-15:30)` (40.9%), while resistance missingness peaks during `MORNING_OPEN (09:15-10:15)` (16.9%).
 
 ---
 
@@ -100,7 +101,7 @@
 | `2026-09-21` | 373 | v4 | 0.0% | 0.0% | 0.0% | 79.6% | 0.0% |
 | `2026-09-22` | 372 | v4 | 0.0% | 0.0% | 4.3% | 0.8% | 0.0% |
 | `2026-09-23` | 373 | v4 | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
-| `2026-09-24` | 364 | v4 | 0.0% | 0.0% | 99.7% | 0.0% | 0.0% |
+| `2026-09-24` | 372 | v4 | 0.0% | 0.0% | 99.7% | 0.0% | 0.0% |
 
 ---
 
@@ -117,7 +118,7 @@
 | `2026-W35` | 1,855 | v4 | 0.0% | 0.0% | 43.1% | 13.7% | 0.0% |
 | `2026-W36` | 1,858 | v4 | 0.0% | 0.0% | 84.6% | 0.0% | 0.0% |
 | `2026-W37` | 1,490 | v4 | 0.0% | 0.0% | 5.0% | 16.0% | 0.0% |
-| `2026-W38` | 1,482 | v4 | 0.0% | 0.0% | 25.6% | 20.2% | 0.0% |
+| `2026-W38` | 1,490 | v4 | 0.0% | 0.0% | 26.0% | 20.1% | 0.0% |
 
 ---
 

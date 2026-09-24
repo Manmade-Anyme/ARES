@@ -477,6 +477,20 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
                 "feature_version": 4,
                 "structure_features": {"dist_to_nearest_support": -15.0},
             },
+            # Row with zero-injected option payload (MANM-49 defect)
+            {
+                "timestamp": "2026-09-12T10:00:00Z",
+                "feature_version": 4,
+                "raw_atm_oi": {
+                    "ce": {"iv": 0, "oi": 0, "gamma": 0, "theta": 0, "vega": 0},
+                    "pe": {"iv": 0, "oi": 0, "gamma": 0, "theta": 0, "vega": 0},
+                },
+                "greek_features": {"net_delta": 0.0},
+                "oi_features": {
+                    "strikes_with_ce_oi": 1, "max_ce_oi": 0, "p85_ce_oi": 0,
+                    "strikes_with_pe_oi": 1, "max_pe_oi": 0, "p85_pe_oi": 0,
+                },
+            },
         ]
 
         res = analyze_records(rows)
@@ -489,11 +503,48 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
         self.assertEqual(s["real_100_resistance"], 1)
         # Negative distance flagged
         self.assertEqual(s["negative_sentinels"], 1)
+        # Zero-injected options flagged
+        self.assertEqual(s["zero_injected_options"], 1)
+        # Check that legacy 100.0 sentinels and negative distances are treated as missing observations:
+        # Rows 0, 1 (legacy 100) and Row 6 (-15.0) and Row 7 (no support) are missing support -> 4 / 8 missing
+        self.assertEqual(res["overall"]["missing_support"], 4)
+        # Rows 0 (legacy 100) and Rows 1, 2, 4, 5, 6, 7 (no resistance) are missing resistance -> 7 / 8 missing
+        self.assertEqual(res["overall"]["missing_resistance"], 7)
+        # Check that zero-injected option payload causes net_delta and oi_shape to be treated as missing
+        # In Row 7, net_delta and oi_shape are poisoned by zero-injected options, so missing = True
+        self.assertEqual(res["overall"]["missing_net_delta"], 8)
+        self.assertEqual(res["overall"]["missing_oi_shape"], 8)
         # Verify by_date aggregation exists and captures unique dates
         self.assertIn("by_date", res)
         dates_recorded = [d["date"] for d in res["by_date"]]
         self.assertIn("2026-07-20", dates_recorded)
         self.assertIn("2026-09-10", dates_recorded)
+
+    def test_is_zero_injected_option_payload(self):
+        from scripts.audit_ml_missingness import is_zero_injected_option_payload
+
+        # Normal options payload
+        valid_raw = {
+            "ce": {"iv": 11.4, "oi": 6035315, "gamma": 0.00116, "vega": 11.96},
+            "pe": {"iv": 11.6, "oi": 5326295, "gamma": 0.00113, "vega": 11.96},
+        }
+        self.assertFalse(is_zero_injected_option_payload(valid_raw))
+
+        # MANM-49 all-zero payload in raw_atm_oi
+        zero_raw = {
+            "ce": {"iv": 0, "oi": 0, "gamma": 0, "theta": 0, "vega": 0},
+            "pe": {"iv": 0, "oi": 0, "gamma": 0, "theta": 0, "vega": 0},
+        }
+        self.assertTrue(is_zero_injected_option_payload(zero_raw))
+
+        # Zero-injected derived features when raw_atm_oi is None
+        zero_greek = {"total_vega": 0.0, "gamma_theta_ratio": 0.0}
+        zero_oi = {"total_ce_oi": 0, "total_pe_oi": 0, "atm_ce_oi": 0, "atm_pe_oi": 0}
+        self.assertTrue(is_zero_injected_option_payload(None, zero_greek, zero_oi))
+
+        # Empty / non-zero derived features
+        self.assertFalse(is_zero_injected_option_payload(None, {}, {}))
+        self.assertFalse(is_zero_injected_option_payload(None, {"total_vega": 5.0}, {"total_ce_oi": 1000}))
 
     def test_generate_markdown_report_supports_filename_without_dir(self):
         from scripts.audit_ml_missingness import generate_markdown_report
@@ -518,6 +569,7 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
                 "real_100_support": 2,
                 "real_100_resistance": 1,
                 "negative_sentinels": 0,
+                "zero_injected_options": 0,
             },
             "by_version": [
                 {
@@ -575,8 +627,9 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
             self.assertTrue(os.path.exists(test_filename))
             with open(test_filename, "r") as f:
                 content = f.read()
-            # Verify clean PASS for 0 legacy sentinels
-            self.assertIn("PASS. Zero legacy sentinels", content)
+            # Verify clean PASS for 0 legacy sentinels and zero-injected options
+            self.assertIn("PASS. Zero legacy sentinels, negative distances, or zero-injected option payloads detected", content)
+            self.assertIn("Zero-Injected Option Payloads (MANM-49):", content)
             self.assertIn("Legitimate 100.0 Market Distances (Post-TASK-195):", content)
             # Verify dynamically derived session observations
             self.assertIn("AFTERNOON_CLOSE (14:00-15:30)` (40.0%)", content)
@@ -709,6 +762,7 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
                 "real_100_support": 0,
                 "real_100_resistance": 0,
                 "negative_sentinels": 1,
+                "zero_injected_options": 1,
             },
             "by_version": [
                 {
@@ -742,7 +796,7 @@ class TestMANM154MissingnessAuditScript(unittest.TestCase):
             self.assertTrue(os.path.exists(test_file))
             with open(test_file, "r") as f:
                 content = f.read()
-            self.assertIn("WARNING. Detected 3 legacy sentinel artifact(s)", content)
+            self.assertIn("WARNING. Detected 4 legacy artifact(s) remaining in historical rows (1 legacy support, 1 legacy resistance, 1 negative, 1 zero-injected option payloads)", content)
             self.assertIn("2026-W37", content)
         finally:
             if os.path.exists(test_dir):
