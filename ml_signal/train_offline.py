@@ -445,10 +445,25 @@ def run_training(
     })
     metrics.update(sharpe)
     metrics.update(_shap_metrics())
+    if "feature_version" in df_train.columns:
+        missingness_by_ver: Dict[str, Any] = {}
+        for ver, vdf in df_train.groupby("feature_version"):
+            v_missing = {
+                col: round(float(vdf[col].isna().mean()), 4)
+                for col in feature_cols
+                if vdf[col].isna().any()
+            }
+            missingness_by_ver[str(ver)] = {
+                "n_samples": int(len(vdf)),
+                "features_with_missing": v_missing,
+            }
+        metrics["missingness_by_feature_version"] = missingness_by_ver
+
     if model_version is not None:
         metrics["model_version"] = model_version
 
     importance = _importance(model, feature_cols)
+
     metrics["top_features"] = importance.head(15).to_dict(orient="records")
     _compute_shap(model, X_test, feature_cols, metrics)
     _save_shap_plot(metrics, shap_plot_path)
@@ -471,12 +486,23 @@ def run_training(
 
 def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     """Read-only, paginated pull of ml_collection ordered by timestamp asc."""
-    cols = "timestamp,raw_candle,trade_id,trade_outcome,trade_pnl," + ",".join([
+    include_feature_version = True
+    try:
+        supabase.table("ml_collection").select("feature_version").limit(1).execute()
+    except Exception:
+        include_feature_version = False
+
+    base_cols = ["timestamp", "raw_candle", "trade_id", "trade_outcome", "trade_pnl"]
+    if include_feature_version:
+        base_cols.append("feature_version")
+    cols = ",".join(base_cols + [
         "candle_features", "volume_features", "iv_features", "oi_features",
         "greek_features", "structure_features", "meta_features",
         "detector_scores",   # TASK-4e: one-hot setup-detector dict
     ])
     rows: List[dict] = []
+
+
     start = 0
     while True:
         batch = (

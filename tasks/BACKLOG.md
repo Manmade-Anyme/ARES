@@ -1,12 +1,22 @@
 # Backlog
 
 ## High Priority
+- **MANM-154**: Audit and resolve feature-versioning and missing-data inconsistency in `ml_collection`.
+  - [x] Create intent document for MANM-154 (PM)
+  - [x] Investigate `ml_collection` missing data (Architect)
+  - [x] Write ADR on handling schema versioning and missing data (Architect) - Proposed in directives/adr/MANM-154_feature-versioning-missing-data.md
+  - [x] Implement `feature_version` metadata and enforce `NULL`/`NaN` in storage (Code Generator)
+  - [x] Produce missingness audit report (Code Generator / Architect)
+  - [x] Review implementation and ensure tests pass (QA & PR Reviewer)
+
+
 - **MANM-150**: Fix broken signal-to-trade joins between `ares_signals`, `active_trades`, and analytics.
   - [x] Create ADR (Architect) - Proposed in directives/adr/MANM-150_fix-signal-joins.md
   - [x] Implement data model and insertion path changes (Code Generator)
   - [x] Safe read-only validation query and backfill plan
 
-## TASK-153: Implement prediction persistence in ml_predictions table for model auditing
+## Completed
+### TASK-153: Implement prediction persistence in ml_predictions table for model auditing
 **Priority:** High
 **Status:** Completed
 **Acceptance Criteria:**
@@ -15,3 +25,4 @@
 - [x] All required fields are correctly populated (timestamp, probability, confidence_tier, model_version, signal_id, trade_id, spot price, source, feature_snapshot).
 - [x] Tests prove both persistence success and graceful error handling.
 - [x] Documentation is present for data retention.
+

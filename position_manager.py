@@ -202,14 +202,17 @@ class PositionManager:
 
         oi_data = {}
         if atm is not None:
-            ce_oi = atm.ce.oi
-            pe_oi = atm.pe.oi
+            ce_oi = atm.ce.oi if atm.ce else None
+            pe_oi = atm.pe.oi if atm.pe else None
+            pcr = round(pe_oi / ce_oi, 4) if (ce_oi is not None and pe_oi is not None and ce_oi > 0) else None
+            ce_change = round(atm.ce.oi_change_pct, 2) if (atm.ce and atm.ce.oi_change_pct is not None) else None
+            pe_change = round(atm.pe.oi_change_pct, 2) if (atm.pe and atm.pe.oi_change_pct is not None) else None
             oi_data = {
-                "pcr": round(pe_oi / ce_oi if ce_oi > 0 else 0.0, 4),
+                "pcr": pcr,
                 "atm_ce_oi": ce_oi,
                 "atm_pe_oi": pe_oi,
-                "ce_oi_change_pct": round(atm.ce.oi_change_pct, 2),
-                "pe_oi_change_pct": round(atm.pe.oi_change_pct, 2),
+                "ce_oi_change_pct": ce_change,
+                "pe_oi_change_pct": pe_change,
             }
 
         mode = settings.signal_schema_mode

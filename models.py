@@ -65,15 +65,15 @@ class OptionRow:
     """
     strike: int
     option_type: str  # "CE" or "PE"
-    ltp: float
-    iv: float
-    oi: int
-    oi_prev: int
-    oi_change_pct: float
-    gamma: float = 0.0
-    theta: float = 0.0
-    delta: float = 0.0
-    vega: float = 0.0
+    ltp: Optional[float] = None
+    iv: Optional[float] = None
+    oi: Optional[int] = None
+    oi_prev: Optional[int] = None
+    oi_change_pct: Optional[float] = None
+    gamma: Optional[float] = None
+    theta: Optional[float] = None
+    delta: Optional[float] = None
+    vega: Optional[float] = None
 
 
 @dataclass

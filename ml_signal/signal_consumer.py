@@ -152,10 +152,10 @@ class SignalConsumer:
                         candle=candle,
                         volume_history=[],
                         iv_history=[],
-                        atm_ce={"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0},
-                        atm_pe={"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0},
-                        total_ce_oi=0,
-                        total_pe_oi=0,
+                        atm_ce=None,
+                        atm_pe=None,
+                        total_ce_oi=None,
+                        total_pe_oi=None,
                         all_ce_oi=None,
                         all_pe_oi=None,
                         levels=[],
@@ -166,6 +166,7 @@ class SignalConsumer:
                         dte=None,
                         is_expiry=False,
                     )
+
 
                     result["source"] = "event_triggered"
                     result["signal_id"] = canonical_signal_id
