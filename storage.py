@@ -455,6 +455,8 @@ def _sanitize_value(val: Any) -> Any:
         return None
     if isinstance(val, datetime):
         return to_utc_iso(val)
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
     if isinstance(val, (float, np.floating)):
         f_val = float(val)
         if math.isnan(f_val) or math.isinf(f_val):
@@ -462,8 +464,6 @@ def _sanitize_value(val: Any) -> Any:
         return round(f_val, 6)
     if isinstance(val, (int, np.integer)):
         return int(val)
-    if isinstance(val, (bool, np.bool_)):
-        return bool(val)
     if isinstance(val, dict):
         return {str(k): _sanitize_value(v) for k, v in val.items()}
     if isinstance(val, (list, tuple, set, np.ndarray)):
@@ -578,13 +578,6 @@ class PredictionLogger:
                 "source": str(source),
                 "feature_snapshot": sanitize_feature_snapshot(feature_snapshot),
             }
-
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                # Synchronous fallback when called outside an active event loop
-                self._insert_prediction(record)
-                return
 
             self._executor.submit(self._insert_prediction, record)
         except Exception as exc:

@@ -61,11 +61,33 @@ class TestFeatureSanitization(unittest.TestCase):
         self.assertIsNone(sanitized["np_inf"])
         self.assertIsNone(sanitized["none_val"])
         self.assertIn("2026-09-12T10:30:00", sanitized["dt_val"])
-        self.assertTrue(sanitized["bool_val"])
-        self.assertFalse(sanitized["np_bool"])
+        self.assertIs(sanitized["bool_val"], True)
+        self.assertIs(sanitized["np_bool"], False)
+        self.assertIs(type(sanitized["bool_val"]), bool)
+        self.assertIs(type(sanitized["np_bool"]), bool)
         self.assertIsNone(sanitized["nested_dict"]["inner_nan"])
         self.assertEqual(sanitized["nested_dict"]["inner_val"], 5.555556)
         self.assertEqual(sanitized["array_val"], [1.1, None, 9])
+
+    def test_sanitize_preserves_boolean_types_not_coerced_to_int(self):
+        sanitized = sanitize_feature_snapshot({
+            "flag_true": True,
+            "flag_false": False,
+            "np_flag_true": np.bool_(True),
+            "np_flag_false": np.bool_(False),
+            "int_one": 1,
+            "int_zero": 0,
+        })
+        self.assertIs(sanitized["flag_true"], True)
+        self.assertIs(sanitized["flag_false"], False)
+        self.assertIs(sanitized["np_flag_true"], True)
+        self.assertIs(sanitized["np_flag_false"], False)
+        self.assertIs(type(sanitized["flag_true"]), bool)
+        self.assertIs(type(sanitized["flag_false"]), bool)
+        self.assertIs(type(sanitized["np_flag_true"]), bool)
+        self.assertIs(type(sanitized["np_flag_false"]), bool)
+        self.assertIs(type(sanitized["int_one"]), int)
+        self.assertIs(type(sanitized["int_zero"]), int)
 
     def test_sanitize_empty_or_invalid_input(self):
         self.assertEqual(sanitize_feature_snapshot({}), {})
@@ -110,6 +132,7 @@ class TestPredictionLogger(unittest.TestCase):
         )
         try:
             logger.log_record(record)
+            logger.shutdown(wait=True)
             self.table_mock.insert.assert_called_once()
             payload = self.table_mock.insert.call_args[0][0]
             self.assertEqual(payload["probability"], 0.85)
@@ -131,6 +154,7 @@ class TestPredictionLogger(unittest.TestCase):
                 trade_id="3fa85f64-5717-4562-b3fc-2c963f66afa6",
                 source="event_triggered",
             )
+            logger.shutdown(wait=True)
 
             self.mock_client.table.assert_called_with("ml_predictions")
             self.table_mock.insert.assert_called_once()
@@ -148,6 +172,34 @@ class TestPredictionLogger(unittest.TestCase):
         finally:
             logger.shutdown(wait=True)
 
+    def test_sync_call_does_not_block_caller_on_slow_insert(self):
+        """Verifies that non-event-loop callers are dispatched to executor and not blocked by slow network operations."""
+        logger = PredictionLogger(supabase_client=self.mock_client, max_workers=1)
+        original_insert = logger._insert_prediction
+
+        def _slow_insert(record):
+            time.sleep(0.2)
+            original_insert(record)
+
+        logger._insert_prediction = _slow_insert
+        try:
+            t0 = time.perf_counter()
+            logger.log_prediction(
+                probability=0.65,
+                confidence_tier="MEDIUM",
+                model_version="v1",
+                spot=24000.0,
+                feature_snapshot={"val": 1},
+            )
+            elapsed = time.perf_counter() - t0
+            # Must return immediately, well under the 0.2s sleep time
+            self.assertLess(elapsed, 0.1)
+
+            logger.shutdown(wait=True)
+            self.table_mock.insert.assert_called_once()
+        finally:
+            logger.shutdown(wait=True)
+
     def test_missing_optional_fields_persist_safely(self):
         logger = PredictionLogger(supabase_client=self.mock_client, max_workers=1)
         try:
@@ -160,6 +212,7 @@ class TestPredictionLogger(unittest.TestCase):
                 signal_id=None,
                 trade_id=None,
             )
+            logger.shutdown(wait=True)
 
             record = self.table_mock.insert.call_args[0][0]
             self.assertIsNone(record["signal_id"])
@@ -180,6 +233,7 @@ class TestPredictionLogger(unittest.TestCase):
                 spot=24200.0,
                 feature_snapshot={"x": 1},
             )
+            logger.shutdown(wait=True)
             self.table_mock.insert.assert_called_once()
         finally:
             logger.shutdown(wait=True)
