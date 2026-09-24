@@ -138,9 +138,27 @@ class LiveRunner:
         except Exception as e:
             logger.warning("LiveRunner: Failed to log prediction: %s", e)
 
-    def _parse_option_chain(self, oc_response: Optional[Dict[str, Any]], spot: float) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        atm_ce = {"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0}
-        atm_pe = {"iv": 0, "oi": 0, "oi_change_pct": 0, "gamma": 0, "theta": 0, "vega": 0}
+    def _parse_option_chain(self, oc_response: Optional[Dict[str, Any]], spot: float) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        def _get_float(d: Dict[str, Any], key: str) -> Optional[float]:
+            v = d.get(key)
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return None
+
+        def _get_int(d: Dict[str, Any], key: str) -> Optional[int]:
+            v = d.get(key)
+            if v is None:
+                return None
+            try:
+                return int(v)
+            except (ValueError, TypeError):
+                return None
+
+        atm_ce = None
+        atm_pe = None
 
         if oc_response and "data" in oc_response:
             resp_data = oc_response["data"]
@@ -149,27 +167,29 @@ class LiveRunner:
             atm_strike = round(spot / 50) * 50
             for strike_key, data in oc_data.items():
                 if abs(float(strike_key) - atm_strike) <= 25:
-                    ce = data.get("ce", {})
-                    pe = data.get("pe", {})
+                    ce = data.get("ce", {}) if isinstance(data.get("ce"), dict) else {}
+                    pe = data.get("pe", {}) if isinstance(data.get("pe"), dict) else {}
                     
-                    ce_greeks = ce.get("greeks", {})
-                    pe_greeks = pe.get("greeks", {})
+                    ce_greeks = ce.get("greeks", {}) if isinstance(ce.get("greeks"), dict) else {}
+                    pe_greeks = pe.get("greeks", {}) if isinstance(pe.get("greeks"), dict) else {}
                     
                     atm_ce = {
-                        "iv": float(ce.get("implied_volatility", 0)),
-                        "oi": int(ce.get("oi", 0)),
-                        "oi_change_pct": 0,
-                        "gamma": float(ce_greeks.get("gamma", 0)),
-                        "theta": float(ce_greeks.get("theta", 0)),
-                        "vega": float(ce_greeks.get("vega", 0)),
+                        "iv": _get_float(ce, "implied_volatility"),
+                        "oi": _get_int(ce, "oi"),
+                        "oi_change_pct": None,
+                        "gamma": _get_float(ce_greeks, "gamma"),
+                        "theta": _get_float(ce_greeks, "theta"),
+                        "delta": _get_float(ce_greeks, "delta"),
+                        "vega": _get_float(ce_greeks, "vega"),
                     }
                     atm_pe = {
-                        "iv": float(pe.get("implied_volatility", 0)),
-                        "oi": int(pe.get("oi", 0)),
-                        "oi_change_pct": 0,
-                        "gamma": float(pe_greeks.get("gamma", 0)),
-                        "theta": float(pe_greeks.get("theta", 0)),
-                        "vega": float(pe_greeks.get("vega", 0)),
+                        "iv": _get_float(pe, "implied_volatility"),
+                        "oi": _get_int(pe, "oi"),
+                        "oi_change_pct": None,
+                        "gamma": _get_float(pe_greeks, "gamma"),
+                        "theta": _get_float(pe_greeks, "theta"),
+                        "delta": _get_float(pe_greeks, "delta"),
+                        "vega": _get_float(pe_greeks, "vega"),
                     }
                     break
         return atm_ce, atm_pe
@@ -218,8 +238,8 @@ class LiveRunner:
                     iv_history=list(self.iv_history),
                     atm_ce=atm_ce,
                     atm_pe=atm_pe,
-                    total_ce_oi=0,
-                    total_pe_oi=0,
+                    total_ce_oi=None,
+                    total_pe_oi=None,
                     all_ce_oi=None,
                     all_pe_oi=None,
                     levels=[],
@@ -236,7 +256,8 @@ class LiveRunner:
                 # diff and zeroed iv_acceleration. Same contract as
                 # MLCollector.snapshot; see tests/unit/test_ml_feature_fidelity.py.
                 self.volume_history.append(candle["volume"])
-                self.iv_history.append(atm_ce["iv"])
+                if atm_ce and atm_ce.get("iv") is not None:
+                    self.iv_history.append(atm_ce["iv"])
 
                 result["source"] = "continuous"
 

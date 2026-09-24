@@ -148,7 +148,8 @@ class AresEngine:
         """
         # 1. Update buffers
         self.candle_buffer.append(candle)
-        self.iv_buffer.append(atm.ce.iv)
+        if atm and atm.ce and atm.ce.iv is not None:
+            self.iv_buffer.append(atm.ce.iv)
 
         # 2. Cooldown state. Evaluated here but applied *after* the stateful
         # detectors have advanced (TASK-188) — see step 5a.
@@ -167,8 +168,10 @@ class AresEngine:
         # 4. Get previous IV
         if len(self.iv_buffer) >= 2:
             iv_prev = self.iv_buffer[-2]
-        else:
+        elif len(self.iv_buffer) == 1:
             iv_prev = self.iv_buffer[-1]
+        else:
+            iv_prev = None
 
         # 5a. Advance the stateful OI wall detector and entry filter on EVERY candle (TASK-073).
         # It updates persistence, tracking, and qualification regardless of cooldown
@@ -234,10 +237,10 @@ class AresEngine:
             candle=candle,
             avg_volume=avg_volume,
             iv_change_pct=iv_change_pct,
-            atm_ce_oi=atm.ce.oi,
-            atm_ce_oi_prev=atm.ce.oi_prev,
-            atm_pe_oi=atm.pe.oi,
-            atm_pe_oi_prev=atm.pe.oi_prev,
+            atm_ce_oi=atm.ce.oi if (atm and atm.ce) else None,
+            atm_ce_oi_prev=atm.ce.oi_prev if (atm and atm.ce) else None,
+            atm_pe_oi=atm.pe.oi if (atm and atm.pe) else None,
+            atm_pe_oi_prev=atm.pe.oi_prev if (atm and atm.pe) else None,
             levels=levels,
         )
 
@@ -264,7 +267,7 @@ class AresEngine:
                 )
                 or self.exhaustion_detector.update(
                     candle=candle,
-                    iv_current=atm.ce.iv,
+                    iv_current=atm.ce.iv if (atm and atm.ce) else None,
                     iv_prev=iv_prev,
                     levels=levels,
                 )

@@ -50,5 +50,42 @@ class TestMLLiveRemediation(unittest.TestCase):
         self.assertEqual(atm_ce["gamma"], 0.001)
         self.assertEqual(atm_pe["vega"], 9.5)
 
+    def test_parse_option_chain_preserves_none_for_missing_fields(self):
+        runner = LiveRunner()
+        mock_response = {
+            "status": "success",
+            "data": {
+                "oc": {
+                    "24000.000000": {
+                        "ce": {
+                            "last_price": 100.0,
+                            "oi": 100000,
+                        },
+                        "pe": {
+                            "last_price": 95.0,
+                            "implied_volatility": 13.0,
+                        }
+                    }
+                }
+            }
+        }
+
+        atm_ce, atm_pe = runner._parse_option_chain(mock_response, spot=24000.0)
+
+        # CE has oi, missing iv and greeks -> None
+        self.assertEqual(atm_ce["oi"], 100000)
+        self.assertIsNone(atm_ce["iv"])
+        self.assertIsNone(atm_ce["gamma"])
+        self.assertIsNone(atm_ce["theta"])
+        self.assertIsNone(atm_ce["delta"])
+        self.assertIsNone(atm_ce["vega"])
+
+        # PE has iv, missing oi and greeks -> None
+        self.assertEqual(atm_pe["iv"], 13.0)
+        self.assertIsNone(atm_pe["oi"])
+        self.assertIsNone(atm_pe["gamma"])
+        self.assertIsNone(atm_pe["delta"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -41,10 +41,10 @@ class FailedBreakoutDetector:
         candle: OHLCVCandle,
         avg_volume: float,
         iv_change_pct: float,
-        atm_ce_oi: int,
-        atm_ce_oi_prev: int,
-        atm_pe_oi: int,
-        atm_pe_oi_prev: int,
+        atm_ce_oi: Optional[int],
+        atm_ce_oi_prev: Optional[int],
+        atm_pe_oi: Optional[int],
+        atm_pe_oi_prev: Optional[int],
         levels: List[ResistanceLevel]
     ) -> Optional[AresSignal]:
         """
@@ -96,15 +96,23 @@ class FailedBreakoutDetector:
         # Check bidirectional conditions appropriately
         if was_upward:
             closed_back = candle.close < self.active.level
-            writers_holding = atm_ce_oi >= atm_ce_oi_prev
+            writers_holding = (atm_ce_oi >= atm_ce_oi_prev) if (atm_ce_oi is not None and atm_ce_oi_prev is not None) else False
             direction = Direction.BEARISH
-            oi_change = ((atm_ce_oi - atm_ce_oi_prev) / atm_ce_oi_prev * 100.0) if atm_ce_oi_prev > 0 else 0.0
+            oi_change = (
+                ((atm_ce_oi - atm_ce_oi_prev) / atm_ce_oi_prev * 100.0)
+                if (atm_ce_oi is not None and atm_ce_oi_prev is not None and atm_ce_oi_prev > 0)
+                else 0.0
+            )
             deep_close = (self.active.level - candle.close) >= settings.breakout_deep_close_pts
         else:
             closed_back = candle.close > self.active.level
-            writers_holding = atm_pe_oi >= atm_pe_oi_prev
+            writers_holding = (atm_pe_oi >= atm_pe_oi_prev) if (atm_pe_oi is not None and atm_pe_oi_prev is not None) else False
             direction = Direction.BULLISH
-            oi_change = ((atm_pe_oi - atm_pe_oi_prev) / atm_pe_oi_prev * 100.0) if atm_pe_oi_prev > 0 else 0.0
+            oi_change = (
+                ((atm_pe_oi - atm_pe_oi_prev) / atm_pe_oi_prev * 100.0)
+                if (atm_pe_oi is not None and atm_pe_oi_prev is not None and atm_pe_oi_prev > 0)
+                else 0.0
+            )
             deep_close = (candle.close - self.active.level) >= settings.breakout_deep_close_pts
 
         weak_volume = self.active.breakout_candle.volume < (avg_volume * settings.breakout_weak_volume_ratio)

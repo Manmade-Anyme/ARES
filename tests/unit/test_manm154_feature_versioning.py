@@ -213,6 +213,84 @@ class TestMANM154ZeroInjectionPrevention(unittest.TestCase):
         # Spread is None because PE IV is missing
         self.assertIsNone(feats["iv_features__iv_ce_pe_spread"])
 
+    def test_upstream_option_row_to_collector_to_feature_vector_preserves_none(self):
+        """Verify upstream OptionRow with missing fields propagates None through collector to feature vector."""
+        from models import OptionRow
+        from ml_signal.collector import MLCollector
+
+        # OptionRow constructed upstream by OIFetcher where Dhan omitted IV and Greeks
+        ce_row = OptionRow(
+            strike=24000,
+            option_type="CE",
+            ltp=100.0,
+            oi=50000,
+            oi_prev=48000,
+            oi_change_pct=4.16,
+            iv=None,
+            gamma=None,
+            theta=None,
+            delta=None,
+            vega=None,
+        )
+        pe_row = OptionRow(
+            strike=24000,
+            option_type="PE",
+            ltp=95.0,
+            oi=60000,
+            oi_prev=55000,
+            oi_change_pct=9.09,
+            iv=None,
+            gamma=None,
+            theta=None,
+            delta=None,
+            vega=None,
+        )
+
+        # MLCollector._option_row_to_dict must preserve None, not default to 0.0
+        ce_dict = MLCollector._option_row_to_dict(ce_row)
+        pe_dict = MLCollector._option_row_to_dict(pe_row)
+
+        self.assertEqual(ce_dict["oi"], 50000)
+        self.assertIsNone(ce_dict["iv"])
+        self.assertIsNone(ce_dict["gamma"])
+        self.assertIsNone(ce_dict["theta"])
+        self.assertIsNone(ce_dict["delta"])
+        self.assertIsNone(ce_dict["vega"])
+
+        # Feed to build_feature_vector
+        candle = {
+            "open": 24000.0,
+            "high": 24050.0,
+            "low": 23980.0,
+            "close": 24020.0,
+            "volume": 1000,
+        }
+        feats = build_feature_vector(
+            candle=candle,
+            volume_history=[1000],
+            iv_history=None,
+            atm_ce=ce_dict,
+            atm_pe=pe_dict,
+            total_ce_oi=50000,
+            total_pe_oi=60000,
+            all_ce_oi=[50000],
+            all_pe_oi=[60000],
+            levels=[24100.0],
+            timestamp=datetime.now(timezone.utc),
+            spot=24020.0,
+        )
+
+        # Features correctly preserve None rather than fabricating zeros
+        self.assertIsNone(feats["iv_features__iv_level"])
+        self.assertIsNone(feats["iv_features__iv_ce_pe_spread"])
+        self.assertIsNone(feats["greek_features__gamma_theta_ratio"])
+        self.assertIsNone(feats["greek_features__total_vega"])
+        self.assertIsNone(feats["greek_features__net_delta"])
+        self.assertEqual(feats["greek__has_net_delta"], 0.0)
+        # OI features computed normally from observed OI
+        self.assertEqual(feats["oi_features__atm_total_oi"], 110000)
+        self.assertEqual(feats["oi_features__atm_ce_oi_change_pct"], 4.16)
+
     def test_build_feature_vector_generates_presence_indicators(self):
         """Verify serving path generates structure and greek presence indicators to prevent training-serving skew."""
         candle = {
