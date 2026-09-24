@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import logging
 import math
+import re
 from typing import Any, Dict, List, Optional, Union
 import numpy as np
 from supabase import create_client, Client
@@ -463,34 +464,59 @@ PROHIBITED_FEATURE_KEYS: frozenset = frozenset({
     "user_id",
     "broker_id",
     "ip_address",
+    "ip",
     "credentials",
     "auth",
     "authorization",
     "session_id",
+    "email",
+    "name",
+    "phone",
+    "mobile",
+    "identity",
 })
 
 SENSITIVE_KEY_SUBSTRINGS: tuple = (
     "token",
     "secret",
     "password",
+    "passwd",
     "api_key",
+    "apikey",
     "client_id",
     "account_id",
-    "user_id",
     "broker_id",
+    "user_id",
     "credentials",
+    "credential",
     "auth",
+    "session",
+    "jwt",
+    "email",
+    "name",
+    "phone",
+    "mobile",
+    "identity",
+    "ip_address",
+    "ip_addr",
+    "ipv4",
+    "ipv6",
 )
 
 
 def _is_prohibited_key(key: Any) -> bool:
-    """Returns True if key matches prohibited PII, credential, or authentication names."""
+    """Returns True if key matches prohibited PII, credential, or identity names."""
     if not isinstance(key, str):
         key = str(key)
     normalized = key.strip().lower()
     if normalized in PROHIBITED_FEATURE_KEYS:
         return True
-    return any(sub in normalized for sub in SENSITIVE_KEY_SUBSTRINGS)
+    if any(sub in normalized for sub in SENSITIVE_KEY_SUBSTRINGS):
+        return True
+    tokens = set(re.split(r"[^a-z0-9]+", normalized))
+    if "ip" in tokens:
+        return True
+    return False
 
 
 def _sanitize_value(val: Any) -> Any:
