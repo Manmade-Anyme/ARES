@@ -288,5 +288,148 @@ class TestMANM154MigrationSQL(unittest.TestCase):
         self.assertIn("2026-08-21T05:46:35Z", content)
 
 
+class TestMANM154EdgeCasesAndFallbacks(unittest.TestCase):
+    def test_infer_feature_version_edge_cases(self):
+        # None timestamp
+        self.assertEqual(infer_feature_version_from_timestamp(None), 4)
+
+        # Invalid string / unparseable timestamp
+        self.assertEqual(infer_feature_version_from_timestamp("invalid-date-string"), 4)
+
+        # Invalid object / non-string type that raises
+        self.assertEqual(infer_feature_version_from_timestamp({"unsupported": 123}), 4)
+
+        # Naive datetime (no tzinfo) localization across each epoch
+        v1_naive = datetime(2026, 7, 20, 10, 0, 0)
+        self.assertEqual(infer_feature_version_from_timestamp(v1_naive), 1)
+
+        v2_naive = datetime(2026, 7, 29, 10, 0, 0)
+        self.assertEqual(infer_feature_version_from_timestamp(v2_naive), 2)
+
+        v3_naive = datetime(2026, 8, 10, 10, 0, 0)
+        self.assertEqual(infer_feature_version_from_timestamp(v3_naive), 3)
+
+        v4_naive = datetime(2026, 9, 1, 10, 0, 0)
+        self.assertEqual(infer_feature_version_from_timestamp(v4_naive), 4)
+
+    def test_flatten_features_empty_rows(self):
+        df_empty = flatten_features([])
+        self.assertTrue(df_empty.empty)
+        self.assertIn("feature_version", df_empty.columns)
+        self.assertIn("structure__has_nearest_support", df_empty.columns)
+        self.assertIn("structure__has_nearest_resistance", df_empty.columns)
+        self.assertIn("greek__has_net_delta", df_empty.columns)
+
+    def test_flatten_features_corrupted_version_string(self):
+        row = {
+            "timestamp": "2026-07-20T10:00:00Z",
+            "raw_candle": {"close": 24000.0},
+            "feature_version": "corrupted_non_int",
+        }
+        df = flatten_features([row])
+        self.assertEqual(len(df), 1)
+        # Should catch ValueError and fall back to timestamp inference (epoch 1)
+        self.assertEqual(df.iloc[0]["feature_version"], 1)
+
+    def test_flatten_features_missing_feature_groups_indicators_default_zero(self):
+        # Row with no structure_features and no greek_features
+        row = {
+            "timestamp": "2026-09-10T10:00:00Z",
+            "raw_candle": {"close": 24500.0},
+            "feature_version": 4,
+        }
+        df = flatten_features([row])
+        self.assertEqual(len(df), 1)
+        self.assertEqual(df.iloc[0]["structure__has_nearest_support"], 0.0)
+        self.assertEqual(df.iloc[0]["structure__has_nearest_resistance"], 0.0)
+        self.assertEqual(df.iloc[0]["greek__has_net_delta"], 0.0)
+
+
+class TestMANM154OfflineTrainingAndFetch(unittest.TestCase):
+    def test_fetch_ml_collection_with_feature_version(self):
+        from ml_signal.train_offline import _fetch_ml_collection
+
+        mock_supabase = MagicMock()
+        # Mock probe success
+        mock_supabase.table.return_value.select.return_value.limit.return_value.execute.return_value = MagicMock()
+
+        # Mock paginated fetch
+        mock_batch = [{"timestamp": "2026-09-10T10:00:00Z", "feature_version": 4}]
+        mock_supabase.table.return_value.select.return_value.order.return_value.range.return_value.execute.return_value = MagicMock(
+            data=mock_batch
+        )
+
+        rows = _fetch_ml_collection(mock_supabase, page=100)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["feature_version"], 4)
+
+        # Verify feature_version was included in select cols
+        call_args = mock_supabase.table.return_value.select.call_args_list
+        select_cols = call_args[1][0][0]
+        self.assertIn("feature_version", select_cols)
+
+    def test_fetch_ml_collection_fallback_when_column_missing(self):
+        from ml_signal.train_offline import _fetch_ml_collection
+
+        mock_supabase = MagicMock()
+        # Mock probe failure (pre-migration schema error)
+        mock_supabase.table.return_value.select.return_value.limit.return_value.execute.side_effect = Exception("Column does not exist")
+
+        mock_batch = [{"timestamp": "2026-09-10T10:00:00Z"}]
+        mock_supabase.table.return_value.select.return_value.order.return_value.range.return_value.execute.return_value = MagicMock(
+            data=mock_batch
+        )
+
+        rows = _fetch_ml_collection(mock_supabase, page=100)
+        self.assertEqual(len(rows), 1)
+
+        # Verify feature_version was omitted from select cols
+        call_args = mock_supabase.table.return_value.select.call_args_list
+        select_cols = call_args[1][0][0]
+        self.assertNotIn("feature_version", select_cols)
+
+    def test_missingness_by_feature_version_metric(self):
+        # Construct sample df_train with feature_version and missing columns
+        df_train = pd.DataFrame({
+            "feature_version": [1, 1, 4, 4],
+            "greek_features__net_delta": [np.nan, np.nan, 0.1, 0.2],
+            "structure_features__dist_to_nearest_support": [np.nan, 10.0, 5.0, np.nan],
+            "candle_features__body_size": [1.0, 2.0, 3.0, 4.0],
+        })
+        feature_cols = [
+            "greek_features__net_delta",
+            "structure_features__dist_to_nearest_support",
+            "candle_features__body_size",
+        ]
+
+        metrics = {}
+        if "feature_version" in df_train.columns:
+            missingness_by_ver = {}
+            for ver, vdf in df_train.groupby("feature_version"):
+                v_missing = {
+                    col: round(float(vdf[col].isna().mean()), 4)
+                    for col in feature_cols
+                    if vdf[col].isna().any()
+                }
+                missingness_by_ver[str(ver)] = {
+                    "n_samples": int(len(vdf)),
+                    "features_with_missing": v_missing,
+                }
+            metrics["missingness_by_feature_version"] = missingness_by_ver
+
+        self.assertIn("missingness_by_feature_version", metrics)
+        v1_metrics = metrics["missingness_by_feature_version"]["1"]
+        self.assertEqual(v1_metrics["n_samples"], 2)
+        self.assertEqual(v1_metrics["features_with_missing"]["greek_features__net_delta"], 1.0)
+        self.assertEqual(v1_metrics["features_with_missing"]["structure_features__dist_to_nearest_support"], 0.5)
+        self.assertNotIn("candle_features__body_size", v1_metrics["features_with_missing"])
+
+        v4_metrics = metrics["missingness_by_feature_version"]["4"]
+        self.assertEqual(v4_metrics["n_samples"], 2)
+        self.assertEqual(v4_metrics["features_with_missing"]["structure_features__dist_to_nearest_support"], 0.5)
+        self.assertNotIn("greek_features__net_delta", v4_metrics["features_with_missing"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
