@@ -127,7 +127,57 @@ class TestMANM154ZeroInjectionPrevention(unittest.TestCase):
         self.assertIsNone(feats.get("oi_features__max_ce_oi"))
         self.assertIsNone(feats.get("iv_features__iv_level"))
 
+    def test_build_feature_vector_generates_presence_indicators(self):
+        """Verify serving path generates structure and greek presence indicators to prevent training-serving skew."""
+        candle = {
+            "open": 24000.0,
+            "high": 24050.0,
+            "low": 23980.0,
+            "close": 24020.0,
+            "volume": 1000,
+        }
+        atm_ce = {"iv": 12.0, "oi": 1000, "oi_change_pct": 1.0, "gamma": 0.001, "theta": -10, "vega": 5, "delta": 0.5}
+        atm_pe = {"iv": 12.0, "oi": 1000, "oi_change_pct": 1.0, "gamma": 0.001, "theta": -10, "vega": 5, "delta": -0.5}
+
+        feats_with_levels = build_feature_vector(
+            candle=candle,
+            volume_history=[1000],
+            iv_history=None,
+            atm_ce=atm_ce,
+            atm_pe=atm_pe,
+            total_ce_oi=1000,
+            total_pe_oi=1000,
+            all_ce_oi=[1000],
+            all_pe_oi=[1000],
+            levels=[24000.0, 24100.0],  # 24000 is support (< spot), 24100 is resistance (> spot)
+            timestamp=datetime.now(timezone.utc),
+            spot=24020.0,
+        )
+        self.assertEqual(feats_with_levels["structure__has_nearest_support"], 1.0)
+        self.assertEqual(feats_with_levels["structure__has_nearest_resistance"], 1.0)
+        self.assertEqual(feats_with_levels["greek__has_net_delta"], 1.0)
+
+        # Without levels and without option delta
+        feats_no_levels = build_feature_vector(
+            candle=candle,
+            volume_history=[1000],
+            iv_history=None,
+            atm_ce=None,
+            atm_pe=None,
+            total_ce_oi=None,
+            total_pe_oi=None,
+            all_ce_oi=None,
+            all_pe_oi=None,
+            levels=[],
+            timestamp=datetime.now(timezone.utc),
+            spot=24020.0,
+        )
+        self.assertEqual(feats_no_levels["structure__has_nearest_support"], 0.0)
+        self.assertEqual(feats_no_levels["structure__has_nearest_resistance"], 0.0)
+        self.assertEqual(feats_no_levels["greek__has_net_delta"], 0.0)
+
     def test_signal_predictor_predict_proba_converts_none_to_nan(self):
+
         """Verify SignalPredictor correctly handles None in feature vectors by casting to NaN."""
         predictor = SignalPredictor()
         predictor.model = MagicMock()

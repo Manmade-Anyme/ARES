@@ -372,4 +372,17 @@ def build_feature_vector(
         )
         features.update({f"meta_features__{k}": v for k, v in meta_feats.items()})
 
+    # Explicit missingness presence indicators (MANM-154)
+    # Aligns serving feature vector with offline dataset.flatten_features()
+    features["structure__has_nearest_support"] = (
+        1.0 if features.get("structure_features__dist_to_nearest_support") is not None else 0.0
+    )
+    features["structure__has_nearest_resistance"] = (
+        1.0 if features.get("structure_features__dist_to_nearest_resistance") is not None else 0.0
+    )
+    features["greek__has_net_delta"] = (
+        1.0 if features.get("greek_features__net_delta") is not None else 0.0
+    )
+
     return features
+

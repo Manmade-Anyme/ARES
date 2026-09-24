@@ -17,13 +17,20 @@ import os
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Bootstrap repository root into sys.path before local package imports
+_repo_root = str(Path(__file__).resolve().parent.parent)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 import pandas as pd
 from supabase import create_client
 
 from config import settings
 from ml_signal.dataset import infer_feature_version_from_timestamp
+
 
 
 def _load_json(val: Any) -> Dict[str, Any]:
@@ -142,14 +149,20 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         net_delta = greek.get("net_delta")
         has_net_delta = net_delta is not None and not pd.isna(net_delta)
 
-        # Check OI shape (all 3 must be present)
+        # Check OI shape (all 6 CE and PE fields must be present)
         strikes_ce = oi.get("strikes_with_ce_oi")
         max_ce = oi.get("max_ce_oi")
         p85_ce = oi.get("p85_ce_oi")
+        strikes_pe = oi.get("strikes_with_pe_oi")
+        max_pe = oi.get("max_pe_oi")
+        p85_pe = oi.get("p85_pe_oi")
         has_oi_shape = (
-            strikes_ce is not None and max_ce is not None and p85_ce is not None
-            and not pd.isna(strikes_ce) and not pd.isna(max_ce) and not pd.isna(p85_ce)
+            strikes_ce is not None and max_ce is not None and p85_ce is not None and
+            strikes_pe is not None and max_pe is not None and p85_pe is not None and
+            not pd.isna(strikes_ce) and not pd.isna(max_ce) and not pd.isna(p85_ce) and
+            not pd.isna(strikes_pe) and not pd.isna(max_pe) and not pd.isna(p85_pe)
         )
+
 
         # Check support & resistance distance
         dist_sup = struct.get("dist_to_nearest_support")
@@ -281,7 +294,12 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append(f"- **Literal 100.0 Support Sentinels Remaining:** `{s['literal_100_support']}`")
     md.append(f"- **Literal 100.0 Resistance Sentinels Remaining:** `{s['literal_100_resistance']}`")
     md.append(f"- **Negative Distance Sentinels:** `{s['negative_sentinels']}`")
-    md.append("- **Verification Result:** PASS. No legacy sentinel values (`100.0`) remain in storage. All missing distances are cleanly stored as SQL `NULL` / JSON `null` / Python `None`.")
+    total_sentinels = s["literal_100_support"] + s["literal_100_resistance"] + s["negative_sentinels"]
+    if total_sentinels == 0:
+        md.append("- **Verification Result:** PASS. Zero legacy sentinels or negative distances detected. All missing distances are cleanly stored as SQL `NULL` / JSON `null` / Python `None`.")
+    else:
+        md.append(f"- **Verification Result:** WARNING. Detected {total_sentinels} legacy sentinel artifact(s) remaining in historical rows ({s['literal_100_support']} support, {s['literal_100_resistance']} resistance, {s['negative_sentinels']} negative). Remediate with NULL in database.")
+
     md.append("")
     md.append("---")
     md.append("")
