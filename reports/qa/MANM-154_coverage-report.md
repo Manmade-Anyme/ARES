@@ -35,7 +35,7 @@
 
 ## 3. Regression & Unit Test Verification
 
-- **Targeted Unit Tests**: `tests/unit/test_manm154_feature_versioning.py` (15/15 passed)
+- **Targeted Unit Tests**: `tests/unit/test_manm154_feature_versioning.py` (22/22 passed)
 - **Full Unit Test Suite**: 648 passed, 0 failed across all modules
 - **Regressions**: 0 caught
 

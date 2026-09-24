@@ -430,6 +430,283 @@ class TestMANM154OfflineTrainingAndFetch(unittest.TestCase):
         self.assertNotIn("greek_features__net_delta", v4_metrics["features_with_missing"])
 
 
+class TestMANM154MissingnessAuditScript(unittest.TestCase):
+    def test_audit_sentinel_distinguishes_real_100_from_legacy(self):
+        from scripts.audit_ml_missingness import analyze_records
+
+        rows = [
+            # Legacy row (fv=1) with 100.0 support sentinel
+            {
+                "timestamp": "2026-07-20T10:00:00Z",
+                "feature_version": 1,
+                "structure_features": {"dist_to_nearest_support": 100.0, "dist_to_nearest_resistance": 100.0},
+            },
+            # Modern row (fv=4) with legitimate 100.0 market distances
+            {
+                "timestamp": "2026-09-10T10:00:00Z",
+                "feature_version": 4,
+                "structure_features": {"dist_to_nearest_support": 100.0, "dist_to_nearest_resistance": 100.0},
+            },
+            # Row with corrupted feature_version and unversioned row to exercise fallbacks
+            {
+                "timestamp": "2026-07-25T10:00:00Z",
+                "feature_version": "corrupted_non_int",
+                "structure_features": {"dist_to_nearest_support": 50.0},
+            },
+            {
+                "timestamp": "2026-08-01T10:00:00Z",
+                "feature_version": None,
+                "structure_features": {"dist_to_nearest_support": 50.0},
+            },
+            # Corrupted row with negative distance
+            {
+                "timestamp": "2026-09-11T10:00:00Z",
+                "feature_version": 4,
+                "structure_features": {"dist_to_nearest_support": -15.0},
+            },
+        ]
+
+        res = analyze_records(rows)
+        s = res["sentinels"]
+        # Legacy row (v1) increments legacy_100_support and legacy_100_resistance
+        self.assertEqual(s["legacy_100_support"], 1)
+        self.assertEqual(s["legacy_100_resistance"], 1)
+        # Modern row (v4) increments real_100_support and real_100_resistance
+        self.assertEqual(s["real_100_support"], 1)
+        self.assertEqual(s["real_100_resistance"], 1)
+        # Negative distance flagged
+        self.assertEqual(s["negative_sentinels"], 1)
+
+    def test_generate_markdown_report_supports_filename_without_dir(self):
+        from scripts.audit_ml_missingness import generate_markdown_report
+
+        mock_audit_res = {
+            "overall": {
+                "total_rows": 10,
+                "missing_net_delta": 2,
+                "pct_missing_net_delta": 20.0,
+                "missing_oi_shape": 1,
+                "pct_missing_oi_shape": 10.0,
+                "missing_support": 3,
+                "pct_missing_support": 30.0,
+                "missing_resistance": 1,
+                "pct_missing_resistance": 10.0,
+                "missing_trend_continuation": 0,
+                "pct_missing_trend_continuation": 0.0,
+            },
+            "sentinels": {
+                "legacy_100_support": 0,
+                "legacy_100_resistance": 0,
+                "real_100_support": 2,
+                "real_100_resistance": 1,
+                "negative_sentinels": 0,
+            },
+            "by_version": [
+                {
+                    "feature_version": 4,
+                    "rows": 10,
+                    "pct_of_total": 100.0,
+                    "missing_net_delta_pct": 0.0,
+                    "missing_oi_shape_pct": 0.0,
+                    "missing_support_pct": 30.0,
+                    "missing_resistance_pct": 10.0,
+                    "missing_trend_continuation_pct": 0.0,
+                }
+            ],
+            "by_session": [
+                {
+                    "session": "AFTERNOON_CLOSE (14:00-15:30)",
+                    "rows": 5,
+                    "pct_of_total": 50.0,
+                    "missing_net_delta_pct": 0.0,
+                    "missing_oi_shape_pct": 0.0,
+                    "missing_support_pct": 40.0,
+                    "missing_resistance_pct": 10.0,
+                    "missing_trend_continuation_pct": 0.0,
+                },
+                {
+                    "session": "MORNING_OPEN (09:15-10:15)",
+                    "rows": 5,
+                    "pct_of_total": 50.0,
+                    "missing_net_delta_pct": 0.0,
+                    "missing_oi_shape_pct": 0.0,
+                    "missing_support_pct": 20.0,
+                    "missing_resistance_pct": 25.0,
+                    "missing_trend_continuation_pct": 0.0,
+                },
+            ],
+            "by_week": [],
+        }
+
+        # Plain filename without directory component
+        test_filename = "test_audit_plain_name.md"
+        try:
+            generate_markdown_report(mock_audit_res, test_filename)
+            self.assertTrue(os.path.exists(test_filename))
+            with open(test_filename, "r") as f:
+                content = f.read()
+            # Verify clean PASS for 0 legacy sentinels
+            self.assertIn("PASS. Zero legacy sentinels", content)
+            self.assertIn("Legitimate 100.0 Market Distances (Epochs 3-4):", content)
+            # Verify dynamically derived session observations
+            self.assertIn("AFTERNOON_CLOSE (14:00-15:30)` (40.0%)", content)
+            self.assertIn("MORNING_OPEN (09:15-10:15)` (25.0%)", content)
+        finally:
+            if os.path.exists(test_filename):
+                os.remove(test_filename)
+
+    def test_get_market_session(self):
+        from scripts.audit_ml_missingness import get_market_session
+
+        self.assertEqual(get_market_session(None), "UNKNOWN")
+
+        # 03:00 UTC = 08:30 IST -> PRE_MARKET (< 09:15)
+        dt_pre = datetime(2026, 9, 10, 3, 0, tzinfo=timezone.utc)
+        self.assertEqual(get_market_session(dt_pre), "PRE_MARKET")
+
+        # 04:00 UTC = 09:30 IST -> MORNING_OPEN (09:15-10:15)
+        dt_open = datetime(2026, 9, 10, 4, 0, tzinfo=timezone.utc)
+        self.assertEqual(get_market_session(dt_open), "MORNING_OPEN (09:15-10:15)")
+
+        # 06:00 UTC = 11:30 IST -> MID_DAY (10:15-14:00)
+        dt_mid = datetime(2026, 9, 10, 6, 0, tzinfo=timezone.utc)
+        self.assertEqual(get_market_session(dt_mid), "MID_DAY (10:15-14:00)")
+
+        # 09:00 UTC = 14:30 IST -> AFTERNOON_CLOSE (14:00-15:30)
+        dt_close = datetime(2026, 9, 10, 9, 0, tzinfo=timezone.utc)
+        self.assertEqual(get_market_session(dt_close), "AFTERNOON_CLOSE (14:00-15:30)")
+
+        # 11:00 UTC = 16:30 IST -> POST_MARKET (> 15:30)
+        dt_post = datetime(2026, 9, 10, 11, 0, tzinfo=timezone.utc)
+        self.assertEqual(get_market_session(dt_post), "POST_MARKET")
+
+        # Naive datetime
+        dt_naive = datetime(2026, 9, 10, 4, 0)
+        self.assertEqual(get_market_session(dt_naive), "MORNING_OPEN (09:15-10:15)")
+
+        # Exception handling fallback
+        dt_err = MagicMock()
+        dt_err.astimezone.side_effect = Exception("tz error")
+        self.assertEqual(get_market_session(dt_err), "UNKNOWN")
+
+    def test_load_json(self):
+        from scripts.audit_ml_missingness import _load_json
+
+        self.assertEqual(_load_json({"a": 1}), {"a": 1})
+        self.assertEqual(_load_json('{"a": 2}'), {"a": 2})
+        self.assertEqual(_load_json("not-json"), {})
+        self.assertEqual(_load_json(12345), {})
+
+    def test_fetch_all_ml_collection_pagination_and_probe(self):
+        from scripts.audit_ml_missingness import fetch_all_ml_collection
+
+        mock_sb = MagicMock()
+        # Probe success
+        mock_sb.table.return_value.select.return_value.limit.return_value.execute.return_value = MagicMock()
+        # Batch return with multi-page pagination (page 1 returns 2, page 2 returns 0)
+        page1 = [{"timestamp": "2026-09-10T10:00:00Z"}, {"timestamp": "2026-09-10T10:01:00Z"}]
+        mock_sb.table.return_value.select.return_value.order.return_value.range.return_value.execute.side_effect = [
+            MagicMock(data=page1),
+            MagicMock(data=[]),
+        ]
+
+        rows = fetch_all_ml_collection(mock_sb, page_size=2)
+        self.assertEqual(len(rows), 2)
+
+        # Probe failure fallback
+        mock_sb.table.return_value.select.return_value.limit.return_value.execute.side_effect = Exception("No col")
+        mock_sb.table.return_value.select.return_value.order.return_value.range.return_value.execute.side_effect = [
+            MagicMock(data=[{"timestamp": "2026-09-10T10:00:00Z"}])
+        ]
+        rows2 = fetch_all_ml_collection(mock_sb, limit=1, page_size=100)
+        self.assertEqual(len(rows2), 1)
+
+    def test_generate_markdown_report_with_dir_and_sentinel_warning(self):
+        from scripts.audit_ml_missingness import generate_markdown_report
+        import shutil
+
+        test_dir = "tmp_qa_test_report_dir"
+        test_file = os.path.join(test_dir, "report.md")
+
+        mock_audit_res = {
+            "overall": {
+                "total_rows": 10,
+                "missing_net_delta": 2,
+                "pct_missing_net_delta": 20.0,
+                "missing_oi_shape": 1,
+                "pct_missing_oi_shape": 10.0,
+                "missing_support": 3,
+                "pct_missing_support": 30.0,
+                "missing_resistance": 1,
+                "pct_missing_resistance": 10.0,
+                "missing_trend_continuation": 0,
+                "pct_missing_trend_continuation": 0.0,
+            },
+            "sentinels": {
+                "legacy_100_support": 1,
+                "legacy_100_resistance": 1,
+                "real_100_support": 0,
+                "real_100_resistance": 0,
+                "negative_sentinels": 1,
+            },
+            "by_version": [
+                {
+                    "feature_version": 1,
+                    "rows": 5,
+                    "pct_of_total": 50.0,
+                    "missing_net_delta_pct": 100.0,
+                    "missing_oi_shape_pct": 100.0,
+                    "missing_support_pct": 20.0,
+                    "missing_resistance_pct": 20.0,
+                    "missing_trend_continuation_pct": 100.0,
+                }
+            ],
+            "by_session": [],
+            "by_week": [
+                {
+                    "week": "2026-W37",
+                    "rows": 10,
+                    "feature_versions": [1, 4],
+                    "missing_net_delta_pct": 10.0,
+                    "missing_oi_shape_pct": 5.0,
+                    "missing_support_pct": 10.0,
+                    "missing_resistance_pct": 10.0,
+                    "missing_trend_continuation_pct": 0.0,
+                }
+            ],
+        }
+
+        try:
+            generate_markdown_report(mock_audit_res, test_file)
+            self.assertTrue(os.path.exists(test_file))
+            with open(test_file, "r") as f:
+                content = f.read()
+            self.assertIn("WARNING. Detected 3 legacy sentinel artifact(s)", content)
+            self.assertIn("2026-W37", content)
+        finally:
+            if os.path.exists(test_dir):
+                shutil.rmtree(test_dir)
+
+    @patch("scripts.audit_ml_missingness.create_client")
+    @patch("scripts.audit_ml_missingness.fetch_all_ml_collection")
+    @patch("scripts.audit_ml_missingness.generate_markdown_report")
+    def test_main_cli(self, mock_gen, mock_fetch, mock_create):
+        from scripts.audit_ml_missingness import main
+
+        # Case 1: rows empty
+        mock_fetch.return_value = []
+        with patch("sys.argv", ["audit_ml_missingness.py", "--limit", "10"]):
+            main()
+            mock_gen.assert_not_called()
+
+        # Case 2: rows returned
+        mock_fetch.return_value = [{"timestamp": "2026-09-10T10:00:00Z", "feature_version": 4}]
+        with patch("sys.argv", ["audit_ml_missingness.py", "--limit", "10", "--output", "test_main_report.md"]):
+            main()
+            mock_gen.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

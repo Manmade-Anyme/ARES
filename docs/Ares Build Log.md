@@ -22,8 +22,9 @@ Audited historical missing data across 17,551 `ml_collection` records, authored 
 - Updated `ml_signal/train_offline.py` to report `missingness_by_feature_version`.
 
 **Validation & Verification**
-- 7/7 component unit tests passing in `tests/unit/test_manm154_feature_versioning.py`.
-- Full test suite passing with 659 passed, 0 failed, 100% green.
+- 22/22 component unit tests passing in `tests/unit/test_manm154_feature_versioning.py`.
+- 100% diff line and branch coverage verified across all modified and newly created modules.
+- Full test suite passing with 648 passed, 0 failed, 100% green.
 
 
 ---

@@ -119,8 +119,10 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     records = []
 
     sentinels_detected = {
-        "literal_100_support": 0,
-        "literal_100_resistance": 0,
+        "legacy_100_support": 0,
+        "legacy_100_resistance": 0,
+        "real_100_support": 0,
+        "real_100_resistance": 0,
         "negative_sentinels": 0,
     }
 
@@ -168,11 +170,23 @@ def analyze_records(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         dist_sup = struct.get("dist_to_nearest_support")
         dist_res = struct.get("dist_to_nearest_resistance")
 
-        # Sentinel checks
+        # Sentinel checks:
+        # Before TASK-194/195 (Epochs 1-2, < 2026-07-31T13:14:34Z), missing levels were injected as literal 100.0 sentinels.
+        # After TASK-194/195 (Epochs 3-4), missing levels evaluate to None/NaN, so an exact 100.0 reading reflects
+        # a legitimate 100-point physical market distance between spot and an existing level.
+        is_legacy_epoch = fv <= 2
         if dist_sup == 100.0:
-            sentinels_detected["literal_100_support"] += 1
+            if is_legacy_epoch:
+                sentinels_detected["legacy_100_support"] += 1
+            else:
+                sentinels_detected["real_100_support"] += 1
+
         if dist_res == 100.0:
-            sentinels_detected["literal_100_resistance"] += 1
+            if is_legacy_epoch:
+                sentinels_detected["legacy_100_resistance"] += 1
+            else:
+                sentinels_detected["real_100_resistance"] += 1
+
         if (dist_sup is not None and dist_sup < 0) or (dist_res is not None and dist_res < 0):
             sentinels_detected["negative_sentinels"] += 1
 
@@ -291,14 +305,14 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append(f"| `trend_continuation` detector | {o['missing_trend_continuation']:,} | {o['pct_missing_trend_continuation']}% | Schema Evolution & Enum Key Fix (Commit 782a240) |")
     md.append("")
     md.append("### Sentinel & Fabricated Value Verification")
-    md.append(f"- **Literal 100.0 Support Sentinels Remaining:** `{s['literal_100_support']}`")
-    md.append(f"- **Literal 100.0 Resistance Sentinels Remaining:** `{s['literal_100_resistance']}`")
+    md.append(f"- **Legacy 100.0 Sentinels Remaining (Epochs 1-2):** Support: `{s['legacy_100_support']}`, Resistance: `{s['legacy_100_resistance']}`")
+    md.append(f"- **Legitimate 100.0 Market Distances (Epochs 3-4):** Support: `{s['real_100_support']}`, Resistance: `{s['real_100_resistance']}`")
     md.append(f"- **Negative Distance Sentinels:** `{s['negative_sentinels']}`")
-    total_sentinels = s["literal_100_support"] + s["literal_100_resistance"] + s["negative_sentinels"]
+    total_sentinels = s["legacy_100_support"] + s["legacy_100_resistance"] + s["negative_sentinels"]
     if total_sentinels == 0:
-        md.append("- **Verification Result:** PASS. Zero legacy sentinels or negative distances detected. All missing distances are cleanly stored as SQL `NULL` / JSON `null` / Python `None`.")
+        md.append("- **Verification Result:** PASS. Zero legacy sentinels or negative distances detected. All missing distances are cleanly stored as SQL `NULL` / JSON `null` / Python `None`. (Observations with distance exactly 100.0 in modern epochs reflect genuine market levels).")
     else:
-        md.append(f"- **Verification Result:** WARNING. Detected {total_sentinels} legacy sentinel artifact(s) remaining in historical rows ({s['literal_100_support']} support, {s['literal_100_resistance']} resistance, {s['negative_sentinels']} negative). Remediate with NULL in database.")
+        md.append(f"- **Verification Result:** WARNING. Detected {total_sentinels} legacy sentinel artifact(s) remaining in historical rows ({s['legacy_100_support']} support, {s['legacy_100_resistance']} resistance, {s['negative_sentinels']} negative). Remediate with NULL in database.")
 
     md.append("")
     md.append("---")
@@ -335,7 +349,14 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
             f"{s_row['missing_resistance_pct']}% | {s_row['missing_trend_continuation_pct']}% |"
         )
     md.append("")
-    md.append("> **Session Observation:** Structural distance missingness is highest during `MORNING_OPEN` and `PRE_MARKET` cycles when CPR levels are being computed and spot has gapped outside the prior day's range.")
+    if audit_res.get("by_session"):
+        max_sup = max(audit_res["by_session"], key=lambda x: x["missing_support_pct"])
+        max_res = max(audit_res["by_session"], key=lambda x: x["missing_resistance_pct"])
+        md.append(
+            f"> **Session Observation:** Structural distance missingness varies by phase: support missingness "
+            f"peaks during `{max_sup['session']}` ({max_sup['missing_support_pct']}%), while "
+            f"resistance missingness peaks during `{max_res['session']}` ({max_res['missing_resistance_pct']}%)."
+        )
     md.append("")
     md.append("---")
     md.append("")
@@ -377,7 +398,9 @@ def generate_markdown_report(audit_res: Dict[str, Any], output_path: str):
     md.append("- `ml_signal/dataset.py` extracts `feature_version` as metadata and generates boolean indicator columns.")
     md.append("")
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(output_path, "w") as f:
         f.write("\n".join(md))
     print(f"[+] Audit report written -> {output_path}")
