@@ -92,7 +92,12 @@ def compute_cv_metrics(fold_results: List[Dict[str, Any]], leakage_guard_passed:
         mean_auc = np.mean(aucs)
         metrics["mean_auc"] = mean_auc
         metrics["min_fold_auc"] = np.min(aucs)
-        metrics["brier_score"] = np.mean([res["brier"] for res in fold_results if not res.get("degenerate", False)])
+        valid_res = [r for r in fold_results if not r.get("degenerate", False)]
+        if valid_res and "n_test" in valid_res[0]:
+            total_n = sum(r["n_test"] for r in valid_res)
+            metrics["brier_score"] = sum(r["brier"] * r["n_test"] for r in valid_res) / total_n if total_n > 0 else np.nan
+        else:
+            metrics["brier_score"] = np.mean([r["brier"] for r in valid_res])
         
         if evaluable_folds > 1:
             se = np.std(aucs, ddof=1) / np.sqrt(evaluable_folds)

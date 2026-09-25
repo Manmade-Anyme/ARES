@@ -675,11 +675,11 @@ def main(argv=None) -> None:
                     trade_df = trade_df.sort_values("timestamp").copy()
                     for train_idx, test_idx in tscv.split(trade_df):
                         # Get max timestamp in train
-                        max_train_ts = trade_df.iloc[train_idx]["timestamp"].max()
+                        test_start_ts = trade_df.iloc[test_idx]["timestamp"].min()
                         
                         # Train stage 1 on market data up to max_train_ts
-                        train_market = market_df[market_df["timestamp"] <= max_train_ts]
-                        if len(train_market) < 50:
+                        train_market = market_df[market_df["resolution_timestamp"] < test_start_ts]
+                        if len(train_market) < 50 or train_market["label"].nunique() < 2:
                             continue
                             
                         fold_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)

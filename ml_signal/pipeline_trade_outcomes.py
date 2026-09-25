@@ -156,6 +156,7 @@ class TradeOutcomePipeline:
                 "fold": fold_info["fold"],
                 "auc": auc,
                 "brier": brier,
+                "n_test": len(y_test),
                 "degenerate": False
             })
             
