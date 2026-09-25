@@ -1,7 +1,9 @@
 from typing import Dict, Any, Tuple, List
 
 class ModelPromotionError(Exception):
-    pass
+    def __init__(self, message, reasons=None):
+        super().__init__(message)
+        self.reasons = reasons or []
 
 def evaluate_promotion_gate(metrics: Dict[str, Any]) -> Tuple[bool, List[str]]:
     reasons = []
@@ -41,4 +43,4 @@ def evaluate_promotion_gate(metrics: Dict[str, Any]) -> Tuple[bool, List[str]]:
 def enforce_promotion_or_raise(metrics: Dict[str, Any]) -> None:
     passed, reasons = evaluate_promotion_gate(metrics)
     if not passed:
-        raise ModelPromotionError(f"Promotion gate failed: {reasons}")
+        raise ModelPromotionError(f"Promotion gate failed: {reasons}", reasons=reasons)

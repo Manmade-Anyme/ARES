@@ -651,12 +651,17 @@ def main(argv=None) -> None:
         leakage_guard_passed = metrics.get("leakage_guard_passed", False)
         
         if args.promote:
-            try:
-                enforce_promotion_or_raise(metrics)
-                promoted = True
+            from ml_signal.promotion_gate import evaluate_promotion_gate
+            passed, reasons = evaluate_promotion_gate(metrics)
+            promoted = passed
+            if not passed:
+                gate_error = ModelPromotionError(f"Promotion gate failed: {reasons}", reasons=reasons)
+                print(f"[!] Promotion Gate Failed: {reasons}")
                 
-                # Fit final stage 1 and stage 2 on ALL data
-                print("[*] Training final Stage 1 and Stage 2 models for promotion...")
+            # Fit final stage 1 and stage 2 on ALL data (even if unpromoted, for research artifact)
+            print("[*] Training final Stage 1 and Stage 2 models for promotion or research...")
+            try:
+                pass
                 
                 if args.hybrid:
                     stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
@@ -738,9 +743,32 @@ def main(argv=None) -> None:
                     joblib.dump(stage2_model, save_path)
                     print(f"[+] Promoted Standalone Stage 2 Model -> {save_path}")
             except ModelPromotionError as e:
-                print(f"[!] Promotion Gate Failed: {e}")
-                promoted = False
-                gate_error = e
+                pass
+            
+            if not promoted:
+                # Write rejection audit
+                audit_path = f"reports/ml/{next_version}_rejection_audit.json"
+                os.makedirs(os.path.dirname(audit_path) or ".", exist_ok=True)
+                import json
+                with open(audit_path, "w") as f:
+                    json.dump({"version": next_version, "reasons": gate_error.reasons if gate_error else [], "metrics": metrics}, f, indent=2, default=str)
+                print(f"[!] Rejection audit saved -> {audit_path}")
+                
+                # Overwrite save_path to be unpromoted
+                original_save = save_path
+                save_path = save_path.replace(".joblib", "_unpromoted.joblib")
+                if args.hybrid:
+                    import joblib
+                    joblib.dump(bundle, save_path)
+                else:
+                    import joblib
+                    joblib.dump(stage2_model, save_path)
+                
+                # Remove the falsely promoted file if it was just saved
+                if os.path.exists(original_save):
+                    os.remove(original_save)
+                
+                print(f"[!] Saved unpromoted artifact -> {save_path}")
 
     # Write summary metrics
     summary = {
@@ -757,7 +785,8 @@ def main(argv=None) -> None:
         "shap_status": "skipped",
         "shap_computed": False,
         "promoted": promoted,
-        "leakage_guard_passed": leakage_guard_passed
+        "leakage_guard_passed": leakage_guard_passed,
+        "gate_reasons": gate_error.reasons if gate_error else []
     }
     summary.update(final_metrics)
     

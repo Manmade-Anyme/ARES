@@ -84,31 +84,35 @@ class TradeOutcomePipeline:
                 continue
 
             # Stage 1 cross-fitting
-            if self.use_hybrid_transfer and market_snapshots_df is not None:
-                # Outer test rows scoring:
-                test_start = fold_info["test_start"]
-                # snapshots strictly resolved before test_start
-                valid_snaps = market_snapshots_df[market_snapshots_df["resolution_timestamp"] < test_start]
-                if len(valid_snaps) > 0 and valid_snaps["label"].nunique() > 1:
-                    model_s1 = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
-                    model_s1.fit(valid_snaps[stage1_feat_cols], valid_snaps["label"])
-                    test_df["meta_features__market_movement_prob"] = model_s1.predict_proba(test_df.reindex(columns=stage1_feat_cols))[:, 1]
+            if self.use_hybrid_transfer:
+                if market_snapshots_df is not None and not market_snapshots_df.empty:
+                    # Outer test rows scoring:
+                    test_start = fold_info["test_start"]
+                    # snapshots strictly resolved before test_start
+                    valid_snaps = market_snapshots_df[market_snapshots_df["resolution_timestamp"] < test_start]
+                    if len(valid_snaps) > 0 and valid_snaps["label"].nunique() > 1:
+                        model_s1 = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
+                        model_s1.fit(valid_snaps[stage1_feat_cols], valid_snaps["label"])
+                        test_df["meta_features__market_movement_prob"] = model_s1.predict_proba(test_df.reindex(columns=stage1_feat_cols))[:, 1]
+                    else:
+                        test_df["meta_features__market_movement_prob"] = 0.5
+                        
+                    # Outer train rows scoring (inner OOF):
+                    train_probs = []
+                    for _, row in train_df.iterrows():
+                        entry_ts = row["timestamp"]
+                        inner_snaps = market_snapshots_df[market_snapshots_df["resolution_timestamp"] < entry_ts]
+                        if len(inner_snaps) > 0 and inner_snaps["label"].nunique() > 1:
+                            model_inner = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
+                            model_inner.fit(inner_snaps[stage1_feat_cols], inner_snaps["label"])
+                            prob = model_inner.predict_proba(pd.DataFrame([pd.DataFrame([row]).reindex(columns=stage1_feat_cols).iloc[0]]))[:, 1][0]
+                        else:
+                            prob = 0.5
+                        train_probs.append(prob)
+                    train_df["meta_features__market_movement_prob"] = train_probs
                 else:
                     test_df["meta_features__market_movement_prob"] = 0.5
-                    
-                # Outer train rows scoring (inner OOF):
-                train_probs = []
-                for _, row in train_df.iterrows():
-                    entry_ts = row["timestamp"]
-                    inner_snaps = market_snapshots_df[market_snapshots_df["resolution_timestamp"] < entry_ts]
-                    if len(inner_snaps) > 0 and inner_snaps["label"].nunique() > 1:
-                        model_inner = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
-                        model_inner.fit(inner_snaps[stage1_feat_cols], inner_snaps["label"])
-                        prob = model_inner.predict_proba(pd.DataFrame([pd.DataFrame([row]).reindex(columns=stage1_feat_cols).iloc[0]]))[:, 1][0]
-                    else:
-                        prob = 0.5
-                    train_probs.append(prob)
-                train_df["meta_features__market_movement_prob"] = train_probs
+                    train_df["meta_features__market_movement_prob"] = 0.5
 
             # Stage 2 training
             feat_cols2 = ["meta_features__market_movement_prob"] if self.use_hybrid_transfer else []
