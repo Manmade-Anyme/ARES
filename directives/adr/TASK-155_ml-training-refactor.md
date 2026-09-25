@@ -216,22 +216,22 @@ For every training observation $i$, its actual label resolution timestamp must s
   *(Where `resolution_timestamp` is the barrier-hit candle timestamp in `MarketMovementPipeline`, and `exit_timestamp` in `TradeOutcomePipeline`).*
 
 ### 4.4 Invariant 4: Duplicate Snapshot Deduplication & Feature Hygiene
-To prevent identical market states from polluting multiple folds:
-- **Schema & Fetcher Additions**: Update `_fetch_ml_collection()` in `ml_signal/train_offline.py` to explicitly query `signal_id` and `signal_setup_type` (the canonical column names in `ml_collection` schema).
+- **Schema & Fetcher Additions**: Update `_fetch_ml_collection()` in `ml_signal/train_offline.py` to explicitly query `trade_id`, `snapshot_uuid`, `signal_id`, and `signal_setup_type` (the canonical columns in `ml_collection` schema).
 - **Source-Candle Identity & Feature-Equality Deduplication**:
-  `ml_signal/collector.py` captures snapshots on asynchronous polling cycles. Within the same 1-minute candle interval, two captures can occur:
+  `ml_signal/collector.py` captures snapshots on asynchronous polling cycles. Within the same 1-minute candle interval, multiple captures can occur:
   - If they share identical market features (e.g. repeated polling cycles or retry writes with no data changes), they are true duplicates that distort sample counts.
-  - If market data (OI, IV, volume, Greeks, structure) updated intra-minute, they represent distinct market states. Blindly dropping on `["bucketed_timestamp", "close"]` would erroneously discard valid market state updates.
+  - If market data (OI, IV, volume, Greeks, structure) updated intra-minute, they represent distinct market states.
+  - Furthermore, in restored or partially repaired history, multiple distinct closed trades can share a `signal_id`, or have a null `signal_id` (as documented in `migrations/2026-08-01-task198-score-columns.sql`). Deduplicating by `signal_id` would erroneously collapse distinct trade outcomes whenever entry market features match!
   Therefore, deduplication in `deduplicate_snapshots(df)` is implemented as:
-  1. **Source-Candle Identity**: Extract canonical candle identity `source_candle_ts = pd.to_datetime(df["timestamp"]).dt.floor("1min")` (or `raw_candle["timestamp"]`).
-  2. **Feature Equality / Content Hash**: Compute a hash or check exact equality across all flattened numeric feature columns (`feature_columns(df)`).
-  3. **Deduplication Rules**:
-     - **Signaled Rows (`TradeOutcomePipeline`)**: Deduplicate strictly on `["signal_id", "feature_hash"]` (or `signal_id` + feature equality). Every unique trade/signal event is preserved; only identical retry re-inserts are eliminated.
+  1. **Canonical Identity Keys**:
+     - **Trade Outcome Rows (`TradeOutcomePipeline`)**: Deduplicate using the canonical trade identity: `["trade_id", "feature_hash"]` when `trade_id` is present, or fallback `["snapshot_uuid", "feature_hash"]`. Because each closed trade represents an independent Stage 2 outcome, this ensures distinct trade executions are never collapsed, while true database retry re-inserts with identical features are safely eliminated.
      - **Unsignaled Continuous Snapshots (`MarketMovementPipeline`)**:
+       - Extract source candle identity `source_candle_ts = pd.to_datetime(df["timestamp"]).dt.floor("1min")` (or `raw_candle["timestamp"]`).
+       - Compute `feature_hash` across all flattened numeric feature columns (`feature_columns(df)`).
        - True duplicates sharing identical feature state `["source_candle_ts", "feature_hash"]` are eliminated immediately.
        - Where multiple distinct intra-candle captures exist with updated features within the same candle, **the canonical snapshot retained is explicitly defined as the terminal snapshot (`keep="last"`)** sorted chronologically by capture `timestamp`. This retains the candle-close finalized market state (freshest OI, IV, Greeks, and closing spot), guaranteeing uniform 1-minute time series intervals without forward-label horizon distortion.
-  4. Drops temporary helper columns immediately after deduplication.
-- **Metadata Exclusion & Feature Hygiene**: Tracking identifiers and partition columns (`signal_id`, `signal_setup_type`, and `resolution_timestamp`) are strictly tracking metadata. They must be registered in `_META_COLS` in `ml_signal/dataset.py` so `feature_columns(df)` excludes them from model inputs, and dropped or filtered before constructing the feature matrix $X$. Under no circumstances may raw UUIDs or categorical signal identities pass into XGBoost/LightGBM.
+  2. Drops temporary helper columns immediately after deduplication.
+- **Metadata Exclusion & Feature Hygiene**: Tracking identifiers and partition columns (`trade_id`, `snapshot_uuid`, `signal_id`, `signal_setup_type`, and `resolution_timestamp`) are strictly tracking metadata. They must be registered in `_META_COLS` in `ml_signal/dataset.py` so `feature_columns(df)` excludes them from model inputs, and dropped or filtered before constructing the feature matrix $X$. Under no circumstances may raw UUIDs or categorical signal identities pass into XGBoost/LightGBM.
 - Log the count of dropped duplicate snapshots and assert deduplication prior to time-series fold partitioning.
 
 ---
@@ -351,7 +351,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 
 #### 1. `ml_signal/leakage_guards.py` (New Module)
 - Implement `assert_no_outcome_leakage(feature_names: List[str]) -> None`:
-  - Validates feature columns against `FORBIDDEN_OUTCOME_FIELDS` (including `resolution_timestamp`, `signal_id`, and `signal_setup_type`).
+  - Validates feature columns against `FORBIDDEN_OUTCOME_FIELDS` (including `resolution_timestamp`, `trade_id`, `snapshot_uuid`, `signal_id`, and `signal_setup_type`).
 - Implement `assert_chronological_integrity(df: pd.DataFrame, date_col: str = "timestamp") -> None`:
   - Checks `df[date_col].is_monotonic_increasing`.
 - Implement `assert_train_test_purged(train_df: pd.DataFrame, test_df: pd.DataFrame, resolution_col: str = "resolution_timestamp") -> None`:
@@ -360,7 +360,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 - Implement `deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame`:
   - Determines canonical source candle identity `source_candle_ts = pd.to_datetime(df["timestamp"]).dt.floor("1min")` (or `raw_candle["timestamp"]`).
   - Verifies feature equality across `feature_columns(df)` (or MD5 feature hash) prior to dropping rows:
-    - For signaled rows (`TradeOutcomePipeline`): deduplicates strictly on identical `["signal_id", "feature_hash"]`, preserving all distinct trade/signal events and eliminating retry re-inserts.
+    - For trade outcome rows (`TradeOutcomePipeline`): deduplicates strictly on canonical trade identity `["trade_id", "feature_hash"]` (or fallback `["snapshot_uuid", "feature_hash"]`), preserving all distinct trade executions while eliminating duplicate retry inserts.
     - For unsignaled background snapshots (`MarketMovementPipeline`): drops identical feature duplicates, and for intra-candle updates retains the canonical terminal snapshot (`keep="last"`) sorted chronologically by capture `timestamp` to preserve the finalized candle state.
   - Drops helper keys (`source_candle_ts`, `feature_hash`) immediately or ensures they are excluded from feature vectors via `_META_COLS`.
 - Define custom exception `DataLeakageError(Exception)`.
@@ -408,7 +408,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 
 #### 4. `ml_signal/pipeline_market_movement.py` (New Module) & `ml_signal/dataset.py`
 - In `ml_signal/dataset.py`:
-  - Register `signal_id`, `signal_setup_type`, and `resolution_timestamp` in `_META_COLS` so `feature_columns(df)` strictly excludes them from model inputs.
+  - Register `trade_id`, `snapshot_uuid`, `signal_id`, `signal_setup_type`, and `resolution_timestamp` in `_META_COLS` so `feature_columns(df)` strictly excludes them from model inputs.
   - Update `build_labeled_frame` and `label_forward_points` to record and return `resolution_timestamp` for every labeled observation as the decisive resolution candle:
     - Target hit candle timestamp when bull or bear hits target (+15 pts).
     - Second stop candle timestamp when both directions hit stops (+10/-10 pts, irreversible stop).
@@ -451,7 +451,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
   - On successful promotion, fits final models on complete history (Stage 2 trained on rolling Stage 1 features) and packages `HybridPredictorBundle`.
 
 #### 6. `ml_signal/train_offline.py` (Refactor CLI Entrypoint & Fetcher)
-- Update `_fetch_ml_collection()` query to explicitly select `signal_id` and `signal_setup_type`.
+- Update `_fetch_ml_collection()` query to explicitly select `trade_id`, `snapshot_uuid`, `signal_id`, and `signal_setup_type`.
 - Add command-line argument parser:
   - `--pipeline [market_movement | trade_outcomes | all]` (default: `all`).
   - `--folds <int>` (default: 5).
@@ -479,7 +479,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 - Test that `stage1_feature_names` excludes `detector_scores` and is 100% satisfied by `build_feature_vector()`.
 - Test that Stage 2 structural feature selection inside walk-forward CV is strictly fold-local with zero full-dataset lookahead.
 - Test data leakage guards (assert `FORBIDDEN_OUTCOME_FIELDS` raises `DataLeakageError`).
-- Test feature-equality snapshot deduplication: verify that same-minute snapshots with updated features (e.g., changed OI/IV/Greeks) are not falsely discarded as duplicates, and that canonical terminal snapshots (`keep="last"`) are correctly preserved for continuous series.
+- Test feature-equality snapshot deduplication: verify that same-minute snapshots with updated features (e.g., changed OI/IV/Greeks) are not falsely discarded as duplicates, distinct trades sharing a `signal_id` are preserved by canonical trade identity, and canonical terminal snapshots (`keep="last"`) are correctly preserved for continuous series.
 - Test promotion gate on evaluable vs degenerate single-class folds (`degenerate_folds > 0` raises `ModelPromotionError`).
 - Test single production target rule (market-movement model does not overwrite `models/v{N}.joblib`).
 - Test `SignalPredictor.predict_from_raw()` with `HybridPredictorBundle` ensuring `meta_features__market_movement_prob` is computed dynamically at inference time without missing feature warnings.
