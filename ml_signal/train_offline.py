@@ -33,6 +33,17 @@ from .dataset import feature_columns
 # minimal helpers are inlined here — same XGBoost params (from MLConfig), same
 # metrics. Only xgboost + scikit-learn are required.
 
+
+def _final_refit_sample_size_reason(n_samples: int, n_splits: int) -> Optional[str]:
+    """Return the normal gate-rejection reason when cross-fitting cannot run."""
+    if n_samples <= n_splits:
+        return (
+            "insufficient trade rows for final chronological cross-fitting: "
+            f"got {n_samples}, requires more than {n_splits} folds"
+        )
+    return None
+
+
 def _train_xgb(X_tr, y_tr, X_val, y_val, config: MLConfig):
     scale_pos_weight = (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
     model = xgb.XGBClassifier(
@@ -653,6 +664,10 @@ def main(argv=None) -> None:
         if args.promote:
             from ml_signal.promotion_gate import evaluate_promotion_gate
             passed, reasons = evaluate_promotion_gate(metrics)
+            refit_size_reason = _final_refit_sample_size_reason(len(trade_df), args.folds)
+            if refit_size_reason:
+                passed = False
+                reasons = [*reasons, refit_size_reason]
             promoted = passed
             if not passed:
                 gate_error = ModelPromotionError(f"Promotion gate failed: {reasons}", reasons=reasons)
@@ -661,9 +676,9 @@ def main(argv=None) -> None:
             # Fit final stage 1 and stage 2 on ALL data (even if unpromoted, for research artifact)
             print("[*] Training final Stage 1 and Stage 2 models for promotion or research...")
             try:
-                pass
-                
-                if args.hybrid:
+                if refit_size_reason:
+                    print(f"[!] Skipping final refit: {refit_size_reason}")
+                elif args.hybrid:
                     stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
                     
                     # Generate cross-fitted probabilities for Stage 2 training using WalkForwardPurgedCV
@@ -702,46 +717,47 @@ def main(argv=None) -> None:
                     stage1_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
                     stage1_model.fit(market_df[stage1_feat_cols], market_df["label"])
                     
-                feat_cols2 = ["meta_features__market_movement_prob"] if args.hybrid else []
-                feat_cols2 += [
-                    c for c in [
-                        "structure_features__dist_to_nearest_support",
-                        "structure_features__dist_to_nearest_resistance",
-                        "oi_features__pcr_oi",
-                        "candle_features__body_pct",
-                        "iv_features__iv_level",
-                        "greek_features__net_delta"
-                    ] if c in trade_df.columns
-                ]
-                
-                stage2_model = xgb.XGBClassifier(
-                    n_estimators=50,
-                    learning_rate=0.03,
-                    max_depth=2,
-                    reg_lambda=5.0,
-                    reg_alpha=1.0,
-                    colsample_bytree=0.6,
-                    subsample=0.7,
-                    random_state=42
-                )
-                stage2_model.fit(trade_df[feat_cols2], trade_df["label"])
-                
-                if args.hybrid:
-                    bundle = HybridPredictorBundle(
-                        stage1_model=stage1_model,
-                        stage2_model=stage2_model,
-                        stage1_feature_names=stage1_feat_cols,
-                        stage2_feature_names=feat_cols2,
-                        model_version=next_version,
-                        created_at=str(pd.Timestamp.utcnow()),
-                        metrics_summary=metrics
+                if not refit_size_reason:
+                    feat_cols2 = ["meta_features__market_movement_prob"] if args.hybrid else []
+                    feat_cols2 += [
+                        c for c in [
+                            "structure_features__dist_to_nearest_support",
+                            "structure_features__dist_to_nearest_resistance",
+                            "oi_features__pcr_oi",
+                            "candle_features__body_pct",
+                            "iv_features__iv_level",
+                            "greek_features__net_delta"
+                        ] if c in trade_df.columns
+                    ]
+
+                    stage2_model = xgb.XGBClassifier(
+                        n_estimators=50,
+                        learning_rate=0.03,
+                        max_depth=2,
+                        reg_lambda=5.0,
+                        reg_alpha=1.0,
+                        colsample_bytree=0.6,
+                        subsample=0.7,
+                        random_state=42
                     )
-                    joblib.dump(bundle, save_path)
-                    print(f"[+] Promoted Hybrid Bundle -> {save_path}")
-                else:
-                    # Persist as legacy standalone model
-                    joblib.dump(stage2_model, save_path)
-                    print(f"[+] Promoted Standalone Stage 2 Model -> {save_path}")
+                    stage2_model.fit(trade_df[feat_cols2], trade_df["label"])
+
+                    if args.hybrid:
+                        bundle = HybridPredictorBundle(
+                            stage1_model=stage1_model,
+                            stage2_model=stage2_model,
+                            stage1_feature_names=stage1_feat_cols,
+                            stage2_feature_names=feat_cols2,
+                            model_version=next_version,
+                            created_at=str(pd.Timestamp.utcnow()),
+                            metrics_summary=metrics
+                        )
+                        joblib.dump(bundle, save_path)
+                        print(f"[+] Promoted Hybrid Bundle -> {save_path}")
+                    else:
+                        # Persist as legacy standalone model
+                        joblib.dump(stage2_model, save_path)
+                        print(f"[+] Promoted Standalone Stage 2 Model -> {save_path}")
             except ModelPromotionError as e:
                 pass
             
@@ -757,10 +773,10 @@ def main(argv=None) -> None:
                 # Overwrite save_path to be unpromoted
                 original_save = save_path
                 save_path = save_path.replace(".joblib", "_unpromoted.joblib")
-                if args.hybrid:
+                if args.hybrid and stage2_model is not None:
                     import joblib
                     joblib.dump(bundle, save_path)
-                else:
+                elif stage2_model is not None:
                     import joblib
                     joblib.dump(stage2_model, save_path)
                 
@@ -768,7 +784,8 @@ def main(argv=None) -> None:
                 if os.path.exists(original_save):
                     os.remove(original_save)
                 
-                print(f"[!] Saved unpromoted artifact -> {save_path}")
+                if stage2_model is not None:
+                    print(f"[!] Saved unpromoted artifact -> {save_path}")
 
     # Write summary metrics
     summary = {

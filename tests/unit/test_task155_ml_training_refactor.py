@@ -14,6 +14,19 @@ from ml_signal.validation import WalkForwardPurgedCV
 from ml_signal.promotion_gate import evaluate_promotion_gate, enforce_promotion_or_raise, ModelPromotionError
 from ml_signal.dataset import _META_COLS, build_labeled_frame
 from ml_signal.config import MLConfig
+from ml_signal.train_offline import _final_refit_sample_size_reason
+
+
+@pytest.mark.parametrize("n_samples", [0, 1, 5])
+def test_final_refit_rejects_datasets_not_larger_than_fold_count(n_samples):
+    reason = _final_refit_sample_size_reason(n_samples, n_splits=5)
+
+    assert reason is not None
+    assert f"got {n_samples}" in reason
+
+
+def test_final_refit_accepts_dataset_larger_than_fold_count():
+    assert _final_refit_sample_size_reason(6, n_splits=5) is None
 
 def test_no_outcome_leakage():
     # Should pass
