@@ -95,6 +95,7 @@ To achieve complete architectural decoupling without breaking external callers:
 1. **Market Movement Pipeline (`ml_signal/pipeline_market_movement.py`)**:
    - Encapsulates dataset preparation via `build_labeled_frame`.
    - Focuses strictly on market microstructure dynamics: predicting whether price moves $\ge 15.0$ points before hitting $-10.0$ points stop within 5 candles ($N \approx 617$ resolved high-conviction moves out of 14,823 snapshots, 32.3% positive rate).
+   - **Market-Only Feature Scope**: Stage 1 models market microstructure dynamics across all 14,823 continuous snapshots. Because continuous background cycle snapshots do not have fired detector setups, and `build_feature_vector()` generates market features at inference time without detector scores, `detector_scores` **MUST BE EXCLUDED** from Stage 1 training. Stage 1 is trained strictly on market feature groups: `candle_features`, `volume_features`, `iv_features`, `oi_features`, `greek_features`, `structure_features`, and `meta_features` (plus structural indicators). This guarantees `stage1_feature_names` is 100% covered by `build_feature_vector()` with zero missing or NaN detector columns at live serving time.
    - **Threshold Reconciliation**: Microstructure momentum thresholds (`market_movement_tp_points = 15.0`, `market_movement_sl_points = 10.0`) are explicitly added to `MLConfig` in `ml_signal/config.py` and passed directly to `build_labeled_frame()`. The system's trade execution targets (`tp_points = 35.0`, `sl_points = 25.0`) remain dedicated to realized trade evaluation in `TradeOutcomePipeline`.
    - **Artifacts**: Secondary diagnostic report `reports/ml/market_movement_metrics.json`, research artifact `ml_signal/models/market_movement_v{N}.joblib`.
 
@@ -241,6 +242,7 @@ Until realized trade records reach $N \ge 1,000$ (expected Q1 2027), ARES adopts
 
 1. **Stage 1: Pretrained Market Dynamics Representation**:
    - Train a foundational representation model on the large continuous snapshot dataset ($N = 14,823$ rows, $N = 617$ resolved moves with `market_movement_tp_points = 15.0`, `market_movement_sl_points = 10.0`).
+   - **Market-Only Feature Scope**: Excludes `detector_scores` from Stage 1 input columns. Trained strictly on continuous market dynamics: `candle_features`, `volume_features`, `iv_features`, `oi_features`, `greek_features`, `structure_features`, and `meta_features` (plus structural indicators). This aligns `stage1_feature_names` 100% with the features produced by `build_feature_vector()` in live serving, eliminating any missing or NaN detector columns during inference.
    - Learns non-linear interactions across Open Interest walls, IV skew, volume acceleration, and candle structure.
 2. **Stage 2: Transfer / Feature Stacking into Trade Outcome Classifier**:
    - **Cross-Fitting Invariant (Zero-Leakage Transfer Prior & Out-of-Fold Stacking)**:
@@ -260,7 +262,11 @@ Until realized trade records reach $N \ge 1,000$ (expected Q1 2027), ARES adopts
      - `n_estimators = 50`, `learning_rate = 0.03`.
      - `reg_lambda = 5.0`, `reg_alpha = 1.0` (L1/L2 shrinkage).
      - `colsample_bytree = 0.6`, `subsample = 0.7`.
-     - Input features restricted to: `meta_features__market_movement_prob` + top 6 structural features selected by Stage 1 SHAP gain.
+     - Input features restricted to: `meta_features__market_movement_prob` + top 6 structural features.
+   - **Leakage-Free Fold-Local Feature Selection**:
+     Under no circumstances may full-history SHAP gain from a model trained on the entire dataset be used to select Stage 2 features during walk-forward cross-validation.
+     - Inside each outer fold $k$, the 6 structural features must be selected strictly from the fold-specific Stage 1 model fitted on historical snapshots resolved prior to that fold (`resolution_timestamp < T_k^{\text{test\_start}}`), or fixed *a priori* to canonical structural features (`structure_features__dist_to_nearest_support`, `structure_features__dist_to_nearest_resistance`, `oi_features__pcr`, `candle_features__body_pct`, `iv_features__iv_level`, `greek_features__net_delta`).
+     - Full-dataset SHAP importance ranking is performed strictly post-validation for the final promoted bundle and diagnostic reporting.
    - **Early Stopping Prohibition on Outer Test Windows**:
      Under no circumstances may outer test partition $[T_k^{\text{test\_start}}, T_k^{\text{test\_end}}]$ be supplied to `model.fit()` as `eval_set` or used for early stopping. Supplying test labels to select the stopping iteration leaks test performance into the model parameters and invalidates out-of-sample claims.
      - During outer walk-forward validation folds, early stopping must either be disabled (`early_stopping_rounds = None`) with fixed regularized iterations (`n_estimators = 50`), or an **inner chronological validation slice** (the tail 15–20% of the candidate training partition, purged against earlier train trades) must be used as `eval_set`.
@@ -276,7 +282,7 @@ Until realized trade records reach $N \ge 1,000$ (expected Q1 2027), ARES adopts
      class HybridPredictorBundle:
          stage1_model: Any                      # Pretrained market movement classifier
          stage2_model: Any                      # Regularized trade outcome classifier
-         stage1_feature_names: List[str]        # Exact input columns for Stage 1
+         stage1_feature_names: List[str]        # Exact input columns for Stage 1 (pure market features)
          stage2_feature_names: List[str]        # Input columns for Stage 2 (including transfer prior)
          model_version: str                     # e.g., "v10"
          created_at: str
@@ -285,7 +291,8 @@ Until realized trade records reach $N \ge 1,000$ (expected Q1 2027), ARES adopts
    - **Live Prediction Flow in `SignalPredictor.predict_from_raw()`**:
      ```python
      if isinstance(self.model, HybridPredictorBundle):
-         # Step 1: Compute Stage 1 market probability
+         # Step 1: Compute Stage 1 market probability using pure market features
+         # (all guaranteed present in raw_features from build_feature_vector())
          p_market = self.model.stage1_model.predict_proba(X_stage1)[:, 1]
          raw_features["meta_features__market_movement_prob"] = float(p_market[0])
          # Step 2: Compute Stage 2 trade execution outcome probability
@@ -294,7 +301,7 @@ Until realized trade records reach $N \ge 1,000$ (expected Q1 2027), ARES adopts
          # Standard standalone estimator (legacy compatibility)
          prob = float(self.model.predict_proba(X)[:, 1][0])
      ```
-     This encapsulates both models within the canonical `models/v{N}.joblib` file, requiring zero changes from upstream execution callers while guaranteeing the transfer feature is faithfully computed at runtime.
+     This encapsulates both models within the canonical `models/v{N}.joblib` file, requiring zero changes from upstream execution callers while guaranteeing the transfer feature is faithfully computed at runtime without missing detector inputs.
 
 ---
 
@@ -403,6 +410,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
         def run_walk_forward(self, df: pd.DataFrame, n_splits: int = 5) -> Tuple[object, Dict[str, Any]]: ...
     ```
     - Passes `tp_points=config.market_movement_tp_points, sl_points=config.market_movement_sl_points` into `build_labeled_frame()`.
+    - **Market-Only Features (Zero Inference Mismatch)**: Restricts Stage 1 feature columns strictly to pure market groups (`FEATURE_GROUPS` excluding `detector_scores`). This guarantees `stage1_feature_names` is 100% covered by `build_feature_vector()` at runtime, with zero missing/NaN detector columns.
     - Runs `WalkForwardPurgedCV` with decisive resolution timestamp purging.
     - **No Outer Test Leaks in Early Stopping**: Outer test partition $[T_k^{\text{test\_start}}, T_k^{\text{test\_end}}]$ is strictly isolated from `model.fit()` (never passed as `eval_set`). Model fits either disable early stopping (`early_stopping_rounds=None`) with fixed estimators, or carve an inner chronological validation split strictly from `train_df`.
     - Outputs `market_movement` metrics and model.
@@ -425,6 +433,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
   - **Fold-Level Cross-Fitting**: In `run_walk_forward()`, for each walk-forward fold $k$:
     - Outer test rows are scored using a Stage 1 model fitted strictly on snapshots with `resolution_timestamp < T_k^{test_start}`.
     - Outer train rows are scored using inner-OOF / rolling Stage 1 models fitted strictly on snapshots with `resolution_timestamp < t_entry`, preventing in-sample stacking bias and lookahead leakage.
+  - **Fold-Local Feature Selection**: Selects Stage 2's top 6 structural features strictly from fold $k$'s pre-test Stage 1 model SHAP gain (or fixed *a priori* structural columns), prohibiting full-dataset lookahead in feature selection.
   - **Strict Early Stopping Prohibition**: Enforces `early_stopping_rounds=None` and fits regularized shallow trees (`max_depth=2`, `n_estimators=50`, L1/L2 shrinkage) directly on candidate train sets; outer test partitions are never passed as `eval_set`.
   - Runs `WalkForwardPurgedCV` with trade duration exit timestamp purging.
   - On successful promotion, fits final models on complete history (Stage 2 trained on rolling Stage 1 features) and packages `HybridPredictorBundle`.
@@ -447,17 +456,19 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 - Define `HybridPredictorBundle` dataclass.
 - Update `SignalPredictor.predict_from_raw()`:
   - Detects if `self.model` is `HybridPredictorBundle`.
-  - If hybrid: runs Stage 1 to generate `meta_features__market_movement_prob`, adds it to feature dict, and evaluates Stage 2.
+  - If hybrid: runs Stage 1 to generate `meta_features__market_movement_prob` using pure market features from `build_feature_vector()`, adds it to feature dict, and evaluates Stage 2.
   - If standard estimator: evaluates directly (preserving full backward compatibility for legacy models `v1`–`v9`).
 
 #### 8. Unit Tests (`tests/unit/test_task155_ml_training_refactor.py` & `tests/unit/test_ml_predictor.py`)
 - Test walk-forward purge mechanism using actual resolution timestamps across gaps and non-uniform candles.
 - Test rejection of anomaly trades (`time_metrics_excluded = True` or inverted exit timestamps).
 - Test fold-level cross-fitting of Stage 1 transfer feature preventing future-fold lookahead.
+- Test that `stage1_feature_names` excludes `detector_scores` and is 100% satisfied by `build_feature_vector()`.
+- Test that Stage 2 structural feature selection inside walk-forward CV is strictly fold-local with zero full-dataset lookahead.
 - Test data leakage guards (assert `FORBIDDEN_OUTCOME_FIELDS` raises `DataLeakageError`).
 - Test promotion gate on evaluable vs degenerate single-class folds (`degenerate_folds > 0` raises `ModelPromotionError`).
 - Test single production target rule (market-movement model does not overwrite `models/v{N}.joblib`).
-- Test `SignalPredictor.predict_from_raw()` with `HybridPredictorBundle` ensuring `meta_features__market_movement_prob` is computed dynamically at inference time.
+- Test `SignalPredictor.predict_from_raw()` with `HybridPredictorBundle` ensuring `meta_features__market_movement_prob` is computed dynamically at inference time without missing feature warnings.
 
 #### 9. Scheduled Training Workflow Migration (`.github/workflows/ml_training.yml`)
 - Update `Run offline ML model training` step to run with gate enforcement:
