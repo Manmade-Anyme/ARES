@@ -2,6 +2,19 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-25 · MANM-155 PR Review Architectural Reconciliations
+
+Addressed automated and peer code review feedback on [ADR-155](directives/adr/TASK-155_ml-training-refactor.md) for decoupled ML pipelines, purged walk-forward cross-validation, and promotion gating.
+
+**Reconciliations & Decisions**
+- **Actual Label Resolution Timestamp Purging**: Fixed timedelta purge window replaced with actual observation resolution timestamps. `build_labeled_frame()` explicitly records the barrier-hit candle timestamp, and `build_real_outcome_frame()` maps `exit_timestamp` to `resolution_timestamp`. Purging strictly enforces `assert train_df["resolution_timestamp"].max() < test_df["timestamp"].min()`, preventing leakage across irregular candle intervals or market collection gaps.
+- **Inference Transfer Feature Serving**: Solved live serving omission of `meta_features__market_movement_prob`. Promoted hybrid models serialize as `HybridPredictorBundle` bundling Stage 1 market model and Stage 2 trade outcome model. `SignalPredictor.predict_from_raw()` transparently computes Stage 1 probability at runtime, populating the transfer prior before evaluating Stage 2 while retaining 100% backward compatibility for single-estimator models.
+- **Production Artifact Contract**: Required promoted production models to be published as canonical `ml_signal/models/v{N}.joblib` artifacts discoverable by `discover_latest_model()`, while maintaining pipeline-prefixed filenames as auxiliary diagnostic artifacts.
+- **Workflow Canonical Metrics Compatibility**: Updated CLI contract so `python -m ml_signal.train_offline` defaults to writing the primary metrics JSON to `reports/ml/task183_offline_metrics.json` (or `METRICS_PATH`), ensuring `.github/workflows/ml_training.yml` passes without workflow modification.
+- **Microstructure Label Threshold Reconciliation**: Explicitly separated `market_movement_tp_points = 15.0` / `market_movement_sl_points = 10.0` for microstructure momentum modeling from the 35/25 trade execution targets in `MLConfig`.
+
+---
+
 ## 2026-09-24 · Feature Versioning, Missing Data Remediation, and Storage Contracts (MANM-154)
 
 Audited historical missing data across 17,551 `ml_collection` records, authored [ADR MANM-154](directives/adr/MANM-154_feature-versioning-missing-data.md), implemented database schema migration and collector versioning, eliminated MANM-49 synthetic zero injection, added structural presence indicators, and published missingness audit report.
