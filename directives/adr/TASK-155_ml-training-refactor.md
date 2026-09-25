@@ -112,9 +112,18 @@ To achieve complete architectural decoupling without breaking external callers:
      - `TradeOutcomePipeline` trains the hybrid model (incorporating Stage 1 market representation), evaluates the promotion gate, and—upon gate passage—promotes the self-contained `HybridPredictorBundle` to `ml_signal/models/v{N}.joblib` (incrementing $N$).
      - This completely prevents race conditions or accidental overwrite of trade-success scoring with market-microstructure models.
 
-4. **Workflow Metrics Output Contract (`reports/ml/task183_offline_metrics.json`)**:
+4. **Workflow Metrics Output Contract & Schema Preservation (`reports/ml/task183_offline_metrics.json`)**:
    - The scheduled training workflow `.github/workflows/ml_training.yml:35-43` executes `python -m ml_signal.train_offline` and asserts `test -f reports/ml/task183_offline_metrics.json` (respecting `METRICS_PATH`).
    - `ml_signal/train_offline.py` **MUST** default to writing the primary summary metrics output to `os.environ.get("METRICS_PATH", "reports/ml/task183_offline_metrics.json")` in addition to individual pipeline diagnostic JSONs.
+   - **Schema Compatibility with Workflow Consumer**:
+     `.github/workflows/ml_training.yml:73-82` consumes top-level JSON fields for weekly Discord reporting and artifact publishing. The primary metrics JSON **MUST** provide legacy-compatible top-level keys alongside walk-forward validation fields:
+     - `model_version`: string (e.g., `"v10"`).
+     - `auc_roc`: float (aliasing `mean_auc` / pooled out-of-fold AUC).
+     - `sharpe_status`: string (`"computed"` or `"insufficient_trades"`).
+     - `sharpe_annualized`, `sharpe_daily`, `sharpe_days`, `sharpe_trades`, `sharpe_window_start`, `sharpe_window_end`, `sharpe_total_pnl_points`.
+     - `shap_status`: string (`"computed"` or `"skipped"`), `shap_computed`: bool.
+     - `promoted`: bool (`true` if gate passed and promoted, `false` otherwise).
+     - `leakage_guard_passed`: bool.
 
 5. **Unified CLI Orchestrator (`ml_signal/train_offline.py`) & Gated Promotion Default**:
    - Serves as the high-level entrypoint supporting CLI arguments:
@@ -203,9 +212,16 @@ For every training observation $i$, its actual label resolution timestamp must s
 ### 4.4 Invariant 4: Duplicate Snapshot Deduplication & Feature Hygiene
 To prevent identical market states from polluting multiple folds:
 - **Schema & Fetcher Additions**: Update `_fetch_ml_collection()` in `ml_signal/train_offline.py` to explicitly query `signal_id` and `signal_setup_type` (the canonical column names in `ml_collection` schema).
-- **Post-Flattening Deduplication**: Because `close` resides inside the nested `raw_candle` jsonb payload, deduplication is executed immediately upon flattening rows (in `flatten_features()` / `prepare_dataset()`):
-  - Primary composite key: `["timestamp", "signal_id", "signal_setup_type"]` (for signal-associated rows).
-  - Unsignaled background snapshots fallback: `["timestamp", "close"]` where `close` is the numeric spot close price extracted from `raw_candle`.
+- **Timestamp Bucketing & Post-Flattening Deduplication**:
+  Because `main.py` records polling snapshots using execution time (`now = datetime.now()`), two polling snapshots within the same 1-minute candle cycle (e.g. `10:00:05` and `10:00:55`) have slightly different timestamps despite identical market features.
+  Therefore, deduplication is executed immediately upon flattening rows (in `flatten_features()` / `prepare_dataset()`):
+  1. Floor snapshot timestamps to the canonical 1-minute candle boundary:
+     `df["bucketed_timestamp"] = pd.to_datetime(df["timestamp"]).dt.floor("1min")`
+     (or use the nested candle open timestamp from `raw_candle`).
+  2. Apply deduplication on composite keys using the bucketed timestamp:
+     - Primary composite key: `["bucketed_timestamp", "signal_id", "signal_setup_type"]` (for signal-associated rows).
+     - Unsignaled background snapshots fallback: `["bucketed_timestamp", "close"]` where `close` is the numeric spot close price extracted from `raw_candle`.
+  3. Drop temporary helper `bucketed_timestamp` immediately after deduplication.
 - **Metadata Exclusion & Feature Hygiene**: Tracking identifiers and partition columns (`signal_id`, `signal_setup_type`, and `resolution_timestamp`) are strictly tracking metadata. They must be registered in `_META_COLS` in `ml_signal/dataset.py` so `feature_columns(df)` excludes them from model inputs, and dropped or filtered before constructing the feature matrix $X$. Under no circumstances may raw UUIDs or categorical signal identities pass into XGBoost/LightGBM.
 - Log the count of dropped duplicate snapshots and assert deduplication prior to time-series fold partitioning.
 
@@ -245,6 +261,10 @@ Until realized trade records reach $N \ge 1,000$ (expected Q1 2027), ARES adopts
      - `reg_lambda = 5.0`, `reg_alpha = 1.0` (L1/L2 shrinkage).
      - `colsample_bytree = 0.6`, `subsample = 0.7`.
      - Input features restricted to: `meta_features__market_movement_prob` + top 6 structural features selected by Stage 1 SHAP gain.
+   - **Early Stopping Prohibition on Outer Test Windows**:
+     Under no circumstances may outer test partition $[T_k^{\text{test\_start}}, T_k^{\text{test\_end}}]$ be supplied to `model.fit()` as `eval_set` or used for early stopping. Supplying test labels to select the stopping iteration leaks test performance into the model parameters and invalidates out-of-sample claims.
+     - During outer walk-forward validation folds, early stopping must either be disabled (`early_stopping_rounds = None`) with fixed regularized iterations (`n_estimators = 50`), or an **inner chronological validation slice** (the tail 15–20% of the candidate training partition, purged against earlier train trades) must be used as `eval_set`.
+     - Outer test rows are strictly scored post-fit via `predict_proba()`.
    - When sample size is $N < 500$, the training pipeline automatically tags the model as `provisional_sample_size: true`, emitting explicit warnings in metrics reports.
 
 3. **Inference Serving Contract (`HybridPredictorBundle`)**:
@@ -323,8 +343,9 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
   - Verifies that train actual resolution timestamps strictly precede test start timestamps:
     `assert pd.to_datetime(train_df[resolution_col]).max() < pd.to_datetime(test_df["timestamp"]).min()`.
 - Implement `deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame`:
-  - Deduplicates post-flattened DataFrame using composite key `["timestamp", "signal_id", "signal_setup_type"]` when signal identity is present, falling back to `["timestamp", "close"]` for unsignaled cycle snapshots.
-  - Drops deduplication keys (`signal_id`, `signal_setup_type`) immediately or ensures they are excluded from feature vectors via `_META_COLS`.
+  - Floors timestamps to canonical 1-minute candle boundaries (`pd.to_datetime(df["timestamp"]).dt.floor("1min")`) to prevent sub-minute polling duplicates from surviving.
+  - Deduplicates using composite key `["bucketed_timestamp", "signal_id", "signal_setup_type"]` for signaled rows and `["bucketed_timestamp", "close"]` for unsignaled cycle snapshots.
+  - Drops deduplication keys (`bucketed_timestamp`, `signal_id`, `signal_setup_type`) immediately or ensures they are excluded from feature vectors via `_META_COLS`.
 - Define custom exception `DataLeakageError(Exception)`.
 
 #### 2. `ml_signal/validation.py` (New Module)
@@ -383,6 +404,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
     ```
     - Passes `tp_points=config.market_movement_tp_points, sl_points=config.market_movement_sl_points` into `build_labeled_frame()`.
     - Runs `WalkForwardPurgedCV` with decisive resolution timestamp purging.
+    - **No Outer Test Leaks in Early Stopping**: Outer test partition $[T_k^{\text{test\_start}}, T_k^{\text{test\_end}}]$ is strictly isolated from `model.fit()` (never passed as `eval_set`). Model fits either disable early stopping (`early_stopping_rounds=None`) with fixed estimators, or carve an inner chronological validation split strictly from `train_df`.
     - Outputs `market_movement` metrics and model.
 
 #### 5. `ml_signal/pipeline_trade_outcomes.py` (New Module)
@@ -403,7 +425,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
   - **Fold-Level Cross-Fitting**: In `run_walk_forward()`, for each walk-forward fold $k$:
     - Outer test rows are scored using a Stage 1 model fitted strictly on snapshots with `resolution_timestamp < T_k^{test_start}`.
     - Outer train rows are scored using inner-OOF / rolling Stage 1 models fitted strictly on snapshots with `resolution_timestamp < t_entry`, preventing in-sample stacking bias and lookahead leakage.
-  - Enforces shallow depth (`max_depth=2`) and L1/L2 shrinkage for small $N = 232$.
+  - **Strict Early Stopping Prohibition**: Enforces `early_stopping_rounds=None` and fits regularized shallow trees (`max_depth=2`, `n_estimators=50`, L1/L2 shrinkage) directly on candidate train sets; outer test partitions are never passed as `eval_set`.
   - Runs `WalkForwardPurgedCV` with trade duration exit timestamp purging.
   - On successful promotion, fits final models on complete history (Stage 2 trained on rolling Stage 1 features) and packages `HybridPredictorBundle`.
 
@@ -417,7 +439,9 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
   - `--hybrid / --no-hybrid` (default: `--hybrid`).
   - `--metrics-path <str>` (default: `reports/ml/task183_offline_metrics.json` or `METRICS_PATH` env).
 - **Single Production Target**: In `--pipeline all --promote`, strictly designate `TradeOutcomePipeline` (`HybridPredictorBundle`) as the sole target promoting to `ml_signal/models/v{N}.joblib`. Market movement model is preserved as auxiliary `models/market_movement_v{N}.joblib`.
-- Write primary summary report to `reports/ml/task183_offline_metrics.json` ensuring `.github/workflows/ml_training.yml` passes, plus diagnostic JSONs for each pipeline.
+- **Primary Report Legacy Schema Preservation**:
+  Write primary summary report to `reports/ml/task183_offline_metrics.json` preserving all top-level keys expected by `.github/workflows/ml_training.yml:73-82`:
+  `model_version`, `auc_roc` (mapped from `mean_auc`), `sharpe_status`, `sharpe_annualized`, `sharpe_daily`, `sharpe_days`, `sharpe_trades`, `sharpe_window_start`, `sharpe_window_end`, `sharpe_total_pnl_points`, `shap_status`, `shap_computed`, `promoted`, and `leakage_guard_passed`, preventing `n/a` values in weekly Discord reports and job summaries. Also outputs diagnostic JSONs for each pipeline.
 
 #### 7. `ml_signal/predictor.py` (Inference Serving Support)
 - Define `HybridPredictorBundle` dataclass.
