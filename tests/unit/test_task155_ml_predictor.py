@@ -7,11 +7,12 @@ def test_hybrid_predictor_bundle_prediction():
     # Mock Stage 1 and Stage 2 models
     stage1_mock = MagicMock()
     # predict_proba returns a 2D array, we want the [:, 1] slice to be say 0.85
-    stage1_mock.predict_proba.return_value = [[0.15, 0.85]]
+    import numpy as np
+    stage1_mock.predict_proba.return_value = np.array([[0.15, 0.85]])
     
     stage2_mock = MagicMock()
     # Stage 2 predict_proba returns 0.95
-    stage2_mock.predict_proba.return_value = [[0.05, 0.95]]
+    stage2_mock.predict_proba.return_value = np.array([[0.05, 0.95]])
     
     bundle = HybridPredictorBundle(
         stage1_model=stage1_mock,
