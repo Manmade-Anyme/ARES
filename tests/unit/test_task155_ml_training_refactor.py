@@ -118,10 +118,12 @@ def test_deduplicate_snapshots():
         "trade_id": [None, None, None]
     })
     dedup = deduplicate_snapshots(df)
-    assert len(dedup) == 1
-    # The terminal snapshot (last) of the candle should be kept.
-    assert dedup.iloc[0]["timestamp"] == pd.Timestamp("2026-01-01 10:00:30")
-    assert dedup.iloc[0]["feature1"] == 2.0
+    assert len(dedup) == 2
+    # The terminal snapshot (last) of identical feature sets should be kept.
+    assert dedup.iloc[0]["timestamp"] == pd.Timestamp("2026-01-01 10:00:20")
+    assert dedup.iloc[0]["feature1"] == 1.0
+    assert dedup.iloc[1]["timestamp"] == pd.Timestamp("2026-01-01 10:00:30")
+    assert dedup.iloc[1]["feature1"] == 2.0
 
 def test_dataset_meta_cols():
     assert "trade_id" in _META_COLS

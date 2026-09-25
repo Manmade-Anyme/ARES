@@ -117,7 +117,7 @@ class TradeOutcomePipeline:
                 c for c in [
                     "structure_features__dist_to_nearest_support",
                     "structure_features__dist_to_nearest_resistance",
-                    "oi_features__pcr",
+                    "oi_features__pcr_oi",
                     "candle_features__body_pct",
                     "iv_features__iv_level",
                     "greek_features__net_delta"

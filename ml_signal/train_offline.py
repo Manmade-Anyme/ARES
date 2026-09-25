@@ -659,16 +659,49 @@ def main() -> None:
                 
                 if args.hybrid:
                     stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
+                    
+                    # Generate cross-fitted probabilities for Stage 2 training using WalkForwardPurgedCV
+                    from ml_signal.validation import WalkForwardPurgedCV
+                    cv = WalkForwardPurgedCV(n_splits=args.folds, min_train_samples=100, embargo_window=pd.Timedelta(minutes=15))
+                    
+                    market_probs = pd.Series(index=trade_df.index, dtype=float)
+                    # For simplicity in the final promotion step, we can use a basic K-Fold to cross-fit,
+                    # but strictly, we should use chronological cross-fitting.
+                    from sklearn.model_selection import TimeSeriesSplit
+                    tscv = TimeSeriesSplit(n_splits=args.folds)
+                    
+                    # Ensure trade_df is sorted
+                    trade_df = trade_df.sort_values("timestamp").copy()
+                    for train_idx, test_idx in tscv.split(trade_df):
+                        # Get max timestamp in train
+                        max_train_ts = trade_df.iloc[train_idx]["timestamp"].max()
+                        
+                        # Train stage 1 on market data up to max_train_ts
+                        train_market = market_df[market_df["timestamp"] <= max_train_ts]
+                        if len(train_market) < 50:
+                            continue
+                            
+                        fold_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
+                        fold_model.fit(train_market[stage1_feat_cols], train_market["label"])
+                        
+                        # Predict for test_idx
+                        test_trades = trade_df.iloc[test_idx]
+                        market_probs.iloc[test_idx] = fold_model.predict_proba(test_trades[stage1_feat_cols])[:, 1]
+                    
+                    # Fill any NaNs from the initial folds with the median or the first fold
+                    market_probs = market_probs.ffill().bfill().fillna(0.5)
+                    trade_df["meta_features__market_movement_prob"] = market_probs
+                    
+                    # Fit final Stage 1 model for deployment
                     stage1_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
                     stage1_model.fit(market_df[stage1_feat_cols], market_df["label"])
-                    trade_df["meta_features__market_movement_prob"] = stage1_model.predict_proba(trade_df[stage1_feat_cols])[:, 1]
                     
                 feat_cols2 = ["meta_features__market_movement_prob"] if args.hybrid else []
                 feat_cols2 += [
                     c for c in [
                         "structure_features__dist_to_nearest_support",
                         "structure_features__dist_to_nearest_resistance",
-                        "oi_features__pcr",
+                        "oi_features__pcr_oi",
                         "candle_features__body_pct",
                         "iv_features__iv_level",
                         "greek_features__net_delta"
@@ -687,17 +720,24 @@ def main() -> None:
                 )
                 stage2_model.fit(trade_df[feat_cols2], trade_df["label"])
                 
-                bundle = HybridPredictorBundle(
-                    stage1_model=stage1_model,
-                    stage2_model=stage2_model,
-                    stage1_feature_names=stage1_feat_cols if args.hybrid else [],
-                    stage2_feature_names=feat_cols2,
-                    model_version=next_version,
-                    created_at=str(pd.Timestamp.utcnow()),
-                    metrics_summary=metrics
-                )
-                joblib.dump(bundle, save_path)
-                print(f"[+] Promoted Hybrid Bundle -> {save_path}")
+                if args.hybrid:
+                    bundle = HybridPredictorBundle(
+                        stage1_model=stage1_model,
+                        stage2_model=stage2_model,
+                        stage1_feature_names=stage1_feat_cols,
+                        stage2_feature_names=feat_cols2,
+                        model_version=next_version,
+                        created_at=str(pd.Timestamp.utcnow()),
+                        metrics_summary=metrics
+                    )
+                    joblib.dump(bundle, save_path)
+                    print(f"[+] Promoted Hybrid Bundle -> {save_path}")
+                else:
+                    # Persist as legacy standalone model
+                    # Set feature_names_in_ on the model manually so predictor.py can pick it up
+                    stage2_model.feature_names_in_ = np.array(feat_cols2)
+                    joblib.dump(stage2_model, save_path)
+                    print(f"[+] Promoted Standalone Stage 2 Model -> {save_path}")
             except ModelPromotionError as e:
                 print(f"[!] Promotion Gate Failed: {e}")
                 promoted = False

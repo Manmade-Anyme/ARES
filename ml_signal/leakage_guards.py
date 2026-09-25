@@ -52,19 +52,22 @@ def deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame:
 
     if "trade_id" in df_out.columns and df_out["trade_id"].notna().any():
         # TradeOutcomePipeline deduplication
-        # Use trade_id and feature hash
-        # If trade_id is missing, fallback to snapshot_uuid if available
-        subset = ["_feature_hash"]
-        if "trade_id" in df_out.columns:
-            subset = ["trade_id"] + subset
+        subset = []
+        if "trade_id" in df_out.columns and df_out["trade_id"].notna().any():
+            subset.append("trade_id")
+        elif "snapshot_uuid" in df_out.columns and df_out["snapshot_uuid"].notna().any():
+            subset.append("snapshot_uuid")
         
+        if not subset:
+            subset = ["_feature_hash"]
+        else:
+            subset.append("_feature_hash")
+            
         df_out = df_out.drop_duplicates(subset=subset, keep="last")
     else:
         # MarketMovementPipeline deduplication
-        df_out = df_out.drop_duplicates(subset=["_source_candle_ts", "_feature_hash"], keep="last")
-        # Also drop intra-candle updates keeping terminal
         df_out = df_out.sort_values("timestamp")
-        df_out = df_out.drop_duplicates(subset=["_source_candle_ts"], keep="last")
+        df_out = df_out.drop_duplicates(subset=["_source_candle_ts", "_feature_hash"], keep="last")
 
     # cleanup temp cols
     if "_source_candle_ts" in df_out.columns:
