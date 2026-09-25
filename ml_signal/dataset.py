@@ -303,6 +303,8 @@ def build_labeled_frame(
         day["resolution_timestamp"] = res_ts
         labeled_parts.append(day)
 
+    if not labeled_parts:
+        return df.iloc[0:0].assign(label=pd.Series(dtype=int), resolution_timestamp=pd.Series(dtype=object))
     res = pd.concat(labeled_parts, ignore_index=True)
     res = res[res["label"] != -1].reset_index(drop=True)
     return res
