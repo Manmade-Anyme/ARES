@@ -686,10 +686,10 @@ def main(argv=None) -> None:
                         
                         # Predict for test_idx
                         test_trades = trade_df.iloc[test_idx]
-                        market_probs.iloc[test_idx] = fold_model.predict_proba(test_trades[stage1_feat_cols])[:, 1]
+                        market_probs.iloc[test_idx] = fold_model.predict_proba(test_trades.reindex(columns=stage1_feat_cols))[:, 1]
                     
                     # Fill any NaNs from the initial folds with the median or the first fold
-                    market_probs = market_probs.ffill().bfill().fillna(0.5)
+                    market_probs = market_probs.ffill().fillna(0.5)
                     trade_df["meta_features__market_movement_prob"] = market_probs
                     
                     # Fit final Stage 1 model for deployment

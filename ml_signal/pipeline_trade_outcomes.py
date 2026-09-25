@@ -92,7 +92,7 @@ class TradeOutcomePipeline:
                 if len(valid_snaps) > 0 and valid_snaps["label"].nunique() > 1:
                     model_s1 = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
                     model_s1.fit(valid_snaps[stage1_feat_cols], valid_snaps["label"])
-                    test_df["meta_features__market_movement_prob"] = model_s1.predict_proba(test_df[stage1_feat_cols])[:, 1]
+                    test_df["meta_features__market_movement_prob"] = model_s1.predict_proba(test_df.reindex(columns=stage1_feat_cols))[:, 1]
                 else:
                     test_df["meta_features__market_movement_prob"] = 0.5
                     
@@ -104,7 +104,7 @@ class TradeOutcomePipeline:
                     if len(inner_snaps) > 0 and inner_snaps["label"].nunique() > 1:
                         model_inner = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
                         model_inner.fit(inner_snaps[stage1_feat_cols], inner_snaps["label"])
-                        prob = model_inner.predict_proba(pd.DataFrame([row[stage1_feat_cols]]))[:, 1][0]
+                        prob = model_inner.predict_proba(pd.DataFrame([pd.DataFrame([row]).reindex(columns=stage1_feat_cols).iloc[0]]))[:, 1][0]
                     else:
                         prob = 0.5
                     train_probs.append(prob)

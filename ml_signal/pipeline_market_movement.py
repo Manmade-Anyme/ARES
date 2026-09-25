@@ -25,13 +25,12 @@ class MarketMovementPipeline:
         df = build_labeled_frame(
             rows, 
             lookforward=self.config.lookforward_candles,
-            tp_points=self.config.tp_points, # or market_movement_tp_points if added to config
-            sl_points=self.config.sl_points  # or market_movement_sl_points if added to config
+            tp_points=self.config.mm_tp_points, # or market_movement_tp_points if added to config
+            sl_points=self.config.mm_sl_points  # or market_movement_sl_points if added to config
         )
         if df.empty:
             return df
             
-        df = deduplicate_snapshots(df)
         assert_chronological_integrity(df)
         
         # Strictly exclude detector_scores

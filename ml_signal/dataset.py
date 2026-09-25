@@ -285,6 +285,9 @@ def build_labeled_frame(
     dropped. Returns feature columns + `label` and `resolution_timestamp`.
     """
     df = flatten_features(rows)
+    from ml_signal.leakage_guards import deduplicate_snapshots
+    df = deduplicate_snapshots(df)
+
     if df.empty:
         return df.assign(label=pd.Series(dtype=int), resolution_timestamp=pd.Series(dtype=object))
 
