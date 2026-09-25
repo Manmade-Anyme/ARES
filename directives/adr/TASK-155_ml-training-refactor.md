@@ -160,11 +160,12 @@ For fold $k \in \{1, \dots, K\}$:
    - **Realized Trades**:
      $$t_i^{\text{resolution}} = \text{exit\_timestamp}_i$$
 4. **Embargo Barrier**:
-   In walk-forward evaluations, observations occurring within an embargo buffer $h_{\text{embargo}}$ immediately following a test partition $[T_{k}^{\text{test\_start}}, T_{k}^{\text{test\_end}}]$ are excluded from any training sets that follow that test window (e.g., in rolling, combinatorial, or sequential retraining windows) to eliminate autoregressive serial correlation:
-   $$t_i^{\text{entry}} > T_k^{\text{test\_end}} + h_{\text{embargo}}$$
+   In expanding walk-forward evaluations, candidate training observations all chronologically precede $T_k^{\text{test\_start}}$. To eliminate autoregressive serial correlation between training features and initial test observations, an embargo buffer $h_{\text{embargo}}$ is applied directly at the test boundary:
+   $$t_i^{\text{entry}} < T_k^{\text{test\_start}} - h_{\text{embargo}}$$
+   Candidate training observations falling in $[T_k^{\text{test\_start}} - h_{\text{embargo}}, T_k^{\text{test\_start}})$ are excluded from that fold's training set. (Additionally, for any rolling or sequential retraining splits with training slices occurring after a test window, observations in $[T_k^{\text{test\_end}}, T_k^{\text{test\_end}} + h_{\text{embargo}}]$ are similarly excluded).
    - **Market Movement Pipeline**: $h_{\text{embargo}} = 15\text{ minutes}$ (covers maximum auto-correlation beyond the forward labeling horizon). Configured via `config.market_movement_embargo_minutes`.
    - **Trade Outcome Pipeline**: $h_{\text{embargo}} = 30\text{ minutes}$ (covers typical intraday trade holding memory). Configured via `config.trade_outcome_embargo_minutes`.
-   - **Nonzero Enforced Default**: `WalkForwardPurgedCV` defaults to `embargo_window = pd.Timedelta(minutes=15)` so that omitting an override never silently disables serial-correlation containment.
+   - **Nonzero Enforced Default**: `WalkForwardPurgedCV` defaults to `embargo_window = pd.Timedelta(minutes=15)` so that omitting an override never silently disables serial-correlation containment on evaluated folds.
 
 ### 3.2 Statistical Confidence Interval & Metrics Reporting
 For each fold $k$, the validator computes:
@@ -378,7 +379,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
       ) -> Iterator[Tuple[np.ndarray, np.ndarray, Dict[str, Any]]]: ...
   ```
   - Purges any candidate train index where `df.loc[idx, resolution_col] >= test_start_timestamp`.
-  - Embargoes any observations occurring within `[test_end_timestamp, test_end_timestamp + embargo_window]`, excluding them from training slices that follow that test partition.
+  - Embargoes candidate train observations immediately preceding the test window: excludes any candidate train index where `df.loc[idx, timestamp_col] >= test_start_timestamp - embargo_window` (and any observations in `[test_end_timestamp, test_end_timestamp + embargo_window]` for post-test training slices). This guarantees that fold $k$'s training features stop strictly before the test boundary, enforcing serial-correlation containment on the exact metrics used for model promotion.
   - Defaults `embargo_window` to `pd.Timedelta(minutes=15)` (with pipeline overrides from `MLConfig`), ensuring serial-correlation containment is strictly active even without explicit argument passing.
 - Implement `compute_cv_metrics(fold_results: List[Dict[str, Any]], leakage_guard_passed: bool = True) -> Dict[str, Any]`:
   - Filters and records `evaluable_folds` (folds with both classes present in the test slice and finite metrics).
@@ -467,7 +468,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 
 #### 8. Unit Tests (`tests/unit/test_task155_ml_training_refactor.py` & `tests/unit/test_ml_predictor.py`)
 - Test walk-forward purge mechanism using actual resolution timestamps across gaps and non-uniform candles.
-- Test nonzero embargo window enforcement: verify observations within `[test_end_timestamp, test_end_timestamp + embargo_window]` are strictly excluded from subsequent train partitions.
+- Test nonzero embargo window enforcement: verify observations within `[test_start - embargo_window, test_start)` are strictly excluded from candidate train partitions to isolate training features from test boundary serial correlation.
 - Test rejection of anomaly trades (`time_metrics_excluded = True` or inverted exit timestamps).
 - Test fold-level cross-fitting of Stage 1 transfer feature preventing future-fold lookahead.
 - Test that `stage1_feature_names` excludes `detector_scores` and is 100% satisfied by `build_feature_vector()`.
