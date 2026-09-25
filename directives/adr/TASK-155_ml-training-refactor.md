@@ -104,9 +104,13 @@ To achieve complete architectural decoupling without breaking external callers:
    - Evaluates whether execution sample size is sufficient ($N < 500$ triggers `provisional_sample_size: true`) and executes hybrid transfer learning.
    - **Artifacts**: Secondary diagnostic report `reports/ml/trade_outcome_metrics.json`.
 
-3. **Active Production Artifact Contract (`ml_signal/models/v{N}.joblib`)**:
+3. **Active Production Artifact Contract (`ml_signal/models/v{N}.joblib`) & Target Disambiguation**:
    - `SignalPredictor.load_model()` in `ml_signal/predictor.py` discovers models via `discover_latest_model()` matching the strict regex `^v(\d+)\.joblib$`.
-   - To preserve 100% backward compatibility and prevent silent model stalling, any model promoted by `promotion_gate.py` (whether from the hybrid trade-outcome pipeline or standalone) **MUST** be written to the active canonical path `ml_signal/models/v{N}.joblib` (incrementing $N$). Pipeline-specific filenames (`trade_outcome_v{N}.joblib`) are written alongside solely as auxiliary research references.
+   - **Single Production Target Rule**: Production live alert evaluation requires trade success reliability, not raw 15-point market movement probability. Therefore, the **Trade Outcome pipeline** (or the `HybridPredictorBundle` produced by it) is the **sole pipeline permitted to occupy the canonical `ml_signal/models/v{N}.joblib` slot**.
+   - When running `--pipeline all --promote`:
+     - `MarketMovementPipeline` trains and writes its output strictly to `ml_signal/models/market_movement_v{N}.joblib`.
+     - `TradeOutcomePipeline` trains the hybrid model (incorporating Stage 1 market representation), evaluates the promotion gate, and—upon gate passage—promotes the self-contained `HybridPredictorBundle` to `ml_signal/models/v{N}.joblib` (incrementing $N$).
+     - This completely prevents race conditions or accidental overwrite of trade-success scoring with market-microstructure models.
 
 4. **Workflow Metrics Output Contract (`reports/ml/task183_offline_metrics.json`)**:
    - The scheduled training workflow `.github/workflows/ml_training.yml:35-43` executes `python -m ml_signal.train_offline` with no CLI arguments and asserts `test -f reports/ml/task183_offline_metrics.json` (respecting `METRICS_PATH`).
@@ -115,6 +119,7 @@ To achieve complete architectural decoupling without breaking external callers:
 5. **Unified CLI Orchestrator (`ml_signal/train_offline.py`)**:
    - Serves as the high-level entrypoint supporting CLI arguments:
      `python -m ml_signal.train_offline --pipeline [market_movement | trade_outcomes | all] --folds 5 --promote --metrics-path reports/ml/task183_offline_metrics.json`.
+   - `--pipeline all` executes Stage 1 followed by Stage 2 with automatic cross-fitting. Only Stage 2 is eligible for canonical promotion.
 
 ---
 
@@ -189,8 +194,11 @@ For every training observation $i$, its actual label resolution timestamp must s
 
 ### 4.4 Invariant 4: Duplicate Snapshot Deduplication
 To prevent identical market states from polluting multiple folds:
-- Deduplicate input rows on composite key `("timestamp", "signal_id", "setup_type")` (or `("timestamp", "close")` if signal id is absent).
-- Log count of dropped duplicate snapshots before feature extraction.
+- **Schema & Fetcher Additions**: Update `_fetch_ml_collection()` in `ml_signal/train_offline.py` to explicitly query `signal_id` and `signal_setup_type` (the canonical column names in `ml_collection` schema).
+- **Post-Flattening Deduplication**: Because `close` resides inside the nested `raw_candle` jsonb payload, deduplication is executed immediately upon flattening rows (in `flatten_features()` / `prepare_dataset()`):
+  - Primary composite key: `["timestamp", "signal_id", "signal_setup_type"]` (for signal-associated rows).
+  - Unsignaled background snapshots fallback: `["timestamp", "close"]` where `close` is the numeric spot close price extracted from `raw_candle`.
+- Log the count of dropped duplicate snapshots and assert deduplication prior to time-series fold partitioning.
 
 ---
 
@@ -210,7 +218,14 @@ Until realized trade records reach $N \ge 1,000$ (expected Q1 2027), ARES adopts
    - Train a foundational representation model on the large continuous snapshot dataset ($N = 14,823$ rows, $N = 617$ resolved moves with `market_movement_tp_points = 15.0`, `market_movement_sl_points = 10.0`).
    - Learns non-linear interactions across Open Interest walls, IV skew, volume acceleration, and candle structure.
 2. **Stage 2: Transfer / Feature Stacking into Trade Outcome Classifier**:
-   - The Stage 1 model generates an out-of-fold scalar feature: `meta_features__market_movement_prob`.
+   - **Cross-Fitting Invariant (Zero-Leakage Transfer Prior)**:
+     Passing a single statically pretrained Stage 1 model directly into trade-outcome validation causes fatal lookahead leakage, because the Stage 1 model would have observed price action from future trade fold test windows.
+     Therefore, during walk-forward validation of the hybrid model, Stage 1 predictions **MUST be cross-fitted strictly within each outer fold**:
+     - For outer trade fold $k$ with test window $[T_k^{\text{test\_start}}, T_k^{\text{test\_end}}]$:
+       1. Filter the market movement snapshot dataset to strictly include only rows where `resolution_timestamp < T_k^{\text{test\_start}}`.
+       2. Fit a fold-specific Stage 1 market model on this historical-only snapshot partition.
+       3. Generate `meta_features__market_movement_prob` for trade fold $k$'s training set and test set using this strictly prior-only Stage 1 model.
+     - Only after walk-forward cross-validation passes all promotion criteria are the final Stage 1 and Stage 2 models trained on the complete dataset to construct the deployable `HybridPredictorBundle`.
    - The Stage 2 Trade Outcome model is trained on the $N = 232$ trades with **heavily regularized, constrained hyperparameters**:
      - `max_depth = 2` (shallow stumps to prevent high-order interactions).
      - `n_estimators = 50`, `learning_rate = 0.03`.
@@ -257,12 +272,15 @@ To prevent premature promotion of overfitted or unrepresentative models into liv
 ### 6.1 Gating Invariants
 A newly trained model file **CANNOT** be promoted to active production (`ml_signal/models/v{N}.joblib`) unless ALL of the following criteria are satisfied:
 1. **Validation Protocol**: Validation method must strictly be `walk_forward_purged`. Models trained on a single chronological or random split are blocked.
-2. **Fold Quantity**: $K \ge 4$ folds completed successfully.
+2. **Completed Evaluable Fold Quantity**:
+   - `evaluable_folds >= 4` successfully completed with finite numeric metrics.
+   - An evaluable fold requires both positive and negative classes in its test slice ($y_{\text{test}} \in \{0, 1\}$).
+   - Folds with single-class test slices or non-finite metrics (`np.isnan` / undefined AUC) are flagged as degenerate; `degenerate_folds == 0` is strictly enforced.
 3. **Discriminative Power**:
    - Out-of-fold Mean AUC $\ge 0.55$.
    - Lower bound of 95% Confidence Interval: $\text{AUC}_{95\%\text{-lower}} > 0.50$ (statistically significant outperformance vs random guessing).
 4. **Regime Consistency (Max Fold Degradation)**:
-   - Minimum fold AUC across all folds: $\min(\text{AUC}_k) \ge 0.40$ (prevents models that fail catastrophically in specific market regimes).
+   - Minimum fold AUC across all evaluable folds: $\min(\text{AUC}_k) \ge 0.40$ (prevents models that fail catastrophically in specific market regimes).
 5. **Calibration & Reliability**:
    - Out-of-fold Brier Score $\le 0.23$.
 6. **Data Leakage Compliance**:
@@ -291,7 +309,8 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 - Implement `assert_train_test_purged(train_df: pd.DataFrame, test_df: pd.DataFrame, resolution_col: str = "resolution_timestamp") -> None`:
   - Verifies that train actual resolution timestamps strictly precede test start timestamps:
     `assert pd.to_datetime(train_df[resolution_col]).max() < pd.to_datetime(test_df["timestamp"]).min()`.
-- Implement `deduplicate_snapshots(df: pd.DataFrame, subset: List[str]) -> pd.DataFrame`.
+- Implement `deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame`:
+  - Deduplicates post-flattened DataFrame using composite key `["timestamp", "signal_id", "signal_setup_type"]` when signal identity is present, falling back to `["timestamp", "close"]` for unsignaled cycle snapshots.
 - Define custom exception `DataLeakageError(Exception)`.
 
 #### 2. `ml_signal/validation.py` (New Module)
@@ -314,12 +333,21 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
   ```
   - Purges any candidate train index where `df.loc[idx, resolution_col] >= test_start_timestamp`.
 - Implement `compute_cv_metrics(fold_results: List[Dict[str, Any]]) -> Dict[str, Any]`:
-  - Computes fold means, standard deviations, standard errors, and 95% Student's $t$ confidence intervals.
+  - Filters and records `evaluable_folds` (folds with both classes present in the test slice and finite metrics).
+  - Flags `degenerate_folds` (single-class test partitions or NaN/undefined metrics).
+  - Computes fold means, standard deviations, standard errors, and 95% Student's $t$ confidence intervals across evaluable folds.
   - Computes pooled out-of-fold (OOF) AUC, Brier, and LogLoss.
 
 #### 3. `ml_signal/promotion_gate.py` (New Module)
 - Implement `evaluate_promotion_gate(metrics: Dict[str, Any]) -> Tuple[bool, List[str]]`:
-  - Checks: `validation_method == "walk_forward_purged"`, `n_splits >= 4`, `mean_auc >= 0.55`, `ci_95_lower > 0.50`, `min_fold_auc >= 0.40`, `brier_score <= 0.23`, `leakage_clean == True`.
+  - Validates:
+    - `validation_method == "walk_forward_purged"`
+    - `evaluable_folds >= 4` (must have at least 4 valid, non-degenerate evaluable folds)
+    - `degenerate_folds == 0` (zero single-class or NaN-metric folds)
+    - `mean_auc >= 0.55` and `ci_95_lower > 0.50`
+    - `min_fold_auc >= 0.40`
+    - `brier_score <= 0.23`
+    - `leakage_clean == True`
 - Implement `enforce_promotion_or_raise(metrics: Dict[str, Any]) -> None`:
   - Raises `ModelPromotionError` on failure.
 
@@ -344,24 +372,30 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
   class TradeOutcomePipeline:
       def __init__(self, config: MLConfig = DEFAULT_CONFIG, use_hybrid_transfer: bool = True): ...
       def prepare_dataset(self, rows: List[dict], exit_timestamps: Dict[str, str]) -> pd.DataFrame: ...
-      def run_walk_forward(self, df: pd.DataFrame, n_splits: int = 5, market_model: Optional[object] = None) -> Tuple[object, Dict[str, Any]]: ...
+      def run_walk_forward(
+          self,
+          df: pd.DataFrame,
+          market_snapshots_df: Optional[pd.DataFrame] = None,
+          n_splits: int = 5
+      ) -> Tuple[object, Dict[str, Any]]: ...
   ```
-  - Prepares dataset using `build_real_outcome_frame`, mapping `exit_timestamp` to `resolution_timestamp`.
-  - Injects Stage 1 probability prior (`meta_features__market_movement_prob`) if `use_hybrid_transfer` is enabled.
+  - **Timestamp Anomaly Filtering**: In `prepare_dataset()`, strictly reject/exclude any trades where `time_metrics_excluded is True`, `exit_timestamp is None/NaT`, or `exit_timestamp <= entry_timestamp/timestamp` (preserving MANM-152 contracts). Only verified positive-duration trades enter training.
+  - Maps valid `exit_timestamp` to `resolution_timestamp`.
+  - **Fold-Level Cross-Fitting**: In `run_walk_forward()`, for each walk-forward fold $k$, fits Stage 1 market model strictly on `market_snapshots_df` rows with `resolution_timestamp < T_k^{test_start}`, generating `meta_features__market_movement_prob` without lookahead leakage.
   - Enforces shallow depth (`max_depth=2`) and L1/L2 shrinkage for small $N = 232$.
   - Runs `WalkForwardPurgedCV` with trade duration exit timestamp purging.
-  - On successful training, builds `HybridPredictorBundle` packaging both Stage 1 and Stage 2 models.
+  - On successful promotion, fits final models on complete history and packages `HybridPredictorBundle`.
 
-#### 6. `ml_signal/train_offline.py` (Refactor CLI Entrypoint)
+#### 6. `ml_signal/train_offline.py` (Refactor CLI Entrypoint & Fetcher)
+- Update `_fetch_ml_collection()` query to explicitly select `signal_id` and `signal_setup_type`.
 - Add command-line argument parser:
   - `--pipeline [market_movement | trade_outcomes | all]` (default: `all`).
   - `--folds <int>` (default: 5).
   - `--promote / --no-promote` (default: `--no-promote` unless explicit).
   - `--hybrid / --no-hybrid` (default: `--hybrid`).
   - `--metrics-path <str>` (default: `reports/ml/task183_offline_metrics.json` or `METRICS_PATH` env).
-- Call `leakage_guards`, run designated pipelines, evaluate `promotion_gate`.
-- On promotion, write active artifact to canonical `ml_signal/models/v{N}.joblib` so `discover_latest_model()` loads it immediately.
-- Generate canonical summary report at `reports/ml/task183_offline_metrics.json` and diagnostic reports at `reports/ml/market_movement_metrics.json` / `reports/ml/trade_outcome_metrics.json`.
+- **Single Production Target**: In `--pipeline all --promote`, strictly designate `TradeOutcomePipeline` (`HybridPredictorBundle`) as the sole target promoting to `ml_signal/models/v{N}.joblib`. Market movement model is preserved as auxiliary `models/market_movement_v{N}.joblib`.
+- Write primary summary report to `reports/ml/task183_offline_metrics.json` ensuring `.github/workflows/ml_training.yml` passes, plus diagnostic JSONs for each pipeline.
 
 #### 7. `ml_signal/predictor.py` (Inference Serving Support)
 - Define `HybridPredictorBundle` dataclass.
@@ -372,17 +406,19 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 
 #### 8. Unit Tests (`tests/unit/test_task155_ml_training_refactor.py` & `tests/unit/test_ml_predictor.py`)
 - Test walk-forward purge mechanism using actual resolution timestamps across gaps and non-uniform candles.
+- Test rejection of anomaly trades (`time_metrics_excluded = True` or inverted exit timestamps).
+- Test fold-level cross-fitting of Stage 1 transfer feature preventing future-fold lookahead.
 - Test data leakage guards (assert `FORBIDDEN_OUTCOME_FIELDS` raises `DataLeakageError`).
-- Test promotion gate (assert single-split or AUC < 0.55 raises `ModelPromotionError`).
-- Test hybrid transfer feature stacking on synthetic small-sample trade records.
-- Test `SignalPredictor.predict_from_raw()` with `HybridPredictorBundle` ensuring `meta_features__market_movement_prob` is computed at inference time.
+- Test promotion gate on evaluable vs degenerate single-class folds (`degenerate_folds > 0` raises `ModelPromotionError`).
+- Test single production target rule (market-movement model does not overwrite `models/v{N}.joblib`).
+- Test `SignalPredictor.predict_from_raw()` with `HybridPredictorBundle` ensuring `meta_features__market_movement_prob` is computed dynamically at inference time.
 
 ---
 
 ## 8. Definition of Done & Quality Gate
 
 1. **Decoupled Scripts**: `MarketMovementPipeline` and `TradeOutcomePipeline` operate independently and can be run in isolation or sequentially.
-2. **Walk-Forward Validation**: Cross-validation produces complete fold-by-fold breakdowns, sample counts, class distributions, and 95% confidence intervals.
+2. **Walk-Forward Validation**: Cross-validation produces complete fold-by-fold breakdowns, sample counts, class distributions, and 95% confidence intervals across $\ge 4$ evaluable folds.
 3. **Data Leakage Guards**: Rigorous runtime assertion checks verify zero outcome leakage, zero lookahead bias, and zero overlapping trade evaluation windows using actual label resolution timestamps.
 4. **Promotion Gating**: A hard gate in code prohibits saving or promoting models based on a single chronological split or non-performing walk-forward metrics. Promoted models conform to `models/v{N}.joblib`.
 5. **Workflow Compatibility**: Default CLI execution produces `reports/ml/task183_offline_metrics.json` ensuring existing GitHub Actions workflows pass.
