@@ -140,7 +140,12 @@ For fold $k \in \{1, \dots, K\}$:
    An observation $i$ in the candidate training set is **purged** if its actual forward label evaluation horizon or trade duration touches or overlaps the test start:
    $$\text{Purge Condition: } t_i^{\text{resolution}} \ge T_{k}^{\text{test\_start}}$$
    - **Forward-Price Microstructure Labeling**:
-     Fixed timedelta buffers (e.g. 15–25 min) are strictly prohibited because candle intervals can vary or contain collection gaps, causing the $H$-th observed candle to occur later than a fixed delta. `build_labeled_frame()` explicitly records `resolution_timestamp` as the exact timestamp of the candle that triggered the first barrier (or the $H$-th horizon candle).
+     Fixed timedelta buffers (e.g. 15–25 min) are strictly prohibited because candle intervals can vary or contain collection gaps, causing the $H$-th observed candle to occur later than a fixed delta.
+     `build_labeled_frame()` explicitly records `resolution_timestamp` as the exact timestamp of the **decisive candle that finalized the bidirectional label**:
+     - **Decisive Win**: If either direction hits its target (+15 pts for bull or -15 pts for bear before hitting stop), `resolution_timestamp` is the timestamp of the candle where that winning target was reached.
+     - **Irreversible Double Stop**: If both directions hit their stop (+10/-10 pts) before any target is reached, `resolution_timestamp` is the timestamp of the candle where the second direction stopped out (the exact point at which neither direction can ever win).
+     - **Horizon Expiry (Chop or Single Stop)**: If neither side hits target and at most one side stops out, the final label (0 for one-sided stop without target, or -1 for chop) is only finalized at the horizon boundary; `resolution_timestamp` is therefore the timestamp of the horizon candle ($H$-th candle or end of trading day).
+     Under no circumstances may an intermediate, non-decisive single-side stop candle be recorded as the resolution timestamp while the opposing direction remains active and capable of reaching a winning target on subsequent candles.
      $$t_i^{\text{resolution}} = \text{resolution\_timestamp}_i$$
    - **Realized Trades**:
      $$t_i^{\text{resolution}} = \text{exit\_timestamp}_i$$
@@ -159,7 +164,8 @@ Across all $K$ folds:
 - **Sample Standard Deviation & Standard Error**:
   $$s = \sqrt{\frac{1}{K-1}\sum_{k=1}^K (m_k - \bar{\mu})^2}, \quad \text{SE} = \frac{s}{\sqrt{K}}$$
 - **95% Confidence Interval (Student's $t$-distribution with $K-1$ degrees of freedom)**:
-  $$\text{CI}_{95\%} = \left[\bar{\mu} - t_{0.025, K-1} \cdot \text{SE}, \; \bar{\mu} + t_{0.025, K-1} \cdot \text{SE}\right]$$
+  $$\text{CI}_{95\%} = \left[\bar{\mu} - t_{0.975, K-1} \cdot \text{SE}, \; \bar{\mu} + t_{0.975, K-1} \cdot \text{SE}\right]$$
+  Here $t_{\text{crit}} = t_{0.975, K-1} = |t_{0.025, K-1}| > 0$ denotes the positive two-tailed 97.5th-percentile critical value (e.g., `scipy.stats.t.ppf(0.975, df=evaluable_folds - 1)`). This guarantees that the lower bound $\text{CI}_{95\%\text{-lower}} = \bar{\mu} - t_{\text{crit}} \cdot \text{SE}$ is strictly less than the mean $\bar{\mu}$, preventing inverted endpoint definitions.
 - **Pooled Out-of-Fold (OOF) Prediction**:
   Concatenate out-of-fold predictions $\{(\hat{y}_i, y_i)\}_{i=1}^N$ to compute global out-of-fold $\text{AUC}_{\text{OOF}}$ and $\text{Brier}_{\text{OOF}}$.
 
@@ -177,7 +183,7 @@ FORBIDDEN_OUTCOME_FIELDS = {
     "pnl_points", "exit_timestamp", "exit_price", "exit_type",
     "result_state", "realized_pnl", "duration_seconds", "close",
     "raw_candle", "pnl", "pnl_amount", "stop_loss_hit", "target_hit",
-    "resolution_timestamp"
+    "resolution_timestamp", "signal_id", "signal_setup_type"
 }
 ```
 **Assertion**: `assert set(feature_cols).isdisjoint(FORBIDDEN_OUTCOME_FIELDS)`
@@ -194,12 +200,13 @@ For every training observation $i$, its actual label resolution timestamp must s
   `assert pd.to_datetime(train_df["resolution_timestamp"]).max() < test_df["timestamp"].min()`
   *(Where `resolution_timestamp` is the barrier-hit candle timestamp in `MarketMovementPipeline`, and `exit_timestamp` in `TradeOutcomePipeline`).*
 
-### 4.4 Invariant 4: Duplicate Snapshot Deduplication
+### 4.4 Invariant 4: Duplicate Snapshot Deduplication & Feature Hygiene
 To prevent identical market states from polluting multiple folds:
 - **Schema & Fetcher Additions**: Update `_fetch_ml_collection()` in `ml_signal/train_offline.py` to explicitly query `signal_id` and `signal_setup_type` (the canonical column names in `ml_collection` schema).
 - **Post-Flattening Deduplication**: Because `close` resides inside the nested `raw_candle` jsonb payload, deduplication is executed immediately upon flattening rows (in `flatten_features()` / `prepare_dataset()`):
   - Primary composite key: `["timestamp", "signal_id", "signal_setup_type"]` (for signal-associated rows).
   - Unsignaled background snapshots fallback: `["timestamp", "close"]` where `close` is the numeric spot close price extracted from `raw_candle`.
+- **Metadata Exclusion & Feature Hygiene**: Tracking identifiers and partition columns (`signal_id`, `signal_setup_type`, and `resolution_timestamp`) are strictly tracking metadata. They must be registered in `_META_COLS` in `ml_signal/dataset.py` so `feature_columns(df)` excludes them from model inputs, and dropped or filtered before constructing the feature matrix $X$. Under no circumstances may raw UUIDs or categorical signal identities pass into XGBoost/LightGBM.
 - Log the count of dropped duplicate snapshots and assert deduplication prior to time-series fold partitioning.
 
 ---
@@ -292,12 +299,12 @@ A newly trained model file **CANNOT** be promoted to active production (`ml_sign
 6. **Data Leakage Compliance**:
    - `leakage_guard_passed == True`.
 
-### 6.2 Failure Handling
+### 6.2 Failure Handling & CI Containment
 If any gating rule fails:
 - The script logs detailed failure reasons to `stdout` and writes the failure audit to `reports/ml/{version}_rejection_audit.json`.
-- The model artifact is written with suffix `_unpromoted.joblib` for research inspection.
-- The active model pointer (`models/v{N}.joblib`) remains untouched.
-- If executed in an automated CI/deployment pipeline with `--enforce-gate`, the script exits with non-zero exit code (1).
+- The unvetted model candidate is serialized strictly as `ml_signal/models/{version}_unpromoted.joblib` for research inspection, while canonical production pointer (`models/v{N}.joblib`) remains untouched.
+- When `--enforce-gate` is specified (mandatory for scheduled CI workflows), the script raises `ModelPromotionError` and exits with non-zero exit code (1), immediately halting the CI job so downstream artifact commit and Fly.io deployment steps never execute.
+- In all environments, automated git commit steps must exclude `*_unpromoted.joblib` and condition deployment strictly on verified canonical promotion (`promoted == true`).
 
 ---
 
@@ -309,7 +316,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 
 #### 1. `ml_signal/leakage_guards.py` (New Module)
 - Implement `assert_no_outcome_leakage(feature_names: List[str]) -> None`:
-  - Validates feature columns against `FORBIDDEN_OUTCOME_FIELDS` (including `resolution_timestamp`).
+  - Validates feature columns against `FORBIDDEN_OUTCOME_FIELDS` (including `resolution_timestamp`, `signal_id`, and `signal_setup_type`).
 - Implement `assert_chronological_integrity(df: pd.DataFrame, date_col: str = "timestamp") -> None`:
   - Checks `df[date_col].is_monotonic_increasing`.
 - Implement `assert_train_test_purged(train_df: pd.DataFrame, test_df: pd.DataFrame, resolution_col: str = "resolution_timestamp") -> None`:
@@ -317,6 +324,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
     `assert pd.to_datetime(train_df[resolution_col]).max() < pd.to_datetime(test_df["timestamp"]).min()`.
 - Implement `deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame`:
   - Deduplicates post-flattened DataFrame using composite key `["timestamp", "signal_id", "signal_setup_type"]` when signal identity is present, falling back to `["timestamp", "close"]` for unsignaled cycle snapshots.
+  - Drops deduplication keys (`signal_id`, `signal_setup_type`) immediately or ensures they are excluded from feature vectors via `_META_COLS`.
 - Define custom exception `DataLeakageError(Exception)`.
 
 #### 2. `ml_signal/validation.py` (New Module)
@@ -341,7 +349,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 - Implement `compute_cv_metrics(fold_results: List[Dict[str, Any]], leakage_guard_passed: bool = True) -> Dict[str, Any]`:
   - Filters and records `evaluable_folds` (folds with both classes present in the test slice and finite metrics).
   - Flags `degenerate_folds` (single-class test partitions or NaN/undefined metrics).
-  - Computes fold means, standard deviations, standard errors, and 95% Student's $t$ confidence intervals across evaluable folds.
+  - Computes fold means, standard deviations, standard errors, and 95% Student's $t$ confidence intervals across evaluable folds using positive critical value $t_{\text{crit}} = \text{float}(\text{scipy.stats.t.ppf}(0.975, df=\text{evaluable\_folds} - 1))$, setting `ci_95_lower = mean - t_crit * se` and `ci_95_upper = mean + t_crit * se`.
   - Computes pooled out-of-fold (OOF) AUC, Brier, and LogLoss.
   - Records `leakage_guard_passed: bool` in returned metrics dictionary for evaluation by `promotion_gate.py`.
 
@@ -360,7 +368,11 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 
 #### 4. `ml_signal/pipeline_market_movement.py` (New Module) & `ml_signal/dataset.py`
 - In `ml_signal/dataset.py`:
-  - Update `build_labeled_frame` and `label_forward_points` to record and return `resolution_timestamp` for every labeled observation (the timestamp of the candle where the barrier was resolved or the $H$-th candle).
+  - Register `signal_id`, `signal_setup_type`, and `resolution_timestamp` in `_META_COLS` so `feature_columns(df)` strictly excludes them from model inputs.
+  - Update `build_labeled_frame` and `label_forward_points` to record and return `resolution_timestamp` for every labeled observation as the decisive resolution candle:
+    - Target hit candle timestamp when bull or bear hits target (+15 pts).
+    - Second stop candle timestamp when both directions hit stops (+10/-10 pts, irreversible stop).
+    - Horizon candle timestamp when evaluation times out (chop or single-side stop).
 - In `ml_signal/pipeline_market_movement.py`:
   - Implement `MarketMovementPipeline`:
     ```python
@@ -370,7 +382,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
         def run_walk_forward(self, df: pd.DataFrame, n_splits: int = 5) -> Tuple[object, Dict[str, Any]]: ...
     ```
     - Passes `tp_points=config.market_movement_tp_points, sl_points=config.market_movement_sl_points` into `build_labeled_frame()`.
-    - Runs `WalkForwardPurgedCV` with resolution timestamp purging.
+    - Runs `WalkForwardPurgedCV` with decisive resolution timestamp purging.
     - Outputs `market_movement` metrics and model.
 
 #### 5. `ml_signal/pipeline_trade_outcomes.py` (New Module)
@@ -401,6 +413,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
   - `--pipeline [market_movement | trade_outcomes | all]` (default: `all`).
   - `--folds <int>` (default: 5).
   - `--promote / --no-promote` (default: `--promote`, strictly enforced by `promotion_gate.py`; `--no-promote` is opt-out for dry-runs/experiments).
+  - `--enforce-gate / --no-enforce-gate` (default: `--no-enforce-gate` locally, `--enforce-gate` in CI workflows; raises `ModelPromotionError` and exits 1 on gate failure).
   - `--hybrid / --no-hybrid` (default: `--hybrid`).
   - `--metrics-path <str>` (default: `reports/ml/task183_offline_metrics.json` or `METRICS_PATH` env).
 - **Single Production Target**: In `--pipeline all --promote`, strictly designate `TradeOutcomePipeline` (`HybridPredictorBundle`) as the sole target promoting to `ml_signal/models/v{N}.joblib`. Market movement model is preserved as auxiliary `models/market_movement_v{N}.joblib`.
@@ -423,11 +436,16 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 - Test `SignalPredictor.predict_from_raw()` with `HybridPredictorBundle` ensuring `meta_features__market_movement_prob` is computed dynamically at inference time.
 
 #### 9. Scheduled Training Workflow Migration (`.github/workflows/ml_training.yml`)
-- Update `Run offline ML model training` step to explicitly run:
-  `python -m ml_signal.train_offline --promote`
-- The pipeline defaults to gated promotion (`--promote`), where `promotion_gate.py` evaluates candidate metrics:
-  - If gate passes: `ml_signal/models/v{N}.joblib` is created/updated, git diff detects new model, and artifact commit + Fly.io deployment proceed as expected.
-  - If gate fails: candidate is saved as `_unpromoted.joblib`, canonical `v{N}.joblib` remains untouched, report indicates `promoted: false`, and no unvetted model is committed or deployed.
+- Update `Run offline ML model training` step to run with gate enforcement:
+  `python -m ml_signal.train_offline --promote --enforce-gate`
+  This ensures any promotion gate failure causes the training step to exit with code 1, immediately halting the workflow and preventing downstream artifact commit or deployment.
+- Update `Commit and push updated model artifact to main` step:
+  - Exclude rejection artifacts: strictly stage canonical models and metrics via `git add ml_signal/models/v[0-9]*.joblib "$METRICS_PATH"` (explicitly never staging `*_unpromoted.joblib` or rejection audits).
+  - Add explicit guard: check that candidate was promoted via `test "$(jq -r '.promoted // false' "$METRICS_PATH")" = "true"`. If false or gate failed, skip commit.
+- Update `deploy` job:
+  - Condition deployment strictly on successful promotion by adding output `promoted` from the `train` job:
+    `if: (github.ref == 'refs/heads/main' || github.event_name == 'schedule') && needs.train.outputs.promoted == 'true'`
+    This guarantees unpromoted models or failed training runs can never trigger a Fly.io deployment.
 
 ---
 
@@ -437,6 +455,6 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 2. **Walk-Forward Validation**: Cross-validation produces complete fold-by-fold breakdowns, sample counts, class distributions, and 95% confidence intervals across $\ge 4$ evaluable folds.
 3. **Data Leakage Guards**: Rigorous runtime assertion checks verify zero outcome leakage, zero lookahead bias, and zero overlapping trade evaluation windows using actual label resolution timestamps.
 4. **Promotion Gating**: A hard gate in code prohibits saving or promoting models based on a single chronological split or non-performing walk-forward metrics. Promoted models conform to `models/v{N}.joblib`.
-5. **Workflow Compatibility**: Default CLI execution produces `reports/ml/task183_offline_metrics.json` and supports gated `--promote` by default, ensuring scheduled GitHub Actions workflows promote passing models without deploying unvetted candidates.
+5. **Workflow Safety & Containment**: Scheduled workflows run `train_offline --promote --enforce-gate`, exclude `_unpromoted.joblib` from git staging, and gate Fly.io deployments strictly on verified promotion, preventing unvetted models from being committed or deployed.
 6. **Inference Consistency**: Promoted hybrid models generate the `meta_features__market_movement_prob` transfer feature dynamically at serving time via `HybridPredictorBundle`.
 7. **No Production Code Direct Modification**: Software Architect produces ADR only; implementation handed off to Code Generator Agent.
