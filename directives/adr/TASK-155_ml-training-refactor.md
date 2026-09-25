@@ -160,7 +160,11 @@ For fold $k \in \{1, \dots, K\}$:
    - **Realized Trades**:
      $$t_i^{\text{resolution}} = \text{exit\_timestamp}_i$$
 4. **Embargo Barrier**:
-   In rolling window evaluations, observations occurring within an embargo buffer $h_{\text{embargo}}$ immediately following $T_{k}^{\text{test\_end}}$ are excluded from subsequent training folds to eliminate autoregressive serial correlation.
+   In walk-forward evaluations, observations occurring within an embargo buffer $h_{\text{embargo}}$ immediately following a test partition $[T_{k}^{\text{test\_start}}, T_{k}^{\text{test\_end}}]$ are excluded from any training sets that follow that test window (e.g., in rolling, combinatorial, or sequential retraining windows) to eliminate autoregressive serial correlation:
+   $$t_i^{\text{entry}} > T_k^{\text{test\_end}} + h_{\text{embargo}}$$
+   - **Market Movement Pipeline**: $h_{\text{embargo}} = 15\text{ minutes}$ (covers maximum auto-correlation beyond the forward labeling horizon). Configured via `config.market_movement_embargo_minutes`.
+   - **Trade Outcome Pipeline**: $h_{\text{embargo}} = 30\text{ minutes}$ (covers typical intraday trade holding memory). Configured via `config.trade_outcome_embargo_minutes`.
+   - **Nonzero Enforced Default**: `WalkForwardPurgedCV` defaults to `embargo_window = pd.Timedelta(minutes=15)` so that omitting an override never silently disables serial-correlation containment.
 
 ### 3.2 Statistical Confidence Interval & Metrics Reporting
 For each fold $k$, the validator computes:
@@ -363,7 +367,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
           self,
           n_splits: int = 5,
           min_train_samples: int = 100,
-          embargo_window: pd.Timedelta = pd.Timedelta(minutes=0),
+          embargo_window: pd.Timedelta = pd.Timedelta(minutes=15),
       ): ...
       
       def split(
@@ -374,6 +378,8 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
       ) -> Iterator[Tuple[np.ndarray, np.ndarray, Dict[str, Any]]]: ...
   ```
   - Purges any candidate train index where `df.loc[idx, resolution_col] >= test_start_timestamp`.
+  - Embargoes any observations occurring within `[test_end_timestamp, test_end_timestamp + embargo_window]`, excluding them from training slices that follow that test partition.
+  - Defaults `embargo_window` to `pd.Timedelta(minutes=15)` (with pipeline overrides from `MLConfig`), ensuring serial-correlation containment is strictly active even without explicit argument passing.
 - Implement `compute_cv_metrics(fold_results: List[Dict[str, Any]], leakage_guard_passed: bool = True) -> Dict[str, Any]`:
   - Filters and records `evaluable_folds` (folds with both classes present in the test slice and finite metrics).
   - Flags `degenerate_folds` (single-class test partitions or NaN/undefined metrics).
@@ -411,7 +417,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
     ```
     - Passes `tp_points=config.market_movement_tp_points, sl_points=config.market_movement_sl_points` into `build_labeled_frame()`.
     - **Market-Only Features (Zero Inference Mismatch)**: Restricts Stage 1 feature columns strictly to pure market groups (`FEATURE_GROUPS` excluding `detector_scores`). This guarantees `stage1_feature_names` is 100% covered by `build_feature_vector()` at runtime, with zero missing/NaN detector columns.
-    - Runs `WalkForwardPurgedCV` with decisive resolution timestamp purging.
+    - Runs `WalkForwardPurgedCV(n_splits=n_splits, embargo_window=pd.Timedelta(minutes=config.market_movement_embargo_minutes))` (default 15 minutes) with decisive resolution timestamp purging.
     - **No Outer Test Leaks in Early Stopping**: Outer test partition $[T_k^{\text{test\_start}}, T_k^{\text{test\_end}}]$ is strictly isolated from `model.fit()` (never passed as `eval_set`). Model fits either disable early stopping (`early_stopping_rounds=None`) with fixed estimators, or carve an inner chronological validation split strictly from `train_df`.
     - Outputs `market_movement` metrics and model.
 
@@ -435,7 +441,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
     - Outer train rows are scored using inner-OOF / rolling Stage 1 models fitted strictly on snapshots with `resolution_timestamp < t_entry`, preventing in-sample stacking bias and lookahead leakage.
   - **Fold-Local Feature Selection**: Selects Stage 2's top 6 structural features strictly from fold $k$'s pre-test Stage 1 model SHAP gain (or fixed *a priori* structural columns), prohibiting full-dataset lookahead in feature selection.
   - **Strict Early Stopping Prohibition**: Enforces `early_stopping_rounds=None` and fits regularized shallow trees (`max_depth=2`, `n_estimators=50`, L1/L2 shrinkage) directly on candidate train sets; outer test partitions are never passed as `eval_set`.
-  - Runs `WalkForwardPurgedCV` with trade duration exit timestamp purging.
+  - Runs `WalkForwardPurgedCV(n_splits=n_splits, embargo_window=pd.Timedelta(minutes=config.trade_outcome_embargo_minutes))` (default 30 minutes) with trade duration exit timestamp purging.
   - On successful promotion, fits final models on complete history (Stage 2 trained on rolling Stage 1 features) and packages `HybridPredictorBundle`.
 
 #### 6. `ml_signal/train_offline.py` (Refactor CLI Entrypoint & Fetcher)
@@ -461,6 +467,7 @@ Assign implementation of ticket **MANM-155** to the **Code Generator Agent** wit
 
 #### 8. Unit Tests (`tests/unit/test_task155_ml_training_refactor.py` & `tests/unit/test_ml_predictor.py`)
 - Test walk-forward purge mechanism using actual resolution timestamps across gaps and non-uniform candles.
+- Test nonzero embargo window enforcement: verify observations within `[test_end_timestamp, test_end_timestamp + embargo_window]` are strictly excluded from subsequent train partitions.
 - Test rejection of anomaly trades (`time_metrics_excluded = True` or inverted exit timestamps).
 - Test fold-level cross-fitting of Stage 1 transfer feature preventing future-fold lookahead.
 - Test that `stage1_feature_names` excludes `detector_scores` and is 100% satisfied by `build_feature_vector()`.
