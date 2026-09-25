@@ -614,6 +614,7 @@ def main(argv=None) -> None:
     stage1_model, stage2_model = None, None
     market_df = None
     promoted = False
+    gate_error = None
     leakage_guard_passed = True
     final_metrics = {}
 
@@ -739,8 +740,7 @@ def main(argv=None) -> None:
             except ModelPromotionError as e:
                 print(f"[!] Promotion Gate Failed: {e}")
                 promoted = False
-                if args.enforce_gate:
-                    raise
+                gate_error = e
 
     # Write summary metrics
     summary = {
@@ -761,10 +761,13 @@ def main(argv=None) -> None:
     }
     summary.update(final_metrics)
     
-    os.makedirs(os.path.dirname(args.metrics_path), exist_ok=True)
+    os.makedirs(os.path.dirname(args.metrics_path) or ".", exist_ok=True)
     with open(args.metrics_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
     print(f"[+] Summary report saved -> {args.metrics_path}")
+    
+    if gate_error and args.enforce_gate:
+        raise gate_error
 
 if __name__ == "__main__":
     main()
