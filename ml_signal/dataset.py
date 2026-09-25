@@ -137,18 +137,18 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
             nd = _numeric_only(_load(r.get(g)))
             groups[g] = nd
             keys_by_group[g].update(nd.keys())
-        parsed.append((ts, close, feature_version, groups))
+        parsed.append((ts, close, feature_version, groups, r.get("trade_id"), r.get("snapshot_uuid")))
 
     feature_cols = sorted(
         f"{g}__{k}" for g in FEATURE_GROUPS for k in keys_by_group[g]
     )
 
     records = []
-    for ts, close, feature_version, groups in parsed:
+    for ts, close, feature_version, groups, trade_id, snapshot_uuid in parsed:
         row: Dict[str, Any] = {
             "timestamp": ts,
             "date": ts.date() if ts is not None and not pd.isna(ts) else None,
-            "close": close,
+            "close": close, "trade_id": trade_id, "snapshot_uuid": snapshot_uuid,
             "feature_version": feature_version,
         }
         # NaN, not 0.0. _numeric_only drops a None value, so an unknown feature

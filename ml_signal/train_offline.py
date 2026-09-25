@@ -553,7 +553,7 @@ from ml_signal.pipeline_trade_outcomes import TradeOutcomePipeline
 from ml_signal.promotion_gate import enforce_promotion_or_raise, ModelPromotionError
 from ml_signal.predictor import HybridPredictorBundle
 
-def main() -> None:
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="ARES Offline ML Training")
     parser.add_argument("--pipeline", choices=["market_movement", "trade_outcomes", "all"], default="all")
     parser.add_argument("--folds", type=int, default=5)
@@ -563,7 +563,7 @@ def main() -> None:
     parser.add_argument("--hybrid", action="store_true", default=True)
     parser.add_argument("--no-hybrid", action="store_false", dest="hybrid")
     parser.add_argument("--metrics-path", type=str, default=os.environ.get("METRICS_PATH", "reports/ml/task183_offline_metrics.json"))
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo not in sys.path:
@@ -734,8 +734,6 @@ def main() -> None:
                     print(f"[+] Promoted Hybrid Bundle -> {save_path}")
                 else:
                     # Persist as legacy standalone model
-                    # Set feature_names_in_ on the model manually so predictor.py can pick it up
-                    stage2_model.feature_names_in_ = np.array(feat_cols2)
                     joblib.dump(stage2_model, save_path)
                     print(f"[+] Promoted Standalone Stage 2 Model -> {save_path}")
             except ModelPromotionError as e:

@@ -48,7 +48,7 @@ def deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame:
         feat_cols = [c for c in df_out.columns if c not in _META_COLS and not c.startswith("_")]
     
     # Compute feature hash
-    df_out["_feature_hash"] = df_out[feat_cols].apply(lambda x: hash(tuple(x)), axis=1)
+    df_out["_feature_hash"] = df_out[feat_cols].apply(lambda x: hash(tuple(x.fillna(-9999))), axis=1)
 
     if "trade_id" in df_out.columns and df_out["trade_id"].notna().any():
         # TradeOutcomePipeline deduplication

@@ -67,7 +67,7 @@ class MarketMovementPipeline:
             X_test = test_df[feat_cols]
             y_test = test_df["label"]
             
-            if len(y_test.unique()) < 2:
+            if len(y_test.unique()) < 2 or len(y_train.unique()) < 2:
                 fold_results.append({"fold": fold_info["fold"], "degenerate": True})
                 continue
                 

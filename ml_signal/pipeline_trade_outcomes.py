@@ -79,7 +79,7 @@ class TradeOutcomePipeline:
             
             assert_train_test_purged(train_df, test_df)
             
-            if len(test_df["label"].unique()) < 2:
+            if len(test_df["label"].unique()) < 2 or len(train_df["label"].unique()) < 2:
                 fold_results.append({"fold": fold_info["fold"], "degenerate": True})
                 continue
 
@@ -89,7 +89,7 @@ class TradeOutcomePipeline:
                 test_start = fold_info["test_start"]
                 # snapshots strictly resolved before test_start
                 valid_snaps = market_snapshots_df[market_snapshots_df["resolution_timestamp"] < test_start]
-                if len(valid_snaps) > 0:
+                if len(valid_snaps) > 0 and valid_snaps["label"].nunique() > 1:
                     model_s1 = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
                     model_s1.fit(valid_snaps[stage1_feat_cols], valid_snaps["label"])
                     test_df["meta_features__market_movement_prob"] = model_s1.predict_proba(test_df[stage1_feat_cols])[:, 1]
@@ -101,7 +101,7 @@ class TradeOutcomePipeline:
                 for _, row in train_df.iterrows():
                     entry_ts = row["timestamp"]
                     inner_snaps = market_snapshots_df[market_snapshots_df["resolution_timestamp"] < entry_ts]
-                    if len(inner_snaps) > 0:
+                    if len(inner_snaps) > 0 and inner_snaps["label"].nunique() > 1:
                         model_inner = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
                         model_inner.fit(inner_snaps[stage1_feat_cols], inner_snaps["label"])
                         prob = model_inner.predict_proba(pd.DataFrame([row[stage1_feat_cols]]))[:, 1][0]
