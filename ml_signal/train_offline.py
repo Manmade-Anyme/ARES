@@ -628,6 +628,7 @@ def main(argv=None) -> None:
     gate_error = None
     leakage_guard_passed = True
     final_metrics = {}
+    sharpe_metrics = _sharpe_metrics(pd.DataFrame())
 
     if args.pipeline in ["market_movement", "all"]:
         print("\n=== Running Market Movement Pipeline ===")
@@ -649,6 +650,9 @@ def main(argv=None) -> None:
         print("\n=== Running Trade Outcome Pipeline ===")
         pipe = TradeOutcomePipeline(config, use_hybrid_transfer=args.hybrid)
         trade_df = pipe.prepare_dataset(rows)
+        # Sharpe is a realized-trade diagnostic, not a CV model metric.  Keep
+        # it sourced from the outcome frame even when promotion is rejected.
+        sharpe_metrics = _sharpe_metrics(trade_df)
         
         # We need market_df for cross-fitting if hybrid
         if args.hybrid and market_df is None:
@@ -765,7 +769,6 @@ def main(argv=None) -> None:
                 # Write rejection audit
                 audit_path = f"reports/ml/{next_version}_rejection_audit.json"
                 os.makedirs(os.path.dirname(audit_path) or ".", exist_ok=True)
-                import json
                 with open(audit_path, "w") as f:
                     json.dump({"version": next_version, "reasons": gate_error.reasons if gate_error else [], "metrics": metrics}, f, indent=2, default=str)
                 print(f"[!] Rejection audit saved -> {audit_path}")
@@ -791,14 +794,6 @@ def main(argv=None) -> None:
     summary = {
         "model_version": next_version,
         "auc_roc": final_metrics.get("mean_auc", 0.0),
-        "sharpe_status": "insufficient_trades",
-        "sharpe_annualized": None,
-        "sharpe_daily": None,
-        "sharpe_days": 0,
-        "sharpe_trades": 0,
-        "sharpe_window_start": None,
-        "sharpe_window_end": None,
-        "sharpe_total_pnl_points": 0.0,
         "shap_status": "skipped",
         "shap_computed": False,
         "promoted": promoted,
@@ -806,6 +801,7 @@ def main(argv=None) -> None:
         "gate_reasons": gate_error.reasons if gate_error else []
     }
     summary.update(final_metrics)
+    summary.update(sharpe_metrics)
     
     os.makedirs(os.path.dirname(args.metrics_path) or ".", exist_ok=True)
     with open(args.metrics_path, "w") as f:

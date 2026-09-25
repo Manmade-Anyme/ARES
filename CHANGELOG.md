@@ -6,6 +6,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Trade-outcome Sharpe reporting (MANM-155)**: Restored the canonical walk-forward summary's Sharpe diagnostics from realized trade P&L and exit timestamps instead of leaving zero-trade placeholders in every pipeline report.
 - **Undersized ML refit rejection (MANM-155)**: Short-circuited final chronological cross-fitting when the trade dataset is not larger than the requested fold count, allowing promotion rejection audits and summary metrics to be written instead of raising from `TimeSeriesSplit`.
 - **Canonical market-candle labeling (MANM-155)**: Collapsed all intra-minute market snapshot polls to the terminal snapshot before forward labeling, preventing evolving feature captures from consuming multiple look-forward positions while preserving distinct trade-outcome rows.
 - **Stale OI baseline invalidation on missing cycles (MANM-154)**: Invalidated the cached strike snapshot (`_prev_oi_snapshot.pop()`) in `OIFetcher.fetch_chain()` when current OI is missing, ensuring `oi_prev` and `oi_change_pct` remain unknown (`None`) during the first post-gap cycle rather than reporting artificial multi-cycle jumps against pre-gap baselines.

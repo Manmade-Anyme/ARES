@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import pandas as pd
 import numpy as np
@@ -14,6 +16,7 @@ from ml_signal.validation import WalkForwardPurgedCV
 from ml_signal.promotion_gate import evaluate_promotion_gate, enforce_promotion_or_raise, ModelPromotionError
 from ml_signal.dataset import _META_COLS, build_labeled_frame
 from ml_signal.config import MLConfig
+from ml_signal import train_offline
 from ml_signal.train_offline import _final_refit_sample_size_reason
 
 
@@ -27,6 +30,69 @@ def test_final_refit_rejects_datasets_not_larger_than_fold_count(n_samples):
 
 def test_final_refit_accepts_dataset_larger_than_fold_count():
     assert _final_refit_sample_size_reason(6, n_splits=5) is None
+
+
+def test_primary_summary_computes_sharpe_from_realized_trade_dataset(
+    monkeypatch, tmp_path
+):
+    trade_df = pd.DataFrame({
+        "timestamp": pd.to_datetime([
+            "2026-08-03T04:00:00Z",
+            "2026-08-03T05:00:00Z",
+            "2026-08-04T04:00:00Z",
+            "2026-08-05T04:00:00Z",
+        ]),
+        "entry_timestamp": pd.to_datetime([
+            "2026-08-03T04:00:00Z",
+            "2026-08-03T05:00:00Z",
+            "2026-08-04T04:00:00Z",
+            "2026-08-05T04:00:00Z",
+        ]),
+        "exit_timestamp": pd.to_datetime([
+            "2026-08-03T04:30:00Z",
+            "2026-08-03T05:30:00Z",
+            "2026-08-04T04:30:00Z",
+            "2026-08-05T04:30:00Z",
+        ]),
+        "pnl_points": [10.0, -2.0, -4.0, 8.0],
+        "label": [1, 0, 0, 1],
+    })
+
+    class FakeTradeOutcomePipeline:
+        def __init__(self, config, use_hybrid_transfer):
+            pass
+
+        def prepare_dataset(self, rows):
+            return trade_df.copy()
+
+        def run_walk_forward(self, frame, market_snapshots_df, n_splits):
+            return None, {"mean_auc": 0.6, "leakage_guard_passed": True}
+
+    metrics_path = tmp_path / "metrics.json"
+    monkeypatch.setenv("SUPABASE_URL", "https://example.invalid")
+    monkeypatch.setenv("SUPABASE_KEY", "test-key")
+    monkeypatch.setattr("supabase.create_client", lambda url, key: object())
+    monkeypatch.setattr(train_offline, "_fetch_ml_collection", lambda client: [])
+    monkeypatch.setattr(train_offline, "_fetch_trade_exit_timestamps", lambda client: {})
+    monkeypatch.setattr(train_offline, "TradeOutcomePipeline", FakeTradeOutcomePipeline)
+    monkeypatch.setattr(
+        "ml_signal.predictor.get_next_model_version_and_path",
+        lambda models_dir: (str(tmp_path / "v999.joblib"), "v999"),
+    )
+
+    train_offline.main([
+        "--pipeline", "trade_outcomes",
+        "--no-hybrid",
+        "--no-promote",
+        "--metrics-path", str(metrics_path),
+    ])
+
+    summary = json.loads(metrics_path.read_text())
+    assert summary["sharpe_status"] == "computed"
+    assert summary["sharpe_trades"] == 4
+    assert summary["sharpe_days"] == 3
+    assert summary["sharpe_total_pnl_points"] == 12.0
+    assert summary["sharpe_annualized"] == pytest.approx(9.165151)
 
 def test_no_outcome_leakage():
     # Should pass
