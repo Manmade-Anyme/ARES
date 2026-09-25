@@ -492,7 +492,7 @@ def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     except Exception:
         include_feature_version = False
 
-    base_cols = ["timestamp", "raw_candle", "trade_id", "trade_outcome", "trade_pnl"]
+    base_cols = ["timestamp", "raw_candle", "trade_id", "trade_outcome", "trade_pnl", "snapshot_uuid", "signal_id", "signal_setup_type"]
     if include_feature_version:
         base_cols.append("feature_version")
     cols = ",".join(base_cols + [
@@ -547,8 +547,24 @@ def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, dict]:
     return exits
 
 
+import argparse
+from ml_signal.pipeline_market_movement import MarketMovementPipeline
+from ml_signal.pipeline_trade_outcomes import TradeOutcomePipeline
+from ml_signal.promotion_gate import enforce_promotion_or_raise, ModelPromotionError
+from ml_signal.predictor import HybridPredictorBundle
+
 def main() -> None:
-    # repo root on path so `config` (the app settings, with .env creds) imports.
+    parser = argparse.ArgumentParser(description="ARES Offline ML Training")
+    parser.add_argument("--pipeline", choices=["market_movement", "trade_outcomes", "all"], default="all")
+    parser.add_argument("--folds", type=int, default=5)
+    parser.add_argument("--promote", action="store_true", default=True, help="Promote model if it passes gates")
+    parser.add_argument("--no-promote", action="store_false", dest="promote")
+    parser.add_argument("--enforce-gate", action="store_true", default=False)
+    parser.add_argument("--hybrid", action="store_true", default=True)
+    parser.add_argument("--no-hybrid", action="store_false", dest="hybrid")
+    parser.add_argument("--metrics-path", type=str, default=os.environ.get("METRICS_PATH", "reports/ml/task183_offline_metrics.json"))
+    args = parser.parse_args()
+
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo not in sys.path:
         sys.path.insert(0, repo)
@@ -590,56 +606,127 @@ def main() -> None:
             row["exit_timestamp"] = None
             row["entry_timestamp"] = None
             row["time_metrics_excluded"] = False
-    
-    from ml_signal.dataset import build_real_outcome_frame
-    print(f"[*] {len(rows)} rows fetched. Filtering for real trade outcomes...")
-
-    df = build_real_outcome_frame(
-        rows,
-        t1_is_win=True, # Predict probability of hitting T1 (Win=1)
-    )
-    if df.empty:
-        print("[-] No valid real trade outcomes found. "
-              "Collect more live trades, then rerun.")
-        return
-
-    fcols = feature_columns(df)
-    print(f"[*] {len(df)} labeled samples, {len(fcols)} features, "
-          f"positive-rate={df['label'].mean():.3f}")
 
     from ml_signal.predictor import get_next_model_version_and_path
     models_dir = os.path.join(repo, "ml_signal", "models")
     save_path, next_version = get_next_model_version_and_path(models_dir)
-    print(f"[*] Incrementing model version -> {next_version} ({save_path})")
 
-    report_path, versioned_report_path, shap_plot_path = _offline_report_paths(
-        repo, next_version,
-    )
-    model, metrics = run_training(
-        df, fcols,
-        config=config,
-        save_path=save_path,
-        report_path=report_path,
-        shap_plot_path=shap_plot_path,
-        model_version=next_version,
-    )
-    with open(versioned_report_path, "w") as f:
-        json.dump(metrics, f, indent=2, default=str)
+    stage1_model, stage2_model = None, None
+    market_df = None
+    promoted = False
+    leakage_guard_passed = True
+    final_metrics = {}
 
-    print("\n=== OFFLINE TRAINING RESULT ===")
-    print(f"  samples={metrics['n_samples']} (train={metrics['n_train']}, test={metrics['n_test']})  "
-          f"pos_rate={metrics['pos_rate']:.3f}  provisional={metrics['provisional']}")
-    auc = metrics["auc_roc"]
-    print(f"  AUC-ROC={auc:.3f}" if auc == auc else "  AUC-ROC=n/a (single-class test window)")
-    print(f"  precision={metrics['precision']}  recall={metrics['recall']}  "
-          f"precision@20%={metrics['precision_top20']}")
-    print("  top features:")
-    for feat in metrics["top_features"][:8]:
-        print(f"    {feat['feature']:32s} gain={feat['gain']:.4f}")
-    _print_shap_summary(metrics)
-    print("\n  Interpretation: AUC > 0.55 => the collected features carry real")
-    print("  short-horizon predictive signal. ~0.5 => not yet (more/other data).")
+    if args.pipeline in ["market_movement", "all"]:
+        print("\n=== Running Market Movement Pipeline ===")
+        pipe = MarketMovementPipeline(config)
+        market_df = pipe.prepare_dataset(rows)
+        stage1_model, metrics = pipe.run_walk_forward(market_df, n_splits=args.folds)
+        
+        # Save secondary report
+        market_report = os.path.join(repo, "reports", "ml", "market_movement_metrics.json")
+        os.makedirs(os.path.dirname(market_report), exist_ok=True)
+        with open(market_report, "w") as f:
+            json.dump(metrics, f, indent=2)
+            
+        if args.promote and stage1_model:
+            mm_save_path = os.path.join(models_dir, f"market_movement_{next_version}.joblib")
+            joblib.dump(stage1_model, mm_save_path)
 
+    if args.pipeline in ["trade_outcomes", "all"]:
+        print("\n=== Running Trade Outcome Pipeline ===")
+        pipe = TradeOutcomePipeline(config, use_hybrid_transfer=args.hybrid)
+        trade_df = pipe.prepare_dataset(rows)
+        
+        # We need market_df for cross-fitting if hybrid
+        if args.hybrid and market_df is None:
+            # Reconstruct just for transfer
+            pipe1 = MarketMovementPipeline(config)
+            market_df = pipe1.prepare_dataset(rows)
+            
+        _, metrics = pipe.run_walk_forward(trade_df, market_snapshots_df=market_df, n_splits=args.folds)
+        
+        final_metrics = metrics.copy()
+        leakage_guard_passed = metrics.get("leakage_guard_passed", False)
+        
+        if args.promote:
+            try:
+                enforce_promotion_or_raise(metrics)
+                promoted = True
+                
+                # Fit final stage 1 and stage 2 on ALL data
+                print("[*] Training final Stage 1 and Stage 2 models for promotion...")
+                
+                if args.hybrid:
+                    stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
+                    stage1_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
+                    stage1_model.fit(market_df[stage1_feat_cols], market_df["label"])
+                    trade_df["meta_features__market_movement_prob"] = stage1_model.predict_proba(trade_df[stage1_feat_cols])[:, 1]
+                    
+                feat_cols2 = ["meta_features__market_movement_prob"] if args.hybrid else []
+                feat_cols2 += [
+                    c for c in [
+                        "structure_features__dist_to_nearest_support",
+                        "structure_features__dist_to_nearest_resistance",
+                        "oi_features__pcr",
+                        "candle_features__body_pct",
+                        "iv_features__iv_level",
+                        "greek_features__net_delta"
+                    ] if c in trade_df.columns
+                ]
+                
+                stage2_model = xgb.XGBClassifier(
+                    n_estimators=50,
+                    learning_rate=0.03,
+                    max_depth=2,
+                    reg_lambda=5.0,
+                    reg_alpha=1.0,
+                    colsample_bytree=0.6,
+                    subsample=0.7,
+                    random_state=42
+                )
+                stage2_model.fit(trade_df[feat_cols2], trade_df["label"])
+                
+                bundle = HybridPredictorBundle(
+                    stage1_model=stage1_model,
+                    stage2_model=stage2_model,
+                    stage1_feature_names=stage1_feat_cols if args.hybrid else [],
+                    stage2_feature_names=feat_cols2,
+                    model_version=next_version,
+                    created_at=str(pd.Timestamp.utcnow()),
+                    metrics_summary=metrics
+                )
+                joblib.dump(bundle, save_path)
+                print(f"[+] Promoted Hybrid Bundle -> {save_path}")
+            except ModelPromotionError as e:
+                print(f"[!] Promotion Gate Failed: {e}")
+                promoted = False
+                if args.enforce_gate:
+                    raise
+
+    # Write summary metrics
+    summary = {
+        "model_version": next_version,
+        "auc_roc": final_metrics.get("mean_auc", 0.0),
+        "sharpe_status": "insufficient_trades",
+        "sharpe_annualized": None,
+        "sharpe_daily": None,
+        "sharpe_days": 0,
+        "sharpe_trades": 0,
+        "sharpe_window_start": None,
+        "sharpe_window_end": None,
+        "sharpe_total_pnl_points": 0.0,
+        "shap_status": "skipped",
+        "shap_computed": False,
+        "promoted": promoted,
+        "leakage_guard_passed": leakage_guard_passed
+    }
+    summary.update(final_metrics)
+    
+    os.makedirs(os.path.dirname(args.metrics_path), exist_ok=True)
+    with open(args.metrics_path, "w") as f:
+        json.dump(summary, f, indent=2, default=str)
+    print(f"[+] Summary report saved -> {args.metrics_path}")
 
 if __name__ == "__main__":
     main()

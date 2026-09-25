@@ -10,7 +10,7 @@ of realized trades and without touching any live-path code.
 READ-ONLY / OFFLINE: nothing here writes to Supabase or mutates engine state.
 See ADR-183 for the label definition and rationale.
 """
-from typing import List, Dict, Any, Sequence
+from typing import List, Dict, Any, Sequence, Tuple
 import json
 
 import numpy as np
@@ -40,6 +40,11 @@ _META_COLS = {
     "entry_timestamp",
     "time_metrics_excluded",
     "feature_version",
+    "trade_id",
+    "snapshot_uuid",
+    "signal_id",
+    "signal_setup_type",
+    "resolution_timestamp",
 }
 
 
@@ -192,10 +197,11 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
 
 def label_forward_points(
     closes: Sequence[float],
+    timestamps: Sequence[Any],
     lookforward: int,
     tp_points: float,
     sl_points: float,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Order-aware, bidirectional triple-barrier label over a single contiguous
     close series (one trading day).
@@ -212,11 +218,13 @@ def label_forward_points(
     closes = [float(c) for c in closes]
     n = len(closes)
     labels = np.full(n, -1, dtype=int)
+    resolutions = np.full(n, None, dtype=object)
 
     for i in range(n):
         entry = closes[i]
         end = min(i + lookforward, n - 1)
         future = closes[i + 1 : end + 1]
+        future_ts = timestamps[i + 1 : end + 1]
         if not future:
             labels[i] = -1
             continue
@@ -224,9 +232,13 @@ def label_forward_points(
         bull_res = None  # "win" | "loss"
         bear_res = None
         result = -1
-
-        for c in future:
+        res_ts = None
+        
+        # We need to track the first target hit or the double stop hit.
+        for j, c in enumerate(future):
             delta = c - entry
+            ts = future_ts[j]
+            
             if bull_res is None:
                 if delta >= tp_points:
                     bull_res = "win"
@@ -237,15 +249,28 @@ def label_forward_points(
                     bear_res = "win"
                 elif delta >= sl_points:
                     bear_res = "loss"
+                    
             if bull_res == "win" or bear_res == "win":
                 result = 1
+                res_ts = ts
+                break
+            
+            if bull_res == "loss" and bear_res == "loss":
+                result = 0
+                res_ts = ts
                 break
 
-        if result != 1:
-            result = 0 if (bull_res == "loss" or bear_res == "loss") else -1
+        if result == -1:
+            if bull_res == "loss" or bear_res == "loss":
+                result = 0
+            else:
+                result = -1
+            res_ts = future_ts[-1] if len(future_ts) > 0 else timestamps[i]
+            
         labels[i] = result
+        resolutions[i] = res_ts
 
-    return labels
+    return labels, resolutions
 
 
 def build_labeled_frame(
@@ -257,20 +282,25 @@ def build_labeled_frame(
     """
     Flatten + label, grouped by trading date so a forward window never spans the
     overnight gap. Inconclusive rows (label == -1) and unlabeled tails are
-    dropped. Returns feature columns + `label`.
+    dropped. Returns feature columns + `label` and `resolution_timestamp`.
     """
     df = flatten_features(rows)
     if df.empty:
-        return df.assign(label=pd.Series(dtype=int))
+        return df.assign(label=pd.Series(dtype=int), resolution_timestamp=pd.Series(dtype=object))
 
     df = df.sort_values("timestamp").reset_index(drop=True)
     labeled_parts = []
     for _, day in df.groupby("date", sort=True):
         day = day.sort_values("timestamp").reset_index(drop=True)
         day = day.copy()
-        day["label"] = label_forward_points(
-            day["close"].tolist(), lookforward, tp_points, sl_points
+        
+        labels, res_ts = label_forward_points(
+            day["close"].tolist(),
+            day["timestamp"].tolist(),
+            lookforward, tp_points, sl_points
         )
+        day["label"] = labels
+        day["resolution_timestamp"] = res_ts
         labeled_parts.append(day)
 
     res = pd.concat(labeled_parts, ignore_index=True)

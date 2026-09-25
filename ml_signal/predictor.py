@@ -68,6 +68,18 @@ def get_next_model_version_and_path(models_dir: Optional[str | Path] = None) -> 
     return str(target_dir / f"v{next_ver}.joblib"), f"v{next_ver}"
 
 
+from dataclasses import dataclass
+
+@dataclass
+class HybridPredictorBundle:
+    stage1_model: Any
+    stage2_model: Any
+    stage1_feature_names: List[str]
+    stage2_feature_names: List[str]
+    model_version: str
+    created_at: str
+    metrics_summary: Dict[str, Any]
+
 class SignalPredictor:
     """Scores a fired signal with the offline-trained reliability model.
 
@@ -108,7 +120,9 @@ class SignalPredictor:
         self.loaded_model_path = model_path
         self.model = joblib.load(model_path)
 
-        if hasattr(self.model, "feature_names_in_"):
+        if isinstance(self.model, HybridPredictorBundle):
+            self.feature_names = None # Handled inside predict_from_raw
+        elif hasattr(self.model, "feature_names_in_"):
             self.feature_names = list(self.model.feature_names_in_)
         elif hasattr(self.model, "estimator") and hasattr(self.model.estimator, "feature_names_in_"):
             self.feature_names = list(self.model.estimator.feature_names_in_)
@@ -117,12 +131,13 @@ class SignalPredictor:
 
     def predict_proba(self, features: Dict[str, float]) -> float:
         """Probability of the positive class for one feature dict.
-
-        Reindexes to the model's training column order; a feature the model was
-        not fit on is dropped and one it expects but did not receive is missing.
+        For legacy standalone models.
         """
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
+            
+        if isinstance(self.model, HybridPredictorBundle):
+            raise RuntimeError("predict_proba cannot be called directly on HybridPredictorBundle. Use predict_from_raw.")
 
         df = pd.DataFrame([features])
 
@@ -132,18 +147,6 @@ class SignalPredictor:
                     df[col] = None
             df = df[self.feature_names]
 
-        # Coerce to float64 so an unknown feature arrives as NaN, which XGBoost
-        # treats natively as missing.
-        #
-        # compute_structure_features returns None when a distance is unknown (no
-        # level above spot, no prior-day high). Across many rows pandas infers a
-        # float column; on the SINGLE row built here the column stays object
-        # dtype and predict_proba raises "DataFrame.dtypes for data must be int,
-        # float, bool or category". 668 of the last 1000 collected snapshots
-        # carry at least one such None, so this raised on most live signals.
-        #
-        # NaN, not 0.0: a zero distance means "spot is exactly at the level",
-        # which is a real and strongly-signalling market state, not "unknown".
         df = df.astype("float64")
 
         proba = self.model.predict_proba(df)[0, 1]
@@ -177,13 +180,7 @@ class SignalPredictor:
         dte: Optional[int] = None,
         is_expiry: bool = False,
     ) -> Dict[str, Any]:
-        """Build the feature vector from a raw market snapshot and score it.
-
-        Takes the same inputs MLCollector.snapshot does, so the live prediction
-        and the stored training row are computed by the identical code path.
-        Returns probability, confidence tier, model version and the features
-        used — the dict main.py attaches to the signal as `ml_prediction`.
-        """
+        """Build the feature vector from a raw market snapshot and score it."""
         features = build_feature_vector(
             candle=candle,
             volume_history=volume_history,
@@ -204,7 +201,27 @@ class SignalPredictor:
             config=self.config,
         )
 
-        proba = self.predict_proba(features)
+        if isinstance(self.model, HybridPredictorBundle):
+            # Stage 1
+            df1 = pd.DataFrame([features])
+            for col in self.model.stage1_feature_names:
+                if col not in df1.columns:
+                    df1[col] = None
+            df1 = df1[self.model.stage1_feature_names].astype("float64")
+            p_market = self.model.stage1_model.predict_proba(df1)[:, 1]
+            
+            features["meta_features__market_movement_prob"] = float(p_market[0])
+            
+            # Stage 2
+            df2 = pd.DataFrame([features])
+            for col in self.model.stage2_feature_names:
+                if col not in df2.columns:
+                    df2[col] = None
+            df2 = df2[self.model.stage2_feature_names].astype("float64")
+            proba = float(self.model.stage2_model.predict_proba(df2)[:, 1][0])
+        else:
+            proba = self.predict_proba(features)
+            
         confidence = self.classify_confidence(proba)
 
         return {

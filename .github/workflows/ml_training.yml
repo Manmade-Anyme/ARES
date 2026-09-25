@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      promoted: ${{ steps.train_step.outputs.promoted }}
 
     steps:
       - name: Checkout repository
@@ -33,14 +35,17 @@ jobs:
           pip install -r ml_signal/requirements.txt
 
       - name: Run offline ML model training
+        id: train_step
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           METRICS_PATH: reports/ml/task183_offline_metrics.json
         run: |
           rm -f "$METRICS_PATH"
-          python -m ml_signal.train_offline
+          python -m ml_signal.train_offline --promote --enforce-gate
           test -f "$METRICS_PATH"
+          PROMOTED=$(jq -r '.promoted // false' "$METRICS_PATH")
+          echo "promoted=$PROMOTED" >> $GITHUB_OUTPUT
 
       - name: Publish metrics to Job Summary
         if: always()
@@ -92,11 +97,18 @@ jobs:
           fi
 
       - name: Commit and push updated model artifact to main
-        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+        if: (github.ref == 'refs/heads/main' || github.event_name == 'schedule')
+        env:
+          METRICS_PATH: reports/ml/task183_offline_metrics.json
         run: |
+          PROMOTED="$(jq -r '.promoted // false' "$METRICS_PATH")"
+          if [ "$PROMOTED" != "true" ]; then
+            echo "[*] Model was not promoted. Skipping commit."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f ml_signal/models/ reports/ml/
+          git add ml_signal/models/v[0-9]*.joblib "$METRICS_PATH"
           if git diff --staged --quiet; then
             echo "[*] Model artifacts are unchanged."
           else
@@ -115,7 +127,7 @@ jobs:
 
   deploy:
     needs: train
-    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    if: (github.ref == 'refs/heads/main' || github.event_name == 'schedule') && needs.train.outputs.promoted == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
