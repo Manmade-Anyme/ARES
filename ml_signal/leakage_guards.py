@@ -67,7 +67,11 @@ def deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame:
     else:
         # MarketMovementPipeline deduplication
         df_out = df_out.sort_values("timestamp")
-        df_out = df_out.drop_duplicates(subset=["_source_candle_ts", "_feature_hash"], keep="last")
+        # Polling can capture several evolving feature states for the same
+        # candle.  A feature hash only removes identical retries; retaining
+        # changed states would make those polls consume extra forward-label
+        # positions.  Canonicalize each candle to its terminal snapshot.
+        df_out = df_out.drop_duplicates(subset=["_source_candle_ts"], keep="last")
 
     # cleanup temp cols
     if "_source_candle_ts" in df_out.columns:

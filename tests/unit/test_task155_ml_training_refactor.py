@@ -12,7 +12,7 @@ from ml_signal.leakage_guards import (
 )
 from ml_signal.validation import WalkForwardPurgedCV
 from ml_signal.promotion_gate import evaluate_promotion_gate, enforce_promotion_or_raise, ModelPromotionError
-from ml_signal.dataset import _META_COLS
+from ml_signal.dataset import _META_COLS, build_labeled_frame
 from ml_signal.config import MLConfig
 
 def test_no_outcome_leakage():
@@ -106,24 +106,65 @@ def test_evaluate_promotion_gate_failure():
         enforce_promotion_or_raise(metrics)
 
 def test_deduplicate_snapshots():
-    # Test feature-equality deduplication
+    # Multiple polls of one source candle must collapse even when features
+    # update during the minute; the terminal state is the canonical snapshot.
     df = pd.DataFrame({
         "timestamp": [
             pd.Timestamp("2026-01-01 10:00:10"),
             pd.Timestamp("2026-01-01 10:00:20"),
-            pd.Timestamp("2026-01-01 10:00:30")
+            pd.Timestamp("2026-01-01 10:00:30"),
+            pd.Timestamp("2026-01-01 10:01:05"),
         ],
-        "feature1": [1.0, 1.0, 2.0],  # 1 and 2 are duplicates, 3 is different
-        "feature2": [5.0, 5.0, 6.0],
-        "trade_id": [None, None, None]
+        "feature1": [1.0, 1.0, 2.0, 3.0],
+        "feature2": [5.0, 5.0, 6.0, 7.0],
+        "trade_id": [None, None, None, None],
     })
     dedup = deduplicate_snapshots(df)
     assert len(dedup) == 2
-    # The terminal snapshot (last) of identical feature sets should be kept.
-    assert dedup.iloc[0]["timestamp"] == pd.Timestamp("2026-01-01 10:00:20")
-    assert dedup.iloc[0]["feature1"] == 1.0
-    assert dedup.iloc[1]["timestamp"] == pd.Timestamp("2026-01-01 10:00:30")
-    assert dedup.iloc[1]["feature1"] == 2.0
+    assert dedup.iloc[0]["timestamp"] == pd.Timestamp("2026-01-01 10:00:30")
+    assert dedup.iloc[0]["feature1"] == 2.0
+    assert dedup.iloc[1]["timestamp"] == pd.Timestamp("2026-01-01 10:01:05")
+
+
+def test_deduplicate_snapshots_preserves_distinct_trades_in_same_minute():
+    df = pd.DataFrame({
+        "timestamp": [
+            pd.Timestamp("2026-01-01 10:00:10"),
+            pd.Timestamp("2026-01-01 10:00:20"),
+        ],
+        "feature1": [1.0, 1.0],
+        "trade_id": ["trade-a", "trade-b"],
+    })
+
+    dedup = deduplicate_snapshots(df)
+
+    assert dedup["trade_id"].tolist() == ["trade-a", "trade-b"]
+
+
+def test_build_labeled_frame_uses_one_terminal_snapshot_per_candle():
+    rows = [
+        {"timestamp": "2026-01-01T10:00:00", "raw_candle": {"close": 100}},
+        {
+            "timestamp": "2026-01-01T10:01:05",
+            "raw_candle": {"close": 100},
+            "candle_features": {"poll_state": 1},
+        },
+        {
+            "timestamp": "2026-01-01T10:01:55",
+            "raw_candle": {"close": 100},
+            "candle_features": {"poll_state": 2},
+        },
+        {"timestamp": "2026-01-01T10:02:00", "raw_candle": {"close": 100}},
+        {"timestamp": "2026-01-01T10:03:00", "raw_candle": {"close": 120}},
+    ]
+
+    labeled = build_labeled_frame(rows, lookforward=3, tp_points=15, sl_points=10)
+
+    first_candle = labeled.loc[labeled["timestamp"] == pd.Timestamp("2026-01-01 10:00:00")]
+    assert first_candle.iloc[0]["label"] == 1
+    assert first_candle.iloc[0]["resolution_timestamp"] == pd.Timestamp("2026-01-01 10:03:00")
+    assert labeled["timestamp"].dt.floor("min").is_unique
+
 
 def test_dataset_meta_cols():
     assert "trade_id" in _META_COLS
