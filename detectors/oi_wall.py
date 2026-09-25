@@ -72,14 +72,19 @@ class OIWallDetector:
         wall_option_type: str,
         interaction_dist: float,
     ) -> bool:
+        approach_dist = _setting_float("oi_wall_approach_distance_pts", 80.0)
+        distance_to_wall = abs(strike - candle.close)
+        approaching = distance_to_wall < approach_dist
+
         is_bearish = (wall_option_type == "CE")
-        interacted = (
+        tested_wall = (
             (candle.high >= strike - interaction_dist)
             if is_bearish
             else (candle.low <= strike + interaction_dist)
         )
+        rejected = (candle.close < candle.open) if is_bearish else (candle.close > candle.open)
         defended = (candle.close <= strike) if is_bearish else (candle.close >= strike)
-        return bool(interacted and defended)
+        return bool(approaching and tested_wall and rejected and defended)
 
 
     def update(
@@ -108,9 +113,14 @@ class OIWallDetector:
                 and self.current_wall_key == f"CE:{int(strike)}"
             )
             if strike > spot or is_tracked_ce:
-                ce_oi = row["ce_oi"]
-                ce_oi_change_pct = row["ce_oi_change_pct"]
-                if ce_oi > min_oi and ce_oi_change_pct > min_oi_change:
+                ce_oi = row.get("ce_oi")
+                ce_oi_change_pct = row.get("ce_oi_change_pct")
+                if (
+                    ce_oi is not None
+                    and ce_oi_change_pct is not None
+                    and ce_oi > min_oi
+                    and ce_oi_change_pct > min_oi_change
+                ):
                     if nearest_ce_wall is None or abs(strike - spot) < abs(float(nearest_ce_wall["strike"]) - spot):
                         nearest_ce_wall = row
 
@@ -120,9 +130,14 @@ class OIWallDetector:
                 and self.current_wall_key == f"PE:{int(strike)}"
             )
             if strike < spot or is_tracked_pe:
-                pe_oi = row["pe_oi"]
-                pe_oi_change_pct = row["pe_oi_change_pct"]
-                if pe_oi > min_oi and pe_oi_change_pct > min_oi_change:
+                pe_oi = row.get("pe_oi")
+                pe_oi_change_pct = row.get("pe_oi_change_pct")
+                if (
+                    pe_oi is not None
+                    and pe_oi_change_pct is not None
+                    and pe_oi > min_oi
+                    and pe_oi_change_pct > min_oi_change
+                ):
                     if nearest_pe_wall is None or abs(strike - spot) < abs(float(nearest_pe_wall["strike"]) - spot):
                         nearest_pe_wall = row
 
@@ -140,8 +155,7 @@ class OIWallDetector:
         # order-independence guarantee).
         selected_wall = None
         wall_option_type = None
-
-        interaction_dist = _setting_float("oi_wall_initial_interaction_distance_pts", 20.0)
+        interaction_dist = _setting_float("oi_wall_test_distance", 20.0)
         proximity_window = 2.0 * interaction_dist  # tracked wall still "reachable" from spot
 
         tracked_ce = bool(
@@ -209,9 +223,10 @@ class OIWallDetector:
 
         # Relative percentile: 0..100 among non-zero same-side strikes
         same_side_ois = [
-            row["ce_oi"] if wall_option_type == "CE" else row["pe_oi"]
+            oi
             for row in full_chain
-            if (row["ce_oi"] if wall_option_type == "CE" else row["pe_oi"]) > 0
+            for oi in [row.get("ce_oi") if wall_option_type == "CE" else row.get("pe_oi")]
+            if oi is not None and oi > 0
         ]
         if same_side_ois:
             relative_percentile = round((sum(1 for oi in same_side_ois if oi <= wall_oi) / len(same_side_ois)) * 100.0, 1)

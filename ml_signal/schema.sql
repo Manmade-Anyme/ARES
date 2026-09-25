@@ -1,39 +1,55 @@
 -- Run this in Supabase SQL Editor to create the ML tables.
 
 -- ============================================================
--- ml_predictions: Stores predictions written ONLY by optional
--- standalone processes (live.py, signal_consumer.py).
--- Production ARES uses in-process SignalPredictor (TASK-196), which
--- enriches Discord alerts and does not persist rows to this table.
+-- ml_predictions: Machine learning model prediction persistence for
+-- auditing, calibration (Brier scores), and concept drift monitoring.
+-- Persisted on inference by in-process PredictionLogger (TASK-153).
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS ml_predictions (
   id bigserial primary key,
   timestamp timestamptz not null,
 
-  -- Prediction
+  -- Prediction Metrics
   probability numeric not null,
-  confidence_tier text,
-  model_version text,
+  confidence_tier text not null,       -- 'HIGH' | 'MEDIUM' | 'LOW'
+  model_version text not null,         -- e.g. 'v1', 'v2', 'v2.joblib'
 
-  -- Linking (optional — populated in event-triggered mode)
-  signal_id text,
-  signal_setup_type text,
-  trade_id uuid,
+  -- Entity Linkage
+  signal_id text,                      -- Canonical AresSignal.id UUID (never display_id)
+  trade_id uuid,                       -- Links to active_trades.id / trade_analytics.id when executed
+  
+  -- Market Context
+  spot numeric not null,
+  source text not null default 'event_triggered', -- 'event_triggered' | 'continuous'
 
-  -- Market context
-  spot numeric,
-  source text default 'continuous',  -- 'continuous' | 'event_triggered'
+  -- Feature Payload
+  feature_snapshot jsonb not null,     -- Canonical key-value dictionary of model input features
 
-  -- Feature snapshot for backtesting and retraining
-  features jsonb,
-
-  created_at timestamptz default now()
+  created_at timestamptz not null default now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_ml_pred_timestamp ON ml_predictions (timestamp desc);
 CREATE INDEX IF NOT EXISTS idx_ml_pred_signal ON ml_predictions (signal_id);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_trade ON ml_predictions (trade_id);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_model_version ON ml_predictions (model_version);
 CREATE INDEX IF NOT EXISTS idx_ml_pred_confidence ON ml_predictions (confidence_tier);
+CREATE INDEX IF NOT EXISTS idx_ml_pred_source ON ml_predictions (source);
+
+-- Prediction rows contain backend audit data. Clean installations must enforce
+-- the same service-role-only contract as the TASK-153 upgrade migration.
+ALTER TABLE ml_predictions ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE ml_predictions FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON TABLE ml_predictions TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE ml_predictions_id_seq TO service_role;
+
+DROP POLICY IF EXISTS ml_predictions_service_read ON ml_predictions;
+CREATE POLICY ml_predictions_service_read
+  ON ml_predictions FOR SELECT TO service_role USING (true);
+
+DROP POLICY IF EXISTS ml_predictions_service_insert ON ml_predictions;
+CREATE POLICY ml_predictions_service_insert
+  ON ml_predictions FOR INSERT TO service_role WITH CHECK (true);
 
 
 -- ============================================================
@@ -45,6 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_pred_confidence ON ml_predictions (confidence_
 
 CREATE TABLE IF NOT EXISTS ml_collection (
   id bigserial primary key,
+  snapshot_uuid uuid UNIQUE,
   timestamp timestamptz not null,
   spot numeric,
 
@@ -60,6 +77,9 @@ CREATE TABLE IF NOT EXISTS ml_collection (
   -- Signal reference (filled if a signal fired this cycle)
   signal_generated boolean default false,
   signal_id text,
+  signal_uuid uuid,
+  signal_display_id text,
+  trade_binding_status text,
   signal_setup_type text,
   signal_direction text,
   signal_confidence text,
@@ -73,6 +93,9 @@ CREATE TABLE IF NOT EXISTS ml_collection (
   trade_pnl numeric,
   trade_score integer,
 
+  -- Feature & schema version metadata (MANM-154)
+  feature_version integer NOT NULL DEFAULT 4,
+
   -- Raw market snapshot for repro
   raw_candle jsonb,
   raw_atm_oi jsonb,
@@ -82,11 +105,11 @@ CREATE TABLE IF NOT EXISTS ml_collection (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ml_collection_timestamp ON ml_collection (timestamp desc);
+CREATE INDEX IF NOT EXISTS idx_ml_collection_feature_version ON ml_collection (feature_version);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_signal ON ml_collection (signal_id);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_trade ON ml_collection (trade_id);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_outcome ON ml_collection (trade_outcome);
 CREATE INDEX IF NOT EXISTS idx_ml_collection_oi_wall_strike ON ml_collection ((oi_wall_context ->> 'wall_strike'));
 
--- If you encounter RLS errors (Code 42501), run:
--- ALTER TABLE ml_predictions DISABLE ROW LEVEL SECURITY;
--- ALTER TABLE ml_collection DISABLE ROW LEVEL SECURITY;
+-- ml_predictions intentionally requires the backend service-role credential.
+-- Do not disable RLS to work around permission errors.

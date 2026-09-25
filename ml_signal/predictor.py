@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
 
 import joblib
-import numpy as np
 import pandas as pd
 
 from .config import MLConfig, DEFAULT_CONFIG
@@ -164,10 +163,10 @@ class SignalPredictor:
         candle: Dict[str, float],
         volume_history: List[int],
         iv_history: Optional[List[float]],
-        atm_ce: Dict[str, Any],
-        atm_pe: Dict[str, Any],
-        total_ce_oi: int,
-        total_pe_oi: int,
+        atm_ce: Optional[Dict[str, Any]],
+        atm_pe: Optional[Dict[str, Any]],
+        total_ce_oi: Optional[int],
+        total_pe_oi: Optional[int],
         all_ce_oi: Optional[List[int]],
         all_pe_oi: Optional[List[int]],
         levels: List[float],

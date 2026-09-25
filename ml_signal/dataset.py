@@ -30,7 +30,17 @@ FEATURE_GROUPS = [
 ]
 
 # Non-feature bookkeeping columns produced by flatten_features().
-_META_COLS = {"timestamp", "date", "close", "label", "pnl_points", "exit_timestamp"}
+_META_COLS = {
+    "timestamp",
+    "date",
+    "close",
+    "label",
+    "pnl_points",
+    "exit_timestamp",
+    "entry_timestamp",
+    "time_metrics_excluded",
+    "feature_version",
+}
 
 
 def _load(v: Any) -> Dict[str, Any]:
@@ -46,7 +56,35 @@ def _load(v: Any) -> Dict[str, Any]:
         return {}
 
 
+def infer_feature_version_from_timestamp(ts: Any) -> int:
+    """Infer feature version epoch from timestamp if feature_version column is not yet populated."""
+    if ts is None:
+        return 4
+    try:
+        ts_dt = pd.to_datetime(ts)
+        if ts_dt.tzinfo is None:
+            ts_utc = ts_dt.tz_localize("UTC")
+        else:
+            ts_utc = ts_dt.tz_convert("UTC")
+
+        v1_cutoff = pd.Timestamp("2026-07-28T06:32:37Z")
+        v2_cutoff = pd.Timestamp("2026-07-31T13:14:34Z")
+        v3_cutoff = pd.Timestamp("2026-08-21T05:46:35Z")
+
+        if ts_utc < v1_cutoff:
+            return 1
+        elif ts_utc < v2_cutoff:
+            return 2
+        elif ts_utc < v3_cutoff:
+            return 3
+        else:
+            return 4
+    except Exception:
+        return 4
+
+
 def _numeric_only(d: Dict[str, Any]) -> Dict[str, float]:
+
     """Keep numeric values only (bools excluded — they are not features here)."""
     out = {}
     for k, v in d.items():
@@ -80,24 +118,33 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
         ts = pd.to_datetime(r.get("timestamp"))
         rc = _load(r.get("raw_candle"))
         close = float(rc.get("close", 0) or 0)
+        raw_ver = r.get("feature_version")
+        if raw_ver is not None:
+            try:
+                feature_version = int(raw_ver)
+            except (ValueError, TypeError):
+                feature_version = infer_feature_version_from_timestamp(r.get("timestamp"))
+        else:
+            feature_version = infer_feature_version_from_timestamp(r.get("timestamp"))
 
         groups: Dict[str, Dict[str, float]] = {}
         for g in FEATURE_GROUPS:
             nd = _numeric_only(_load(r.get(g)))
             groups[g] = nd
             keys_by_group[g].update(nd.keys())
-        parsed.append((ts, close, groups))
+        parsed.append((ts, close, feature_version, groups))
 
     feature_cols = sorted(
         f"{g}__{k}" for g in FEATURE_GROUPS for k in keys_by_group[g]
     )
 
     records = []
-    for ts, close, groups in parsed:
+    for ts, close, feature_version, groups in parsed:
         row: Dict[str, Any] = {
             "timestamp": ts,
             "date": ts.date() if ts is not None and not pd.isna(ts) else None,
             "close": close,
+            "feature_version": feature_version,
         }
         # NaN, not 0.0. _numeric_only drops a None value, so an unknown feature
         # reaches here as an absent key. Filling 0.0 made every unknown
@@ -113,11 +160,34 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
                 row[f"{g}__{k}"] = v
         records.append(row)
 
-    ordered = ["timestamp", "date", "close"] + feature_cols
+    indicator_cols = [
+        "structure__has_nearest_support",
+        "structure__has_nearest_resistance",
+        "greek__has_net_delta",
+    ]
+
     df = pd.DataFrame.from_records(records)
+    if not df.empty:
+        if "structure_features__dist_to_nearest_support" in df.columns:
+            df["structure__has_nearest_support"] = (~df["structure_features__dist_to_nearest_support"].isna()).astype(float)
+        else:
+            df["structure__has_nearest_support"] = 0.0
+
+        if "structure_features__dist_to_nearest_resistance" in df.columns:
+            df["structure__has_nearest_resistance"] = (~df["structure_features__dist_to_nearest_resistance"].isna()).astype(float)
+        else:
+            df["structure__has_nearest_resistance"] = 0.0
+
+        if "greek_features__net_delta" in df.columns:
+            df["greek__has_net_delta"] = (~df["greek_features__net_delta"].isna()).astype(float)
+        else:
+            df["greek__has_net_delta"] = 0.0
+
+    ordered = ["timestamp", "date", "close", "feature_version"] + feature_cols + indicator_cols
     if df.empty:
         return pd.DataFrame(columns=ordered)
     return df[ordered]
+
 
 
 def label_forward_points(
@@ -226,6 +296,8 @@ def build_real_outcome_frame(
     labels = []
     pnl_points = []
     exit_timestamps = []
+    entry_timestamps = []
+    time_metrics_excluded = []
     
     for r in rows:
         outcome = r.get("trade_outcome")
@@ -238,6 +310,8 @@ def build_real_outcome_frame(
             labels.append(label)
             pnl_points.append(r.get("trade_pnl"))
             exit_timestamps.append(r.get("exit_timestamp"))
+            entry_timestamps.append(r.get("entry_timestamp"))
+            time_metrics_excluded.append(r.get("time_metrics_excluded", False))
 
     if not valid_rows:
         df = flatten_features([])
@@ -250,5 +324,7 @@ def build_real_outcome_frame(
     # outcome leakage into the reliability model.
     df["pnl_points"] = pd.to_numeric(pnl_points, errors="coerce")
     df["exit_timestamp"] = exit_timestamps
+    df["entry_timestamp"] = entry_timestamps
+    df["time_metrics_excluded"] = time_metrics_excluded
     
     return df

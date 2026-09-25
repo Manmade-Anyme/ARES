@@ -2,7 +2,36 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-24 · Feature Versioning, Missing Data Remediation, and Storage Contracts (MANM-154)
+
+Audited historical missing data across 17,551 `ml_collection` records, authored [ADR MANM-154](directives/adr/MANM-154_feature-versioning-missing-data.md), implemented database schema migration and collector versioning, eliminated MANM-49 synthetic zero injection, added structural presence indicators, and published missingness audit report.
+
+**Problem & Historical Findings**
+- `net_delta` missing in 8,996 rows (51.3%): Traced to schema evolution; introduced in TASK-4c / PR #98 (`a1b67ce` on 2026-08-21). 100% present in v4.
+- OI shape fields missing in 3,729 rows (21.3%): Introduced in TASK-194 (`ec2a84f` on 2026-07-31). 100% present in v3 and v4.
+- Nearest support/resistance distances missing (support in 6,447 rows, resistance in 2,865 rows): TASK-195 (`08c36e3`) nulled 5,226 rows carrying `100.0` literal sentinels. Remaining missingness reflects NIFTY all-time high breakouts (no resistance above spot) or pre-open CPR hydration boundaries.
+- `trend_continuation` detector score missing in 2,606 rows (14.9%): Introduced in commit `782a240` (2026-07-28) when setup one-hot dynamically iterated `SetupType`. 100% present in v2, v3, and v4.
+- Zero-injection defect (MANM-49): `signal_consumer.py` defaulted missing options context to zeros (`{"iv": 0, "oi": 0, ...}`).
+
+**Implementation & Architectural Decisions**
+- Added `feature_version` integer column (`DEFAULT 4`) and index `idx_ml_collection_feature_version` in `ml_signal/schema.sql` and `migrations/2026-09-24-manm154-feature-versioning.sql` with 4 historical epochs: v1 (Legacy, <2026-07-28), v2 (Setup Enums, 2026-07-28 to 2026-07-31), v3 (OI Shape & Joins, 2026-07-31 to 2026-08-21), and v4 (Full Modern Suite, 2026-08-21+).
+- Updated `MLCollector.snapshot` to stamp `feature_version = 4` on all new rows.
+- Eliminated synthetic zero injection (MANM-49) in `signal_consumer.py`, `features.py`, and `predictor.py`. Missing options now evaluate to `None`/`np.nan`.
+- Preserved missing OI in chain aggregates: an omitted CE or PE value invalidates only that side's total and distribution, and cross-side PCR/concentration remain missing until both sides are complete. Genuine observed zero OI remains valid.
+- Updated `ml_signal/dataset.py` to extract `feature_version` as metadata, exclude it from tree model features (in `_META_COLS`), and generate 3 boolean structural presence indicators (`structure__has_nearest_support`, `structure__has_nearest_resistance`, `greek__has_net_delta`).
+- Added standalone audit script `scripts/audit_ml_missingness.py` and published `reports/ml/manm154_missingness_audit_report.md`.
+- Updated `ml_signal/train_offline.py` to report `missingness_by_feature_version`.
+
+**Validation & Verification**
+- 22/22 component unit tests passing in `tests/unit/test_manm154_feature_versioning.py`.
+- 100% diff line and branch coverage verified across all modified and newly created modules.
+- Full test suite passing with 648 passed, 0 failed, 100% green.
+
+
+---
+
 ## 2026-09-11 · Preserve Tracked OI Wall Against Opposite-Side Displacement Mid-Retest (MANM-110)
+
 
 Fixed silent suppression of `OI_WALL_REJECTION` signals caused by premature wall displacement during retest approach.
 

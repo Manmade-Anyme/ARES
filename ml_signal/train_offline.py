@@ -24,7 +24,7 @@ from sklearn.metrics import (
 )
 
 from .config import MLConfig, DEFAULT_CONFIG
-from .dataset import build_labeled_frame, feature_columns
+from .dataset import feature_columns
 
 
 # NOTE: ml_signal/trainer.py already has train_xgboost/evaluate_model, but it
@@ -149,9 +149,20 @@ def _sharpe_metrics(df: pd.DataFrame, periods_per_year: int = 252) -> Dict[str, 
     timestamps = pd.to_datetime(
         df["exit_timestamp"], utc=True, errors="coerce", format="mixed",
     )
+    entry_timestamps = pd.to_datetime(
+        df.get("entry_timestamp"), utc=True, errors="coerce", format="mixed",
+    ) if "entry_timestamp" in df else pd.to_datetime(pd.Series(pd.NaT, index=df.index), utc=True)
+    
+    time_excluded = df.get("time_metrics_excluded", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    
     pnl_valid = pnl.notna() & np.isfinite(pnl)
     metrics["sharpe_missing_exit_timestamps"] = int((pnl_valid & timestamps.isna()).sum())
-    valid = pnl.notna() & timestamps.notna() & np.isfinite(pnl)
+    
+    # ADR says: valid_chronology = (exit_dt >= entry_dt)
+    valid_chronology = (timestamps >= entry_timestamps) | entry_timestamps.isna()
+    metrics["sharpe_invalid_chronology_count"] = int((timestamps < entry_timestamps).sum())
+    
+    valid = pnl.notna() & timestamps.notna() & np.isfinite(pnl) & (~time_excluded) & valid_chronology
     if not valid.any():
         if metrics["sharpe_missing_exit_timestamps"]:
             metrics["sharpe_status"] = "missing_exit_timestamp"
@@ -390,16 +401,28 @@ def run_training(
 ) -> Tuple[object, Dict[str, object]]:
     """
     Train + evaluate on a chronological split. Degrades gracefully on tiny data
-    (warns, marks metrics provisional, still trains). Optionally persists the
-    model and a JSON report. Returns (model, metrics).
+    (warns, marks metrics provisional, still trains), but aborts when anomaly
+    exclusion leaves no eligible rows. Optionally persists the model and a JSON
+    report. Returns (model, metrics).
     """
-    n = len(df)
+    sharpe = _sharpe_metrics(df)
+
+    time_excluded = df.get("time_metrics_excluded", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    if time_excluded.any():
+        df_train = df[~time_excluded].copy()
+    else:
+        df_train = df
+
+    if df_train.empty:
+        raise ValueError("No training rows remain after applying time_metrics_excluded")
+
+    n = len(df_train)
     provisional = n < min_samples
     if provisional:
         print(f"[!] PROVISIONAL: {n} labeled samples (< {min_samples}). "
               f"Metrics are directional, not production-grade.")
 
-    train, test = chronological_split(df, train_frac=train_frac)
+    train, test = chronological_split(df_train, train_frac=train_frac)
 
     X_train, y_train = train[feature_cols], train[label_col]
     # Internal chronological val split for early stopping.
@@ -417,15 +440,30 @@ def run_training(
         "n_samples": int(n),
         "n_train": int(len(train)),
         "n_test": int(len(test)),
-        "pos_rate": float(df[label_col].mean()) if n else float("nan"),
+        "pos_rate": float(df_train[label_col].mean()) if n else float("nan"),
         "provisional": bool(provisional),
     })
-    metrics.update(_sharpe_metrics(df))
+    metrics.update(sharpe)
     metrics.update(_shap_metrics())
+    if "feature_version" in df_train.columns:
+        missingness_by_ver: Dict[str, Any] = {}
+        for ver, vdf in df_train.groupby("feature_version"):
+            v_missing = {
+                col: round(float(vdf[col].isna().mean()), 4)
+                for col in feature_cols
+                if vdf[col].isna().any()
+            }
+            missingness_by_ver[str(ver)] = {
+                "n_samples": int(len(vdf)),
+                "features_with_missing": v_missing,
+            }
+        metrics["missingness_by_feature_version"] = missingness_by_ver
+
     if model_version is not None:
         metrics["model_version"] = model_version
 
     importance = _importance(model, feature_cols)
+
     metrics["top_features"] = importance.head(15).to_dict(orient="records")
     _compute_shap(model, X_test, feature_cols, metrics)
     _save_shap_plot(metrics, shap_plot_path)
@@ -448,12 +486,23 @@ def run_training(
 
 def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     """Read-only, paginated pull of ml_collection ordered by timestamp asc."""
-    cols = "timestamp,raw_candle,trade_id,trade_outcome,trade_pnl," + ",".join([
+    include_feature_version = True
+    try:
+        supabase.table("ml_collection").select("feature_version").limit(1).execute()
+    except Exception:
+        include_feature_version = False
+
+    base_cols = ["timestamp", "raw_candle", "trade_id", "trade_outcome", "trade_pnl"]
+    if include_feature_version:
+        base_cols.append("feature_version")
+    cols = ",".join(base_cols + [
         "candle_features", "volume_features", "iv_features", "oi_features",
         "greek_features", "structure_features", "meta_features",
         "detector_scores",   # TASK-4e: one-hot setup-detector dict
     ])
     rows: List[dict] = []
+
+
     start = 0
     while True:
         batch = (
@@ -471,14 +520,14 @@ def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     return rows
 
 
-def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, str]:
+def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, dict]:
     """Read completed trade exit timestamps keyed by the ml_collection trade id."""
-    exits: Dict[str, str] = {}
+    exits: Dict[str, dict] = {}
     start = 0
     while True:
         batch = (
             supabase.table("trade_analytics")
-            .select("id,exit_timestamp")
+            .select("id,exit_timestamp,entry_timestamp,time_metrics_excluded")
             .order("exit_timestamp")
             .range(start, start + page - 1)
             .execute()
@@ -486,9 +535,12 @@ def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, str]:
         )
         for trade in batch:
             trade_id = trade.get("id")
-            exit_timestamp = trade.get("exit_timestamp")
-            if trade_id is not None and exit_timestamp is not None:
-                exits[str(trade_id)] = exit_timestamp
+            if trade_id is not None:
+                exits[str(trade_id)] = {
+                    "exit_timestamp": trade.get("exit_timestamp"),
+                    "entry_timestamp": trade.get("entry_timestamp"),
+                    "time_metrics_excluded": trade.get("time_metrics_excluded", False)
+                }
         if len(batch) < page:
             break
         start += page
@@ -524,12 +576,20 @@ def main() -> None:
     supabase = create_client(url, key)
 
     config = DEFAULT_CONFIG
-    print(f"[*] Reading ml_collection (read-only)...")
+    print("[*] Reading ml_collection (read-only)...")
     rows = _fetch_ml_collection(supabase)
     exit_timestamps = _fetch_trade_exit_timestamps(supabase)
     for row in rows:
         trade_id = row.get("trade_id")
-        row["exit_timestamp"] = exit_timestamps.get(str(trade_id)) if trade_id else None
+        if trade_id and str(trade_id) in exit_timestamps:
+            metadata = exit_timestamps[str(trade_id)]
+            row["exit_timestamp"] = metadata["exit_timestamp"]
+            row["entry_timestamp"] = metadata["entry_timestamp"]
+            row["time_metrics_excluded"] = metadata["time_metrics_excluded"]
+        else:
+            row["exit_timestamp"] = None
+            row["entry_timestamp"] = None
+            row["time_metrics_excluded"] = False
     
     from ml_signal.dataset import build_real_outcome_frame
     print(f"[*] {len(rows)} rows fetched. Filtering for real trade outcomes...")

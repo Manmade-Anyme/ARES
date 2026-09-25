@@ -7,6 +7,12 @@ from typing import Optional, List, Dict, Any
 
 from models import OHLCVCandle, ATMStrikes, AresSignal, ResistanceLevel, Direction, SetupType, OIWallBias, OIWallEntryDecision
 from config import settings
+from detectors.breakout import FailedBreakoutDetector
+from detectors.oi_wall import OIWallDetector
+from detectors.oi_wall_entry import OIWallEntryFilter
+from detectors.exhaustion import ExhaustionDetector
+from detectors.continuation import TrendContinuationDetector
+
 
 
 def apply_per_type_levels(signal: AresSignal, settings, levels=None) -> None:
@@ -38,11 +44,11 @@ def _resolve_target_2(entry, sign, target_1, lv, levels):
         return min(beyond, key=lambda p: (p - target_1) * sign)
     return entry + sign * lv.target_2_fallback_pts
 
-from detectors.breakout import FailedBreakoutDetector
-from detectors.oi_wall import OIWallDetector
-from detectors.oi_wall_entry import OIWallEntryFilter, OIWallEntryDecision
-from detectors.exhaustion import ExhaustionDetector
-from detectors.continuation import TrendContinuationDetector
+
+
+
+
+
 
 
 class AresEngine:
@@ -109,8 +115,8 @@ class AresEngine:
         candle: OHLCVCandle,
         full_chain: List[Dict[str, Any]],
         atm: ATMStrikes,
-        iv_change_pct: float,
-        levels: List[ResistanceLevel],
+        iv_change_pct: Optional[float] = None,
+        levels: List[ResistanceLevel] = None,
         pdh: Optional[float] = None,
         pdl: Optional[float] = None,
     ) -> Optional[AresSignal]:
@@ -130,7 +136,7 @@ class AresEngine:
             candle: The latest closed OHLCV candle.
             full_chain: The complete NIFTY option chain from OIFetcher.
             atm: The ATM strikes context including spot price and ATM IV/OI.
-            iv_change_pct: The percentage change in ATM Implied Volatility.
+            iv_change_pct: Optional percentage change in ATM Implied Volatility.
             levels: A list of ResistanceLevel objects (structural levels + OI walls) used for target calculation.
             pdh: Previous day high, used by the trend-continuation detector's
                 regime rule. Optional — the detector no-ops without it.
@@ -140,9 +146,11 @@ class AresEngine:
         Returns:
             An AresSignal if a detector triggers and cooldown is clear, otherwise None.
         """
+        levels = levels or []
         # 1. Update buffers
         self.candle_buffer.append(candle)
-        self.iv_buffer.append(atm.ce.iv)
+        if atm and atm.ce and atm.ce.iv is not None:
+            self.iv_buffer.append(atm.ce.iv)
 
         # 2. Cooldown state. Evaluated here but applied *after* the stateful
         # detectors have advanced (TASK-188) — see step 5a.
@@ -161,8 +169,10 @@ class AresEngine:
         # 4. Get previous IV
         if len(self.iv_buffer) >= 2:
             iv_prev = self.iv_buffer[-2]
-        else:
+        elif len(self.iv_buffer) == 1:
             iv_prev = self.iv_buffer[-1]
+        else:
+            iv_prev = None
 
         # 5a. Advance the stateful OI wall detector and entry filter on EVERY candle (TASK-073).
         # It updates persistence, tracking, and qualification regardless of cooldown
@@ -228,10 +238,10 @@ class AresEngine:
             candle=candle,
             avg_volume=avg_volume,
             iv_change_pct=iv_change_pct,
-            atm_ce_oi=atm.ce.oi,
-            atm_ce_oi_prev=atm.ce.oi_prev,
-            atm_pe_oi=atm.pe.oi,
-            atm_pe_oi_prev=atm.pe.oi_prev,
+            atm_ce_oi=atm.ce.oi if (atm and atm.ce) else None,
+            atm_ce_oi_prev=atm.ce.oi_prev if (atm and atm.ce) else None,
+            atm_pe_oi=atm.pe.oi if (atm and atm.pe) else None,
+            atm_pe_oi_prev=atm.pe.oi_prev if (atm and atm.pe) else None,
             levels=levels,
         )
 
@@ -258,7 +268,7 @@ class AresEngine:
                 )
                 or self.exhaustion_detector.update(
                     candle=candle,
-                    iv_current=atm.ce.iv,
+                    iv_current=atm.ce.iv if (atm and atm.ce) else None,
                     iv_prev=iv_prev,
                     levels=levels,
                 )

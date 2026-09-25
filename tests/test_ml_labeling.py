@@ -1,5 +1,3 @@
-import pytest
-import pandas as pd
 from ml_signal.labeling import classify_ares_outcome, label_from_ares_outcome
 
 def test_label_from_ares_outcome():

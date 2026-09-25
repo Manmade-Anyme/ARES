@@ -1,6 +1,5 @@
 import unittest
 from unittest.mock import MagicMock, patch
-import asyncio
 from models import AresSignal, SetupType, Direction
 from datetime import datetime
 from options_math import (
@@ -208,6 +207,56 @@ class TestOptionsMath(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(signal_ce.option_type, "CE")
         self.assertEqual(signal_ce.option_delta, 0.80)
         self.assertEqual(signal_ce.option_premium, 150.0)
+
+    @patch('options_math.fetch_dhan_capital')
+    async def test_process_options_calculation_fallback_missing_metrics(self, mock_fetch_capital):
+        mock_fetch_capital.return_value = 10000.00
+
+        # Scenario: ATM row in full_chain has None for delta and LTP (Dhan payload omission)
+        full_chain_missing = [
+            {"strike": 24100, "ce_delta": None, "ce_ltp": None, "pe_delta": None, "pe_ltp": None},
+        ]
+
+        signal_ce = AresSignal(
+            setup_type=SetupType.FAILED_BREAKOUT,
+            direction=Direction.BULLISH,
+            trigger_price=24087.30,
+            entry_zone=(24082.30, 24092.30),
+            stop_loss=24050.0,
+            target_1=24150.0,
+            target_2=24200.0,
+            confidence="MEDIUM",
+            reasons=["Mock reason"],
+            timestamp=datetime.now(),
+            strike_to_trade=24100,
+            option_type="CE"
+        )
+        await process_options_calculation(signal_ce, full_chain_missing, MagicMock())
+        self.assertEqual(signal_ce.strike_to_trade, 24100)
+        self.assertEqual(signal_ce.option_type, "CE")
+        self.assertEqual(signal_ce.option_delta, 0.50)
+        self.assertEqual(signal_ce.option_premium, 100.0)
+
+        signal_pe = AresSignal(
+            setup_type=SetupType.FAILED_BREAKOUT,
+            direction=Direction.BEARISH,
+            trigger_price=24087.30,
+            entry_zone=(24082.30, 24092.30),
+            stop_loss=24115.05,
+            target_1=24017.30,
+            target_2=23789.25,
+            confidence="MEDIUM",
+            reasons=["Mock reason"],
+            timestamp=datetime.now(),
+            strike_to_trade=24100,
+            option_type="PE"
+        )
+        await process_options_calculation(signal_pe, full_chain_missing, MagicMock())
+        self.assertEqual(signal_pe.strike_to_trade, 24100)
+        self.assertEqual(signal_pe.option_type, "PE")
+        self.assertEqual(signal_pe.option_delta, -0.50)
+        self.assertEqual(signal_pe.option_premium, 100.0)
+
 
 if __name__ == '__main__':
     unittest.main()

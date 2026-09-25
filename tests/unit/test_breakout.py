@@ -133,3 +133,26 @@ def test_breakout_confirmed_real_breakout(breakout_detector, sample_levels):
 # NOTE (TASK-185): the breakout structural target-selection + fixed-points
 # fallback tests were removed. SL/T1/T2 are now set centrally by
 # engine.apply_per_type_levels (see tests/unit/test_per_type_levels.py).
+
+
+def test_failed_breakout_with_missing_iv_change_pct(breakout_detector, sample_levels):
+    # Upward breakout cross above 24100
+    candle1 = OHLCVCandle(
+        timestamp=datetime.now(), open=24090.0, high=24120.0, low=24080.0, close=24110.0, volume=50000
+    )
+    breakout_detector.update(candle1, 100000.0, 5.0, 100, 100, 100, 100, sample_levels)
+    assert breakout_detector.active is not None
+
+    # Reversal candle with iv_change_pct=None (e.g. missing IV from Dhan payload)
+    # Must not raise TypeError, and iv_falling should evaluate to False.
+    candle2 = OHLCVCandle(
+        timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24090.0, volume=40000
+    )
+    # Volume is weak (1 pt), deep close >= 5 pts (1 pt), writers active >= 10% (1 pt) -> score = 3
+    # iv_falling is False because iv_change_pct is None.
+    signal = breakout_detector.update(candle2, 100000.0, None, 150, 100, 100, 100, sample_levels)
+    assert signal is not None
+    assert signal.setup_type == SetupType.FAILED_BREAKOUT
+    assert signal.direction == Direction.BEARISH
+    assert not any("IV crush" in r for r in signal.reasons)
+

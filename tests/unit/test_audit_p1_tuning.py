@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 from datetime import datetime
 
 from config import settings
-from config_profiles import TuningConfig, NON_EXPIRY_CONFIG
+from config_profiles import NON_EXPIRY_CONFIG
 from engine import AresEngine
 from models import (
     OHLCVCandle, ATMStrikes, AresSignal, SetupType, Direction,
