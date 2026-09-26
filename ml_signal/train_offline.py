@@ -746,6 +746,9 @@ def main(argv=None) -> None:
                     )
                     stage2_model.fit(trade_df[feat_cols2], trade_df["label"])
 
+                    if not promoted:
+                        save_path = save_path.replace(".joblib", "_unpromoted.joblib")
+
                     if args.hybrid:
                         bundle = HybridPredictorBundle(
                             stage1_model=stage1_model,
@@ -757,11 +760,15 @@ def main(argv=None) -> None:
                             metrics_summary=metrics
                         )
                         joblib.dump(bundle, save_path)
-                        print(f"[+] Promoted Hybrid Bundle -> {save_path}")
                     else:
                         # Persist as legacy standalone model
                         joblib.dump(stage2_model, save_path)
-                        print(f"[+] Promoted Standalone Stage 2 Model -> {save_path}")
+                        
+                    if promoted:
+                        print(f"[+] Promoted Model -> {save_path}")
+                    else:
+                        print(f"[!] Saved unpromoted artifact -> {save_path}")
+
             except ModelPromotionError as e:
                 pass
             
@@ -772,23 +779,6 @@ def main(argv=None) -> None:
                 with open(audit_path, "w") as f:
                     json.dump({"version": next_version, "reasons": gate_error.reasons if gate_error else [], "metrics": metrics}, f, indent=2, default=str)
                 print(f"[!] Rejection audit saved -> {audit_path}")
-                
-                # Overwrite save_path to be unpromoted
-                original_save = save_path
-                save_path = save_path.replace(".joblib", "_unpromoted.joblib")
-                if args.hybrid and stage2_model is not None:
-                    import joblib
-                    joblib.dump(bundle, save_path)
-                elif stage2_model is not None:
-                    import joblib
-                    joblib.dump(stage2_model, save_path)
-                
-                # Remove the falsely promoted file if it was just saved
-                if os.path.exists(original_save):
-                    os.remove(original_save)
-                
-                if stage2_model is not None:
-                    print(f"[!] Saved unpromoted artifact -> {save_path}")
 
     # Write summary metrics
     summary = {

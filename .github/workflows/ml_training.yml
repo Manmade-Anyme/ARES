@@ -117,6 +117,7 @@ jobs:
           fi
 
       - name: Upload trained model and report artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ml-trained-model-and-report
