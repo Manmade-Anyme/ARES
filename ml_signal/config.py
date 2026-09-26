@@ -21,6 +21,8 @@ class MLConfig:
     lookforward_candles: int = 5
     tp_points: float = 35.0
     sl_points: float = 25.0
+    mm_tp_points: float = 15.0
+    mm_sl_points: float = 10.0
     label_exclude_inconclusive: bool = True
 
     # Confidence tiers
