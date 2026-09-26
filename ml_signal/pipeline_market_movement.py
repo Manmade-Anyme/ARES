@@ -101,6 +101,9 @@ class MarketMovementPipeline:
         metrics = compute_cv_metrics(fold_results, leakage_guard_passed=True)
         
         # Fit final model on all data
+        if df["label"].nunique() < 2:
+            return None, metrics
+            
         final_model = xgb.XGBClassifier(
             n_estimators=self.config.n_estimators,
             learning_rate=self.config.learning_rate,

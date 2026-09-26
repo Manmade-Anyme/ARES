@@ -645,6 +645,10 @@ def main(argv=None) -> None:
         if args.promote and stage1_model:
             mm_save_path = os.path.join(models_dir, f"market_movement_{next_version}.joblib")
             joblib.dump(stage1_model, mm_save_path)
+            
+        if args.pipeline == "market_movement":
+            final_metrics = metrics.copy()
+            leakage_guard_passed = metrics.get("leakage_guard_passed", False)
 
     if args.pipeline in ["trade_outcomes", "all"]:
         print("\n=== Running Trade Outcome Pipeline ===")
