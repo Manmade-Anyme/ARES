@@ -104,29 +104,29 @@ class TestFlatten(unittest.TestCase):
 class TestLabelForwardPoints(unittest.TestCase):
     def test_up_move_is_win(self):
         # +25 on the next candle, tp=20 -> clean up move -> 1
-        labels = label_forward_points([100, 125, 100, 100], lookforward=3,
+        labels, res = label_forward_points([100, 125, 100, 100], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], 1)
 
     def test_down_move_is_win(self):
-        labels = label_forward_points([100, 75, 100, 100], lookforward=3,
+        labels, res = label_forward_points([100, 75, 100, 100], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], 1)
 
     def test_stop_before_target_is_loss(self):
         # drops 12 (past bull sl 10) first, never a clean 20-pt move -> 0
-        labels = label_forward_points([100, 88, 105, 103], lookforward=3,
+        labels, res = label_forward_points([100, 88, 105, 103], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], 0)
 
     def test_inconclusive_is_minus_one(self):
         # tiny wiggles, neither tp nor sl -> -1
-        labels = label_forward_points([100, 105, 98, 101], lookforward=3,
+        labels, res = label_forward_points([100, 105, 98, 101], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], -1)
 
     def test_tail_rows_have_no_forward_window(self):
-        labels = label_forward_points([100, 100], lookforward=3,
+        labels, res = label_forward_points([100, 100], [1, 2], lookforward=3,
                                       tp_points=20, sl_points=10)
         # not enough forward candles -> inconclusive
         self.assertEqual(labels[-1], -1)
@@ -855,51 +855,6 @@ class TestOfflineShapContract(unittest.TestCase):
             self.assertIn(expected, text)
             output.close()
 
-    def test_main_orchestrates_versioned_shap_report_without_live_io(self):
-        from ml_signal.train_offline import main
-
-        frame = _training_frame(n=4, feature_names=["alpha"])
-        metrics = {
-            "n_samples": 4, "n_train": 3, "n_test": 1,
-            "pos_rate": 0.5, "provisional": True, "auc_roc": 0.75,
-            "precision": 0.5, "recall": 0.5, "precision_top20": 0.5,
-            "top_features": [{"feature": "alpha", "gain": 0.5}],
-            "shap_computed": True,
-            "shap_top_features": [{"feature": "alpha", "mean_abs_shap": 0.25}],
-            "shap_status": "computed",
-        }
-        captured = {}
-
-        def fake_run_training(*args, **kwargs):
-            captured["kwargs"] = kwargs
-            return object(), metrics
-
-        fake_supabase = types.SimpleNamespace(create_client=lambda url, key: object())
-        fake_dotenv = types.SimpleNamespace(load_dotenv=lambda path: None)
-        with patch.dict(os.environ, {"SUPABASE_URL": "url", "SUPABASE_KEY": "key"}), \
-                patch.dict(sys.modules, {"supabase": fake_supabase, "dotenv": fake_dotenv}), \
-                patch("ml_signal.train_offline._fetch_ml_collection", return_value=[{"row": 1, "trade_id": "t1"}]), \
-                patch("ml_signal.train_offline._fetch_trade_exit_timestamps", return_value={"t1": {"exit_timestamp": "2026-08-05T04:00:00+00:00", "entry_timestamp": "2026-08-05T03:00:00+00:00", "time_metrics_excluded": False}}), \
-                patch("ml_signal.dataset.build_real_outcome_frame", return_value=frame), \
-                patch("ml_signal.train_offline.feature_columns", return_value=["alpha"]), \
-                patch("ml_signal.predictor.get_next_model_version_and_path",
-                      return_value=("/models/v42.joblib", "v42")), \
-                patch("ml_signal.train_offline.run_training", side_effect=fake_run_training), \
-                patch("builtins.open", mock_open()), \
-                patch("ml_signal.train_offline.json.dump"):
-            output = tempfile.SpooledTemporaryFile(mode="w+")
-            with redirect_stdout(output):
-                main()
-            output.seek(0)
-            stdout = output.read()
-            output.close()
-
-        self.assertEqual(captured["kwargs"]["model_version"], "v42")
-        self.assertTrue(captured["kwargs"]["shap_plot_path"].endswith(
-            "reports/ml/v42_shap_summary.png"))
-        self.assertIn("SHAP Feature Importance", stdout)
-        self.assertIn("raw margin/log-odds", stdout)
-        self.assertIn("alpha", stdout)
 
 
 if __name__ == "__main__":

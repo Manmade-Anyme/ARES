@@ -19,4 +19,4 @@
 | MANM-152 | 2026-09-12 | Trade Exit Timestamp Validation, Anomaly Flagging, and Lifecycle Invariants | Proposed |
 | TASK-153 | 2026-09-12 | Machine Learning Prediction Persistence in ml_predictions | Implemented |
 | MANM-154 | 2026-09-12 | Feature Versioning, Missing Data Remediation, and Storage Contracts | Proposed |
-
+| TASK-155 | 2026-09-12 | Decoupled ML Pipelines, Purged Walk-Forward CV & Promotion Gating | Proposed |
