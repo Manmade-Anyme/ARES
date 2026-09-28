@@ -27,7 +27,7 @@ def assert_train_test_purged(train_df: pd.DataFrame, test_df: pd.DataFrame, reso
     if train_max_res >= test_min_ts:
         raise DataLeakageError(f"Train resolution {train_max_res} overlaps with test start {test_min_ts}")
 
-def deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame:
+def deduplicate_snapshots(df: pd.DataFrame, strategy: str = "auto") -> pd.DataFrame:
     if df.empty:
         return df
         
@@ -50,11 +50,12 @@ def deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame:
     # Compute feature hash
     df_out["_feature_hash"] = df_out[feat_cols].apply(lambda x: hash(tuple(x.fillna(-9999))), axis=1)
 
-    has_trade_ids = "trade_id" in df_out and df_out["trade_id"].notna().any()
-    has_snapshot_ids = (
-        "snapshot_uuid" in df_out and df_out["snapshot_uuid"].notna().any()
-    )
-    if has_trade_ids or has_snapshot_ids:
+    if strategy == "auto":
+        has_trade_ids = "trade_id" in df_out and df_out["trade_id"].notna().any()
+        has_snapshot_ids = "snapshot_uuid" in df_out and df_out["snapshot_uuid"].notna().any()
+        strategy = "trade" if (has_trade_ids or has_snapshot_ids) else "market"
+        
+    if strategy == "trade":
         # TradeOutcomePipeline deduplication
         # Choose the canonical identity per row. A frame can legitimately mix
         # linked trades and snapshot-only historical rows, so selecting one

@@ -80,7 +80,7 @@ class TradeOutcomePipeline:
         # Map resolution_timestamp
         df["resolution_timestamp"] = df["exit_timestamp"]
         
-        df = deduplicate_snapshots(df)
+        df = deduplicate_snapshots(df, strategy="trade")
         df = df.sort_values("timestamp")
         assert_chronological_integrity(df)
         

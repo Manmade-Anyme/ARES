@@ -290,7 +290,7 @@ def build_labeled_frame(
     """
     df = flatten_features(rows)
     from ml_signal.leakage_guards import deduplicate_snapshots
-    df = deduplicate_snapshots(df)
+    df = deduplicate_snapshots(df, strategy="market")
 
     if df.empty:
         return df.assign(label=pd.Series(dtype=int), resolution_timestamp=pd.Series(dtype=object))
