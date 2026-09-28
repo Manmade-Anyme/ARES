@@ -133,7 +133,7 @@ ARES evaluates four distinct market phenomena in strict **short-circuit priority
 
 * **Logic:** Identifies structural rejection at strikes with massive fresh Open Interest.
 * **Bias versus entry (TASK-073):** `OIWallDetector.update()` identifies the wall and tracks consecutive-snapshot persistence; it does not emit a trade. `OIWallEntryFilter` requires initial interaction, sufficient persistence and a later favourable excursion before `RETEST_READY`. A secondary re-test must occur on a later candle than that transition.
-* **Confirmation:** A defended re-test arms a candidate. Its next later candle must close **below both its own open and the candidate low for a CE wall** (bearish), or **above both its own open and the candidate high for a PE wall** (bullish). Flat candles and equality with the candidate extreme do not confirm. Failed confirmation clears that candidate; a fresh defended touch may re-arm it. Wick rejection remains a confidence contributor, not a hard entry gate.
+* **Confirmation:** The extra post-retest confirmation phase was removed (MANM-184). A valid defended re-test emits the trade immediately on candle close, without requiring a follow-through directional candle or a break of the retest extreme. Wick rejection remains a confidence contributor, not a hard entry gate.
 * **State isolation:** Changing wall identity clears interaction/re-test geometry before checking session-consumed keys. An emitted wall cannot fire again in that session. Cooldown/priority suppression requires a fresh re-test. Breach or R:R expiration retains `EXPIRED` and its reason for subsequent evaluations of that same active wall. A disappearing active wall emits one `EXPIRED` context before `NO_WALL`.
 * **Risk policy:** The existing engine retains detector priority, cooldown and R:R checks. Central per-type levels set the initial stop to **16 spot points**, T1 to **25 points**, and T2 to the nearest eligible structural level beyond T1 or the **40-point** fallback. This entry-filter change does not widen stops or alter position-management rules.
 * **Dynamic Scoring (4-Point Matrix):**
@@ -220,7 +220,7 @@ ARES actively tracks its signals using a persistent **Position Manager**:
 | **Trailing Stops** | When price reaches Target 1 (T1), Stop Loss is automatically trailed to entry price (`STOPPED_OUT_AT_BE`). If that trailed stop is later hit, analytics preserve the actual entry-price exit fill while crediting the locked entry-to-T1 P&L. |
 | **Multi-Class Scoring** | Natively records point scores (TASK-198): `T2_HIT=2`, `T1_HIT=1`, `STOPPED_OUT_AT_BE=1`, `SL_HIT=0`. |
 | **Persistent State** | Active trades sync in real-time with Supabase (`active_trades`) and load into memory on startup for resilient failover. |
-| **Tracking IDs** | Every trade signal is assigned a display code (e.g., `#0501`) and linked by DB ID (`signal_id`) to `trade_analytics`. |
+| **Tracking IDs** | Every trade signal is assigned a 4-digit display code (e.g., `"0501"`) and linked by this code (`signal_id` as text) to `trade_analytics`. |
 | **Analytics Logging** | Detailed trade histories, market context, and OI data log to `trade_analytics` upon trade completion. |
 | **Discord Updates** | State changes (T1 hit, Trailed SL hit, T2 hit) trigger color-coded Discord alert updates via Webhooks. |
 
@@ -387,18 +387,26 @@ CREATE TABLE IF NOT EXISTS active_trades (
   signal_id text,
   setup_type text not null,
   direction text not null,
+  entry_timestamp timestamptz not null,
   entry_price numeric not null,
   stop_loss numeric not null,
   target_1 numeric not null,
   target_2 numeric not null,
   state text not null default 'OPEN',
+  exit_price numeric,
+  exit_type text,
+  exit_timestamp timestamptz,
+  pnl_points_override numeric,
   added_time_ist text,
-  created_at timestamptz default now()
+  time_metrics_excluded boolean NOT NULL DEFAULT false,
+  created_at timestamptz default now(),
+  CONSTRAINT chk_active_trades_exit_chronology CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp),
+  CONSTRAINT chk_active_trades_closed_requires_exit CHECK (state NOT IN ('CLOSED', 'STOPPED_OUT') OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
 );
 
 CREATE TABLE IF NOT EXISTS trade_analytics (
   id uuid PRIMARY KEY,
-  signal_id bigint,
+  signal_id text,
   setup_type text NOT NULL,
   direction text NOT NULL,
   entry_timestamp timestamptz NOT NULL,
@@ -410,7 +418,10 @@ CREATE TABLE IF NOT EXISTS trade_analytics (
   score integer,
   market_context jsonb,
   oi_data jsonb,
-  created_at timestamptz DEFAULT now()
+  time_metrics_excluded boolean NOT NULL DEFAULT false,
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT chk_trade_analytics_exit_chronology CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp),
+  CONSTRAINT chk_trade_analytics_closed_requires_exit CHECK (result_state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
 );
 
 CREATE INDEX IF NOT EXISTS idx_trade_analytics_entry ON trade_analytics (entry_timestamp DESC);

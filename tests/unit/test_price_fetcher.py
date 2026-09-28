@@ -1,8 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
-import asyncio
-import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from fetchers.price_fetcher import PriceFetcher
 from models import OHLCVCandle
 

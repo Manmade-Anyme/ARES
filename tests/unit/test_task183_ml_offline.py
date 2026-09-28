@@ -13,7 +13,6 @@ import tempfile
 import types
 import builtins
 from contextlib import redirect_stdout
-from datetime import datetime
 from unittest.mock import mock_open, patch
 
 import numpy as np
@@ -105,29 +104,29 @@ class TestFlatten(unittest.TestCase):
 class TestLabelForwardPoints(unittest.TestCase):
     def test_up_move_is_win(self):
         # +25 on the next candle, tp=20 -> clean up move -> 1
-        labels = label_forward_points([100, 125, 100, 100], lookforward=3,
+        labels, res = label_forward_points([100, 125, 100, 100], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], 1)
 
     def test_down_move_is_win(self):
-        labels = label_forward_points([100, 75, 100, 100], lookforward=3,
+        labels, res = label_forward_points([100, 75, 100, 100], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], 1)
 
     def test_stop_before_target_is_loss(self):
         # drops 12 (past bull sl 10) first, never a clean 20-pt move -> 0
-        labels = label_forward_points([100, 88, 105, 103], lookforward=3,
+        labels, res = label_forward_points([100, 88, 105, 103], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], 0)
 
     def test_inconclusive_is_minus_one(self):
         # tiny wiggles, neither tp nor sl -> -1
-        labels = label_forward_points([100, 105, 98, 101], lookforward=3,
+        labels, res = label_forward_points([100, 105, 98, 101], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], -1)
 
     def test_tail_rows_have_no_forward_window(self):
-        labels = label_forward_points([100, 100], lookforward=3,
+        labels, res = label_forward_points([100, 100], [1, 2], lookforward=3,
                                       tp_points=20, sl_points=10)
         # not enough forward candles -> inconclusive
         self.assertEqual(labels[-1], -1)
@@ -186,7 +185,6 @@ class TestChronologicalSplit(unittest.TestCase):
 class TestRunTrainingSmallDataGuard(unittest.TestCase):
     def test_tiny_dataset_does_not_crash(self):
         # a handful of separable rows; run_training must complete and return metrics
-        import numpy as np
         rng = list(range(40))
         df = pd.DataFrame({
             "timestamp": pd.to_datetime([f"2026-07-08T09:{i:02d}:00" for i in rng]),
@@ -209,6 +207,12 @@ class TestSharpeMetrics(unittest.TestCase):
                 "2026-08-05T04:00:00+00:00",
             ],
             "pnl_points": [10.0, -2.0, -4.0, 8.0],
+            "entry_timestamp": [
+                "2026-08-03T04:00:00+00:00",
+                "2026-08-03T05:00:00+00:00",
+                "2026-08-04T04:00:00+00:00",
+                "2026-08-05T04:00:00+00:00",
+            ],
             "exit_timestamp": [
                 "2026-08-03T04:00:00+00:00",
                 "2026-08-03T05:00:00+00:00",
@@ -235,6 +239,10 @@ class TestSharpeMetrics(unittest.TestCase):
                 "2026-08-03T04:00:00+00:00",
                 "2026-08-04T04:00:00+00:00",
             ],
+            "entry_timestamp": [
+                "2026-08-03T04:00:00+00:00",
+                "2026-08-04T04:00:00+00:00",
+            ],
             "exit_timestamp": [
                 "2026-08-05T04:00:00+00:00",
                 "2026-08-06T04:00:00+00:00",
@@ -256,12 +264,23 @@ class TestSharpeMetrics(unittest.TestCase):
     def test_requires_two_distinct_trading_days(self):
         df = pd.DataFrame({
             "timestamp": ["2026-08-03T04:00:00+00:00"],
+            "entry_timestamp": ["2026-08-03T04:00:00+00:00"],
             "exit_timestamp": ["2026-08-03T04:00:00+00:00"],
             "pnl_points": [10.0],
         })
         metrics = _sharpe_metrics(df)
         self.assertEqual(metrics["sharpe_status"], "insufficient_days")
         self.assertIsNone(metrics["sharpe_annualized"])
+
+    def test_invalid_chronology_count(self):
+        df = pd.DataFrame({
+            "timestamp": ["2026-08-03T04:00:00+00:00", "2026-08-04T04:00:00+00:00"],
+            "entry_timestamp": ["2026-08-03T10:00:00+00:00", "2026-08-04T10:00:00+00:00"],
+            "exit_timestamp": ["2026-08-03T09:00:00+00:00", "2026-08-04T11:00:00+00:00"],
+            "pnl_points": [10.0, 5.0],
+        })
+        metrics = _sharpe_metrics(df)
+        self.assertEqual(metrics["sharpe_invalid_chronology_count"], 1)
 
 
 class TestDetectorScoresFeature(unittest.TestCase):
@@ -319,7 +338,6 @@ class TestDetectorScoresFeature(unittest.TestCase):
         df = flatten_features([row_with, row_without])
 
         self.assertIn("detector_scores__failed_breakout", df.columns)
-        import numpy as np
         self.assertTrue(pd.isna(df.iloc[1]["detector_scores__failed_breakout"]),
                         "Pre-migration rows must have NaN, not 0.0")
 
@@ -381,7 +399,7 @@ class TestDetectorScoresFeature(unittest.TestCase):
 
             def execute(self):
                 return types.SimpleNamespace(data=[
-                    {"id": "trade-1", "exit_timestamp": "2026-08-05T04:00:00+00:00"},
+                    {"id": "trade-1", "exit_timestamp": "2026-08-05T04:00:00+00:00", "entry_timestamp": "2026-08-05T03:00:00+00:00", "time_metrics_excluded": False},
                 ])
 
         query = Query()
@@ -394,8 +412,12 @@ class TestDetectorScoresFeature(unittest.TestCase):
         supabase = Supabase()
         exits = _fetch_trade_exit_timestamps(supabase)
         self.assertEqual(supabase.table_name, "trade_analytics")
-        self.assertEqual(query.selected_columns, "id,exit_timestamp")
-        self.assertEqual(exits["trade-1"], "2026-08-05T04:00:00+00:00")
+        self.assertEqual(query.selected_columns, "id,exit_timestamp,entry_timestamp,time_metrics_excluded")
+        self.assertEqual(exits["trade-1"], {
+            "exit_timestamp": "2026-08-05T04:00:00+00:00",
+            "entry_timestamp": "2026-08-05T03:00:00+00:00",
+            "time_metrics_excluded": False
+        })
 
 
 def _training_frame(n=64, feature_names=None):
@@ -835,52 +857,65 @@ class TestOfflineShapContract(unittest.TestCase):
             self.assertIn(expected, text)
             output.close()
 
-    def test_main_orchestrates_versioned_shap_report_without_live_io(self):
-        from ml_signal.train_offline import main
-
-        frame = _training_frame(n=4, feature_names=["alpha"])
-        metrics = {
-            "n_samples": 4, "n_train": 3, "n_test": 1,
-            "pos_rate": 0.5, "provisional": True, "auc_roc": 0.75,
-            "precision": 0.5, "recall": 0.5, "precision_top20": 0.5,
-            "top_features": [{"feature": "alpha", "gain": 0.5}],
-            "shap_computed": True,
-            "shap_top_features": [{"feature": "alpha", "mean_abs_shap": 0.25}],
-            "shap_status": "computed",
-        }
-        captured = {}
-
-        def fake_run_training(*args, **kwargs):
-            captured["kwargs"] = kwargs
-            return object(), metrics
-
-        fake_supabase = types.SimpleNamespace(create_client=lambda url, key: object())
-        fake_dotenv = types.SimpleNamespace(load_dotenv=lambda path: None)
-        with patch.dict(os.environ, {"SUPABASE_URL": "url", "SUPABASE_KEY": "key"}), \
-                patch.dict(sys.modules, {"supabase": fake_supabase, "dotenv": fake_dotenv}), \
-                patch("ml_signal.train_offline._fetch_ml_collection", return_value=[{"row": 1}]), \
-                patch("ml_signal.train_offline._fetch_trade_exit_timestamps", return_value={}), \
-                patch("ml_signal.dataset.build_real_outcome_frame", return_value=frame), \
-                patch("ml_signal.train_offline.feature_columns", return_value=["alpha"]), \
-                patch("ml_signal.predictor.get_next_model_version_and_path",
-                      return_value=("/models/v42.joblib", "v42")), \
-                patch("ml_signal.train_offline.run_training", side_effect=fake_run_training), \
-                patch("builtins.open", mock_open()), \
-                patch("ml_signal.train_offline.json.dump"):
-            output = tempfile.SpooledTemporaryFile(mode="w+")
-            with redirect_stdout(output):
-                main()
-            output.seek(0)
-            stdout = output.read()
-            output.close()
-
-        self.assertEqual(captured["kwargs"]["model_version"], "v42")
-        self.assertTrue(captured["kwargs"]["shap_plot_path"].endswith(
-            "reports/ml/v42_shap_summary.png"))
-        self.assertIn("SHAP Feature Importance", stdout)
-        self.assertIn("raw margin/log-odds", stdout)
-        self.assertIn("alpha", stdout)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestOfflineExclusions(unittest.TestCase):
+    def test_run_training_excludes_flagged_trades(self):
+        rng = list(range(100))
+        df = pd.DataFrame({
+            "timestamp": pd.date_range("2026-07-08", periods=100, freq="min"),
+            "f1": [i % 2 for i in rng],
+            "f2": [(i * 7) % 5 for i in rng],
+            "label": [i % 2 for i in rng],
+            "time_metrics_excluded": [True if i < 10 else False for i in rng],
+        })
+        model, metrics = run_training(df, ["f1", "f2"], min_samples=1)
+        self.assertEqual(metrics["n_samples"], 90)
+
+    def test_run_training_aborts_without_saving_when_all_trades_are_excluded(self):
+        df = _training_frame(n=20, feature_names=["f1", "f2"])
+        df["time_metrics_excluded"] = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = os.path.join(directory, "model.joblib")
+            report_path = os.path.join(directory, "metrics.json")
+            with patch("ml_signal.train_offline._train_xgb") as train_xgb, \
+                    patch("ml_signal.train_offline.joblib.dump") as dump_model:
+                with self.assertRaisesRegex(
+                        ValueError,
+                        "No training rows remain after applying time_metrics_excluded"):
+                    run_training(
+                        df,
+                        ["f1", "f2"],
+                        min_samples=1,
+                        save_path=model_path,
+                        report_path=report_path,
+                    )
+
+            train_xgb.assert_not_called()
+            dump_model.assert_not_called()
+            self.assertFalse(os.path.exists(model_path))
+            self.assertFalse(os.path.exists(report_path))
+
+class TestBuildRealOutcomeFrame(unittest.TestCase):
+    def test_metadata_columns_preserved(self):
+        from ml_signal.dataset import build_real_outcome_frame
+        rows = [
+            {
+                "timestamp": "2026-07-08T09:15:00+00:00",
+                "trade_outcome": "win",
+                "trade_pnl": 15.0,
+                "exit_timestamp": "2026-07-08T09:20:00+00:00",
+                "entry_timestamp": "2026-07-08T09:15:00+00:00",
+                "time_metrics_excluded": True,
+            }
+        ]
+        with patch("ml_signal.labeling.classify_ares_outcome", return_value=1):
+            df = build_real_outcome_frame(rows)
+        self.assertIn("time_metrics_excluded", df.columns)
+        self.assertIn("entry_timestamp", df.columns)
+        self.assertTrue(df.iloc[0]["time_metrics_excluded"])
+        self.assertEqual(df.iloc[0]["entry_timestamp"], "2026-07-08T09:15:00+00:00")

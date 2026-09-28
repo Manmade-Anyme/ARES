@@ -7,8 +7,6 @@ Verifies that:
 3. SignalPredictor loads the latest discovered model and emits its version in predictions.
 4. Discord alerts dynamically display the loaded model version (e.g. v2.joblib / v2).
 """
-import os
-import re
 import datetime
 import pytest
 from unittest.mock import MagicMock, patch

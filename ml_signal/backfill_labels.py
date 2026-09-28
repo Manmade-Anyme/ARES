@@ -35,7 +35,7 @@ values. DRY RUN BY DEFAULT — pass --apply to write.
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import create_client
@@ -140,9 +140,14 @@ def _parse_ts(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # Historical ARES timestamps without an offset were written in IST.
+    # Normalize every parsed value to aware UTC before proximity comparisons.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    return parsed.astimezone(timezone.utc)
 
 
 def _normalise_setup(value: Optional[str]) -> str:
@@ -165,11 +170,26 @@ def _page(sb, table: str, cols: str, size: int = 1000) -> List[Dict[str, Any]]:
     return out
 
 
-def repair_join_key(sb, apply: bool) -> int:
+def repair_join_key(
+    sb,
+    apply: bool,
+    prospective_trades: Optional[List[Dict[str, Any]]] = None,
+) -> int:
     """Phase 1 — rebuild ml_collection.signal_id as the real ares_signals.id."""
     rows = _page(sb, "ml_collection", "id,created_at,signal_id,signal_setup_type")
     signals = _page(sb, "ares_signals", "id,created_at,setup_type")
     by_id = {str(s["id"]): s for s in signals}
+
+    trades = _page(sb, "trade_analytics", "id,signal_id,setup_type,entry_timestamp")
+    if prospective_trades:
+        known_trade_ids = {str(t.get("id")) for t in trades}
+        trades.extend(
+            t for t in prospective_trades
+            if str(t.get("id")) not in known_trade_ids
+        )
+    trades_by_signal = {}
+    for t in trades:
+        trades_by_signal.setdefault(str(t.get("signal_id")), []).append(t)
 
     def _corroborated(row: Dict[str, Any]) -> bool:
         """Is this row's existing signal_id actually the right signal?
@@ -182,15 +202,26 @@ def repair_join_key(sb, apply: bool) -> int:
         (time, setup) evidence used to repair, so a coincidental numeric match
         cannot pass.
         """
+        # 1. Check if it matches a legacy `ares_signals.id` exactly.
         s = by_id.get(str(row["signal_id"]))
-        if s is None:
-            return False
-        rt, st = _parse_ts(row.get("created_at")), _parse_ts(s.get("created_at"))
-        if not (rt and st):
-            return False
-        if _normalise_setup(row.get("signal_setup_type")) != _normalise_setup(s.get("setup_type")):
-            return False
-        return abs((st - rt).total_seconds()) <= _MATCH_TOLERANCE_SECONDS
+        if s is not None:
+            rt, st = _parse_ts(row.get("created_at")), _parse_ts(s.get("created_at"))
+            if rt and st and _normalise_setup(row.get("signal_setup_type")) == _normalise_setup(s.get("setup_type")):
+                if abs((st - rt).total_seconds()) <= _MATCH_TOLERANCE_SECONDS:
+                    return True
+        
+        # 2. Prevent phase 1 from rewriting new display IDs by checking if it matches
+        #    a modern `trade_analytics` row's 4-digit display ID.
+        ts = trades_by_signal.get(str(row["signal_id"]))
+        if ts is not None:
+            rt = _parse_ts(row.get("created_at"))
+            for t in ts:
+                tt = _parse_ts(t.get("entry_timestamp"))
+                if rt and tt and _normalise_setup(row.get("signal_setup_type")) == _normalise_setup(t.get("setup_type")):
+                    if abs((tt - rt).total_seconds()) <= _MATCH_TOLERANCE_SECONDS:
+                        return True
+                        
+        return False
 
     candidates = [r for r in rows if r.get("signal_id") is not None]
     already = [r for r in candidates if _corroborated(r)]
@@ -209,7 +240,17 @@ def repair_join_key(sb, apply: bool) -> int:
     # and phase 2 — which updates by signal_id — writes one trade's outcome onto
     # both. Consecutive same-setup signals are real here (TASK-185 recorded three
     # exhaustion entries in three consecutive minutes), so this is reachable.
-    claimed = {str(r["signal_id"]) for r in already}
+    # Only claim database IDs. Modern display IDs do not map 1:1 to database IDs,
+    # and treating them as such would lock out valid legacy repairs targeting that db_id.
+    claimed = set()
+    for r in already:
+        # Check if the signal_id is a valid db_id corroboration
+        s = by_id.get(str(r["signal_id"]))
+        if s is not None:
+            rt, st = _parse_ts(r.get("created_at")), _parse_ts(s.get("created_at"))
+            if rt and st and _normalise_setup(r.get("signal_setup_type")) == _normalise_setup(s.get("setup_type")):
+                if abs((st - rt).total_seconds()) <= _MATCH_TOLERANCE_SECONDS:
+                    claimed.add(str(s["id"]))
     fixed = 0
     unmatched: List[int] = []
     contended: List[int] = []
@@ -245,16 +286,53 @@ def repair_join_key(sb, apply: bool) -> int:
     print(f"  unmatchable (left as-is) : {len(unmatched)}")
     if contended:
         print(f"  CONTENDED (left as-is)   : {len(contended)}  rows={contended[:10]}")
-        print(f"    nearest signal was already claimed — inspect before trusting these")
+        print("    nearest signal was already claimed — inspect before trusting these")
     return fixed
 
 
-def backfill_labels(sb, apply: bool) -> int:
-    """Phase 2 — write trade_id / trade_outcome / trade_pnl from closed trades."""
-    trades = _page(sb, "trade_analytics", "id,signal_id,result_state,pnl_points")
+def backfill_labels(
+    sb,
+    apply: bool,
+    prospective_trades: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Phase 4 — write complete labels from closed trades to unowned ML rows.
+
+    During a dry run, phase 0a may have reconstructed analytics rows in
+    memory. Include those prospective rows here so the preview reflects the
+    labels that ``--apply`` would write without mutating the database.
+    """
+    trades = _page(
+        sb,
+        "trade_analytics",
+        "id,signal_id,result_state,pnl_points,score,setup_type,entry_timestamp",
+    )
+    if prospective_trades:
+        prospective_by_id = {
+            str(t.get("id")): t for t in prospective_trades
+        }
+        trades = [
+            prospective_by_id.get(str(t.get("id")), t)
+            for t in trades
+        ]
+        known_trade_ids = {str(t.get("id")) for t in trades}
+        trades.extend(
+            t for t in prospective_trades
+            if str(t.get("id")) not in known_trade_ids
+        )
+    ml_rows = _page(
+        sb,
+        "ml_collection",
+        "id,signal_id,signal_setup_type,timestamp,trade_id",
+    )
+    linked_trade_ids = {
+        str(row["trade_id"])
+        for row in ml_rows
+        if row.get("trade_id") is not None
+    }
     closed = [
         t for t in trades
         if t.get("result_state") not in _OPEN_STATES and t.get("signal_id") is not None
+        and str(t.get("id")) not in linked_trade_ids
     ]
     orphans = [t for t in trades if t.get("signal_id") is None]
 
@@ -264,40 +342,67 @@ def backfill_labels(sb, apply: bool) -> int:
     if not apply and orphans:
         # Phase 2 wrote nothing in dry run, so this still counts orphans it would
         # have recovered. Say so rather than let the figure read as final.
-        print(f"    NOTE dry run: phase 2's recoveries are not reflected above."
-              f" Under --apply this number falls and 'attributable' rises.")
+        print("    NOTE dry run: phase 2's recoveries are not reflected above."
+              " Under --apply this number falls and 'attributable' rises.")
 
-    # One signal must map to one trade. If two closed trades share a signal_id the
-    # second .eq() update overwrites the first, and which one survives depends on
-    # pagination order — arbitrary rather than wrong-but-explainable. Report and
-    # skip instead of writing a label that cannot be trusted.
+    # Display IDs are intentionally reusable. Pair each trade with at most one
+    # unlabelled ML snapshot, using setup and entry time when a code is reused.
     by_signal: Dict[str, List[Dict[str, Any]]] = {}
     for t in closed:
         by_signal.setdefault(str(t["signal_id"]), []).append(t)
 
-    ambiguous = {k: v for k, v in by_signal.items() if len(v) > 1}
-    if ambiguous:
-        print(f"  AMBIGUOUS (skipped)      : {len(ambiguous)} signal(s) with >1 closed trade")
-        for sid, ts in list(ambiguous.items())[:10]:
-            print(f"    signal {sid}: trades {[t['id'] for t in ts]}")
-
     rows_written = 0
     trades_applied = 0
+    claimed_ml_ids = set()
+    ambiguous = []
     for sid, ts in by_signal.items():
-        if len(ts) > 1:
-            continue
-        t = ts[0]
-        payload = {
-            "trade_id": t["id"],
-            "trade_outcome": t["result_state"],
-            "trade_pnl": t.get("pnl_points"),
-        }
-        trades_applied += 1
-        if apply:
-            resp = sb.table("ml_collection").update(payload).eq("signal_id", sid).execute()
-            # Count ROWS touched, not trades iterated — a trade whose signal has no
-            # ml_collection row writes nothing, and the two numbers diverge.
-            rows_written += len(getattr(resp, "data", None) or [])
+        candidates = [
+            row for row in ml_rows
+            if str(row.get("signal_id")) == sid
+            and row.get("trade_id") is None
+            and row.get("id") not in claimed_ml_ids
+        ]
+        for t in sorted(ts, key=lambda row: row.get("entry_timestamp") or ""):
+            setup_matches = [
+                row for row in candidates
+                if _normalise_setup(row.get("signal_setup_type")) == _normalise_setup(t.get("setup_type"))
+            ]
+            timed = []
+            trade_time = _parse_ts(t.get("entry_timestamp"))
+            for row in setup_matches:
+                row_time = _parse_ts(row.get("timestamp"))
+                if trade_time and row_time:
+                    timed.append((abs((row_time - trade_time).total_seconds()), row))
+
+            if timed:
+                delta, target = min(timed, key=lambda item: item[0])
+                if delta > _MATCH_TOLERANCE_SECONDS:
+                    target = None
+            elif len(ts) == 1 and len(setup_matches) == 1:
+                target = setup_matches[0]
+            else:
+                target = None
+
+            if target is None:
+                ambiguous.append(t["id"])
+                continue
+
+            claimed_ml_ids.add(target["id"])
+            candidates.remove(target)
+            payload = {
+                "trade_id": t["id"],
+                "trade_outcome": t["result_state"],
+                "trade_pnl": t.get("pnl_points"),
+                "trade_score": t.get("score"),
+            }
+            trades_applied += 1
+            if apply:
+                resp = sb.table("ml_collection").update(payload).eq("id", target["id"]).execute()
+                rows_written += len(getattr(resp, "data", None) or [])
+
+    if ambiguous:
+        print(f"  AMBIGUOUS (skipped)      : {len(ambiguous)} trade(s) without a unique setup/time match")
+        print(f"    trades {ambiguous[:10]}")
 
     if apply:
         print(f"  trades applied           : {trades_applied}")
@@ -306,6 +411,119 @@ def backfill_labels(sb, apply: bool) -> int:
         print(f"  trades attributable      : {trades_applied}  (row count unknown until --apply)")
     return rows_written if apply else trades_applied
 
+
+
+def repair_stuck_open_trades(
+    sb,
+    apply: bool,
+    prospective_trades: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Phase 0a — reconcile terminal trades that raced entry/exit persistence.
+    
+    Reads the durable terminal telemetry (exit_price, exit_type, exit_timestamp,
+    pnl_points_override) from active_trades. Existing OPEN analytics rows are
+    closed, while entirely absent analytics rows are recreated so Phase 4 can
+    label their ml_collection rows.
+    """
+    trades = _page(
+        sb,
+        "trade_analytics",
+        "id,signal_id,setup_type,result_state,entry_timestamp,entry_price,direction,pnl_points,score",
+    )
+    open_trades = [t for t in trades if t.get("result_state") in _OPEN_STATES]
+    analytics_by_id = {str(t["id"]): t for t in trades if t.get("id")}
+    active = _page(
+        sb,
+        "active_trades",
+        "id,signal_id,setup_type,direction,entry_price,created_at,"
+        "entry_timestamp,exit_price,exit_type,exit_timestamp,pnl_points_override,"
+        "time_metrics_excluded",
+    )
+    
+    repairs = []
+    missing_analytics = 0
+    for a in active:
+        if not a.get("id") or not a.get("exit_type"):
+            continue
+        t = analytics_by_id.get(str(a["id"]))
+        is_missing = t is None
+        if not is_missing and t.get("result_state") not in _OPEN_STATES:
+            continue
+
+        source = a if is_missing else t
+        if a.get("pnl_points_override") is not None:
+            pnl = float(a["pnl_points_override"])
+        else:
+            ep = float(source["entry_price"])
+            xp = float(a["exit_price"])
+            pnl = xp - ep if source["direction"] == "BULLISH" else ep - xp
+        pnl = round(pnl, 2)
+
+        final_state = a["exit_type"]
+        score = {
+            "T2_HIT": 2,
+            "T1_HIT": 1,
+            "STOPPED_OUT_AT_BE": 1,
+            "SL_HIT": 0,
+            "STOPPED_OUT": 0,
+        }.get(final_state)
+
+        terminal = {
+            "result_state": final_state,
+            "exit_price": float(a["exit_price"]),
+            "exit_timestamp": a["exit_timestamp"],
+            "pnl_points": pnl,
+            "score": score,
+        }
+        insert_data = None
+        if is_missing:
+            entry_timestamp = a.get("entry_timestamp") or a.get("created_at")
+            insert_data = {
+                "id": a["id"],
+                "signal_id": a.get("signal_id"),
+                "setup_type": a["setup_type"],
+                "direction": a["direction"],
+                "entry_timestamp": entry_timestamp,
+                "entry_price": float(a["entry_price"]),
+                **terminal,
+            }
+            is_anomaly = bool(a.get("time_metrics_excluded"))
+            if not is_anomaly and a.get("exit_timestamp") and entry_timestamp:
+                try:
+                    if a["exit_timestamp"] < entry_timestamp:
+                        is_anomaly = True
+                except TypeError:
+                    pass
+            if is_anomaly:
+                insert_data["time_metrics_excluded"] = True
+                insert_data["market_context"] = {
+                    "anomaly": {
+                        "type": "unrecoverable_legacy_row",
+                        "note": "Rebuilt from active_trades with anomaly flag preserved."
+                    }
+                }
+            missing_analytics += 1
+        if not apply and prospective_trades is not None:
+            prospective = dict(insert_data if insert_data is not None else t)
+            prospective.update(terminal)
+            prospective_trades.append(prospective)
+        repairs.append((a["id"], terminal, insert_data))
+
+    print(f"  stuck OPEN trades (affected): {len(open_trades)}")
+    print(f"  missing analytics entries   : {missing_analytics}")
+    print(f"  terminal in active_trades   : {len(repairs)}")
+    
+    if not apply:
+        return len(repairs)
+        
+    for trade_id, terminal, insert_data in repairs:
+        if insert_data is not None:
+            sb.table("trade_analytics").insert(insert_data).execute()
+        else:
+            sb.table("trade_analytics").update(terminal).eq("id", trade_id).execute()
+        
+    print(f"  trade_analytics rows closed : {len(repairs)}")
+    return len(repairs)
 
 def repair_be_after_t1(
     sb,
@@ -327,7 +545,7 @@ def repair_be_after_t1(
     trades = _page(
         sb,
         "trade_analytics",
-        "id,signal_id,result_state,pnl_points,entry_price,direction,entry_timestamp,exit_price",
+        "id,signal_id,result_state,pnl_points,entry_price,direction,entry_timestamp,exit_price,market_context,setup_type",
     )
     be_rows = [
         trade for trade in trades
@@ -355,7 +573,7 @@ def repair_be_after_t1(
         return 0
 
     active_trades = _page(sb, "active_trades", "id,target_1")
-    signals = _page(sb, "ares_signals", "id,target_1")
+    signals = _page(sb, "ares_signals", "id,target_1,timestamp,created_at,setup_type")
     active_by_id = {
         str(row.get("id")): row
         for row in active_trades
@@ -384,13 +602,30 @@ def repair_be_after_t1(
             signal_id = prospective_signal_ids.get(str(trade.get("id")))
 
         if pnl is None and signal_id is not None:
-            signal_source = signal_by_id.get(str(signal_id))
-            pnl = _be_pnl(
-                trade.get("entry_price"),
-                signal_source.get("target_1") if signal_source else None,
-                trade.get("direction"),
-            )
-            source_name = "ares_signals" if pnl is not None else None
+            signal_db_id = (trade.get("market_context") or {}).get("signal_db_id")
+            signal_source = None
+            if signal_db_id is not None:
+                signal_source = signal_by_id.get(str(signal_db_id))
+            else:
+                # Fallback safely to timestamp/setup matching instead of bare 4-digit query
+                cand = signal_by_id.get(str(signal_id))
+                if cand:
+                    st = cand.get("timestamp") or cand.get("created_at")
+                    tt = trade.get("entry_timestamp")
+                    if st and tt:
+                        st_dt = _parse_ts(st)
+                        tt_dt = _parse_ts(tt)
+                        if st_dt and tt_dt and abs((st_dt - tt_dt).total_seconds()) <= 65:
+                            if _normalise_setup(cand.get("setup_type")) == _normalise_setup(trade.get("setup_type")):
+                                signal_source = cand
+
+            if signal_source:
+                pnl = _be_pnl(
+                    trade.get("entry_price"),
+                    signal_source.get("target_1"),
+                    trade.get("direction"),
+                )
+                source_name = "ares_signals" if pnl is not None else None
         if source_name is None or pnl is None:
             unrepairable.append(trade)
             continue
@@ -422,71 +657,51 @@ def repair_be_after_t1(
         print(f"    trade ids                 : {[row.get('id') for row in unrepairable[:10]]}")
     print(f"  total points delta         : {total_delta:+.2f}")
 
-    # Reconciliation is restricted to the exact signal IDs of repaired trades.
-    # Duplicate signal IDs with different repaired values are not safe to sync.
-    ml_rows = _page(sb, "ml_collection", "id,signal_id,trade_pnl")
-    expected_by_signal = {}
-    ambiguous_signal_ids = set()
-    for repair in repairs:
-        signal_id = repair.get("signal_id")
-        if signal_id is None:
-            continue
-        key = str(signal_id)
-        previous = expected_by_signal.get(key)
-        if previous is not None and previous != repair["pnl_points"]:
-            ambiguous_signal_ids.add(key)
-        expected_by_signal[key] = repair["pnl_points"]
-
+    ml_rows = _page(sb, "ml_collection", "id,trade_id,trade_pnl")
     ml_matches = 0
     ml_mismatches = 0
     ml_missing = 0
-    for signal_id, expected in expected_by_signal.items():
-        matches = [row for row in ml_rows if str(row.get("signal_id")) == signal_id]
+
+    for repair in repairs:
+        matches = [row for row in ml_rows if row.get("trade_id") == repair["trade_id"]]
         if not matches:
             ml_missing += 1
             continue
         ml_matches += len(matches)
-        if signal_id not in ambiguous_signal_ids:
-            ml_mismatches += sum(
-                1
-                for row in matches
-                if not _pnl_matches(row.get("trade_pnl"), expected)
-            )
+        ml_mismatches += sum(
+            1
+            for row in matches
+            if not _pnl_matches(row.get("trade_pnl"), repair["pnl_points"])
+        )
 
     print(f"  ml_collection exact rows  : {ml_matches}")
     print(f"  ml_collection mismatches  : {ml_mismatches}")
     if ml_missing:
         print(f"  ml_collection missing ids : {ml_missing}")
-    if ambiguous_signal_ids:
-        print(f"  ambiguous signal IDs      : {sorted(ambiguous_signal_ids)} (ML sync skipped)")
 
     if not apply:
         return len(repairs)
 
+    ml_rows_written = 0
     for repair in repairs:
         sb.table("trade_analytics").update(
             {"pnl_points": repair["pnl_points"]}
         ).eq("id", repair["trade_id"]).execute()
 
-    ml_rows_written = 0
-    for signal_id, expected in expected_by_signal.items():
-        if signal_id in ambiguous_signal_ids:
-            continue
         response = sb.table("ml_collection").update(
-            {"trade_pnl": expected}
-        ).eq("signal_id", signal_id).execute()
+            {"trade_pnl": repair["pnl_points"]}
+        ).eq("trade_id", repair["trade_id"]).execute()
         ml_rows_written += len(getattr(response, "data", None) or [])
 
     print(f"  trade_analytics rows written: {len(repairs)}")
     print(f"  ml_collection rows written : {ml_rows_written}")
-    post_rows = _page(sb, "ml_collection", "id,signal_id,trade_pnl")
+    post_rows = _page(sb, "ml_collection", "id,trade_id,trade_pnl")
     post_mismatches = sum(
         1
-        for signal_id, expected in expected_by_signal.items()
-        if signal_id not in ambiguous_signal_ids
+        for repair in repairs
         for row in post_rows
-        if str(row.get("signal_id")) == signal_id
-        and not _pnl_matches(row.get("trade_pnl"), expected)
+        if row.get("trade_id") == repair["trade_id"]
+        and not _pnl_matches(row.get("trade_pnl"), repair["pnl_points"])
     )
     print(f"  ml_collection mismatches after repair: {post_mismatches}")
     return len(repairs)
@@ -513,7 +728,7 @@ def repair_orphan_trades(
     exact UUID-to-signal mappings even during a dry run so later phases can
     preview the same repairs that ``--apply`` would perform.
     """
-    trades = _page(sb, "trade_analytics", "id,signal_id,setup_type,entry_timestamp,result_state")
+    trades = _page(sb, "trade_analytics", "id,signal_id,setup_type,entry_timestamp,result_state,market_context")
     signals = _page(sb, "ares_signals", "id,setup_type,timestamp,created_at")
 
     # Fixtures are not trades. Linking one both fabricates a relationship and
@@ -536,8 +751,35 @@ def repair_orphan_trades(
     for s in signals:
         by_setup.setdefault(_normalise_setup(s.get("setup_type")), []).append(s)
 
-    # A signal already attributed to another trade must not be stolen.
-    claimed = {str(t["signal_id"]) for t in trades if t.get("signal_id") is not None}
+    # A signal already attributed to another trade must not be stolen. Modern
+    # rows store a reusable display code in signal_id and preserve the database
+    # ID separately; legacy signal_id values are accepted only when the signal's
+    # setup and timestamp corroborate that database-ID interpretation.
+    signal_by_id = {str(s["id"]): s for s in signals if s.get("id") is not None}
+    claimed = set()
+    for trade in trades:
+        if trade.get("signal_id") is None:
+            continue
+        preserved_id = (trade.get("market_context") or {}).get("signal_db_id")
+        if preserved_id is not None:
+            claimed.add(str(preserved_id))
+            continue
+        candidate = signal_by_id.get(str(trade["signal_id"]))
+        entry_time = _parse_ts(trade.get("entry_timestamp"))
+        if candidate is None or entry_time is None:
+            continue
+        if _normalise_setup(candidate.get("setup_type")) != _normalise_setup(trade.get("setup_type")):
+            continue
+        candidate_times = (
+            _parse_ts(candidate.get("timestamp")),
+            _parse_ts(candidate.get("created_at")),
+        )
+        if any(
+            timestamp is not None
+            and abs((timestamp - entry_time).total_seconds()) <= _ORPHAN_TOLERANCE_SECONDS
+            for timestamp in candidate_times
+        ):
+            claimed.add(str(candidate["id"]))
 
     fixed = 0
     unmatched: List[str] = []
@@ -565,7 +807,7 @@ def repair_orphan_trades(
             prospective_links[str(t["id"])] = best["id"]
         if apply:
             sb.table("trade_analytics").update(
-                {"signal_id": best["id"]}
+                {"signal_id": str(best["id"])}
             ).eq("id", t["id"]).execute()
         fixed += 1
 
@@ -676,8 +918,21 @@ def main() -> int:
     print("Phase 0 — unlink test fixtures")
     unlink_fixture_trades(sb, args.apply)
 
+    # Recreate missing analytics first so key repair can corroborate display IDs.
+    print("\nPhase 0a — reconcile terminal trades and missing analytics")
+    prospective_trades: List[Dict[str, Any]] = []
+    repair_stuck_open_trades(
+        sb,
+        args.apply,
+        prospective_trades=prospective_trades if not args.apply else None,
+    )
+
     print("\nPhase 1 — rebuild the ml_collection join key")
-    repair_join_key(sb, args.apply)
+    repair_join_key(
+        sb,
+        args.apply,
+        prospective_trades=prospective_trades if not args.apply else None,
+    )
 
     # Before phase 3: a trade recovered here becomes labellable in the same run.
     print("\nPhase 2 — recover orphaned trade_analytics.signal_id")
@@ -692,7 +947,11 @@ def main() -> int:
     )
 
     print("\nPhase 4 — back-fill outcome labels")
-    backfill_labels(sb, args.apply)
+    backfill_labels(
+        sb,
+        args.apply,
+        prospective_trades=prospective_trades if not args.apply else None,
+    )
 
     print("\nPhase 5 — null the structure_features sentinel")
     repair_structure_sentinel(sb, args.apply)

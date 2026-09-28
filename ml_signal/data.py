@@ -1,5 +1,4 @@
-from datetime import datetime
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List
 
 import pandas as pd
 from supabase import create_client, Client
@@ -13,7 +12,6 @@ def load_ares_trade_analytics(
     supabase: Client,
     months: int = 6,
 ) -> List[dict]:
-    import dateutil.parser
     cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
     cutoff_str = cutoff.isoformat()
 

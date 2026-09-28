@@ -19,6 +19,7 @@ from typing import Any
 from config import settings
 
 IST = timezone(timedelta(hours=5, minutes=30))
+REPORT_QUERY_PAGE_SIZE = 1000
 
 # Setups reported on (models.SetupType), in display order.
 SETUP_TYPES = [
@@ -84,15 +85,38 @@ def fetch_closed_trades(supabase: Any, start_utc: str, end_utc: str) -> list[dic
     Fetch trades that CLOSED within [start_utc, end_utc]. Open trades (pnl_points
     NULL) are excluded — they ride multi-day and get counted the week they close.
     """
-    response = (
-        supabase.table("trade_analytics")
-        .select("setup_type, direction, pnl_points, result_state, market_context")
-        .gte("exit_timestamp", start_utc)
-        .lte("exit_timestamp", end_utc)
-        .execute()
-    )
-    rows = getattr(response, "data", None) or []
-    return [r for r in rows if r.get("pnl_points") is not None]
+    rows = []
+    start = 0
+    while True:
+        response = (
+            supabase.table("trade_analytics")
+            .select("id, setup_type, direction, pnl_points, result_state, market_context, entry_timestamp, exit_timestamp, time_metrics_excluded")
+            .gte("exit_timestamp", start_utc)
+            .lte("exit_timestamp", end_utc)
+            .eq("time_metrics_excluded", False)
+            .order("exit_timestamp")
+            .order("id")
+            .range(start, start + REPORT_QUERY_PAGE_SIZE - 1)
+            .execute()
+        )
+        page = getattr(response, "data", None) or []
+        rows.extend(page)
+        if len(page) < REPORT_QUERY_PAGE_SIZE:
+            break
+        start += REPORT_QUERY_PAGE_SIZE
+    
+    valid_rows = []
+    for r in rows:
+        if r.get("time_metrics_excluded") is True:
+            continue
+        if r.get("pnl_points") is None:
+            continue
+        entry = r.get("entry_timestamp")
+        exit_ts = r.get("exit_timestamp")
+        if entry and exit_ts and exit_ts < entry:
+            continue
+        valid_rows.append(r)
+    return valid_rows
 
 
 def _option_rupees(trade: dict) -> float:

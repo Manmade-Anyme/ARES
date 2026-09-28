@@ -10,6 +10,7 @@ Run from the repo root:  python -m ml_signal.train_offline
 
 OFFLINE / ADDITIVE: no Supabase writes, no engine changes. See ADR-183.
 """
+import argparse
 import os
 import sys
 import json
@@ -24,7 +25,7 @@ from sklearn.metrics import (
 )
 
 from .config import MLConfig, DEFAULT_CONFIG
-from .dataset import build_labeled_frame, feature_columns
+from .dataset import feature_columns
 
 
 # NOTE: ml_signal/trainer.py already has train_xgboost/evaluate_model, but it
@@ -32,6 +33,36 @@ from .dataset import build_labeled_frame, feature_columns
 # need). To keep trainer.py untouched AND avoid that dependency, the equivalent
 # minimal helpers are inlined here — same XGBoost params (from MLConfig), same
 # metrics. Only xgboost + scikit-learn are required.
+
+
+def _final_refit_sample_size_reason(n_samples: int, n_splits: int) -> Optional[str]:
+    """Return the normal gate-rejection reason when cross-fitting cannot run."""
+    if n_samples <= n_splits:
+        return (
+            "insufficient trade rows for final chronological cross-fitting: "
+            f"got {n_samples}, requires more than {n_splits} folds"
+        )
+    return None
+
+
+def _stage1_refit_reason(market_df: Optional[pd.DataFrame]) -> Optional[str]:
+    """Return why a deployable hybrid Stage 1 model cannot be fitted."""
+    if market_df is None or market_df.empty:
+        return "no resolved market-movement labels available for final Stage 1 refit"
+    if "label" not in market_df or market_df["label"].nunique(dropna=True) < 2:
+        return "final Stage 1 refit requires at least two market-movement classes"
+    if "resolution_timestamp" not in market_df:
+        return "final Stage 1 refit requires resolution_timestamp"
+    return None
+
+
+def _promotion_fold_count(value: str) -> int:
+    """Parse a fold count that can satisfy the production promotion gate."""
+    folds = int(value)
+    if folds < 4:
+        raise argparse.ArgumentTypeError("--folds must be at least 4")
+    return folds
+
 
 def _train_xgb(X_tr, y_tr, X_val, y_val, config: MLConfig):
     scale_pos_weight = (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
@@ -149,9 +180,20 @@ def _sharpe_metrics(df: pd.DataFrame, periods_per_year: int = 252) -> Dict[str, 
     timestamps = pd.to_datetime(
         df["exit_timestamp"], utc=True, errors="coerce", format="mixed",
     )
+    entry_timestamps = pd.to_datetime(
+        df.get("entry_timestamp"), utc=True, errors="coerce", format="mixed",
+    ) if "entry_timestamp" in df else pd.to_datetime(pd.Series(pd.NaT, index=df.index), utc=True)
+    
+    time_excluded = df.get("time_metrics_excluded", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    
     pnl_valid = pnl.notna() & np.isfinite(pnl)
     metrics["sharpe_missing_exit_timestamps"] = int((pnl_valid & timestamps.isna()).sum())
-    valid = pnl.notna() & timestamps.notna() & np.isfinite(pnl)
+    
+    # ADR says: valid_chronology = (exit_dt >= entry_dt)
+    valid_chronology = (timestamps >= entry_timestamps) | entry_timestamps.isna()
+    metrics["sharpe_invalid_chronology_count"] = int((timestamps < entry_timestamps).sum())
+    
+    valid = pnl.notna() & timestamps.notna() & np.isfinite(pnl) & (~time_excluded) & valid_chronology
     if not valid.any():
         if metrics["sharpe_missing_exit_timestamps"]:
             metrics["sharpe_status"] = "missing_exit_timestamp"
@@ -545,16 +587,28 @@ def run_training(
 ) -> Tuple[object, Dict[str, object]]:
     """
     Train + evaluate on a chronological split. Degrades gracefully on tiny data
-    (warns, marks metrics provisional, still trains). Optionally persists the
-    model and a JSON report. Returns (model, metrics).
+    (warns, marks metrics provisional, still trains), but aborts when anomaly
+    exclusion leaves no eligible rows. Optionally persists the model and a JSON
+    report. Returns (model, metrics).
     """
-    n = len(df)
+    sharpe = _sharpe_metrics(df)
+
+    time_excluded = df.get("time_metrics_excluded", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    if time_excluded.any():
+        df_train = df[~time_excluded].copy()
+    else:
+        df_train = df
+
+    if df_train.empty:
+        raise ValueError("No training rows remain after applying time_metrics_excluded")
+
+    n = len(df_train)
     provisional = n < min_samples
     if provisional:
         print(f"[!] PROVISIONAL: {n} labeled samples (< {min_samples}). "
               f"Metrics are directional, not production-grade.")
 
-    train, test = chronological_split(df, train_frac=train_frac)
+    train, test = chronological_split(df_train, train_frac=train_frac)
 
     X_train, y_train = train[feature_cols], train[label_col]
     # Internal chronological val split for early stopping.
@@ -572,15 +626,30 @@ def run_training(
         "n_samples": int(n),
         "n_train": int(len(train)),
         "n_test": int(len(test)),
-        "pos_rate": float(df[label_col].mean()) if n else float("nan"),
+        "pos_rate": float(df_train[label_col].mean()) if n else float("nan"),
         "provisional": bool(provisional),
     })
-    metrics.update(_sharpe_metrics(df))
+    metrics.update(sharpe)
     metrics.update(_shap_metrics())
+    if "feature_version" in df_train.columns:
+        missingness_by_ver: Dict[str, Any] = {}
+        for ver, vdf in df_train.groupby("feature_version"):
+            v_missing = {
+                col: round(float(vdf[col].isna().mean()), 4)
+                for col in feature_cols
+                if vdf[col].isna().any()
+            }
+            missingness_by_ver[str(ver)] = {
+                "n_samples": int(len(vdf)),
+                "features_with_missing": v_missing,
+            }
+        metrics["missingness_by_feature_version"] = missingness_by_ver
+
     if model_version is not None:
         metrics["model_version"] = model_version
 
     importance = _importance(model, feature_cols)
+
     metrics["top_features"] = importance.head(15).to_dict(orient="records")
     values = _compute_shap(model, X_test, feature_cols, metrics)
     _save_shap_plot(metrics, shap_plot_path)
@@ -643,12 +712,23 @@ def run_training(
 
 def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     """Read-only, paginated pull of ml_collection ordered by timestamp asc."""
-    cols = "timestamp,raw_candle,trade_id,trade_outcome,trade_pnl," + ",".join([
+    include_feature_version = True
+    try:
+        supabase.table("ml_collection").select("feature_version").limit(1).execute()
+    except Exception:
+        include_feature_version = False
+
+    base_cols = ["timestamp", "raw_candle", "trade_id", "trade_outcome", "trade_pnl", "snapshot_uuid", "signal_id", "signal_setup_type"]
+    if include_feature_version:
+        base_cols.append("feature_version")
+    cols = ",".join(base_cols + [
         "candle_features", "volume_features", "iv_features", "oi_features",
         "greek_features", "structure_features", "meta_features",
         "detector_scores",   # TASK-4e: one-hot setup-detector dict
     ])
     rows: List[dict] = []
+
+
     start = 0
     while True:
         batch = (
@@ -666,14 +746,14 @@ def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     return rows
 
 
-def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, str]:
+def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, dict]:
     """Read completed trade exit timestamps keyed by the ml_collection trade id."""
-    exits: Dict[str, str] = {}
+    exits: Dict[str, dict] = {}
     start = 0
     while True:
         batch = (
             supabase.table("trade_analytics")
-            .select("id,exit_timestamp")
+            .select("id,exit_timestamp,entry_timestamp,time_metrics_excluded")
             .order("exit_timestamp")
             .range(start, start + page - 1)
             .execute()
@@ -681,17 +761,41 @@ def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, str]:
         )
         for trade in batch:
             trade_id = trade.get("id")
-            exit_timestamp = trade.get("exit_timestamp")
-            if trade_id is not None and exit_timestamp is not None:
-                exits[str(trade_id)] = exit_timestamp
+            if trade_id is not None:
+                exits[str(trade_id)] = {
+                    "exit_timestamp": trade.get("exit_timestamp"),
+                    "entry_timestamp": trade.get("entry_timestamp"),
+                    "time_metrics_excluded": trade.get("time_metrics_excluded", False)
+                }
         if len(batch) < page:
             break
         start += page
     return exits
 
 
-def main() -> None:
-    # repo root on path so `config` (the app settings, with .env creds) imports.
+from ml_signal.pipeline_market_movement import MarketMovementPipeline
+from ml_signal.pipeline_trade_outcomes import TradeOutcomePipeline
+from ml_signal.promotion_gate import enforce_promotion_or_raise, ModelPromotionError
+from ml_signal.predictor import HybridPredictorBundle
+
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description="ARES Offline ML Training")
+    parser.add_argument("--pipeline", choices=["market_movement", "trade_outcomes", "all"], default="all")
+    parser.add_argument(
+        "--folds",
+        type=_promotion_fold_count,
+        default=5,
+        metavar="N",
+        help="Walk-forward split count (minimum: 4; default: 5)",
+    )
+    parser.add_argument("--promote", action="store_true", default=True, help="Promote model if it passes gates")
+    parser.add_argument("--no-promote", action="store_false", dest="promote")
+    parser.add_argument("--enforce-gate", action="store_true", default=False)
+    parser.add_argument("--hybrid", action="store_true", default=True)
+    parser.add_argument("--no-hybrid", action="store_false", dest="hybrid")
+    parser.add_argument("--metrics-path", type=str, default=os.environ.get("METRICS_PATH", "reports/ml/task183_offline_metrics.json"))
+    args = parser.parse_args(argv)
+
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if repo not in sys.path:
         sys.path.insert(0, repo)
@@ -719,63 +823,212 @@ def main() -> None:
     supabase = create_client(url, key)
 
     config = DEFAULT_CONFIG
-    print(f"[*] Reading ml_collection (read-only)...")
+    print("[*] Reading ml_collection (read-only)...")
     rows = _fetch_ml_collection(supabase)
     exit_timestamps = _fetch_trade_exit_timestamps(supabase)
     for row in rows:
         trade_id = row.get("trade_id")
-        row["exit_timestamp"] = exit_timestamps.get(str(trade_id)) if trade_id else None
-    
-    from ml_signal.dataset import build_real_outcome_frame
-    print(f"[*] {len(rows)} rows fetched. Filtering for real trade outcomes...")
-
-    df = build_real_outcome_frame(
-        rows,
-        t1_is_win=True, # Predict probability of hitting T1 (Win=1)
-    )
-    if df.empty:
-        print("[-] No valid real trade outcomes found. "
-              "Collect more live trades, then rerun.")
-        return
-
-    fcols = feature_columns(df)
-    print(f"[*] {len(df)} labeled samples, {len(fcols)} features, "
-          f"positive-rate={df['label'].mean():.3f}")
+        if trade_id and str(trade_id) in exit_timestamps:
+            metadata = exit_timestamps[str(trade_id)]
+            row["exit_timestamp"] = metadata["exit_timestamp"]
+            row["entry_timestamp"] = metadata["entry_timestamp"]
+            row["time_metrics_excluded"] = metadata["time_metrics_excluded"]
+        else:
+            row["exit_timestamp"] = None
+            row["entry_timestamp"] = None
+            row["time_metrics_excluded"] = False
 
     from ml_signal.predictor import get_next_model_version_and_path
     models_dir = os.path.join(repo, "ml_signal", "models")
     save_path, next_version = get_next_model_version_and_path(models_dir)
-    print(f"[*] Incrementing model version -> {next_version} ({save_path})")
 
-    report_path, versioned_report_path, shap_plot_path, shap_beeswarm_path = _offline_report_paths(
-        repo, next_version,
-    )
-    model, metrics = run_training(
-        df, fcols,
-        config=config,
-        save_path=save_path,
-        report_path=report_path,
-        shap_plot_path=shap_plot_path,
-        shap_beeswarm_path=shap_beeswarm_path,
-        model_version=next_version,
-    )
-    with open(versioned_report_path, "w") as f:
-        json.dump(metrics, f, indent=2, default=str)
+    stage1_model, stage2_model = None, None
+    market_df = None
+    promoted = False
+    gate_error = None
+    leakage_guard_passed = True
+    final_metrics = {}
+    sharpe_metrics = _sharpe_metrics(pd.DataFrame())
 
-    print("\n=== OFFLINE TRAINING RESULT ===")
-    print(f"  samples={metrics['n_samples']} (train={metrics['n_train']}, test={metrics['n_test']})  "
-          f"pos_rate={metrics['pos_rate']:.3f}  provisional={metrics['provisional']}")
-    auc = metrics["auc_roc"]
-    print(f"  AUC-ROC={auc:.3f}" if auc == auc else "  AUC-ROC=n/a (single-class test window)")
-    print(f"  precision={metrics['precision']}  recall={metrics['recall']}  "
-          f"precision@20%={metrics['precision_top20']}")
-    print("  top features:")
-    for feat in metrics["top_features"][:8]:
-        print(f"    {feat['feature']:32s} gain={feat['gain']:.4f}")
-    _print_shap_summary(metrics)
-    print("\n  Interpretation: AUC > 0.55 => the collected features carry real")
-    print("  short-horizon predictive signal. ~0.5 => not yet (more/other data).")
+    if args.pipeline in ["market_movement", "all"]:
+        print("\n=== Running Market Movement Pipeline ===")
+        pipe = MarketMovementPipeline(config)
+        market_df = pipe.prepare_dataset(rows)
+        stage1_model, metrics = pipe.run_walk_forward(market_df, n_splits=args.folds)
+        
+        # Save secondary report
+        market_report = os.path.join(repo, "reports", "ml", "market_movement_metrics.json")
+        os.makedirs(os.path.dirname(market_report), exist_ok=True)
+        with open(market_report, "w") as f:
+            json.dump(metrics, f, indent=2)
+            
+        if args.promote and stage1_model:
+            mm_save_path = os.path.join(models_dir, f"market_movement_{next_version}.joblib")
+            joblib.dump(stage1_model, mm_save_path)
+            
+        if args.pipeline == "market_movement":
+            final_metrics = metrics.copy()
+            leakage_guard_passed = metrics.get("leakage_guard_passed", False)
 
+    if args.pipeline in ["trade_outcomes", "all"]:
+        print("\n=== Running Trade Outcome Pipeline ===")
+        pipe = TradeOutcomePipeline(config, use_hybrid_transfer=args.hybrid)
+        trade_df = pipe.prepare_dataset(rows)
+        # Sharpe is a realized-trade diagnostic, not a CV model metric.  Keep
+        # it sourced from the outcome frame even when promotion is rejected.
+        sharpe_metrics = _sharpe_metrics(trade_df)
+        
+        # We need market_df for cross-fitting if hybrid
+        if args.hybrid and market_df is None:
+            # Reconstruct just for transfer
+            pipe1 = MarketMovementPipeline(config)
+            market_df = pipe1.prepare_dataset(rows)
+            
+        _, metrics = pipe.run_walk_forward(trade_df, market_snapshots_df=market_df, n_splits=args.folds)
+        
+        final_metrics = metrics.copy()
+        leakage_guard_passed = metrics.get("leakage_guard_passed", False)
+        
+        if args.promote:
+            from ml_signal.promotion_gate import evaluate_promotion_gate
+            passed, reasons = evaluate_promotion_gate(metrics)
+            refit_size_reason = _final_refit_sample_size_reason(len(trade_df), args.folds)
+            if refit_size_reason:
+                passed = False
+                reasons = [*reasons, refit_size_reason]
+            stage1_refit_reason = _stage1_refit_reason(market_df) if args.hybrid else None
+            if stage1_refit_reason:
+                passed = False
+                reasons = [*reasons, stage1_refit_reason]
+            promoted = passed
+            if not passed:
+                gate_error = ModelPromotionError(f"Promotion gate failed: {reasons}", reasons=reasons)
+                print(f"[!] Promotion Gate Failed: {reasons}")
+                
+            # Fit final stage 1 and stage 2 on ALL data (even if unpromoted, for research artifact)
+            print("[*] Training final Stage 1 and Stage 2 models for promotion or research...")
+            try:
+                refit_reason = refit_size_reason or stage1_refit_reason
+                if refit_reason:
+                    print(f"[!] Skipping final refit: {refit_reason}")
+                elif args.hybrid:
+                    stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
+                    
+                    # Generate cross-fitted probabilities for Stage 2 training using WalkForwardPurgedCV
+                    from ml_signal.validation import WalkForwardPurgedCV
+                    cv = WalkForwardPurgedCV(n_splits=args.folds, min_train_samples=100, embargo_window=pd.Timedelta(minutes=15))
+                    
+                    market_probs = pd.Series(index=trade_df.index, dtype=float)
+                    # For simplicity in the final promotion step, we can use a basic K-Fold to cross-fit,
+                    # but strictly, we should use chronological cross-fitting.
+                    from sklearn.model_selection import TimeSeriesSplit
+                    tscv = TimeSeriesSplit(n_splits=args.folds)
+                    
+                    # Ensure trade_df is sorted
+                    trade_df = trade_df.sort_values("timestamp").copy()
+                    for train_idx, test_idx in tscv.split(trade_df):
+                        # Get max timestamp in train
+                        test_start_ts = trade_df.iloc[test_idx]["timestamp"].min()
+                        
+                        # Train stage 1 on market data up to max_train_ts
+                        train_market = market_df[market_df["resolution_timestamp"] < test_start_ts]
+                        if len(train_market) < 50 or train_market["label"].nunique() < 2:
+                            continue
+                            
+                        fold_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
+                        fold_model.fit(train_market[stage1_feat_cols], train_market["label"])
+                        
+                        # Predict for test_idx
+                        test_trades = trade_df.iloc[test_idx]
+                        market_probs.iloc[test_idx] = fold_model.predict_proba(test_trades.reindex(columns=stage1_feat_cols))[:, 1]
+                    
+                    # Fill any NaNs from the initial folds with the median or the first fold
+                    market_probs = market_probs.ffill().fillna(0.5)
+                    trade_df["meta_features__market_movement_prob"] = market_probs
+                    
+                    # Fit final Stage 1 model for deployment
+                    stage1_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
+                    stage1_model.fit(market_df[stage1_feat_cols], market_df["label"])
+                    
+                if not refit_reason:
+                    feat_cols2 = ["meta_features__market_movement_prob"] if args.hybrid else []
+                    feat_cols2 += [
+                        c for c in [
+                            "structure_features__dist_to_nearest_support",
+                            "structure_features__dist_to_nearest_resistance",
+                            "oi_features__pcr_oi",
+                            "candle_features__body_pct",
+                            "iv_features__iv_level",
+                            "greek_features__net_delta"
+                        ] if c in trade_df.columns
+                    ]
+
+                    stage2_model = xgb.XGBClassifier(
+                        n_estimators=50,
+                        learning_rate=0.03,
+                        max_depth=2,
+                        reg_lambda=5.0,
+                        reg_alpha=1.0,
+                        colsample_bytree=0.6,
+                        subsample=0.7,
+                        random_state=42
+                    )
+                    stage2_model.fit(trade_df[feat_cols2], trade_df["label"])
+
+                    if not promoted:
+                        save_path = save_path.replace(".joblib", "_unpromoted.joblib")
+
+                    if args.hybrid:
+                        bundle = HybridPredictorBundle(
+                            stage1_model=stage1_model,
+                            stage2_model=stage2_model,
+                            stage1_feature_names=stage1_feat_cols,
+                            stage2_feature_names=feat_cols2,
+                            model_version=next_version,
+                            created_at=str(pd.Timestamp.utcnow()),
+                            metrics_summary=metrics
+                        )
+                        joblib.dump(bundle, save_path)
+                    else:
+                        # Persist as legacy standalone model
+                        joblib.dump(stage2_model, save_path)
+                        
+                    if promoted:
+                        print(f"[+] Promoted Model -> {save_path}")
+                    else:
+                        print(f"[!] Saved unpromoted artifact -> {save_path}")
+
+            except ModelPromotionError as e:
+                pass
+            
+            if not promoted:
+                # Write rejection audit
+                audit_path = f"reports/ml/{next_version}_rejection_audit.json"
+                os.makedirs(os.path.dirname(audit_path) or ".", exist_ok=True)
+                with open(audit_path, "w") as f:
+                    json.dump({"version": next_version, "reasons": gate_error.reasons if gate_error else [], "metrics": metrics}, f, indent=2, default=str)
+                print(f"[!] Rejection audit saved -> {audit_path}")
+
+    # Write summary metrics
+    summary = {
+        "model_version": next_version,
+        "auc_roc": final_metrics.get("mean_auc", 0.0),
+        "shap_status": "skipped",
+        "shap_computed": False,
+        "promoted": promoted,
+        "leakage_guard_passed": leakage_guard_passed,
+        "gate_reasons": gate_error.reasons if gate_error else []
+    }
+    summary.update(final_metrics)
+    summary.update(sharpe_metrics)
+    
+    os.makedirs(os.path.dirname(args.metrics_path) or ".", exist_ok=True)
+    with open(args.metrics_path, "w") as f:
+        json.dump(summary, f, indent=2, default=str)
+    print(f"[+] Summary report saved -> {args.metrics_path}")
+    
+    if gate_error and args.enforce_gate:
+        raise gate_error
 
 if __name__ == "__main__":
     main()

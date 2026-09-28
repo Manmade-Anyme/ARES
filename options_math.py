@@ -95,16 +95,20 @@ async def process_options_calculation(signal: AresSignal, full_chain: list, dhan
         signal.option_type = opt_type
     else:
         # Fallback to current ATM contract on signal (already populated by detectors)
-        delta = 0.50  # fallback delta
+        delta = 0.50 if signal.option_type == "CE" else -0.50  # fallback delta
         ltp = 100.0  # fallback LTP
         for row in full_chain:
-            if row["strike"] == signal.strike_to_trade:
+            if row.get("strike") == signal.strike_to_trade:
                 if signal.option_type == "CE":
-                    delta = row.get("ce_delta", 0.50)
-                    ltp = row.get("ce_ltp", 100.0)
+                    row_delta = row.get("ce_delta")
+                    row_ltp = row.get("ce_ltp")
+                    delta = float(row_delta) if row_delta is not None else 0.50
+                    ltp = float(row_ltp) if row_ltp is not None else 100.0
                 else:
-                    delta = row.get("pe_delta", -0.50)
-                    ltp = row.get("pe_ltp", 100.0)
+                    row_delta = row.get("pe_delta")
+                    row_ltp = row.get("pe_ltp")
+                    delta = float(row_delta) if row_delta is not None else -0.50
+                    ltp = float(row_ltp) if row_ltp is not None else 100.0
                 break
                 
     # 3. Lot Sizing Calculations
