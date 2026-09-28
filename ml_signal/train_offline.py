@@ -763,6 +763,15 @@ def _save_shap_plot(metrics: Dict[str, object], shap_plot_path: Optional[str]) -
         metrics["shap_plot_status"] = "failed"
         metrics["shap_plot_error_type"] = type(exc).__name__
         print(f"[!] SHAP plot could not be saved; continuing ({type(exc).__name__}).")
+        if (
+            shap_plot_path.lower().endswith(".png")
+            and os.path.isfile(shap_plot_path)
+            and not os.path.islink(shap_plot_path)
+        ):
+            try:
+                os.remove(shap_plot_path)
+            except OSError:
+                pass
 
 
 def _offline_report_paths(repo: str, version: str) -> Tuple[str, str, str, str]:
@@ -1303,11 +1312,30 @@ def main(argv=None) -> None:
                 )
                 if refit_reason:
                     print(f"[!] Skipping final refit: {refit_reason}")
-                elif args.hybrid:
-                    stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
-                    market_train_df, _ = _reserved_refit_split(
-                        market_df, embargo_window=pd.Timedelta(minutes=15)
+                if not refit_reason:
+                    trade_train_df, trade_eval_df = _reserved_refit_split(
+                        trade_df, embargo_window=pd.Timedelta(minutes=30)
                     )
+                if not refit_reason and args.hybrid:
+                    stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
+                    trade_eval_start = pd.to_datetime(
+                        trade_eval_df["timestamp"], errors="coerce", utc=True
+                    ).min()
+                    
+                    if pd.isna(trade_eval_start):
+                        market_train_df, _ = _reserved_refit_split(
+                            market_df, embargo_window=pd.Timedelta(minutes=15)
+                        )
+                    else:
+                        market_candidate_ts = pd.to_datetime(market_df["timestamp"], errors="coerce", utc=True)
+                        market_resolution_ts = pd.to_datetime(market_df["resolution_timestamp"], errors="coerce", utc=True)
+                        market_keep = (
+                            market_resolution_ts.notna()
+                            & market_candidate_ts.notna()
+                            & (market_resolution_ts < trade_eval_start)
+                            & (market_candidate_ts < (trade_eval_start - pd.Timedelta(minutes=15)))
+                        )
+                        market_train_df = market_df[market_keep].reset_index(drop=True)
                     
                     # Generate cross-fitted probabilities for Stage 2 training using WalkForwardPurgedCV
                     from ml_signal.validation import WalkForwardPurgedCV
@@ -1368,9 +1396,6 @@ def main(argv=None) -> None:
                         colsample_bytree=0.6,
                         subsample=0.7,
                         random_state=42
-                    )
-                    trade_train_df, trade_eval_df = _reserved_refit_split(
-                        trade_df, embargo_window=pd.Timedelta(minutes=30)
                     )
                     stage2_model.fit(trade_train_df[feat_cols2], trade_train_df["label"])
                     shap_model = stage2_model
