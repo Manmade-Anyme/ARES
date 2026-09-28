@@ -50,20 +50,36 @@ def deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame:
     # Compute feature hash
     df_out["_feature_hash"] = df_out[feat_cols].apply(lambda x: hash(tuple(x.fillna(-9999))), axis=1)
 
-    if "trade_id" in df_out.columns and df_out["trade_id"].notna().any():
+    has_trade_ids = "trade_id" in df_out and df_out["trade_id"].notna().any()
+    has_snapshot_ids = (
+        "snapshot_uuid" in df_out and df_out["snapshot_uuid"].notna().any()
+    )
+    if has_trade_ids or has_snapshot_ids:
         # TradeOutcomePipeline deduplication
-        subset = []
-        if "trade_id" in df_out.columns and df_out["trade_id"].notna().any():
-            subset.append("trade_id")
-        elif "snapshot_uuid" in df_out.columns and df_out["snapshot_uuid"].notna().any():
-            subset.append("snapshot_uuid")
-        
-        if not subset:
-            subset = ["_feature_hash"]
-        else:
-            subset.append("_feature_hash")
-            
-        df_out = df_out.drop_duplicates(subset=subset, keep="last")
+        # Choose the canonical identity per row. A frame can legitimately mix
+        # linked trades and snapshot-only historical rows, so selecting one
+        # identity column for the whole frame would collapse all null values.
+        trade_ids = df_out.get("trade_id", pd.Series(index=df_out.index, dtype=object))
+        snapshot_ids = df_out.get(
+            "snapshot_uuid", pd.Series(index=df_out.index, dtype=object)
+        )
+        canonical_ids = trade_ids.map(
+            lambda value: f"trade:{value}" if pd.notna(value) else None
+        )
+        snapshot_fallback = snapshot_ids.map(
+            lambda value: f"snapshot:{value}" if pd.notna(value) else None
+        )
+        canonical_ids = canonical_ids.fillna(snapshot_fallback)
+        # With no identity, preserving the outcome is safer than silently
+        # merging distinct executions merely because their features match.
+        missing = canonical_ids.isna()
+        canonical_ids.loc[missing] = [
+            f"unidentified-row:{idx}" for idx in canonical_ids.index[missing]
+        ]
+        df_out["_canonical_identity"] = canonical_ids
+        df_out = df_out.drop_duplicates(
+            subset=["_canonical_identity", "_feature_hash"], keep="last"
+        )
     else:
         # MarketMovementPipeline deduplication
         df_out = df_out.sort_values("timestamp")
@@ -78,5 +94,7 @@ def deduplicate_snapshots(df: pd.DataFrame) -> pd.DataFrame:
         df_out = df_out.drop(columns=["_source_candle_ts"])
     if "_feature_hash" in df_out.columns:
         df_out = df_out.drop(columns=["_feature_hash"])
+    if "_canonical_identity" in df_out.columns:
+        df_out = df_out.drop(columns=["_canonical_identity"])
         
     return df_out

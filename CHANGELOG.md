@@ -6,6 +6,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Trade identity preservation (MANM-155)**: Preserved `trade_id` and `snapshot_uuid` through feature flattening and selected the canonical deduplication identity per row, preventing mixed historical outcome frames from collapsing distinct executions.
 - **Trade-outcome exit metadata application (MANM-155)**: Applied caller-supplied entry/exit timing metadata to copied `ml_collection` rows before outcome-frame construction, so valid realized trades are retained for duration filtering and purged walk-forward validation without mutating caller input.
 - **Walk-forward fold validation (MANM-155)**: Reject CLI `--folds` values below the four-fold promotion minimum during argument parsing, before database access or model fitting can fail without an audit summary.
 - **Empty Stage 1 refit rejection (MANM-155)**: Reject hybrid candidates with no resolved market-movement labels before final cross-fitting, preserving metrics and rejection-audit output instead of raising on a missing `resolution_timestamp` column.

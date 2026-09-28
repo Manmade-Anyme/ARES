@@ -113,8 +113,9 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
     `close` is taken from `raw_candle`; `timestamp`/`date` support day-bounded
     labeling and chronological splitting.
 
-    Returns a DataFrame with columns: timestamp, date, close, and one column
-    per flattened feature.
+    Returns a DataFrame with timestamp/date/close, trade tracking metadata,
+    and one column per flattened feature. Tracking columns remain excluded
+    from model inputs by ``_META_COLS``.
     """
     parsed = []
     keys_by_group: Dict[str, set] = {g: set() for g in FEATURE_GROUPS}
@@ -188,7 +189,10 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
         else:
             df["greek__has_net_delta"] = 0.0
 
-    ordered = ["timestamp", "date", "close", "feature_version"] + feature_cols + indicator_cols
+    ordered = [
+        "timestamp", "date", "close", "feature_version", "trade_id",
+        "snapshot_uuid",
+    ] + feature_cols + indicator_cols
     if df.empty:
         return pd.DataFrame(columns=ordered)
     return df[ordered]

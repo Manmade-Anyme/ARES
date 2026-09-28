@@ -14,7 +14,12 @@ from ml_signal.leakage_guards import (
 )
 from ml_signal.validation import WalkForwardPurgedCV, build_fold_result, compute_cv_metrics
 from ml_signal.promotion_gate import evaluate_promotion_gate, enforce_promotion_or_raise, ModelPromotionError
-from ml_signal.dataset import _META_COLS, build_labeled_frame
+from ml_signal.dataset import (
+    _META_COLS,
+    build_labeled_frame,
+    feature_columns,
+    flatten_features,
+)
 from ml_signal.config import MLConfig
 from ml_signal.pipeline_trade_outcomes import TradeOutcomePipeline
 from ml_signal import train_offline
@@ -456,6 +461,40 @@ def test_deduplicate_snapshots():
     assert dedup.iloc[0]["timestamp"] == pd.Timestamp("2026-01-01 10:00:30")
     assert dedup.iloc[0]["feature1"] == 2.0
     assert dedup.iloc[1]["timestamp"] == pd.Timestamp("2026-01-01 10:01:05")
+
+
+def test_flatten_features_preserves_trade_identity_metadata():
+    frame = flatten_features([
+        {
+            "timestamp": "2026-08-01T10:00:00Z",
+            "raw_candle": {"close": 100.0},
+            "trade_id": "trade-a",
+            "snapshot_uuid": "snapshot-a",
+        }
+    ])
+
+    assert frame.loc[0, "trade_id"] == "trade-a"
+    assert frame.loc[0, "snapshot_uuid"] == "snapshot-a"
+    assert "trade_id" not in feature_columns(frame)
+    assert "snapshot_uuid" not in feature_columns(frame)
+
+
+def test_deduplicate_snapshots_uses_rowwise_trade_identity_fallback():
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime([
+            "2026-08-01T10:00:05Z",
+            "2026-08-01T10:00:15Z",
+            "2026-08-01T10:00:25Z",
+        ]),
+        "trade_id": ["trade-a", None, None],
+        "snapshot_uuid": ["snapshot-a", "snapshot-b", "snapshot-c"],
+        "candle_features__body": [1.0, 1.0, 1.0],
+    })
+
+    dedup = deduplicate_snapshots(df)
+
+    assert dedup["trade_id"].tolist()[0] == "trade-a"
+    assert dedup["snapshot_uuid"].tolist() == ["snapshot-a", "snapshot-b", "snapshot-c"]
 
 
 def test_deduplicate_snapshots_preserves_distinct_trades_in_same_minute():
