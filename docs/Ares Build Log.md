@@ -2,6 +2,12 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-28 · MANM-155 Empty Stage 1 Refit Guard
+
+Added a final-refit preflight check for hybrid candidates with no resolved market-movement labels. Validation may continue with its neutral transfer fallback, but promotion now fails closed with an actionable reason and skips final hybrid fitting so the metrics summary and rejection audit are still produced.
+
+---
+
 ## 2026-09-28 · MANM-155 Auditable Fold Metrics
 
 Preserved the complete chronological fold breakdown in walk-forward validation reports. Each market-movement and trade-outcome fold now records its train/test time bounds, post-purge sample counts, binary class counts and positive rates, degeneracy reason, AUC, and Brier score in a JSON-safe schema. Aggregate evaluation uses the same finite-metric predicate for AUC and weighted Brier calculations, and the promotion gate explicitly rejects missing or non-finite metrics.

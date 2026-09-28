@@ -32,6 +32,82 @@ def test_final_refit_accepts_dataset_larger_than_fold_count():
     assert _final_refit_sample_size_reason(6, n_splits=5) is None
 
 
+def test_final_hybrid_refit_rejects_empty_stage1_frame_cleanly(
+    monkeypatch, tmp_path
+):
+    trade_df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-08-01", periods=6, freq="h", tz="UTC"),
+        "label": [0, 1, 0, 1, 0, 1],
+    })
+    empty_market_df = pd.DataFrame()
+    rejected_metrics = {
+        "validation_method": "walk_forward_purged",
+        "evaluable_folds": 0,
+        "degenerate_folds": 5,
+        "mean_auc": None,
+        "ci_95_lower": None,
+        "min_fold_auc": None,
+        "brier_score": None,
+        "leakage_guard_passed": True,
+    }
+
+    class FakeMarketMovementPipeline:
+        def __init__(self, config):
+            pass
+
+        def prepare_dataset(self, rows):
+            return empty_market_df.copy()
+
+    class FakeTradeOutcomePipeline:
+        def __init__(self, config, use_hybrid_transfer):
+            assert use_hybrid_transfer is True
+
+        def prepare_dataset(self, rows):
+            return trade_df.copy()
+
+        def run_walk_forward(self, frame, market_snapshots_df, n_splits):
+            assert market_snapshots_df.empty
+            return None, rejected_metrics.copy()
+
+    metrics_path = tmp_path / "metrics.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SUPABASE_URL", "https://example.invalid")
+    monkeypatch.setenv("SUPABASE_KEY", "test-key")
+    monkeypatch.setattr("supabase.create_client", lambda url, key: object())
+    monkeypatch.setattr(train_offline, "_fetch_ml_collection", lambda client: [])
+    monkeypatch.setattr(train_offline, "_fetch_trade_exit_timestamps", lambda client: {})
+    monkeypatch.setattr(train_offline, "MarketMovementPipeline", FakeMarketMovementPipeline)
+    monkeypatch.setattr(train_offline, "TradeOutcomePipeline", FakeTradeOutcomePipeline)
+    monkeypatch.setattr(
+        "ml_signal.predictor.get_next_model_version_and_path",
+        lambda models_dir: (str(tmp_path / "v999.joblib"), "v999"),
+    )
+    monkeypatch.setattr(
+        train_offline.xgb,
+        "XGBClassifier",
+        lambda *args, **kwargs: pytest.fail(
+            "an empty Stage 1 frame must short-circuit final hybrid fitting"
+        ),
+    )
+
+    train_offline.main([
+        "--pipeline", "trade_outcomes",
+        "--hybrid",
+        "--promote",
+        "--metrics-path", str(metrics_path),
+    ])
+
+    summary = json.loads(metrics_path.read_text())
+    audit = json.loads(
+        (tmp_path / "reports/ml/v999_rejection_audit.json").read_text()
+    )
+    assert summary["promoted"] is False
+    assert any("stage 1" in reason.lower() for reason in summary["gate_reasons"])
+    assert audit["reasons"] == summary["gate_reasons"]
+    assert not (tmp_path / "v999.joblib").exists()
+    assert not (tmp_path / "v999_unpromoted.joblib").exists()
+
+
 def test_primary_summary_computes_sharpe_from_realized_trade_dataset(
     monkeypatch, tmp_path
 ):

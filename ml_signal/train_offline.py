@@ -44,6 +44,17 @@ def _final_refit_sample_size_reason(n_samples: int, n_splits: int) -> Optional[s
     return None
 
 
+def _stage1_refit_reason(market_df: Optional[pd.DataFrame]) -> Optional[str]:
+    """Return why a deployable hybrid Stage 1 model cannot be fitted."""
+    if market_df is None or market_df.empty:
+        return "no resolved market-movement labels available for final Stage 1 refit"
+    if "label" not in market_df or market_df["label"].nunique(dropna=True) < 2:
+        return "final Stage 1 refit requires at least two market-movement classes"
+    if "resolution_timestamp" not in market_df:
+        return "final Stage 1 refit requires resolution_timestamp"
+    return None
+
+
 def _train_xgb(X_tr, y_tr, X_val, y_val, config: MLConfig):
     scale_pos_weight = (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
     model = xgb.XGBClassifier(
@@ -676,6 +687,10 @@ def main(argv=None) -> None:
             if refit_size_reason:
                 passed = False
                 reasons = [*reasons, refit_size_reason]
+            stage1_refit_reason = _stage1_refit_reason(market_df) if args.hybrid else None
+            if stage1_refit_reason:
+                passed = False
+                reasons = [*reasons, stage1_refit_reason]
             promoted = passed
             if not passed:
                 gate_error = ModelPromotionError(f"Promotion gate failed: {reasons}", reasons=reasons)
@@ -684,8 +699,9 @@ def main(argv=None) -> None:
             # Fit final stage 1 and stage 2 on ALL data (even if unpromoted, for research artifact)
             print("[*] Training final Stage 1 and Stage 2 models for promotion or research...")
             try:
-                if refit_size_reason:
-                    print(f"[!] Skipping final refit: {refit_size_reason}")
+                refit_reason = refit_size_reason or stage1_refit_reason
+                if refit_reason:
+                    print(f"[!] Skipping final refit: {refit_reason}")
                 elif args.hybrid:
                     stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
                     
@@ -725,7 +741,7 @@ def main(argv=None) -> None:
                     stage1_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
                     stage1_model.fit(market_df[stage1_feat_cols], market_df["label"])
                     
-                if not refit_size_reason:
+                if not refit_reason:
                     feat_cols2 = ["meta_features__market_movement_prob"] if args.hybrid else []
                     feat_cols2 += [
                         c for c in [
