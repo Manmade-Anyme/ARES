@@ -2,6 +2,12 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-28 · MANM-155 Trade-Outcome Exit Metadata Application
+
+Updated `TradeOutcomePipeline.prepare_dataset()` to merge trade metadata supplied by canonical `trade_id` before flattening. Entry timestamps, exit timestamps, and anomaly-exclusion flags now reach outcome-frame construction, preventing valid raw `ml_collection` rows from being dropped solely because their timing fields are provided separately, while preserving the caller-owned rows unchanged.
+
+---
+
 ## 2026-09-28 · MANM-155 Fold-Count CLI Guard
 
 Added argument-level validation that requires at least four walk-forward folds, matching the production promotion gate. Invalid zero, negative, and sub-minimum values now fail before database access or model training.

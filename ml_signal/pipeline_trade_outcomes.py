@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from collections.abc import Mapping
 from typing import List, Dict, Any, Tuple, Optional
 import xgboost as xgb
 
@@ -19,20 +20,58 @@ class TradeOutcomePipeline:
         self.config = config
         self.use_hybrid_transfer = use_hybrid_transfer
         
-    def prepare_dataset(self, rows: List[dict], exit_timestamps: Dict[str, str] = None) -> pd.DataFrame:
+    def prepare_dataset(
+        self,
+        rows: List[dict],
+        exit_timestamps: Optional[Mapping[Any, Any]] = None,
+    ) -> pd.DataFrame:
+        """Build outcomes after joining optional trade-analytics metadata.
+
+        ``exit_timestamps`` is keyed by ``trade_id``.  Current callers supply
+        metadata mappings containing entry/exit timestamps and the anomaly
+        flag; legacy scalar values are also accepted as exit timestamps.  The
+        input rows are copied because they may also be reused by Stage 1.
+        """
         if not rows:
             return pd.DataFrame()
-            
-        df = build_real_outcome_frame(rows)
+
+        metadata_by_trade_id = {
+            str(trade_id): metadata
+            for trade_id, metadata in (exit_timestamps or {}).items()
+        }
+        enriched_rows = []
+        metadata_fields = (
+            "exit_timestamp",
+            "entry_timestamp",
+            "time_metrics_excluded",
+        )
+        for source_row in rows:
+            row = source_row.copy()
+            trade_id = row.get("trade_id")
+            metadata = (
+                metadata_by_trade_id.get(str(trade_id))
+                if trade_id is not None
+                else None
+            )
+            if isinstance(metadata, Mapping):
+                for field in metadata_fields:
+                    if field in metadata:
+                        row[field] = metadata[field]
+            elif metadata is not None:
+                row["exit_timestamp"] = metadata
+            enriched_rows.append(row)
+
+        df = build_real_outcome_frame(enriched_rows)
         if df.empty:
             return df
             
         # Timestamp Anomaly Filtering
         df = df[df["time_metrics_excluded"] != True]
         df = df[df["exit_timestamp"].notna()]
-        df["exit_timestamp"] = pd.to_datetime(df["exit_timestamp"])
-        df["entry_timestamp"] = pd.to_datetime(df["entry_timestamp"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        for timestamp_col in ("exit_timestamp", "entry_timestamp", "timestamp"):
+            df[timestamp_col] = pd.to_datetime(
+                df[timestamp_col], format="mixed", utc=True, errors="coerce"
+            )
         
         # Valid trade duration
         df = df[df["exit_timestamp"] > df["entry_timestamp"]]

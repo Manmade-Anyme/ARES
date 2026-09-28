@@ -16,8 +16,76 @@ from ml_signal.validation import WalkForwardPurgedCV, build_fold_result, compute
 from ml_signal.promotion_gate import evaluate_promotion_gate, enforce_promotion_or_raise, ModelPromotionError
 from ml_signal.dataset import _META_COLS, build_labeled_frame
 from ml_signal.config import MLConfig
+from ml_signal.pipeline_trade_outcomes import TradeOutcomePipeline
 from ml_signal import train_offline
 from ml_signal.train_offline import _final_refit_sample_size_reason
+
+
+def test_trade_outcome_prepare_dataset_applies_supplied_exit_metadata():
+    rows = [{
+        "trade_id": "trade-1",
+        "trade_outcome": "T1_HIT",
+        "trade_pnl": 10.0,
+        "timestamp": "2026-08-05T03:05:00Z",
+        "raw_candle": {"close": 24000.0},
+        "candle_features": {"body_pct": 0.1},
+    }]
+    exit_timestamps = {
+        "trade-1": {
+            "entry_timestamp": "2026-08-05T03:00:00Z",
+            "exit_timestamp": "2026-08-05T04:00:00Z",
+            "time_metrics_excluded": False,
+        }
+    }
+
+    frame = TradeOutcomePipeline().prepare_dataset(rows, exit_timestamps)
+
+    assert len(frame) == 1
+    assert frame.iloc[0]["entry_timestamp"] == pd.Timestamp("2026-08-05T03:00:00Z")
+    assert frame.iloc[0]["exit_timestamp"] == pd.Timestamp("2026-08-05T04:00:00Z")
+    assert frame.iloc[0]["resolution_timestamp"] == pd.Timestamp("2026-08-05T04:00:00Z")
+    assert "exit_timestamp" not in rows[0]
+
+
+def test_trade_outcome_prepare_dataset_supports_scalar_exit_mapping():
+    rows = [{
+        "trade_id": 7,
+        "trade_outcome": "T1_HIT",
+        "trade_pnl": 5.0,
+        "timestamp": "2026-08-05T03:05:00Z",
+        "entry_timestamp": "2026-08-05T03:00:00Z",
+        "raw_candle": {"close": 24000.0},
+    }]
+
+    frame = TradeOutcomePipeline().prepare_dataset(
+        rows,
+        {"7": "2026-08-05T04:00:00Z"},
+    )
+
+    assert len(frame) == 1
+    assert frame.iloc[0]["entry_timestamp"] == pd.Timestamp("2026-08-05T03:00:00Z")
+    assert frame.iloc[0]["exit_timestamp"] == pd.Timestamp("2026-08-05T04:00:00Z")
+
+
+def test_trade_outcome_prepare_dataset_preserves_unsupplied_metadata_fields():
+    rows = [{
+        "trade_id": "trade-2",
+        "trade_outcome": "SL_HIT",
+        "trade_pnl": -5.0,
+        "timestamp": "2026-08-05T03:05:00Z",
+        "entry_timestamp": "2026-08-05T03:00:00Z",
+        "time_metrics_excluded": False,
+        "raw_candle": {"close": 24000.0},
+    }]
+
+    frame = TradeOutcomePipeline().prepare_dataset(
+        rows,
+        {"trade-2": {"exit_timestamp": "2026-08-05T04:00:00Z"}},
+    )
+
+    assert len(frame) == 1
+    assert frame.iloc[0]["entry_timestamp"] == pd.Timestamp("2026-08-05T03:00:00Z")
+    assert frame.iloc[0]["time_metrics_excluded"] == False
 
 
 @pytest.mark.parametrize("folds", [0, 1, -1, 2, 3])
