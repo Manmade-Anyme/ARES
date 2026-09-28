@@ -124,6 +124,39 @@ class TestSHAPSupport(unittest.TestCase):
         self.assertIn("mean_rank_correlation", res2)
         self.assertIn("stability_verdict", res2)
 
+    def test_attribution_swing_overrides_stable_rank_and_turnover(self):
+        class Booster:
+            def __init__(self):
+                self.calls = 0
+
+            def predict(self, dtest, pred_contribs=False, **kwargs):
+                vectors = (
+                    [1.0, 2.0, 3.0],
+                    [1.1, 2.1, 6.5],
+                    [1.2, 2.2, 13.0],
+                    [1.3, 2.3, 26.0],
+                )
+                values = np.tile(vectors[self.calls], (dtest.num_row(), 1))
+                self.calls += 1
+                return np.column_stack([values, np.zeros(len(values))])
+
+        booster = Booster()
+        model = types.SimpleNamespace(
+            best_iteration=0,
+            n_estimators=1,
+            get_booster=lambda: booster,
+        )
+        result = audit_shap_stability(
+            _training_frame(n=240),
+            ["alpha", "beta", "gamma"],
+            model,
+            min_window_samples=30,
+        )
+
+        self.assertEqual(result["status"], "computed")
+        self.assertEqual(result["stability_verdict"], "drift_detected")
+        self.assertIn("gamma", result["flagged_features"])
+
     def test_tier8_metadata_completeness(self):
         df = _training_frame()
         with patch.dict(sys.modules, {"shap": None}):

@@ -862,31 +862,47 @@ class TestOfflineShapContract(unittest.TestCase):
         df = _training_frame()
         expected = _shap_metrics()
         expected.update({"shap_computed": True, "shap_status": "computed"})
+        fitted_model = object()
+
+        def explain(model, X_test, feature_cols, metrics):
+            self.assertIs(model, fitted_model)
+            _, expected_test = chronological_split(df)
+            pd.testing.assert_frame_equal(
+                X_test.reset_index(drop=True),
+                expected_test[feature_cols].reset_index(drop=True),
+            )
+            metrics.update(expected)
+            return np.zeros((len(X_test), len(feature_cols)))
+
         with tempfile.TemporaryDirectory() as directory, \
-                patch("ml_signal.train_offline.run_training",
-                      return_value=(object(), expected)) as train:
+                patch("ml_signal.train_offline.run_training") as train, \
+                patch("ml_signal.train_offline._compute_shap", side_effect=explain), \
+                patch("ml_signal.train_offline._save_shap_plot") as save_summary, \
+                patch("ml_signal.train_offline._save_shap_beeswarm_plot") as save_beeswarm, \
+                patch("ml_signal.train_offline.audit_shap_stability",
+                      return_value={"status": "computed"}):
             observed = _generate_shap_report(
                 directory,
                 "v42",
+                fitted_model,
                 df,
                 ["alpha", "beta", "gamma"],
-                self._config(),
             )
+            with open(os.path.join(directory, "reports", "ml", "v42_offline_metrics.json")) as report_file:
+                report = json.load(report_file)
 
-        self.assertIs(observed, expected)
-        kwargs = train.call_args.kwargs
+        self.assertTrue(observed["shap_computed"])
+        self.assertEqual(observed["shap_status"], "computed")
+        train.assert_not_called()
         self.assertEqual(
-            kwargs["report_path"],
-            os.path.join(directory, "reports", "ml", "v42_offline_metrics.json"),
-        )
-        self.assertEqual(
-            kwargs["shap_plot_path"],
+            save_summary.call_args.args[1],
             os.path.join(directory, "reports", "ml", "v42_shap_summary.png"),
         )
         self.assertEqual(
-            kwargs["shap_beeswarm_path"],
+            save_beeswarm.call_args.args[3],
             os.path.join(directory, "reports", "ml", "v42_shap_beeswarm.png"),
         )
+        self.assertEqual(report["model_version"], "v42")
 
 
 

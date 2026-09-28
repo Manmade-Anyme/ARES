@@ -521,10 +521,10 @@ def audit_shap_stability(
     mean_rho = float(np.mean(correlations))
     mean_turnover = float(np.mean(turnover_rates))
     
-    if mean_rho >= 0.65 and mean_turnover <= 0.4:
-        verdict = "stable"
-    elif mean_rho < 0.50 or flagged_features:
+    if flagged_features or mean_rho < 0.50:
         verdict = "drift_detected"
+    elif mean_rho >= 0.65 and mean_turnover <= 0.4:
+        verdict = "stable"
     else:
         verdict = "stable"
         
@@ -594,32 +594,116 @@ def _offline_report_paths(repo: str, version: str) -> Tuple[str, str, str, str]:
     )
 
 
+def _populate_shap_metrics(
+    metrics: Dict[str, object],
+    model,
+    source_df: pd.DataFrame,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_cols: List[str],
+    model_version: Optional[str],
+    shap_plot_path: Optional[str] = None,
+    shap_beeswarm_path: Optional[str] = None,
+) -> None:
+    """Explain an already-fitted model on the supplied held-out frame."""
+    X_test = test_df[feature_cols]
+    values = _compute_shap(model, X_test, feature_cols, metrics)
+    _save_shap_plot(metrics, shap_plot_path)
+    _save_shap_beeswarm_plot(
+        values,
+        X_test,
+        feature_cols,
+        shap_beeswarm_path,
+        metrics.get("shap_backend", "none"),
+    )
+
+    import hashlib
+    schema_hash = hashlib.sha256(",".join(feature_cols).encode()).hexdigest()[:8]
+
+    def _boundary(frame: pd.DataFrame, mode: str) -> Optional[str]:
+        if "timestamp" not in frame.columns or frame.empty:
+            return None
+        timestamps = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True).dropna()
+        if timestamps.empty:
+            return None
+        return getattr(timestamps, mode)().isoformat()
+
+    metrics["shap_metadata"] = {
+        "model_version": model_version,
+        "feature_schema_version": "v1.0",
+        "feature_count": len(feature_cols),
+        "feature_schema_hash": schema_hash,
+        "training_window_start": _boundary(train_df, "min"),
+        "training_window_end": _boundary(train_df, "max"),
+        "testing_window_start": _boundary(test_df, "min"),
+        "testing_window_end": _boundary(test_df, "max"),
+        "sample_size_total": metrics.get("n_samples", len(source_df)),
+        "sample_size_train": metrics.get("n_train", len(train_df)),
+        "sample_size_test": metrics.get("n_test", len(test_df)),
+        "shap_backend": metrics.get("shap_backend", "none"),
+        "shap_status": metrics.get("shap_status", "not_attempted"),
+        "raw_margin_additivity": metrics.get("shap_raw_margin_additivity", False),
+        "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
+    }
+
+    try:
+        metrics["shap_stability_audit"] = audit_shap_stability(
+            source_df, feature_cols, model
+        )
+    except Exception as exc:
+        print(f"[!] Stability audit failed: {exc}")
+        metrics["shap_stability_audit"] = {
+            "status": "failed",
+            "error": type(exc).__name__,
+        }
+
+
 def _generate_shap_report(
     repo: str,
     version: str,
+    model,
     df: pd.DataFrame,
     feature_cols: List[str],
-    config: MLConfig,
 ) -> Dict[str, object]:
-    """Generate the versioned SHAP report used by the pipeline CLI."""
+    """Generate a report for an existing pipeline model on a held-out tail."""
     _, report_path, shap_plot_path, shap_beeswarm_path = _offline_report_paths(
         repo, version
     )
-    if df.empty or not feature_cols:
+    if model is None or df.empty or not feature_cols:
         metrics = _shap_metrics()
         metrics["shap_status"] = "skipped"
         return metrics
 
     try:
-        _, metrics = run_training(
+        if "timestamp" in df.columns:
+            train_df, test_df = chronological_split(df)
+        else:
+            split = max(1, min(len(df) - 1, int(len(df) * 0.8)))
+            train_df = df.iloc[:split].copy()
+            test_df = df.iloc[split:].copy()
+
+        metrics = _shap_metrics()
+        metrics.update({
+            "model_version": version,
+            "n_samples": int(len(df)),
+            "n_train": int(len(train_df)),
+            "n_test": int(len(test_df)),
+        })
+        _populate_shap_metrics(
+            metrics,
+            model,
             df,
+            train_df,
+            test_df,
             feature_cols,
-            config=config,
-            report_path=report_path,
-            shap_plot_path=shap_plot_path,
-            shap_beeswarm_path=shap_beeswarm_path,
-            model_version=version,
+            version,
+            shap_plot_path,
+            shap_beeswarm_path,
         )
+        os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
+        with open(report_path, "w") as report_file:
+            json.dump(metrics, report_file, indent=2, default=str)
+        print(f"[+] Report saved -> {report_path}")
         return metrics
     except Exception as exc:
         metrics = _shap_metrics()
@@ -720,47 +804,17 @@ def run_training(
     importance = _importance(model, feature_cols)
 
     metrics["top_features"] = importance.head(15).to_dict(orient="records")
-    values = _compute_shap(model, X_test, feature_cols, metrics)
-    _save_shap_plot(metrics, shap_plot_path)
-    _save_shap_beeswarm_plot(values, X_test, feature_cols, shap_beeswarm_path, metrics.get("shap_backend", "none"))
-    
-    # Metadata assembly
-    try:
-        import hashlib
-        schema_str = ",".join(feature_cols)
-        schema_hash = hashlib.sha256(schema_str.encode()).hexdigest()[:8]
-        
-        train_start = pd.to_datetime(train["timestamp"]).min().isoformat() if not train.empty and "timestamp" in train else None
-        train_end = pd.to_datetime(train["timestamp"]).max().isoformat() if not train.empty and "timestamp" in train else None
-        test_start = pd.to_datetime(test["timestamp"]).min().isoformat() if not test.empty and "timestamp" in test else None
-        test_end = pd.to_datetime(test["timestamp"]).max().isoformat() if not test.empty and "timestamp" in test else None
-        
-        from datetime import datetime, timezone
-        metrics["shap_metadata"] = {
-            "model_version": model_version,
-            "feature_schema_version": "v1.0",
-            "feature_count": len(feature_cols),
-            "feature_schema_hash": schema_hash,
-            "training_window_start": train_start,
-            "training_window_end": train_end,
-            "testing_window_start": test_start,
-            "testing_window_end": test_end,
-            "sample_size_total": metrics["n_samples"],
-            "sample_size_train": metrics["n_train"],
-            "sample_size_test": metrics["n_test"],
-            "shap_backend": metrics.get("shap_backend", "none"),
-            "shap_status": metrics.get("shap_status", "not_attempted"),
-            "raw_margin_additivity": metrics.get("shap_raw_margin_additivity", False),
-            "generated_at": datetime.now(timezone.utc).isoformat()
-        }
-    except Exception as e:
-        print(f"[!] Metadata generation failed: {e}")
-        
-    try:
-        metrics["shap_stability_audit"] = audit_shap_stability(df, feature_cols, model)
-    except Exception as e:
-        print(f"[!] Stability audit failed: {e}")
-        metrics["shap_stability_audit"] = {"status": "failed", "error": type(e).__name__}
+    _populate_shap_metrics(
+        metrics,
+        model,
+        df,
+        train,
+        test,
+        feature_cols,
+        model_version,
+        shap_plot_path,
+        shap_beeswarm_path,
+    )
 
 
     if save_path:
@@ -920,6 +974,7 @@ def main(argv=None) -> None:
     sharpe_metrics = _sharpe_metrics(pd.DataFrame())
     shap_metrics = _shap_metrics()
     shap_metrics["shap_status"] = "skipped"
+    shap_model = None
     shap_source_df = None
     shap_feature_cols = []
 
@@ -942,6 +997,7 @@ def main(argv=None) -> None:
         if args.pipeline == "market_movement":
             final_metrics = metrics.copy()
             leakage_guard_passed = metrics.get("leakage_guard_passed", False)
+            shap_model = stage1_model
             shap_source_df = market_df
             shap_feature_cols = [
                 c for c in feature_columns(market_df)
@@ -1052,6 +1108,7 @@ def main(argv=None) -> None:
                         random_state=42
                     )
                     stage2_model.fit(trade_df[feat_cols2], trade_df["label"])
+                    shap_model = stage2_model
                     shap_source_df = trade_df
                     shap_feature_cols = feat_cols2
 
@@ -1089,13 +1146,13 @@ def main(argv=None) -> None:
                     json.dump({"version": next_version, "reasons": gate_error.reasons if gate_error else [], "metrics": metrics}, f, indent=2, default=str)
                 print(f"[!] Rejection audit saved -> {audit_path}")
 
-    if shap_source_df is not None:
+    if shap_model is not None and shap_source_df is not None:
         shap_metrics = _generate_shap_report(
             repo,
             next_version,
+            shap_model,
             shap_source_df,
             shap_feature_cols,
-            config,
         )
 
     # Write summary metrics
