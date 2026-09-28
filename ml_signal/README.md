@@ -108,6 +108,11 @@ compatibility failures, or when the SHAP package is unavailable, the trainer
 falls back to XGBoost's native exact TreeSHAP contributions and checks
 additivity in raw-margin units. A failed explanation remains nonfatal.
 
+The CLI reserves the chronological evaluation tail before fitting the persisted
+market or trade-outcome model, then passes that same fitted model and untouched
+tail to the SHAP reporter; it never retrains a second generic model for the
+report.
+
 Training writes the model under `ml_signal/models/`, a canonical report at
 `reports/ml/task183_offline_metrics.json`, a versioned report at
 `reports/ml/v{n}_offline_metrics.json`, plus headless 150-DPI summary and

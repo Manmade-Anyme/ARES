@@ -17,6 +17,7 @@ from unittest.mock import mock_open, patch
 
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 
 from ml_signal.dataset import (
     flatten_features,
@@ -34,6 +35,7 @@ from ml_signal.train_offline import (
     _generate_shap_report,
     _native_shap_values,
     _offline_report_paths,
+    _positive_class_base_value,
     _print_shap_summary,
     _sharpe_metrics,
     _shap_metrics,
@@ -435,25 +437,41 @@ def _training_frame(n=64, feature_names=None):
 
 def _fake_shap(values, observed=None):
     """External SHAP boundary fake; run_training and XGBoost remain real."""
+    def _base_values(model, X, vals, tree_limit):
+        raw_margin = model.get_booster().predict(
+            xgb.DMatrix(X),
+            output_margin=True,
+            iteration_range=(0, tree_limit),
+        )
+        return raw_margin - np.asarray(vals, dtype=float).sum(axis=1)
+
     class Explanation:
-        def __init__(self, vals):
+        def __init__(self, vals, base_values):
             self.values = np.asarray(vals, dtype=float)
+            self.base_values = np.asarray(base_values, dtype=float)
 
     class TreeExplainer:
-        def __init__(self, model):
+        def __init__(self, model, **kwargs):
+            self.model = model
             self.expected_value = 0.0
+            if observed is not None:
+                observed["feature_perturbation"] = kwargs.get("feature_perturbation")
 
         def shap_values(self, X, tree_limit=None, check_additivity=True):
+            vals = np.asarray(values, dtype=float)
+            self.expected_value = _base_values(self.model, X, vals, tree_limit)
             if observed is not None:
                 observed.update({
                     "X": X.copy(),
                     "tree_limit": tree_limit,
                     "check_additivity": check_additivity,
                 })
-            return np.asarray(values, dtype=float)
+            return vals
 
         def __call__(self, X, **kwargs):
-            return Explanation(np.asarray(values, dtype=float))
+            vals = np.asarray(values, dtype=float)
+            base = _base_values(self.model, X, vals, kwargs["tree_limit"])
+            return Explanation(vals, base)
 
     return types.SimpleNamespace(TreeExplainer=TreeExplainer)
 
@@ -483,6 +501,7 @@ class TestOfflineShapContract(unittest.TestCase):
         )
         self.assertEqual(observed["tree_limit"], int(model.best_iteration) + 1)
         self.assertIs(observed["check_additivity"], True)
+        self.assertEqual(observed["feature_perturbation"], "tree_path_dependent")
         self.assertIs(metrics["shap_computed"], True)
         self.assertIsInstance(metrics["shap_top_features"], list)
         self.assertEqual(metrics["shap_output_unit"], "raw_margin_log_odds")
@@ -490,6 +509,14 @@ class TestOfflineShapContract(unittest.TestCase):
         self.assertEqual(metrics["shap_backend"], "shap_tree_explainer")
         self.assertEqual(metrics["shap_status"], "computed")
         self.assertIs(metrics["shap_plot_saved"], False)
+
+    def test_two_row_class_base_value_is_not_mistaken_for_per_row_values(self):
+        np.testing.assert_allclose(
+            _positive_class_base_value(
+                np.array([0.2, 0.8]), 2, class_expected_value=True
+            ),
+            np.array([0.8, 0.8]),
+        )
 
     def test_top_fifteen_descending_nonnegative_and_feature_aligned(self):
         features = [f"f{i}" for i in range(20)]
@@ -587,22 +614,44 @@ class TestOfflineShapContract(unittest.TestCase):
         n_test = len(df) - int(len(df) * 0.8)
 
         class CallableExplainer:
+            def __init__(self, model):
+                self.model = model
+
             def __call__(self, X, **kwargs):
-                return types.SimpleNamespace(values=np.ones((len(X), 3)))
+                values = np.ones((len(X), 3))
+                raw_margin = self.model.get_booster().predict(
+                    xgb.DMatrix(X),
+                    output_margin=True,
+                    iteration_range=(0, kwargs["tree_limit"]),
+                )
+                return types.SimpleNamespace(
+                    values=values,
+                    base_values=raw_margin - values.sum(axis=1),
+                )
 
         with patch.dict(sys.modules, {"shap": types.SimpleNamespace(
-                TreeExplainer=lambda model: CallableExplainer())}):
+                TreeExplainer=lambda model, **kwargs: CallableExplainer(model))}):
             _, callable_metrics = run_training(
                 df, ["alpha", "beta", "gamma"], config=self._config())
         self.assertTrue(callable_metrics["shap_computed"])
         self.assertEqual(callable_metrics["shap_explained_rows"], n_test)
 
         class ListExplainer:
+            def __init__(self, model):
+                self.model = model
+
             def shap_values(self, X, **kwargs):
-                return [np.zeros((len(X), 3)), np.full((len(X), 3), 0.25)]
+                values = [np.zeros((len(X), 3)), np.full((len(X), 3), 0.25)]
+                raw_margin = self.model.get_booster().predict(
+                    xgb.DMatrix(X),
+                    output_margin=True,
+                    iteration_range=(0, kwargs["tree_limit"]),
+                )
+                self.expected_value = raw_margin - values[1].sum(axis=1)
+                return values
 
         with patch.dict(sys.modules, {"shap": types.SimpleNamespace(
-                TreeExplainer=lambda model: ListExplainer())}):
+                TreeExplainer=lambda model, **kwargs: ListExplainer(model))}):
             _, list_metrics = run_training(
                 df, ["alpha", "beta", "gamma"], config=self._config())
         self.assertTrue(list_metrics["shap_computed"])
@@ -619,6 +668,28 @@ class TestOfflineShapContract(unittest.TestCase):
         self.assertEqual(metrics["shap_backend"], "xgboost_pred_contribs")
         self.assertIn("ValueError", metrics["shap_fallback_reason"])
         self.assertEqual(metrics["shap_explained_rows"], metrics["n_test"])
+
+    def test_external_nonadditive_values_fall_back_to_native(self):
+        df = _training_frame()
+
+        class NonAdditiveExplainer:
+            def __init__(self, model, **kwargs):
+                self.expected_value = 0.0
+
+            def shap_values(self, X, **kwargs):
+                return np.zeros((len(X), 3))
+
+        fake = types.SimpleNamespace(TreeExplainer=NonAdditiveExplainer)
+        with patch.dict(sys.modules, {"shap": fake}):
+            _, metrics = run_training(
+                df,
+                ["alpha", "beta", "gamma"],
+                config=self._config(),
+            )
+
+        self.assertTrue(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_backend"], "xgboost_pred_contribs")
+        self.assertIn("not additive", metrics["shap_fallback_reason"])
 
     def test_nested_import_error_falls_back_to_native(self):
         df = _training_frame()

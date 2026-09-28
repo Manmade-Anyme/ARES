@@ -23,7 +23,10 @@ from ml_signal.dataset import (
 from ml_signal.config import MLConfig
 from ml_signal.pipeline_trade_outcomes import TradeOutcomePipeline
 from ml_signal import train_offline
-from ml_signal.train_offline import _final_refit_sample_size_reason
+from ml_signal.train_offline import (
+    _final_refit_class_reason,
+    _final_refit_sample_size_reason,
+)
 
 
 def test_trade_outcome_prepare_dataset_applies_supplied_exit_metadata():
@@ -134,6 +137,27 @@ def test_final_refit_rejects_datasets_not_larger_than_fold_count(n_samples):
 
 def test_final_refit_accepts_dataset_larger_than_fold_count():
     assert _final_refit_sample_size_reason(6, n_splits=5) is None
+
+
+def test_final_refit_rejects_single_class_reserved_training_prefix():
+    frame = pd.DataFrame({
+        "timestamp": pd.date_range("2026-08-01", periods=10, freq="h"),
+        "label": [0] * 8 + [1] * 2,
+    })
+
+    reason = _final_refit_class_reason(frame, "Stage 2")
+
+    assert reason is not None
+    assert "reserved training prefix" in reason
+
+
+def test_final_refit_accepts_two_classes_in_reserved_training_prefix():
+    frame = pd.DataFrame({
+        "timestamp": pd.date_range("2026-08-01", periods=10, freq="h"),
+        "label": [0, 1] * 5,
+    })
+
+    assert _final_refit_class_reason(frame, "Stage 2") is None
 
 
 def test_final_hybrid_refit_rejects_empty_stage1_frame_cleanly(

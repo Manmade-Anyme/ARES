@@ -29,14 +29,30 @@ class TestSHAPSupport(unittest.TestCase):
     def test_tier1_mocked_shap_success(self):
         df = _training_frame()
         class Explanation:
-            def __init__(self, vals):
+            def __init__(self, vals, base_values):
                 self.values = vals
+                self.base_values = base_values
         class FakeTreeExplainer:
-            def __init__(self, model, **kwargs): pass
+            def __init__(self, model, **kwargs):
+                self.model = model
+
+            def _values_and_base(self, X, tree_limit):
+                values = np.ones((len(X), 3))
+                raw_margin = self.model.get_booster().predict(
+                    xgb.DMatrix(X),
+                    output_margin=True,
+                    iteration_range=(0, tree_limit),
+                )
+                return values, raw_margin - values.sum(axis=1)
+
             def __call__(self, X, **kwargs):
-                return Explanation(np.ones((len(X), 3)))
+                values, base = self._values_and_base(X, kwargs["tree_limit"])
+                return Explanation(values, base)
+
             def shap_values(self, X, **kwargs):
-                return np.ones((len(X), 3))
+                values, base = self._values_and_base(X, kwargs["tree_limit"])
+                self.expected_value = base
+                return values
         
         fake_shap = types.SimpleNamespace(TreeExplainer=FakeTreeExplainer)
         with patch.dict(sys.modules, {"shap": fake_shap}):
@@ -96,9 +112,20 @@ class TestSHAPSupport(unittest.TestCase):
 
             # SHAP explainer plot
             class FakeTreeExplainer:
+                def __init__(self, model, **kwargs):
+                    self.model = model
+
                 def __call__(self, X, **kwargs):
-                    class Exp: values = np.ones((len(X), 3))
-                    return Exp()
+                    values = np.ones((len(X), 3))
+                    raw_margin = self.model.get_booster().predict(
+                        xgb.DMatrix(X),
+                        output_margin=True,
+                        iteration_range=(0, kwargs["tree_limit"]),
+                    )
+                    return types.SimpleNamespace(
+                        values=values,
+                        base_values=raw_margin - values.sum(axis=1),
+                    )
             fake_shap = types.SimpleNamespace(
                 TreeExplainer=FakeTreeExplainer,
                 summary_plot=lambda v, x, show, max_display: None

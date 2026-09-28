@@ -45,6 +45,24 @@ def _final_refit_sample_size_reason(n_samples: int, n_splits: int) -> Optional[s
     return None
 
 
+def _final_refit_class_reason(
+    df: pd.DataFrame,
+    model_name: str,
+) -> Optional[str]:
+    """Return why the reserved training prefix cannot fit a classifier."""
+    if df.empty or "label" not in df:
+        return f"final {model_name} refit requires labeled rows"
+    if "timestamp" not in df:
+        return f"final {model_name} refit requires timestamped rows"
+    train_df, _ = chronological_split(df)
+    if train_df["label"].nunique(dropna=True) < 2:
+        return (
+            f"final {model_name} refit requires at least two classes in its "
+            "reserved training prefix"
+        )
+    return None
+
+
 def _stage1_refit_reason(market_df: Optional[pd.DataFrame]) -> Optional[str]:
     """Return why a deployable hybrid Stage 1 model cannot be fitted."""
     if market_df is None or market_df.empty:
@@ -272,6 +290,62 @@ def _native_shap_values(model, X_test: pd.DataFrame, best_iteration: int):
     return contributions[:, :-1], iteration_range
 
 
+def _positive_class_base_value(
+    base_values,
+    n_rows: int,
+    class_expected_value: bool = False,
+) -> np.ndarray:
+    """Normalize SHAP expected/base values to one binary-class value per row."""
+    if base_values is None:
+        raise ValueError("SHAP expected value is unavailable")
+    values = np.asarray(base_values, dtype=float)
+    if values.ndim == 0:
+        return np.full(n_rows, float(values))
+    if values.ndim == 1:
+        if class_expected_value and len(values) >= 2:
+            return np.full(n_rows, float(values[1]))
+        if len(values) == n_rows:
+            return values
+        if len(values) >= 2:
+            return np.full(n_rows, float(values[1]))
+    if values.ndim == 2:
+        if values.shape == (n_rows, 1):
+            return values[:, 0]
+        if values.shape[0] == n_rows and values.shape[1] >= 2:
+            return values[:, 1]
+        if values.shape[1] == n_rows and values.shape[0] >= 2:
+            return values[1]
+    raise ValueError("SHAP expected value shape mismatch")
+
+
+def _validate_external_shap_additivity(
+    model,
+    X_test: pd.DataFrame,
+    values: np.ndarray,
+    base_values,
+    best_iteration: int,
+    class_expected_value: bool = False,
+) -> None:
+    """Verify external TreeSHAP values reconstruct the raw XGBoost margin."""
+    raw_margin = np.asarray(model.get_booster().predict(
+        xgb.DMatrix(X_test),
+        output_margin=True,
+        iteration_range=(0, best_iteration + 1),
+    ))
+    if raw_margin.ndim != 1 or not np.isfinite(raw_margin).all():
+        raise ValueError("external SHAP raw margins contain non-finite values")
+    base = _positive_class_base_value(
+        base_values, len(X_test), class_expected_value=class_expected_value
+    )
+    if not np.allclose(
+        values.sum(axis=1) + base,
+        raw_margin,
+        rtol=1e-4,
+        atol=1e-5,
+    ):
+        raise ValueError("external SHAP contributions are not additive to raw margin")
+
+
 def _compute_shap(
     model,
     X_test: pd.DataFrame,
@@ -279,7 +353,10 @@ def _compute_shap(
     metrics: Dict[str, object],
 ):
     """Populate metrics with optional held-out-set SHAP analysis."""
-    best_iteration = int(getattr(model, "best_iteration", model.n_estimators - 1))
+    best_iteration = getattr(model, "best_iteration", None)
+    if best_iteration is None:
+        best_iteration = getattr(model, "n_estimators", 1) - 1
+    best_iteration = int(best_iteration)
     metrics["shap_iteration_range"] = [0, best_iteration + 1]
     import_failure = None
     try:
@@ -293,18 +370,27 @@ def _compute_shap(
     tree_exc = import_failure
     if tree_exc is None:
         try:
-            explainer = shap.TreeExplainer(model)
+            explainer = shap.TreeExplainer(
+                model,
+                feature_perturbation="tree_path_dependent",
+            )
             # `tree_limit` is the SHAP API's equivalent of XGBoost's iteration range.
+            explanation = None
             if hasattr(explainer, "shap_values"):
                 values = explainer.shap_values(
                     X_test, tree_limit=best_iteration + 1, check_additivity=True,
                 )
             else:
-                values = explainer(
+                explanation = explainer(
                     X_test, tree_limit=best_iteration + 1, check_additivity=True,
-                ).values
+                )
+                values = explanation.values
+            base_values = getattr(explanation, "base_values", None)
+            class_expected_value = base_values is None
+            if base_values is None:
+                base_values = getattr(explainer, "expected_value", None)
             if isinstance(values, list):
-                values = values[-1]
+                values = values[1] if len(values) > 1 else values[0]
             values = np.asarray(values, dtype=float)
             
             if values.ndim == 3:
@@ -315,6 +401,14 @@ def _compute_shap(
                 raise ValueError("SHAP contribution shape mismatch")
             if not np.isfinite(values).all():
                 raise ValueError("SHAP contributions contain non-finite values")
+            _validate_external_shap_additivity(
+                model,
+                X_test,
+                values,
+                base_values,
+                best_iteration,
+                class_expected_value=class_expected_value,
+            )
             backend = "shap_tree_explainer"
             iteration_range = [0, best_iteration + 1]
             metrics["shap_raw_margin_additivity"] = True
@@ -457,7 +551,10 @@ def audit_shap_stability(
         return {"status": "insufficient_data"}
 
     window_shaps = []
-    best_iteration = int(getattr(model, "best_iteration", model.n_estimators - 1))
+    best_iteration = getattr(model, "best_iteration", None)
+    if best_iteration is None:
+        best_iteration = getattr(model, "n_estimators", 1) - 1
+    best_iteration = int(best_iteration)
 
     for indices in index_windows:
         w_df = sorted_df.iloc[indices]
@@ -1042,13 +1139,27 @@ def main(argv=None) -> None:
             from ml_signal.promotion_gate import evaluate_promotion_gate
             passed, reasons = evaluate_promotion_gate(metrics)
             refit_size_reason = _final_refit_sample_size_reason(len(trade_df), args.folds)
+            stage2_class_reason = (
+                _final_refit_class_reason(trade_df, "Stage 2")
+                if refit_size_reason is None else None
+            )
             if refit_size_reason:
                 passed = False
                 reasons = [*reasons, refit_size_reason]
+            if stage2_class_reason:
+                passed = False
+                reasons = [*reasons, stage2_class_reason]
             stage1_refit_reason = _stage1_refit_reason(market_df) if args.hybrid else None
+            stage1_class_reason = (
+                _final_refit_class_reason(market_df, "Stage 1")
+                if args.hybrid and stage1_refit_reason is None else None
+            )
             if stage1_refit_reason:
                 passed = False
                 reasons = [*reasons, stage1_refit_reason]
+            if stage1_class_reason:
+                passed = False
+                reasons = [*reasons, stage1_class_reason]
             promoted = passed
             if not passed:
                 gate_error = ModelPromotionError(f"Promotion gate failed: {reasons}", reasons=reasons)
@@ -1057,7 +1168,12 @@ def main(argv=None) -> None:
             # Reserve chronological tails for evaluation before final fitting.
             print("[*] Training final Stage 1 and Stage 2 models for promotion or research...")
             try:
-                refit_reason = refit_size_reason or stage1_refit_reason
+                refit_reason = (
+                    refit_size_reason
+                    or stage2_class_reason
+                    or stage1_refit_reason
+                    or stage1_class_reason
+                )
                 if refit_reason:
                     print(f"[!] Skipping final refit: {refit_reason}")
                 elif args.hybrid:
@@ -1068,14 +1184,14 @@ def main(argv=None) -> None:
                     from ml_signal.validation import WalkForwardPurgedCV
                     cv = WalkForwardPurgedCV(n_splits=args.folds, min_train_samples=100, embargo_window=pd.Timedelta(minutes=15))
                     
-                    market_probs = pd.Series(index=trade_df.index, dtype=float)
                     # For simplicity in the final promotion step, we can use a basic K-Fold to cross-fit,
                     # but strictly, we should use chronological cross-fitting.
                     from sklearn.model_selection import TimeSeriesSplit
                     tscv = TimeSeriesSplit(n_splits=args.folds)
                     
                     # Ensure trade_df is sorted
-                    trade_df = trade_df.sort_values("timestamp").copy()
+                    trade_df = trade_df.sort_values("timestamp").reset_index(drop=True)
+                    market_probs = pd.Series(index=trade_df.index, dtype=float)
                     for train_idx, test_idx in tscv.split(trade_df):
                         # Get max timestamp in train
                         test_start_ts = trade_df.iloc[test_idx]["timestamp"].min()
