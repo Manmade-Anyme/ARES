@@ -14,7 +14,7 @@ import argparse
 import os
 import sys
 import json
-from typing import List, Tuple, Dict, Optional
+from typing import Any, List, Tuple, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -354,7 +354,13 @@ def _compute_shap(
 
 
 
-def _save_shap_beeswarm_plot(values: np.ndarray, X_test: pd.DataFrame, feature_cols: List[str], beeswarm_path: Optional[str], backend: str) -> None:
+def _save_shap_beeswarm_plot(
+    values: np.ndarray,
+    X_test: pd.DataFrame,
+    feature_cols: List[str],
+    beeswarm_path: Optional[str],
+    backend: str,
+) -> None:
     if not beeswarm_path or values is None:
         return
     try:
@@ -363,125 +369,150 @@ def _save_shap_beeswarm_plot(values: np.ndarray, X_test: pd.DataFrame, feature_c
         import matplotlib.pyplot as plt
 
         os.makedirs(os.path.dirname(beeswarm_path) or ".", exist_ok=True)
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig = None
         try:
-            plot_success = False
             if backend == "shap_tree_explainer":
                 try:
                     import shap
                     shap.summary_plot(values, X_test, show=False, max_display=15)
                     fig = plt.gcf()
-                    plot_success = True
                 except Exception as e:
                     print(f"[!] shap.summary_plot failed ({e}), falling back to Matplotlib beeswarm.")
-                    plt.clf() # Clear failed plot
-            
-            if not plot_success:
+                    plt.close("all")
+
+            if fig is None:
                 # Native fallback beeswarm (Matplotlib directional scatter/jitter)
+                fig, ax = plt.subplots(figsize=(10, 6))
                 means = np.mean(np.abs(values), axis=0)
-                top_indices = np.argsort(means)[-15:]
-                
+                top_indices = np.argsort(means)[-15:][::-1]
+                scatter = None
+                rng = np.random.default_rng(0)
                 for i, feat_idx in enumerate(top_indices):
-                    feat_vals = X_test.iloc[:, feat_idx].values
+                    feat_vals = pd.to_numeric(
+                        X_test.iloc[:, feat_idx], errors="coerce"
+                    ).to_numpy(dtype=float)
                     shap_vals = values[:, feat_idx]
-                    
+
                     # Normalize feature values to [0, 1]
-                    feat_min, feat_max = feat_vals.min(), feat_vals.max()
+                    finite = np.isfinite(feat_vals)
+                    feat_min = feat_vals[finite].min() if finite.any() else 0.0
+                    feat_max = feat_vals[finite].max() if finite.any() else 0.0
                     if feat_max > feat_min:
-                        norm_vals = (feat_vals - feat_min) / (feat_max - feat_min)
+                        norm_vals = np.nan_to_num(
+                            (feat_vals - feat_min) / (feat_max - feat_min),
+                            nan=0.5,
+                        )
                     else:
-                        norm_vals = np.zeros_like(feat_vals)
-                    
-                    jitter = np.random.uniform(-0.15, 0.15, size=len(shap_vals))
+                        norm_vals = np.full_like(feat_vals, 0.5)
+
+                    jitter = rng.uniform(-0.15, 0.15, size=len(shap_vals))
                     y_pos = np.full_like(shap_vals, i) + jitter
-                    
-                    sc = ax.scatter(shap_vals, y_pos, c=norm_vals, cmap="coolwarm", s=10, alpha=0.7)
-                
+
+                    scatter = ax.scatter(
+                        shap_vals, y_pos, c=norm_vals, cmap="coolwarm",
+                        s=10, alpha=0.7,
+                    )
+
                 ax.axvline(x=0, color="k", linestyle="-", linewidth=0.5)
                 ax.set_yticks(range(len(top_indices)))
                 ax.set_yticklabels([feature_cols[idx] for idx in top_indices])
                 ax.set_xlabel("SHAP value (impact on model output)")
                 ax.set_title("SHAP Beeswarm Plot (Native Fallback)")
-                cbar = plt.colorbar(sc, ax=ax)
-                cbar.set_label("Feature value")
-            
+
+                if scatter is not None:
+                    cbar = fig.colorbar(scatter, ax=ax)
+                    cbar.set_label("Feature value")
+
             fig.savefig(beeswarm_path, dpi=150, bbox_inches="tight")
             print(f"[+] SHAP beeswarm plot saved -> {beeswarm_path}")
         finally:
-            plt.close(fig)
+            if fig is not None:
+                plt.close(fig)
     except Exception as exc:
         print(f"[!] SHAP beeswarm plot could not be saved; continuing ({type(exc).__name__}).")
 
-def audit_shap_stability(df: pd.DataFrame, feature_cols: List[str], model, min_window_samples: int = 30) -> Dict[str, object]:
+def audit_shap_stability(
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    model,
+    n_windows: int = 4,
+    min_window_samples: int = 30,
+) -> Dict[str, object]:
     """Audit SHAP stability across rolling training windows to detect feature drift."""
     if "timestamp" not in df.columns:
         return {"status": "missing_timestamp_column"}
-        
+
+    if n_windows < 2 or min_window_samples < 1:
+        return {"status": "invalid_window_configuration"}
+
     n = len(df)
     if n < 2 * min_window_samples:
         return {"status": "insufficient_data"}
-    
-    n_windows = 4
-    # Split df chronologically into W windows
-    sorted_df = df.sort_values("timestamp").reset_index(drop=True)
-    window_size = n // n_windows
-    if window_size < min_window_samples:
+
+    sorted_df = df.assign(
+        timestamp=pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+    ).dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    index_windows = np.array_split(np.arange(len(sorted_df)), n_windows)
+    if any(len(indices) < min_window_samples for indices in index_windows):
         return {"status": "insufficient_data"}
-        
+
     window_shaps = []
     best_iteration = int(getattr(model, "best_iteration", model.n_estimators - 1))
-    
-    for w in range(n_windows):
-        start_idx = w * window_size
-        end_idx = start_idx + window_size if w < n_windows - 1 else n
-        w_df = sorted_df.iloc[start_idx:end_idx]
-        if len(w_df) == 0:
-            continue
-            
+
+    for indices in index_windows:
+        w_df = sorted_df.iloc[indices]
         # Extract native SHAP for window
         try:
             w_X = w_df[feature_cols]
             w_dtest = xgb.DMatrix(w_X)
             booster = model.get_booster()
-            w_contribs = np.asarray(booster.predict(w_dtest, pred_contribs=True, iteration_range=(0, best_iteration + 1)))
+            w_contribs = np.asarray(booster.predict(
+                w_dtest,
+                pred_contribs=True,
+                iteration_range=(0, best_iteration + 1),
+            ))
+            if w_contribs.ndim != 2 or w_contribs.shape[1] != len(feature_cols) + 1:
+                continue
             w_values = w_contribs[:, :-1]
+            if not np.isfinite(w_values).all():
+                continue
             w_mean_abs = np.mean(np.abs(w_values), axis=0)
             window_shaps.append(w_mean_abs)
         except Exception:
             pass
-            
+
     if len(window_shaps) < 2:
         return {"status": "insufficient_data"}
-        
+
     correlations = []
     turnover_rates = []
-    drifts = []
+    drift_scores = []
     flagged_features = set()
-    
+
     for i in range(1, len(window_shaps)):
         prev = window_shaps[i-1]
         curr = window_shaps[i]
-        
+
         # Rank correlation
         prev_ranks = np.argsort(np.argsort(-prev))
         curr_ranks = np.argsort(np.argsort(-curr))
-        
+
         d_sq = np.sum((prev_ranks - curr_ranks) ** 2)
         M = len(feature_cols)
         rho = 1 - (6 * d_sq) / (M * (M**2 - 1)) if M > 1 else 1.0
         correlations.append(rho)
-        
+
         # Top 5 turnover
         prev_top5 = set(np.argsort(-prev)[:5])
         curr_top5 = set(np.argsort(-curr)[:5])
         denom = float(min(5, len(feature_cols)))
         turnover = len(prev_top5 - curr_top5) / denom if denom > 0 else 0.0
         turnover_rates.append(turnover)
-        
+
         # Drift score
         drift = np.abs(curr - prev) / (prev + 1e-6)
-        drifts.append(drift)
-        
+        drift_scores.append(drift)
+
         # Flag features with > 100% swing in top features
         for j in curr_top5:
             if drift[j] > 1.0:
@@ -501,8 +532,9 @@ def audit_shap_stability(df: pd.DataFrame, feature_cols: List[str], model, min_w
         "status": "computed",
         "mean_rank_correlation": mean_rho,
         "mean_top5_turnover": mean_turnover,
+        "max_attribution_drift": float(np.max(drift_scores)),
         "stability_verdict": verdict,
-        "flagged_features": list(flagged_features)
+        "flagged_features": sorted(flagged_features),
     }
 
 
@@ -560,6 +592,43 @@ def _offline_report_paths(repo: str, version: str) -> Tuple[str, str, str, str]:
         os.path.join(report_dir, f"{version}_shap_summary.png"),
         os.path.join(report_dir, f"{version}_shap_beeswarm.png"),
     )
+
+
+def _generate_shap_report(
+    repo: str,
+    version: str,
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    config: MLConfig,
+) -> Dict[str, object]:
+    """Generate the versioned SHAP report used by the pipeline CLI."""
+    _, report_path, shap_plot_path, shap_beeswarm_path = _offline_report_paths(
+        repo, version
+    )
+    if df.empty or not feature_cols:
+        metrics = _shap_metrics()
+        metrics["shap_status"] = "skipped"
+        return metrics
+
+    try:
+        _, metrics = run_training(
+            df,
+            feature_cols,
+            config=config,
+            report_path=report_path,
+            shap_plot_path=shap_plot_path,
+            shap_beeswarm_path=shap_beeswarm_path,
+            model_version=version,
+        )
+        return metrics
+    except Exception as exc:
+        metrics = _shap_metrics()
+        metrics.update({
+            "shap_status": "failed",
+            "shap_error_type": type(exc).__name__,
+        })
+        print(f"[!] SHAP report generation failed; continuing ({type(exc).__name__}).")
+        return metrics
 
 
 def _print_shap_summary(metrics: Dict[str, object]) -> None:
@@ -849,6 +918,10 @@ def main(argv=None) -> None:
     leakage_guard_passed = True
     final_metrics = {}
     sharpe_metrics = _sharpe_metrics(pd.DataFrame())
+    shap_metrics = _shap_metrics()
+    shap_metrics["shap_status"] = "skipped"
+    shap_source_df = None
+    shap_feature_cols = []
 
     if args.pipeline in ["market_movement", "all"]:
         print("\n=== Running Market Movement Pipeline ===")
@@ -869,6 +942,11 @@ def main(argv=None) -> None:
         if args.pipeline == "market_movement":
             final_metrics = metrics.copy()
             leakage_guard_passed = metrics.get("leakage_guard_passed", False)
+            shap_source_df = market_df
+            shap_feature_cols = [
+                c for c in feature_columns(market_df)
+                if not c.startswith("detector_scores__")
+            ]
 
     if args.pipeline in ["trade_outcomes", "all"]:
         print("\n=== Running Trade Outcome Pipeline ===")
@@ -974,6 +1052,8 @@ def main(argv=None) -> None:
                         random_state=42
                     )
                     stage2_model.fit(trade_df[feat_cols2], trade_df["label"])
+                    shap_source_df = trade_df
+                    shap_feature_cols = feat_cols2
 
                     if not promoted:
                         save_path = save_path.replace(".joblib", "_unpromoted.joblib")
@@ -1009,18 +1089,26 @@ def main(argv=None) -> None:
                     json.dump({"version": next_version, "reasons": gate_error.reasons if gate_error else [], "metrics": metrics}, f, indent=2, default=str)
                 print(f"[!] Rejection audit saved -> {audit_path}")
 
+    if shap_source_df is not None:
+        shap_metrics = _generate_shap_report(
+            repo,
+            next_version,
+            shap_source_df,
+            shap_feature_cols,
+            config,
+        )
+
     # Write summary metrics
     summary = {
         "model_version": next_version,
         "auc_roc": final_metrics.get("mean_auc", 0.0),
-        "shap_status": "skipped",
-        "shap_computed": False,
         "promoted": promoted,
         "leakage_guard_passed": leakage_guard_passed,
         "gate_reasons": gate_error.reasons if gate_error else []
     }
     summary.update(final_metrics)
     summary.update(sharpe_metrics)
+    summary.update(shap_metrics)
     
     os.makedirs(os.path.dirname(args.metrics_path) or ".", exist_ok=True)
     with open(args.metrics_path, "w") as f:

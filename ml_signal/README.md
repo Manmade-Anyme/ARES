@@ -104,15 +104,17 @@ python -m ml_signal.train_offline
 
 The chronological held-out test split is explained with `shap.TreeExplainer`,
 using the fitted model's `best_iteration`. On Python 3.10 SHAP/XGBoost
-compatibility failures, the trainer falls back to XGBoost's native exact
-TreeSHAP contributions and checks additivity in raw-margin units. If the SHAP
-package is genuinely missing, explanation is skipped as a nonfatal condition.
+compatibility failures, or when the SHAP package is unavailable, the trainer
+falls back to XGBoost's native exact TreeSHAP contributions and checks
+additivity in raw-margin units. A failed explanation remains nonfatal.
 
 Training writes the model under `ml_signal/models/`, a canonical report at
 `reports/ml/task183_offline_metrics.json`, a versioned report at
-`reports/ml/v{n}_offline_metrics.json`, and (when SHAP is available) a
-headless 150-DPI bar chart at `reports/ml/v{n}_shap_summary.png`. Reports
-include the model version, stable SHAP status/backend/output-unit fields, and
+`reports/ml/v{n}_offline_metrics.json`, plus headless 150-DPI summary and
+beeswarm charts at `reports/ml/v{n}_shap_summary.png` and
+`reports/ml/v{n}_shap_beeswarm.png`. Reports include the model version,
+training/testing windows, feature schema metadata, drift-audit results, and
+stable SHAP status/backend/output-unit fields, as well as
 an annualized active-trading-day Sharpe diagnostic computed from realized NIFTY
 spot P&L at a zero risk-free rate. The diagnostic groups P&L by the trade's IST
 exit date, includes only days with a closed trade, reports its date window and

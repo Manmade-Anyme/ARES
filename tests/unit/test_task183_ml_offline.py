@@ -31,6 +31,7 @@ from ml_signal.train_offline import (
     _compute_shap,
     _fetch_ml_collection,
     _fetch_trade_exit_timestamps,
+    _generate_shap_report,
     _native_shap_values,
     _offline_report_paths,
     _print_shap_summary,
@@ -856,6 +857,36 @@ class TestOfflineShapContract(unittest.TestCase):
             self.assertIn("raw margin/log-odds", text)
             self.assertIn(expected, text)
             output.close()
+
+    def test_generate_shap_report_uses_versioned_artifact_paths(self):
+        df = _training_frame()
+        expected = _shap_metrics()
+        expected.update({"shap_computed": True, "shap_status": "computed"})
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("ml_signal.train_offline.run_training",
+                      return_value=(object(), expected)) as train:
+            observed = _generate_shap_report(
+                directory,
+                "v42",
+                df,
+                ["alpha", "beta", "gamma"],
+                self._config(),
+            )
+
+        self.assertIs(observed, expected)
+        kwargs = train.call_args.kwargs
+        self.assertEqual(
+            kwargs["report_path"],
+            os.path.join(directory, "reports", "ml", "v42_offline_metrics.json"),
+        )
+        self.assertEqual(
+            kwargs["shap_plot_path"],
+            os.path.join(directory, "reports", "ml", "v42_shap_summary.png"),
+        )
+        self.assertEqual(
+            kwargs["shap_beeswarm_path"],
+            os.path.join(directory, "reports", "ml", "v42_shap_beeswarm.png"),
+        )
 
 
 

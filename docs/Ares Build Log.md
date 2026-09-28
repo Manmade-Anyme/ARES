@@ -17,6 +17,7 @@ Architected resilient multi-tier SHAP explainability, raw-margin additivity vali
 - Raw-margin log-odds additivity: validated via `np.allclose(contributions[:, :-1].sum(axis=1) + contributions[:, -1], raw_margin)`.
 - Multi-plot suite: summary bar chart (`{version}_shap_summary.png`) and directional beeswarm plot (`{version}_shap_beeswarm.png`) with pure Matplotlib scatter/jitter fallback for environments without `shap`.
 - Feature drift audit: `audit_shap_stability(...)` computes rank correlation ($\rho_s$), top-5 turnover, and attribution drift across rolling windows with graceful sparse data handling.
+- Pipeline CLI integration: the active market-only or trade-outcome training path now reuses `run_training()` to publish versioned SHAP reports and merge SHAP metadata into the canonical `task183_offline_metrics.json` output.
 - Implementation tasks assigned to Code Generator Agent via ADR-156.
 ## 2026-09-28 · MANM-155 Trade Identity Preservation
 
