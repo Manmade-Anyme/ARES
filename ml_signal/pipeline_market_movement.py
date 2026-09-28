@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from ml_signal.config import MLConfig, DEFAULT_CONFIG
 from ml_signal.dataset import build_labeled_frame, feature_columns
-from ml_signal.validation import WalkForwardPurgedCV, compute_cv_metrics
+from ml_signal.validation import WalkForwardPurgedCV, build_fold_result, compute_cv_metrics
 from ml_signal.leakage_guards import (
     assert_no_outcome_leakage,
     assert_chronological_integrity,
@@ -67,7 +67,10 @@ class MarketMovementPipeline:
             y_test = test_df["label"]
             
             if len(y_test.unique()) < 2 or len(y_train.unique()) < 2:
-                fold_results.append({"fold": fold_info["fold"], "degenerate": True})
+                reason = "single_class_train" if len(y_train.unique()) < 2 else "single_class_test"
+                fold_results.append(build_fold_result(
+                    fold_info, y_train, y_test, degenerate=True, reason=reason
+                ))
                 continue
                 
             model = xgb.XGBClassifier(
@@ -90,13 +93,9 @@ class MarketMovementPipeline:
             auc = roc_auc_score(y_test, preds)
             brier = brier_score_loss(y_test, preds)
             
-            fold_results.append({
-                "fold": fold_info["fold"],
-                "auc": auc,
-                "brier": brier,
-                "n_test": len(y_test),
-                "degenerate": False
-            })
+            fold_results.append(build_fold_result(
+                fold_info, y_train, y_test, auc=auc, brier=brier
+            ))
             
         metrics = compute_cv_metrics(fold_results, leakage_guard_passed=True)
         

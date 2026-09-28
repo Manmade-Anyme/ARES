@@ -6,6 +6,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Auditable walk-forward metrics (MANM-155)**: Preserved chronological fold results, post-purge train/test counts, class balances, degeneracy reasons, and per-fold AUC/Brier values in generated validation reports, and made the promotion gate reject missing or non-finite metrics explicitly.
 - **Trade-outcome Sharpe reporting (MANM-155)**: Restored the canonical walk-forward summary's Sharpe diagnostics from realized trade P&L and exit timestamps instead of leaving zero-trade placeholders in every pipeline report.
 - **Undersized ML refit rejection (MANM-155)**: Short-circuited final chronological cross-fitting when the trade dataset is not larger than the requested fold count, allowing promotion rejection audits and summary metrics to be written instead of raising from `TimeSeriesSplit`.
 - **Canonical market-candle labeling (MANM-155)**: Collapsed all intra-minute market snapshot polls to the terminal snapshot before forward labeling, preventing evolving feature captures from consuming multiple look-forward positions while preserving distinct trade-outcome rows.

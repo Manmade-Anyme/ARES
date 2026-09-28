@@ -12,7 +12,7 @@ from ml_signal.leakage_guards import (
     deduplicate_snapshots,
     DataLeakageError
 )
-from ml_signal.validation import WalkForwardPurgedCV
+from ml_signal.validation import WalkForwardPurgedCV, build_fold_result, compute_cv_metrics
 from ml_signal.promotion_gate import evaluate_promotion_gate, enforce_promotion_or_raise, ModelPromotionError
 from ml_signal.dataset import _META_COLS, build_labeled_frame
 from ml_signal.config import MLConfig
@@ -153,6 +153,63 @@ def test_walk_forward_purged_cv_embargo():
         embargo_start = test_start - pd.Timedelta(minutes=10)
         assert (train_ts < embargo_start).all()
 
+
+def test_cv_metrics_preserve_auditable_fold_diagnostics():
+    fold_info = {
+        "fold": 2,
+        "train_start": pd.Timestamp("2026-01-01T10:00:00Z"),
+        "train_end": pd.Timestamp("2026-01-01T10:09:00Z"),
+        "test_start": pd.Timestamp("2026-01-01T10:15:00Z"),
+        "test_end": pd.Timestamp("2026-01-01T10:18:00Z"),
+    }
+    result = build_fold_result(
+        fold_info,
+        pd.Series([0, 0, 1, 1, 1]),
+        pd.Series([0, 1, 1]),
+        auc=0.75,
+        brier=0.2,
+    )
+
+    metrics = compute_cv_metrics([result])
+
+    assert metrics["fold_results"] == [{
+        "fold": 2,
+        "train_start": "2026-01-01T10:00:00+00:00",
+        "train_end": "2026-01-01T10:09:00+00:00",
+        "test_start": "2026-01-01T10:15:00+00:00",
+        "test_end": "2026-01-01T10:18:00+00:00",
+        "n_train": 5,
+        "n_test": 3,
+        "train_class_counts": {"negative": 2, "positive": 3},
+        "test_class_counts": {"negative": 1, "positive": 2},
+        "train_positive_rate": 0.6,
+        "test_positive_rate": pytest.approx(2 / 3),
+        "auc": 0.75,
+        "brier": 0.2,
+        "degenerate": False,
+    }]
+    # The diagnostics must be directly writable by every JSON report path.
+    json.dumps(metrics, allow_nan=False)
+
+
+def test_degenerate_fold_keeps_counts_and_chronological_bounds():
+    result = build_fold_result(
+        {"fold": 1, "test_start": pd.Timestamp("2026-01-01T10:00:00")},
+        pd.Series([0, 1]),
+        pd.Series([1, 1]),
+        degenerate=True,
+    )
+
+    metrics = compute_cv_metrics([result])
+
+    assert metrics["evaluable_folds"] == 0
+    assert metrics["degenerate_folds"] == 1
+    assert metrics["fold_results"][0]["n_train"] == 2
+    assert metrics["fold_results"][0]["test_class_counts"] == {
+        "negative": 0,
+        "positive": 2,
+    }
+
 def test_evaluate_promotion_gate_success():
     metrics = {
         "validation_method": "walk_forward_purged",
@@ -183,6 +240,27 @@ def test_evaluate_promotion_gate_failure():
     assert passed is False
     with pytest.raises(ModelPromotionError):
         enforce_promotion_or_raise(metrics)
+
+
+@pytest.mark.parametrize("field", ["mean_auc", "ci_95_lower", "min_fold_auc", "brier_score"])
+@pytest.mark.parametrize("value", [None, np.nan, np.inf, "not-a-number"])
+def test_evaluate_promotion_gate_rejects_non_finite_metrics(field, value):
+    metrics = {
+        "validation_method": "walk_forward_purged",
+        "evaluable_folds": 4,
+        "degenerate_folds": 0,
+        "mean_auc": 0.56,
+        "ci_95_lower": 0.51,
+        "min_fold_auc": 0.42,
+        "brier_score": 0.20,
+        "leakage_guard_passed": True,
+    }
+    metrics[field] = value
+
+    passed, reasons = evaluate_promotion_gate(metrics)
+
+    assert passed is False
+    assert reasons
 
 def test_deduplicate_snapshots():
     # Multiple polls of one source candle must collapse even when features

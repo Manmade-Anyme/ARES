@@ -2,6 +2,78 @@ import pandas as pd
 import numpy as np
 from typing import Iterator, Tuple, Dict, Any, List
 import scipy.stats
+from copy import deepcopy
+
+
+def _class_counts(labels: pd.Series) -> Dict[str, int]:
+    """Return a stable binary-label summary suitable for JSON reports."""
+    numeric = pd.to_numeric(labels, errors="coerce")
+    return {
+        "negative": int((numeric == 0).sum()),
+        "positive": int((numeric == 1).sum()),
+    }
+
+
+def _iso_timestamp(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, (pd.Timestamp, np.datetime64)):
+        return pd.Timestamp(value).isoformat()
+    return value
+
+
+def _finite_float(value: Any) -> Any:
+    if isinstance(value, (int, float, np.number)) and np.isfinite(value):
+        return float(value)
+    return None
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (pd.Timestamp, np.datetime64)):
+        return _iso_timestamp(value)
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
+
+
+def build_fold_result(
+    fold_info: Dict[str, Any],
+    train_labels: pd.Series,
+    test_labels: pd.Series,
+    *,
+    auc: float = None,
+    brier: float = None,
+    degenerate: bool = False,
+    reason: str = None,
+) -> Dict[str, Any]:
+    """Build the common, JSON-safe audit record emitted for every CV fold."""
+    train_counts = _class_counts(train_labels)
+    test_counts = _class_counts(test_labels)
+    result = {
+        "fold": int(fold_info["fold"]),
+        "train_start": _iso_timestamp(fold_info.get("train_start")),
+        "train_end": _iso_timestamp(fold_info.get("train_end")),
+        "test_start": _iso_timestamp(fold_info.get("test_start")),
+        "test_end": _iso_timestamp(fold_info.get("test_end")),
+        "n_train": int(len(train_labels)),
+        "n_test": int(len(test_labels)),
+        "train_class_counts": train_counts,
+        "test_class_counts": test_counts,
+        "train_positive_rate": float(train_counts["positive"] / len(train_labels)) if len(train_labels) else None,
+        "test_positive_rate": float(test_counts["positive"] / len(test_labels)) if len(test_labels) else None,
+        "auc": _finite_float(auc),
+        "brier": _finite_float(brier),
+        "degenerate": bool(degenerate),
+    }
+    if reason is not None:
+        result["reason"] = str(reason)
+    return result
 
 class WalkForwardPurgedCV:
     def __init__(
@@ -73,31 +145,41 @@ def compute_cv_metrics(fold_results: List[Dict[str, Any]], leakage_guard_passed:
     degenerate_folds = 0
     aucs = []
     
+    def is_finite_metric(value: Any) -> bool:
+        return isinstance(value, (int, float, np.number)) and np.isfinite(value)
+
+    def is_evaluable(res: Dict[str, Any]) -> bool:
+        return (
+            not res.get("degenerate", False)
+            and is_finite_metric(res.get("auc"))
+            and is_finite_metric(res.get("brier"))
+            and int(res.get("n_test", 0)) > 0
+        )
+
     for res in fold_results:
-        # Assuming res contains 'auc', 'degenerate'
-        if res.get("degenerate", False) or np.isnan(res.get("auc", np.nan)):
+        if not is_evaluable(res):
             degenerate_folds += 1
         else:
             evaluable_folds += 1
-            aucs.append(res["auc"])
+            aucs.append(float(res["auc"]))
             
     metrics = {
         "validation_method": "walk_forward_purged",
         "evaluable_folds": evaluable_folds,
         "degenerate_folds": degenerate_folds,
         "leakage_guard_passed": leakage_guard_passed,
+        "fold_results": _json_safe(deepcopy(fold_results)),
     }
     
     if evaluable_folds > 0:
         mean_auc = np.mean(aucs)
         metrics["mean_auc"] = mean_auc
         metrics["min_fold_auc"] = np.min(aucs)
-        valid_res = [r for r in fold_results if not r.get("degenerate", False)]
-        if valid_res and "n_test" in valid_res[0]:
-            total_n = sum(r["n_test"] for r in valid_res)
-            metrics["brier_score"] = sum(r["brier"] * r["n_test"] for r in valid_res) / total_n if total_n > 0 else np.nan
-        else:
-            metrics["brier_score"] = np.mean([r["brier"] for r in valid_res])
+        valid_res = [r for r in fold_results if is_evaluable(r)]
+        total_n = sum(int(r["n_test"]) for r in valid_res)
+        metrics["brier_score"] = (
+            sum(float(r["brier"]) * int(r["n_test"]) for r in valid_res) / total_n
+        )
         
         if evaluable_folds > 1:
             se = np.std(aucs, ddof=1) / np.sqrt(evaluable_folds)

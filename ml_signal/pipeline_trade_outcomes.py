@@ -5,7 +5,7 @@ import xgboost as xgb
 
 from ml_signal.config import MLConfig, DEFAULT_CONFIG
 from ml_signal.dataset import build_real_outcome_frame, feature_columns
-from ml_signal.validation import WalkForwardPurgedCV, compute_cv_metrics
+from ml_signal.validation import WalkForwardPurgedCV, build_fold_result, compute_cv_metrics
 from ml_signal.leakage_guards import (
     assert_no_outcome_leakage,
     assert_chronological_integrity,
@@ -80,7 +80,14 @@ class TradeOutcomePipeline:
             assert_train_test_purged(train_df, test_df)
             
             if len(test_df["label"].unique()) < 2 or len(train_df["label"].unique()) < 2:
-                fold_results.append({"fold": fold_info["fold"], "degenerate": True})
+                reason = "single_class_train" if len(train_df["label"].unique()) < 2 else "single_class_test"
+                fold_results.append(build_fold_result(
+                    fold_info,
+                    train_df["label"],
+                    test_df["label"],
+                    degenerate=True,
+                    reason=reason,
+                ))
                 continue
 
             # Stage 1 cross-fitting
@@ -156,13 +163,9 @@ class TradeOutcomePipeline:
             auc = roc_auc_score(y_test, preds)
             brier = brier_score_loss(y_test, preds)
             
-            fold_results.append({
-                "fold": fold_info["fold"],
-                "auc": auc,
-                "brier": brier,
-                "n_test": len(y_test),
-                "degenerate": False
-            })
+            fold_results.append(build_fold_result(
+                fold_info, y_train, y_test, auc=auc, brier=brier
+            ))
             
         metrics = compute_cv_metrics(fold_results, leakage_guard_passed=True)
         if len(df) < 500:

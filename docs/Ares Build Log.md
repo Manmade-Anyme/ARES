@@ -2,6 +2,12 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-28 · MANM-155 Auditable Fold Metrics
+
+Preserved the complete chronological fold breakdown in walk-forward validation reports. Each market-movement and trade-outcome fold now records its train/test time bounds, post-purge sample counts, binary class counts and positive rates, degeneracy reason, AUC, and Brier score in a JSON-safe schema. Aggregate evaluation uses the same finite-metric predicate for AUC and weighted Brier calculations, and the promotion gate explicitly rejects missing or non-finite metrics.
+
+---
+
 ## 2026-09-25 · MANM-155 PR Review Architectural Reconciliations
 
 Addressed automated and peer code review feedback on [ADR-155](directives/adr/TASK-155_ml-training-refactor.md) for decoupled ML pipelines, purged walk-forward cross-validation, and promotion gating.
