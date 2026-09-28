@@ -599,6 +599,18 @@ def _save_shap_beeswarm_plot(
                 plt.close(fig)
     except Exception as exc:
         print(f"[!] SHAP beeswarm plot could not be saved; continuing ({type(exc).__name__}).")
+        if (
+            beeswarm_path.lower().endswith(".png")
+            and os.path.isfile(beeswarm_path)
+            and not os.path.islink(beeswarm_path)
+        ):
+            try:
+                os.remove(beeswarm_path)
+            except OSError as cleanup_exc:
+                print(
+                    "[!] Stale SHAP beeswarm could not be removed after render "
+                    f"failure; continuing ({type(cleanup_exc).__name__})."
+                )
 
 def audit_shap_stability(
     df: pd.DataFrame,

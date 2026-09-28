@@ -1006,6 +1006,24 @@ class TestSHAPP2Regressions(unittest.TestCase):
 
             self.assertFalse(os.path.exists(path))
 
+    def test_beeswarm_stale_artifact_is_removed_when_rendering_fails(self):
+        df = pd.DataFrame({"alpha": [1.0], "beta": [2.0]})
+        values = np.ones((1, 2))
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "v42_shap_beeswarm.png")
+            with open(path, "wb") as artifact:
+                artifact.write(b"stale")
+
+            with patch(
+                "ml_signal.train_offline.os.makedirs",
+                side_effect=RuntimeError("render failure"),
+            ):
+                _save_shap_beeswarm_plot(
+                    values, df, ["alpha", "beta"], path, "none"
+                )
+
+            self.assertFalse(os.path.exists(path))
+
     def test_hybrid_eval_feature_uses_persisted_stage1_model(self):
         class PersistedStage1:
             def predict_proba(self, features):
