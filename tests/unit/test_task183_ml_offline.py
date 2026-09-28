@@ -37,8 +37,10 @@ from ml_signal.train_offline import (
     _offline_report_paths,
     _positive_class_base_value,
     _print_shap_summary,
+    _save_shap_beeswarm_plot,
     _sharpe_metrics,
     _shap_metrics,
+    _with_persisted_stage1_probability,
 )
 from ml_signal.config import MLConfig
 
@@ -976,6 +978,43 @@ class TestOfflineShapContract(unittest.TestCase):
         )
         self.assertEqual(report["model_version"], "v42")
 
+
+class TestSHAPP2Regressions(unittest.TestCase):
+    def test_beeswarm_stale_artifact_is_removed_when_shap_is_unavailable(self):
+        df = pd.DataFrame({"alpha": [1.0], "beta": [2.0]})
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "v42_shap_beeswarm.png")
+            with open(path, "wb") as artifact:
+                artifact.write(b"stale")
+
+            _save_shap_beeswarm_plot(
+                None, df, ["alpha", "beta"], path, "none"
+            )
+
+            self.assertFalse(os.path.exists(path))
+
+    def test_hybrid_eval_feature_uses_persisted_stage1_model(self):
+        class PersistedStage1:
+            def predict_proba(self, features):
+                self.features = features.copy()
+                return np.array([[0.2, 0.8], [0.7, 0.3]])
+
+        model = PersistedStage1()
+        evaluation = pd.DataFrame({
+            "timestamp": pd.date_range("2026-08-01", periods=2, freq="h"),
+            "market_a": [10.0, 20.0],
+            "fold_specific_probability": [0.1, 0.9],
+        })
+
+        observed = _with_persisted_stage1_probability(
+            model, evaluation, ["market_a"]
+        )
+
+        np.testing.assert_allclose(
+            observed["meta_features__market_movement_prob"], [0.8, 0.3]
+        )
+        self.assertNotIn("meta_features__market_movement_prob", evaluation)
+        self.assertEqual(list(model.features.columns), ["market_a"])
 
 
 if __name__ == "__main__":

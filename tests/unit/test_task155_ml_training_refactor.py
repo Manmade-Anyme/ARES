@@ -26,6 +26,7 @@ from ml_signal import train_offline
 from ml_signal.train_offline import (
     _final_refit_class_reason,
     _final_refit_sample_size_reason,
+    _reserved_refit_split,
 )
 
 
@@ -142,6 +143,8 @@ def test_final_refit_accepts_dataset_larger_than_fold_count():
 def test_final_refit_rejects_single_class_reserved_training_prefix():
     frame = pd.DataFrame({
         "timestamp": pd.date_range("2026-08-01", periods=10, freq="h"),
+        "resolution_timestamp": pd.date_range("2026-08-01", periods=10, freq="h")
+        + pd.Timedelta(minutes=30),
         "label": [0] * 8 + [1] * 2,
     })
 
@@ -154,10 +157,30 @@ def test_final_refit_rejects_single_class_reserved_training_prefix():
 def test_final_refit_accepts_two_classes_in_reserved_training_prefix():
     frame = pd.DataFrame({
         "timestamp": pd.date_range("2026-08-01", periods=10, freq="h"),
+        "resolution_timestamp": pd.date_range("2026-08-01", periods=10, freq="h")
+        + pd.Timedelta(minutes=30),
         "label": [0, 1] * 5,
     })
 
     assert _final_refit_class_reason(frame, "Stage 2") is None
+
+
+def test_reserved_refit_split_purges_resolution_overlap_and_embargo():
+    timestamps = pd.date_range("2026-08-01", periods=10, freq="h", tz="UTC")
+    frame = pd.DataFrame({
+        "timestamp": timestamps,
+        "resolution_timestamp": timestamps + pd.Timedelta(minutes=30),
+        "label": [0, 1] * 5,
+    })
+    frame.loc[5, "resolution_timestamp"] = timestamps[8] + pd.Timedelta(minutes=1)
+
+    train, evaluation = _reserved_refit_split(
+        frame, embargo_window=pd.Timedelta(hours=2)
+    )
+
+    assert evaluation.iloc[0]["timestamp"] == timestamps[8]
+    assert train["timestamp"].max() == timestamps[4]
+    assert (train["resolution_timestamp"] < evaluation.iloc[0]["timestamp"]).all()
 
 
 def test_final_hybrid_refit_rejects_empty_stage1_frame_cleanly(

@@ -108,10 +108,12 @@ compatibility failures, or when the SHAP package is unavailable, the trainer
 falls back to XGBoost's native exact TreeSHAP contributions and checks
 additivity in raw-margin units. A failed explanation remains nonfatal.
 
-The CLI reserves the chronological evaluation tail before fitting the persisted
-market or trade-outcome model, then passes that same fitted model and untouched
-tail to the SHAP reporter; it never retrains a second generic model for the
-report.
+The CLI reserves a purged chronological evaluation tail before fitting the
+persisted market or trade-outcome model, then passes that same fitted model and
+untouched tail to the SHAP reporter; it never retrains a second generic model
+for the report. Final refits exclude prefix rows whose labels overlap the
+evaluation start and apply the configured pre-test embargo (15 minutes for
+Stage 1, 30 minutes for Stage 2).
 
 Training writes the model under `ml_signal/models/`, a canonical report at
 `reports/ml/task183_offline_metrics.json`, a versioned report at

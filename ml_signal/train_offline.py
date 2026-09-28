@@ -48,13 +48,16 @@ def _final_refit_sample_size_reason(n_samples: int, n_splits: int) -> Optional[s
 def _final_refit_class_reason(
     df: pd.DataFrame,
     model_name: str,
+    embargo_window: pd.Timedelta = pd.Timedelta(minutes=15),
 ) -> Optional[str]:
     """Return why the reserved training prefix cannot fit a classifier."""
     if df.empty or "label" not in df:
         return f"final {model_name} refit requires labeled rows"
     if "timestamp" not in df:
         return f"final {model_name} refit requires timestamped rows"
-    train_df, _ = chronological_split(df)
+    if "resolution_timestamp" not in df:
+        return f"final {model_name} refit requires resolution_timestamp"
+    train_df, _ = _reserved_refit_split(df, embargo_window=embargo_window)
     if train_df["label"].nunique(dropna=True) < 2:
         return (
             f"final {model_name} refit requires at least two classes in its "
@@ -145,6 +148,62 @@ def chronological_split(
     if n >= 2 and k >= n:
         k = n - 1
     return df.iloc[:k].reset_index(drop=True), df.iloc[k:].reset_index(drop=True)
+
+
+def _reserved_refit_split(
+    df: pd.DataFrame,
+    train_frac: float = 0.8,
+    embargo_window: pd.Timedelta = pd.Timedelta(minutes=15),
+    timestamp_col: str = "timestamp",
+    resolution_col: str = "resolution_timestamp",
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Reserve a chronological tail and purge its overlapping training rows.
+
+    This mirrors ``WalkForwardPurgedCV``: a prefix row is eligible only when
+    its label resolves before the evaluation starts and its event timestamp is
+    earlier than the configured pre-test embargo boundary. Missing boundary
+    timestamps are excluded from the refit rather than treated as safe.
+    """
+    ordered = df.sort_values(timestamp_col).reset_index(drop=True)
+    train_candidate, eval_df = chronological_split(
+        ordered, train_frac=train_frac, date_col=timestamp_col
+    )
+    if eval_df.empty or resolution_col not in train_candidate.columns:
+        return train_candidate.iloc[0:0].copy(), eval_df
+
+    eval_start = pd.to_datetime(
+        eval_df[timestamp_col], errors="coerce", utc=True
+    ).min()
+    if pd.isna(eval_start):
+        return train_candidate.iloc[0:0].copy(), eval_df
+
+    candidate_timestamps = pd.to_datetime(
+        train_candidate[timestamp_col], errors="coerce", utc=True
+    )
+    candidate_resolutions = pd.to_datetime(
+        train_candidate[resolution_col], errors="coerce", utc=True
+    )
+    embargo_start = eval_start - embargo_window
+    eligible = (
+        candidate_timestamps.notna()
+        & candidate_resolutions.notna()
+        & (candidate_resolutions < eval_start)
+        & (candidate_timestamps < embargo_start)
+    )
+    return train_candidate.loc[eligible].reset_index(drop=True), eval_df
+
+
+def _with_persisted_stage1_probability(
+    stage1_model,
+    eval_df: pd.DataFrame,
+    stage1_feature_cols: List[str],
+) -> pd.DataFrame:
+    """Use the persisted Stage 1 model to build the deployed eval feature."""
+    enriched = eval_df.copy()
+    enriched["meta_features__market_movement_prob"] = stage1_model.predict_proba(
+        enriched.reindex(columns=stage1_feature_cols)
+    )[:, 1]
+    return enriched
 
 
 def _safe_metrics(model, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, float]:
@@ -455,7 +514,23 @@ def _save_shap_beeswarm_plot(
     beeswarm_path: Optional[str],
     backend: str,
 ) -> None:
-    if not beeswarm_path or values is None:
+    if not beeswarm_path:
+        return
+    if values is None:
+        # A version can be rerun after a previously successful SHAP attempt.
+        # Do not leave an old beeswarm implying that this run produced one.
+        if (
+            beeswarm_path.lower().endswith(".png")
+            and os.path.isfile(beeswarm_path)
+            and not os.path.islink(beeswarm_path)
+        ):
+            try:
+                os.remove(beeswarm_path)
+            except OSError as exc:
+                print(
+                    "[!] Stale SHAP beeswarm could not be removed; continuing "
+                    f"({type(exc).__name__})."
+                )
         return
     try:
         import matplotlib
@@ -1082,6 +1157,7 @@ def main(argv=None) -> None:
     shap_source_df = None
     shap_eval_df = None
     shap_feature_cols = []
+    market_model_for_save = None
 
     if args.pipeline in ["market_movement", "all"]:
         print("\n=== Running Market Movement Pipeline ===")
@@ -1103,18 +1179,32 @@ def main(argv=None) -> None:
                 if not c.startswith("detector_scores__")
             ]
             if stage1_model is not None and len(market_df) > 1:
-                market_train_df, market_eval_df = chronological_split(market_df)
-                if market_train_df["label"].nunique() > 1:
+                market_train_df, market_eval_df = _reserved_refit_split(
+                    market_df, embargo_window=pd.Timedelta(minutes=15)
+                )
+                market_class_reason = _final_refit_class_reason(
+                    market_df,
+                    "Stage 1",
+                    embargo_window=pd.Timedelta(minutes=15),
+                )
+                if market_class_reason is None:
                     stage1_model = _fit_market_model(
                         market_train_df, shap_feature_cols, config
                     )
+                    market_model_for_save = stage1_model
                     shap_model = stage1_model
                     shap_source_df = market_train_df
                     shap_eval_df = market_eval_df
+                else:
+                    print(f"[!] Skipping final Stage 1 refit: {market_class_reason}")
+                    stage1_model = None
 
-        if args.promote and stage1_model:
+        if args.pipeline == "all" and not args.hybrid:
+            market_model_for_save = stage1_model
+
+        if args.promote and market_model_for_save is not None:
             mm_save_path = os.path.join(models_dir, f"market_movement_{next_version}.joblib")
-            joblib.dump(stage1_model, mm_save_path)
+            joblib.dump(market_model_for_save, mm_save_path)
 
     if args.pipeline in ["trade_outcomes", "all"]:
         print("\n=== Running Trade Outcome Pipeline ===")
@@ -1140,7 +1230,11 @@ def main(argv=None) -> None:
             passed, reasons = evaluate_promotion_gate(metrics)
             refit_size_reason = _final_refit_sample_size_reason(len(trade_df), args.folds)
             stage2_class_reason = (
-                _final_refit_class_reason(trade_df, "Stage 2")
+                _final_refit_class_reason(
+                    trade_df,
+                    "Stage 2",
+                    embargo_window=pd.Timedelta(minutes=30),
+                )
                 if refit_size_reason is None else None
             )
             if refit_size_reason:
@@ -1151,7 +1245,11 @@ def main(argv=None) -> None:
                 reasons = [*reasons, stage2_class_reason]
             stage1_refit_reason = _stage1_refit_reason(market_df) if args.hybrid else None
             stage1_class_reason = (
-                _final_refit_class_reason(market_df, "Stage 1")
+                _final_refit_class_reason(
+                    market_df,
+                    "Stage 1",
+                    embargo_window=pd.Timedelta(minutes=15),
+                )
                 if args.hybrid and stage1_refit_reason is None else None
             )
             if stage1_refit_reason:
@@ -1178,7 +1276,9 @@ def main(argv=None) -> None:
                     print(f"[!] Skipping final refit: {refit_reason}")
                 elif args.hybrid:
                     stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
-                    market_train_df, _ = chronological_split(market_df)
+                    market_train_df, _ = _reserved_refit_split(
+                        market_df, embargo_window=pd.Timedelta(minutes=15)
+                    )
                     
                     # Generate cross-fitted probabilities for Stage 2 training using WalkForwardPurgedCV
                     from ml_signal.validation import WalkForwardPurgedCV
@@ -1215,6 +1315,7 @@ def main(argv=None) -> None:
                     # Fit final Stage 1 model for deployment
                     stage1_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
                     stage1_model.fit(market_train_df[stage1_feat_cols], market_train_df["label"])
+                    market_model_for_save = stage1_model
                     
                 if not refit_reason:
                     feat_cols2 = ["meta_features__market_movement_prob"] if args.hybrid else []
@@ -1239,11 +1340,18 @@ def main(argv=None) -> None:
                         subsample=0.7,
                         random_state=42
                     )
-                    trade_train_df, trade_eval_df = chronological_split(trade_df)
+                    trade_train_df, trade_eval_df = _reserved_refit_split(
+                        trade_df, embargo_window=pd.Timedelta(minutes=30)
+                    )
                     stage2_model.fit(trade_train_df[feat_cols2], trade_train_df["label"])
                     shap_model = stage2_model
                     shap_source_df = trade_train_df
-                    shap_eval_df = trade_eval_df
+                    shap_eval_df = (
+                        _with_persisted_stage1_probability(
+                            stage1_model, trade_eval_df, stage1_feat_cols
+                        )
+                        if args.hybrid else trade_eval_df
+                    )
                     shap_feature_cols = feat_cols2
 
                     if not promoted:
@@ -1271,6 +1379,10 @@ def main(argv=None) -> None:
 
             except ModelPromotionError as e:
                 pass
+
+            if args.promote and args.hybrid and market_model_for_save is not None:
+                mm_save_path = os.path.join(models_dir, f"market_movement_{next_version}.joblib")
+                joblib.dump(market_model_for_save, mm_save_path)
             
             if not promoted:
                 # Write rejection audit
