@@ -30,6 +30,7 @@ from ml_signal.train_offline import (
     chronological_split,
     run_training,
     _compute_shap,
+    _clear_versioned_shap_artifacts,
     _fetch_ml_collection,
     _fetch_trade_exit_timestamps,
     _generate_shap_report,
@@ -980,6 +981,18 @@ class TestOfflineShapContract(unittest.TestCase):
 
 
 class TestSHAPP2Regressions(unittest.TestCase):
+    def test_skipped_generation_clears_all_versioned_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = _offline_report_paths(directory, "v42")[1:]
+            for path in paths:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as artifact:
+                    artifact.write(b"stale")
+
+            _clear_versioned_shap_artifacts(directory, "v42")
+
+            self.assertTrue(all(not os.path.exists(path) for path in paths))
+
     def test_beeswarm_stale_artifact_is_removed_when_shap_is_unavailable(self):
         df = pd.DataFrame({"alpha": [1.0], "beta": [2.0]})
         with tempfile.TemporaryDirectory() as directory:

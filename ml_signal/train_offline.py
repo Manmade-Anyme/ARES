@@ -764,6 +764,22 @@ def _offline_report_paths(repo: str, version: str) -> Tuple[str, str, str, str]:
     )
 
 
+def _clear_versioned_shap_artifacts(repo: str, version: str) -> None:
+    """Remove artifacts that must not survive a skipped SHAP generation."""
+    _, report_path, shap_plot_path, shap_beeswarm_path = _offline_report_paths(
+        repo, version
+    )
+    for path in (report_path, shap_plot_path, shap_beeswarm_path):
+        if os.path.isfile(path) and not os.path.islink(path):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                print(
+                    "[!] Versioned SHAP artifact could not be removed; "
+                    f"continuing ({type(exc).__name__}): {path}"
+                )
+
+
 def _populate_shap_metrics(
     metrics: Dict[str, object],
     model,
@@ -841,6 +857,7 @@ def _generate_shap_report(
         repo, version
     )
     if model is None or train_df.empty or test_df.empty or not feature_cols:
+        _clear_versioned_shap_artifacts(repo, version)
         metrics = _shap_metrics()
         metrics["shap_status"] = "skipped"
         return metrics
@@ -1401,6 +1418,10 @@ def main(argv=None) -> None:
             shap_feature_cols,
             shap_eval_df,
         )
+    else:
+        # Final refit guards can bypass report generation entirely. Remove the
+        # prior version's artifacts so rejected runs cannot publish stale SHAP.
+        _clear_versioned_shap_artifacts(repo, next_version)
 
     # Write summary metrics
     summary = {

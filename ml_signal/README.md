@@ -114,6 +114,8 @@ untouched tail to the SHAP reporter; it never retrains a second generic model
 for the report. Final refits exclude prefix rows whose labels overlap the
 evaluation start and apply the configured pre-test embargo (15 minutes for
 Stage 1, 30 minutes for Stage 2).
+If a final refit or SHAP generation is rejected, the versioned SHAP report and
+both plots are removed so failed runs cannot publish stale explanations.
 
 Training writes the model under `ml_signal/models/`, a canonical report at
 `reports/ml/task183_offline_metrics.json`, a versioned report at
