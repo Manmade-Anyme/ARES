@@ -521,10 +521,8 @@ def audit_shap_stability(
     mean_rho = float(np.mean(correlations))
     mean_turnover = float(np.mean(turnover_rates))
     
-    if flagged_features or mean_rho < 0.50:
+    if flagged_features or mean_rho < 0.65 or mean_turnover > 0.4:
         verdict = "drift_detected"
-    elif mean_rho >= 0.65 and mean_turnover <= 0.4:
-        verdict = "stable"
     else:
         verdict = "stable"
         
@@ -662,37 +660,31 @@ def _generate_shap_report(
     repo: str,
     version: str,
     model,
-    df: pd.DataFrame,
+    train_df: pd.DataFrame,
     feature_cols: List[str],
+    test_df: pd.DataFrame,
 ) -> Dict[str, object]:
-    """Generate a report for an existing pipeline model on a held-out tail."""
+    """Generate a report for an existing model on a reserved held-out frame."""
     _, report_path, shap_plot_path, shap_beeswarm_path = _offline_report_paths(
         repo, version
     )
-    if model is None or df.empty or not feature_cols:
+    if model is None or train_df.empty or test_df.empty or not feature_cols:
         metrics = _shap_metrics()
         metrics["shap_status"] = "skipped"
         return metrics
 
     try:
-        if "timestamp" in df.columns:
-            train_df, test_df = chronological_split(df)
-        else:
-            split = max(1, min(len(df) - 1, int(len(df) * 0.8)))
-            train_df = df.iloc[:split].copy()
-            test_df = df.iloc[split:].copy()
-
         metrics = _shap_metrics()
         metrics.update({
             "model_version": version,
-            "n_samples": int(len(df)),
+            "n_samples": int(len(train_df) + len(test_df)),
             "n_train": int(len(train_df)),
             "n_test": int(len(test_df)),
         })
         _populate_shap_metrics(
             metrics,
             model,
-            df,
+            train_df,
             train_df,
             test_df,
             feature_cols,
@@ -807,7 +799,7 @@ def run_training(
     _populate_shap_metrics(
         metrics,
         model,
-        df,
+        df_train,
         train,
         test,
         feature_cols,
@@ -901,6 +893,21 @@ from ml_signal.pipeline_trade_outcomes import TradeOutcomePipeline
 from ml_signal.promotion_gate import enforce_promotion_or_raise, ModelPromotionError
 from ml_signal.predictor import HybridPredictorBundle
 
+
+def _fit_market_model(df: pd.DataFrame, feature_cols: List[str], config: MLConfig):
+    """Fit the final Stage 1 model on the reserved training portion."""
+    model = xgb.XGBClassifier(
+        n_estimators=config.n_estimators,
+        learning_rate=config.learning_rate,
+        max_depth=config.max_depth,
+        subsample=config.subsample,
+        colsample_bytree=config.colsample_bytree,
+        random_state=42,
+    )
+    model.fit(df[feature_cols], df["label"])
+    return model
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="ARES Offline ML Training")
     parser.add_argument("--pipeline", choices=["market_movement", "trade_outcomes", "all"], default="all")
@@ -976,6 +983,7 @@ def main(argv=None) -> None:
     shap_metrics["shap_status"] = "skipped"
     shap_model = None
     shap_source_df = None
+    shap_eval_df = None
     shap_feature_cols = []
 
     if args.pipeline in ["market_movement", "all"]:
@@ -990,19 +998,26 @@ def main(argv=None) -> None:
         with open(market_report, "w") as f:
             json.dump(metrics, f, indent=2)
             
-        if args.promote and stage1_model:
-            mm_save_path = os.path.join(models_dir, f"market_movement_{next_version}.joblib")
-            joblib.dump(stage1_model, mm_save_path)
-            
         if args.pipeline == "market_movement":
             final_metrics = metrics.copy()
             leakage_guard_passed = metrics.get("leakage_guard_passed", False)
-            shap_model = stage1_model
-            shap_source_df = market_df
             shap_feature_cols = [
                 c for c in feature_columns(market_df)
                 if not c.startswith("detector_scores__")
             ]
+            if stage1_model is not None and len(market_df) > 1:
+                market_train_df, market_eval_df = chronological_split(market_df)
+                if market_train_df["label"].nunique() > 1:
+                    stage1_model = _fit_market_model(
+                        market_train_df, shap_feature_cols, config
+                    )
+                    shap_model = stage1_model
+                    shap_source_df = market_train_df
+                    shap_eval_df = market_eval_df
+
+        if args.promote and stage1_model:
+            mm_save_path = os.path.join(models_dir, f"market_movement_{next_version}.joblib")
+            joblib.dump(stage1_model, mm_save_path)
 
     if args.pipeline in ["trade_outcomes", "all"]:
         print("\n=== Running Trade Outcome Pipeline ===")
@@ -1039,7 +1054,7 @@ def main(argv=None) -> None:
                 gate_error = ModelPromotionError(f"Promotion gate failed: {reasons}", reasons=reasons)
                 print(f"[!] Promotion Gate Failed: {reasons}")
                 
-            # Fit final stage 1 and stage 2 on ALL data (even if unpromoted, for research artifact)
+            # Reserve chronological tails for evaluation before final fitting.
             print("[*] Training final Stage 1 and Stage 2 models for promotion or research...")
             try:
                 refit_reason = refit_size_reason or stage1_refit_reason
@@ -1047,6 +1062,7 @@ def main(argv=None) -> None:
                     print(f"[!] Skipping final refit: {refit_reason}")
                 elif args.hybrid:
                     stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
+                    market_train_df, _ = chronological_split(market_df)
                     
                     # Generate cross-fitted probabilities for Stage 2 training using WalkForwardPurgedCV
                     from ml_signal.validation import WalkForwardPurgedCV
@@ -1082,7 +1098,7 @@ def main(argv=None) -> None:
                     
                     # Fit final Stage 1 model for deployment
                     stage1_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
-                    stage1_model.fit(market_df[stage1_feat_cols], market_df["label"])
+                    stage1_model.fit(market_train_df[stage1_feat_cols], market_train_df["label"])
                     
                 if not refit_reason:
                     feat_cols2 = ["meta_features__market_movement_prob"] if args.hybrid else []
@@ -1107,9 +1123,11 @@ def main(argv=None) -> None:
                         subsample=0.7,
                         random_state=42
                     )
-                    stage2_model.fit(trade_df[feat_cols2], trade_df["label"])
+                    trade_train_df, trade_eval_df = chronological_split(trade_df)
+                    stage2_model.fit(trade_train_df[feat_cols2], trade_train_df["label"])
                     shap_model = stage2_model
-                    shap_source_df = trade_df
+                    shap_source_df = trade_train_df
+                    shap_eval_df = trade_eval_df
                     shap_feature_cols = feat_cols2
 
                     if not promoted:
@@ -1146,13 +1164,14 @@ def main(argv=None) -> None:
                     json.dump({"version": next_version, "reasons": gate_error.reasons if gate_error else [], "metrics": metrics}, f, indent=2, default=str)
                 print(f"[!] Rejection audit saved -> {audit_path}")
 
-    if shap_model is not None and shap_source_df is not None:
+    if shap_model is not None and shap_source_df is not None and shap_eval_df is not None:
         shap_metrics = _generate_shap_report(
             repo,
             next_version,
             shap_model,
             shap_source_df,
             shap_feature_cols,
+            shap_eval_df,
         )
 
     # Write summary metrics

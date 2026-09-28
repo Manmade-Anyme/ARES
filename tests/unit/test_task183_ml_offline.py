@@ -860,16 +860,16 @@ class TestOfflineShapContract(unittest.TestCase):
 
     def test_generate_shap_report_uses_versioned_artifact_paths(self):
         df = _training_frame()
+        train_df, test_df = chronological_split(df)
         expected = _shap_metrics()
         expected.update({"shap_computed": True, "shap_status": "computed"})
         fitted_model = object()
 
         def explain(model, X_test, feature_cols, metrics):
             self.assertIs(model, fitted_model)
-            _, expected_test = chronological_split(df)
             pd.testing.assert_frame_equal(
                 X_test.reset_index(drop=True),
-                expected_test[feature_cols].reset_index(drop=True),
+                test_df[feature_cols].reset_index(drop=True),
             )
             metrics.update(expected)
             return np.zeros((len(X_test), len(feature_cols)))
@@ -885,8 +885,9 @@ class TestOfflineShapContract(unittest.TestCase):
                 directory,
                 "v42",
                 fitted_model,
-                df,
+                train_df,
                 ["alpha", "beta", "gamma"],
+                test_df,
             )
             with open(os.path.join(directory, "reports", "ml", "v42_offline_metrics.json")) as report_file:
                 report = json.load(report_file)
@@ -919,8 +920,13 @@ class TestOfflineExclusions(unittest.TestCase):
             "label": [i % 2 for i in rng],
             "time_metrics_excluded": [True if i < 10 else False for i in rng],
         })
-        model, metrics = run_training(df, ["f1", "f2"], min_samples=1)
+        with patch("ml_signal.train_offline.audit_shap_stability",
+                   return_value={"status": "computed"}) as audit:
+            model, metrics = run_training(df, ["f1", "f2"], min_samples=1)
         self.assertEqual(metrics["n_samples"], 90)
+        audited_df = audit.call_args.args[0]
+        self.assertEqual(len(audited_df), 90)
+        self.assertFalse(audited_df["time_metrics_excluded"].any())
 
     def test_run_training_aborts_without_saving_when_all_trades_are_excluded(self):
         df = _training_frame(n=20, feature_names=["f1", "f2"])
