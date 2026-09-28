@@ -20,6 +20,37 @@ from ml_signal import train_offline
 from ml_signal.train_offline import _final_refit_sample_size_reason
 
 
+@pytest.mark.parametrize("folds", [0, 1, -1, 2, 3])
+def test_main_rejects_fold_counts_below_promotion_minimum_before_io(
+    monkeypatch, folds, capsys
+):
+    monkeypatch.setattr(
+        train_offline,
+        "_fetch_ml_collection",
+        lambda client: pytest.fail("invalid CLI input must fail before data access"),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        train_offline.main(["--folds", str(folds)])
+
+    assert exc_info.value.code == 2
+    assert "--folds must be at least 4" in capsys.readouterr().err
+
+
+def test_main_accepts_promotion_minimum_fold_count_before_environment_check(
+    monkeypatch, capsys
+):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr("config.settings.supabase_url", "")
+    monkeypatch.setattr("config.settings.supabase_key", "")
+
+    train_offline.main(["--folds", "4"])
+
+    assert "SUPABASE_URL / SUPABASE_KEY not available" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("n_samples", [0, 1, 5])
 def test_final_refit_rejects_datasets_not_larger_than_fold_count(n_samples):
     reason = _final_refit_sample_size_reason(n_samples, n_splits=5)

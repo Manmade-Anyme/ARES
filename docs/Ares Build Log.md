@@ -2,6 +2,12 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-28 · MANM-155 Fold-Count CLI Guard
+
+Added argument-level validation that requires at least four walk-forward folds, matching the production promotion gate. Invalid zero, negative, and sub-minimum values now fail before database access or model training.
+
+---
+
 ## 2026-09-28 · MANM-155 Empty Stage 1 Refit Guard
 
 Added a final-refit preflight check for hybrid candidates with no resolved market-movement labels. Validation may continue with its neutral transfer fallback, but promotion now fails closed with an actionable reason and skips final hybrid fitting so the metrics summary and rejection audit are still produced.

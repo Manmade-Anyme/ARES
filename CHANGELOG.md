@@ -6,6 +6,7 @@ All notable changes to the ARES trading system will be documented in this file.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed
+- **Walk-forward fold validation (MANM-155)**: Reject CLI `--folds` values below the four-fold promotion minimum during argument parsing, before database access or model fitting can fail without an audit summary.
 - **Empty Stage 1 refit rejection (MANM-155)**: Reject hybrid candidates with no resolved market-movement labels before final cross-fitting, preserving metrics and rejection-audit output instead of raising on a missing `resolution_timestamp` column.
 - **Auditable walk-forward metrics (MANM-155)**: Preserved chronological fold results, post-purge train/test counts, class balances, degeneracy reasons, and per-fold AUC/Brier values in generated validation reports, and made the promotion gate reject missing or non-finite metrics explicitly.
 - **Trade-outcome Sharpe reporting (MANM-155)**: Restored the canonical walk-forward summary's Sharpe diagnostics from realized trade P&L and exit timestamps instead of leaving zero-trade placeholders in every pipeline report.

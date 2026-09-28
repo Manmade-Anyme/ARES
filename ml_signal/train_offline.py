@@ -10,6 +10,7 @@ Run from the repo root:  python -m ml_signal.train_offline
 
 OFFLINE / ADDITIVE: no Supabase writes, no engine changes. See ADR-183.
 """
+import argparse
 import os
 import sys
 import json
@@ -53,6 +54,14 @@ def _stage1_refit_reason(market_df: Optional[pd.DataFrame]) -> Optional[str]:
     if "resolution_timestamp" not in market_df:
         return "final Stage 1 refit requires resolution_timestamp"
     return None
+
+
+def _promotion_fold_count(value: str) -> int:
+    """Parse a fold count that can satisfy the production promotion gate."""
+    folds = int(value)
+    if folds < 4:
+        raise argparse.ArgumentTypeError("--folds must be at least 4")
+    return folds
 
 
 def _train_xgb(X_tr, y_tr, X_val, y_val, config: MLConfig):
@@ -569,7 +578,6 @@ def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, dict]:
     return exits
 
 
-import argparse
 from ml_signal.pipeline_market_movement import MarketMovementPipeline
 from ml_signal.pipeline_trade_outcomes import TradeOutcomePipeline
 from ml_signal.promotion_gate import enforce_promotion_or_raise, ModelPromotionError
@@ -578,7 +586,13 @@ from ml_signal.predictor import HybridPredictorBundle
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="ARES Offline ML Training")
     parser.add_argument("--pipeline", choices=["market_movement", "trade_outcomes", "all"], default="all")
-    parser.add_argument("--folds", type=int, default=5)
+    parser.add_argument(
+        "--folds",
+        type=_promotion_fold_count,
+        default=5,
+        metavar="N",
+        help="Walk-forward split count (minimum: 4; default: 5)",
+    )
     parser.add_argument("--promote", action="store_true", default=True, help="Promote model if it passes gates")
     parser.add_argument("--no-promote", action="store_false", dest="promote")
     parser.add_argument("--enforce-gate", action="store_true", default=False)
