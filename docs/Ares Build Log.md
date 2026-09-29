@@ -16,6 +16,10 @@ both plots' import/render/save failure paths.
 Validation: `PYTHONPATH=. pytest -q --import-mode=importlib` passed 779 tests
 and 10 subtests. Importlib mode avoids the local `tests.unit` collection conflict.
 
+Follow-up: CLI stability audits now include both the retained training rows and
+the current holdout. Real-XGBoost regression cases verify that a holdout-only
+shift is detected, stationary data stays stable, and split metadata is preserved.
+
 ## 2026-09-12 · Enable SHAP Package Support, Native TreeSHAP Fallback, and Drift Stability Auditing (MANM-156)
 
 Architected resilient multi-tier SHAP explainability, raw-margin additivity validation, and rolling-window feature drift stability auditing.

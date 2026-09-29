@@ -117,6 +117,8 @@ Stage 1, 30 minutes for Stage 2). In hybrid runs, Stage 1 is bounded by the
 trade evaluation start, and its exact training subset must contain both
 classes. Stage 2's reserved frame receives fresh cross-fitted probabilities;
 evaluation probabilities come from the persisted Stage 1 model.
+The stability audit covers the combined training and evaluation rows in time
+order; training/testing metadata retains the original separate boundaries.
 
 Each training attempt clears prior versioned SHAP artifacts before fitting.
 Skipped or failed report generation also removes the versioned JSON and both

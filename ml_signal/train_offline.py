@@ -906,7 +906,9 @@ def _generate_shap_report(
         _populate_shap_metrics(
             metrics,
             model,
-            train_df,
+            # The audit sorts chronologically and must include the current
+            # holdout; keep the separate frames below for split metadata.
+            pd.concat([train_df, test_df], ignore_index=True),
             train_df,
             test_df,
             feature_cols,

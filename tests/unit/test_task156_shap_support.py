@@ -173,6 +173,45 @@ def test_report_failure_clears_all_versioned_outputs(tmp_path, monkeypatch, fail
     assert other_version.read_bytes() == b"keep"
 
 
+@pytest.mark.parametrize("holdout_shift", [False, True])
+def test_report_stability_includes_holdout_without_changing_split_metadata(
+    tmp_path, monkeypatch, holdout_shift
+):
+    # Every training window has the same rare positive feature. Only the
+    # holdout changes regime, so auditing training alone must miss the shift.
+    alpha = np.tile([0.0] * 19 + [1.0], 12)
+    train = pd.DataFrame({
+        "timestamp": pd.date_range("2026-08-01", periods=240, freq="min", tz="UTC"),
+        "alpha": alpha,
+        "label": alpha.astype(int),
+    })
+    evaluation = pd.DataFrame({
+        "timestamp": pd.date_range("2026-08-01T04:00Z", periods=60, freq="min"),
+        "alpha": np.ones(60) if holdout_shift else alpha[:60],
+    })
+    model = xgb.XGBClassifier(
+        n_estimators=10, max_depth=1, min_child_weight=0, reg_lambda=0,
+        random_state=42,
+    ).fit(train[["alpha"]], train["label"])
+    assert audit_shap_stability(train, ["alpha"], model)["stability_verdict"] == "stable"
+    monkeypatch.setitem(sys.modules, "shap", None)
+
+    report = train_offline._generate_shap_report(
+        str(tmp_path), "v1", model, train, ["alpha"], evaluation
+    )
+
+    expected = "drift_detected" if holdout_shift else "stable"
+    assert report["shap_stability_audit"]["stability_verdict"] == expected
+    metadata = report["shap_metadata"]
+    assert metadata["sample_size_train"] == 240
+    assert metadata["sample_size_test"] == 60
+    assert metadata["sample_size_total"] == 300
+    assert metadata["training_window_end"] == train["timestamp"].max().isoformat()
+    assert metadata["testing_window_start"] == evaluation["timestamp"].min().isoformat()
+    persisted = json.loads((tmp_path / "reports/ml/v1_offline_metrics.json").read_text())
+    assert persisted["shap_stability_audit"] == report["shap_stability_audit"]
+
+
 @pytest.mark.parametrize("plot_kind", ["summary", "beeswarm"])
 @pytest.mark.parametrize("failure", ["import", "render", "partial_save"])
 def test_plot_failures_remove_stale_or_partial_png(tmp_path, monkeypatch, plot_kind, failure):
