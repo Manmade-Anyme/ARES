@@ -14,6 +14,9 @@ class ProbabilityCalibrator:
     def __init__(self, method: str = "isotonic", min_brier_improvement: float = 0.0):
         self.method = method
         self.min_brier_improvement = min_brier_improvement
+        self._reset_fit_state()
+
+    def _reset_fit_state(self):
         self.model = None
         self.is_calibrated = False
         self.rejection_reason: Optional[str] = None
@@ -21,6 +24,7 @@ class ProbabilityCalibrator:
         self.brier_after: Optional[float] = None
 
     def fit(self, y_true, y_prob, method: Optional[str] = None):
+        self._reset_fit_state()
         actual = np.asarray(y_true, dtype=float).reshape(-1)
         probability = np.asarray(y_prob, dtype=float).reshape(-1)
         if actual.size < 2 or actual.size != probability.size:
@@ -76,6 +80,7 @@ class ProbabilityCalibrator:
 
     def fit_cross_validated(self, estimator, X, y, n_splits: int = 5, method: Optional[str] = None):
         """Build chronological OOF probabilities, then fit the post-hoc mapping."""
+        self._reset_fit_state()
         target = np.asarray(y, dtype=int).reshape(-1)
         if len(target) != len(X) or len(target) < 4:
             raise ValueError("cross-validation requires at least four aligned rows")

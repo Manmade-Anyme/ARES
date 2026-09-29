@@ -24,5 +24,6 @@ Diagnose and eliminate inverse calibration across signal confidence tiers (HIGH 
     - Unvalidated or inverted `HIGH` tiers are automatically suppressed to `MEDIUM` at signal emission, with explicit audit reasons logged in `reasons` and `market_context`.
   - **Post-Hoc Probability Calibrator (`ml_signal/calibrator.py`)**:
     - Fits Platt scaling / Isotonic regression on out-of-fold validation splits to ensure monotonic mapping from predicted probability to realized outcome frequency.
+    - A failed refit clears the prior mapping and fit diagnostics so later predictions cannot reuse stale calibration.
 - **Assigned Implementation Tasks**:
   - Authored comprehensive file-level contracts and assigned execution to Code Generator Agent, awaiting human ADR approval.

@@ -148,6 +148,26 @@ def test_platt_calibrator_rejects_inverted_probability_mapping():
     assert calibrator.rejection_reason == "non_monotonic_fit"
 
 
+@pytest.mark.parametrize("cross_validated", [False, True])
+def test_failed_refit_discards_previous_calibration(cross_validated):
+    labels = np.array([0, 0, 0, 1, 1, 1])
+    probabilities = np.array([0.1, 0.2, 0.4, 0.6, 0.8, 0.9])
+    calibrator = ProbabilityCalibrator("isotonic").fit(labels, probabilities)
+    assert calibrator.is_calibrated
+
+    with pytest.raises(ValueError):
+        if cross_validated:
+            calibrator.fit_cross_validated(None, np.arange(6).reshape(-1, 1), np.ones(6))
+        else:
+            calibrator.fit(np.ones(6), probabilities)
+
+    assert calibrator.is_calibrated is False
+    assert calibrator.model is None
+    assert calibrator.brier_before is None
+    assert calibrator.brier_after is None
+    np.testing.assert_array_equal(calibrator.transform(probabilities), probabilities)
+
+
 def test_flattened_outcomes_preserve_signal_tiers_outside_model_features():
     row = {
         "timestamp": "2026-09-01T09:30:00+05:30",
