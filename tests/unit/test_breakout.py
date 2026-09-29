@@ -76,7 +76,9 @@ def test_failed_breakout_confidence_high(breakout_detector, sample_levels):
     )
     signal = breakout_detector.update(candle2, 100000.0, -15.0, 110, 100, 100, 100, sample_levels)
     assert signal is not None
-    assert signal.confidence == "HIGH"
+    assert signal.confidence == "MEDIUM"
+    assert signal.market_context["uncalibrated_high_suppressed"] is True
+    assert any("[CONFIDENCE GATE]" in reason for reason in signal.reasons)
 
 def test_failed_breakout_weak_failure_rejected(breakout_detector, sample_levels):
     # closed_back is a hard gate, not a scored point (TASK-172 audit item 8);
@@ -155,4 +157,3 @@ def test_failed_breakout_with_missing_iv_change_pct(breakout_detector, sample_le
     assert signal.setup_type == SetupType.FAILED_BREAKOUT
     assert signal.direction == Direction.BEARISH
     assert not any("IV crush" in r for r in signal.reasons)
-

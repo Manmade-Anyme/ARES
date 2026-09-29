@@ -98,12 +98,14 @@ class TestWritersHoldingNotScored(BreakoutScoringHarness):
 class TestWritersActiveScored(BreakoutScoringHarness):
     """Genuine writer defense (>= configured %) still scores and fires."""
 
-    def test_twelve_percent_growth_fires_high(self):
-        """weak_volume + deep_close + writers_active(12%) = 3 of 4 → HIGH (75%)."""
+    def test_twelve_percent_growth_fires_with_high_suppressed_pending_validation(self):
+        """The 3-of-4 score fires; runtime validation suppresses unproven HIGH."""
         self._breakout_up()
         signal = self._fail_back(ce_oi=112, ce_oi_prev=100)
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.confidence, "HIGH")
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertTrue(signal.market_context["uncalibrated_high_suppressed"])
+        self.assertTrue(any("[CONFIDENCE GATE]" in reason for reason in signal.reasons))
 
     def test_threshold_boundary_inclusive(self):
         """Exactly 10.0% growth counts as active."""

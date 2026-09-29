@@ -277,4 +277,6 @@ class TestContinuationStateMachine(unittest.TestCase):
         resume = candle(24115.0, 24100.0, open_=24108.0, volume=200000, minute=2 * n + 2)
         signal = self.det.update(resume, avg_volume=100000, levels=levels, pdh=self.pdh, pdl=self.pdl)
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.confidence, "HIGH")
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertTrue(signal.market_context["uncalibrated_high_suppressed"])
+        self.assertTrue(any("[CONFIDENCE GATE]" in reason for reason in signal.reasons))

@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from models import OHLCVCandle, ResistanceLevel, AresSignal, SetupType, Direction, confidence_from_score
+from ml_signal.calibration_policy import ConfidenceCalibrationPolicy
 from config import settings
 
 
@@ -202,7 +203,7 @@ class FailedBreakoutDetector:
         # Strike should be rounded to the nearest configured interval (e.g., 50)
         strike_to_trade = int(round(candle.close / settings.strike_interval) * settings.strike_interval)
 
-        return AresSignal(
+        signal = AresSignal(
             setup_type=SetupType.FAILED_BREAKOUT,
             direction=direction,
             trigger_price=candle.close,
@@ -216,3 +217,4 @@ class FailedBreakoutDetector:
             strike_to_trade=strike_to_trade,
             option_type=option_type
         )
+        return ConfidenceCalibrationPolicy().apply_to_signal(signal)

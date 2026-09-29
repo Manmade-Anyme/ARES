@@ -83,8 +83,8 @@ class TestBreakoutScoreExcludesClosedBack(unittest.TestCase):
         signal = self.detector.update(candle2, 10000.0, 0.0, 100, 100, 100, 100, self.levels)
         self.assertIsNone(signal)
 
-    def test_three_real_conditions_fires_high(self):
-        """writers_active + weak_volume + deep_close = 3/4 → fires, HIGH at 60%.
+    def test_three_real_conditions_fires_but_unvalidated_high_is_suppressed(self):
+        """writers_active + weak_volume + deep_close fires; validation gates HIGH.
         (TASK-174: writers_holding unscored, so the third point comes from
         genuine OI growth past the 10% threshold.)"""
         self._breakout_up()
@@ -95,7 +95,9 @@ class TestBreakoutScoreExcludesClosedBack(unittest.TestCase):
         )
         signal = self.detector.update(candle2, 100000.0, 0.0, 112, 100, 100, 100, self.levels)
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.confidence, "HIGH")
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertTrue(signal.market_context["uncalibrated_high_suppressed"])
+        self.assertTrue(any("[CONFIDENCE GATE]" in reason for reason in signal.reasons))
 
     def test_shallow_close_back_with_weak_conditions_rejected(self):
         """closed_back alone (score 0) can never fire — below the min of 2."""

@@ -47,7 +47,9 @@ class TestOIWallDetector(unittest.TestCase):
             option_type="PE",
             levels=[]
         )
-        self.assertEqual(signal.confidence, "HIGH")
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertIs(signal.market_context["uncalibrated_high_suppressed"], True)
+        self.assertTrue(any("[CONFIDENCE GATE]" in reason for reason in signal.reasons))
         self.assertTrue(any("Massive wall size" in r for r in signal.reasons))
         self.assertTrue(any("tested wall deeply" in r for r in signal.reasons))
         self.assertFalse(any("Aggressive active defending" in r for r in signal.reasons))

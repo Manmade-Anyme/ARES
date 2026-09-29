@@ -26,6 +26,9 @@ from sklearn.metrics import (
 
 from .config import MLConfig, DEFAULT_CONFIG
 from .dataset import feature_columns
+from .calibration import compute_brier_decomposition, compute_calibration_curve, test_tier_significance
+from .calibrator import ProbabilityCalibrator
+from .stratified_evaluator import StratifiedCalibrationEvaluator
 
 
 # NOTE: ml_signal/trainer.py already has train_xgboost/evaluate_model, but it
@@ -930,8 +933,30 @@ def _generate_shap_report(
         })
         print(f"[!] SHAP report generation failed; continuing ({type(exc).__name__}).")
         return metrics
+def _save_reliability_plot(y_true, y_prob, path: Optional[str], curve=None) -> bool:
+    if not path:
+        return False
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
 
-
+        curve = curve or compute_calibration_curve(y_true, y_prob)
+        fig, ax = plt.subplots(figsize=(6, 6))
+        try:
+            ax.plot([0, 1], [0, 1], "--", color="gray", label="Perfect calibration")
+            ax.plot(curve.bin_confidences, curve.bin_accuracies, "o-", label="Model")
+            ax.set(xlim=(0, 1), ylim=(0, 1), xlabel="Mean predicted probability",
+                   ylabel="Observed win rate", title="Reliability diagram")
+            ax.legend(loc="best")
+            fig.tight_layout()
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            fig.savefig(path, dpi=150, bbox_inches="tight")
+        finally:
+            plt.close(fig)
+        return True
+    except Exception:
+        return False
 def _print_shap_summary(metrics: Dict[str, object]) -> None:
     """Print the labeled raw-margin/log-odds SHAP summary."""
     print("=== SHAP Feature Importance (mean |SHAP| on test set; raw margin/log-odds) ===")
@@ -992,6 +1017,76 @@ def run_training(
 
     X_test, y_test = test[feature_cols], test[label_col]
     metrics = _safe_metrics(model, X_test, y_test)
+    calibrator = ProbabilityCalibrator(method=config.calibrator_method)
+    try:
+        calibrator.fit_cross_validated(model, X_train, y_train, method=config.calibrator_method)
+        calibration_status = calibrator.rejection_reason or "fitted"
+    except (ValueError, TypeError):
+        calibrator.rejection_reason = calibrator.rejection_reason or "insufficient_oof_data"
+        calibration_status = calibrator.rejection_reason
+    raw_test_probability = np.asarray(model.predict_proba(X_test)[:, 1], dtype=float)
+    calibrated_probability = np.asarray(calibrator.transform(raw_test_probability), dtype=float)
+    calibration = compute_brier_decomposition(y_test, calibrated_probability)
+    curve = compute_calibration_curve(y_test, calibrated_probability)
+    test_brier_before = float(np.mean((np.asarray(y_test, dtype=float) - raw_test_probability) ** 2))
+    test_brier_after = float(np.mean((np.asarray(y_test, dtype=float) - calibrated_probability) ** 2))
+    calibration_validated = bool(
+        calibrator.is_calibrated and test_brier_after < test_brier_before
+    )
+    metrics.update({
+        "calibration_status": calibration_status,
+        "calibrator_method": calibrator.method,
+        "calibrator_brier_before": calibrator.brier_before,
+        "calibrator_brier_after_oof": calibrator.brier_after,
+        "calibration_brier_before_evaluation": test_brier_before,
+        "calibration_brier_after_evaluation": test_brier_after,
+        "probability_calibrated": calibration_validated,
+        "calibration_brier_decomposition": calibration.__dict__,
+        "calibration_curve": curve.__dict__,
+        "ece": curve.ece,
+        "mce": curve.mce,
+    })
+    significance = None
+    if report_path:
+        report_root = os.path.dirname(report_path) or "."
+    elif save_path:
+        report_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reports", "ml")
+    else:
+        report_root = None
+    if "pnl_points" in test:
+        ml_tier_frame = pd.DataFrame({
+            "confidence": np.where(calibrated_probability >= config.high_threshold, "HIGH",
+                np.where(calibrated_probability >= config.medium_threshold, "MEDIUM", "LOW")),
+            "win": np.asarray(y_test, dtype=int),
+            "pnl_points": pd.to_numeric(test["pnl_points"], errors="coerce").to_numpy(),
+        })
+        ml_significance = test_tier_significance(ml_tier_frame, alpha=config.calibration_alpha)
+        metrics["ml_tier_significance"] = ml_significance.to_dict()
+        if "signal_confidence" in test:
+            tier_frame = test[["signal_confidence", label_col, "pnl_points"]].rename(
+                columns={"signal_confidence": "confidence", label_col: "win"}
+            )
+        else:
+            tier_frame = ml_tier_frame
+        significance = test_tier_significance(tier_frame, alpha=config.calibration_alpha)
+        metrics["tier_significance"] = significance.to_dict()
+        stratified = test.copy()
+        stratified["confidence"] = tier_frame["confidence"].values
+        stratified["win"] = np.asarray(y_test, dtype=int)
+        stratified["probability"] = calibrated_probability
+        if report_root is not None:
+            StratifiedCalibrationEvaluator(stratified).export_json(
+                os.path.join(report_root, "confidence_calibration_stratified_report.json"),
+                alpha=config.calibration_alpha,
+            )
+    version_name = model_version or "model"
+    reliability_plot_path = (
+        os.path.join(report_root, f"{version_name}_reliability_diagram.png")
+        if report_root is not None else None
+    )
+    metrics["reliability_diagram_saved"] = _save_reliability_plot(
+        y_test, calibrated_probability, reliability_plot_path, curve,
+    )
     metrics.update({
         "n_samples": int(n),
         "n_train": int(len(train)),
@@ -1038,12 +1133,32 @@ def run_training(
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
         joblib.dump(model, save_path)
         print(f"[+] Model saved -> {save_path}")
+        joblib.dump(calibrator, f"{save_path}.calibrator.joblib")
 
     if report_path:
         os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
         with open(report_path, "w") as f:
             json.dump(metrics, f, indent=2, default=str)
         print(f"[+] Report saved -> {report_path}")
+
+    if significance is not None and report_root is not None:
+        validation_path = os.path.join(report_root, "calibration_validation_record.json")
+        auc_value = metrics.get("auc_roc")
+        try:
+            auc_value = float(auc_value) if np.isfinite(float(auc_value)) else None
+        except (TypeError, ValueError):
+            auc_value = None
+        validation_record = {
+            **significance.to_dict(),
+            "tier_significance": significance.to_dict(),
+            "ml_tier_significance": metrics.get("ml_tier_significance", {}),
+            "auc_roc": auc_value,
+            "calibration_status": calibration_status,
+            "probability_calibrated": calibration_validated,
+            "model_version": model_version,
+        }
+        with open(validation_path, "w", encoding="utf-8") as f:
+            json.dump(validation_record, f, indent=2, allow_nan=False)
 
     return model, metrics
 
@@ -1058,7 +1173,7 @@ def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     except Exception:
         include_feature_version = False
 
-    base_cols = ["timestamp", "raw_candle", "trade_id", "trade_outcome", "trade_pnl", "snapshot_uuid", "signal_id", "signal_setup_type"]
+    base_cols = ["timestamp", "raw_candle", "trade_id", "trade_outcome", "trade_pnl", "snapshot_uuid", "signal_id", "signal_setup_type", "signal_direction", "signal_confidence"]
     if include_feature_version:
         base_cols.append("feature_version")
     cols = ",".join(base_cols + [
@@ -1111,6 +1226,131 @@ def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, dict]:
             break
         start += page
     return exits
+
+
+def _write_walk_forward_calibration_artifacts(
+    trade_df: pd.DataFrame,
+    probabilities: np.ndarray,
+    valid_mask: np.ndarray,
+    report_dir: str,
+    model_version: str,
+    mean_auc: Optional[float],
+    alpha: float,
+    config: MLConfig,
+):
+    """Fit calibration on OOF predictions and publish runtime/audit artifacts."""
+    os.makedirs(report_dir, exist_ok=True)
+    calibrator = ProbabilityCalibrator(method=config.calibrator_method)
+    valid_mask = np.asarray(valid_mask, dtype=bool)
+    probabilities = np.asarray(probabilities, dtype=float)
+    labels = pd.to_numeric(trade_df["label"], errors="coerce").fillna(0).to_numpy(dtype=int)
+    valid_mask = valid_mask & np.isfinite(probabilities)
+    valid_positions = np.flatnonzero(valid_mask)
+    raw_oof = probabilities[valid_mask]
+    oof_labels = labels[valid_mask]
+    # Fit on the earlier OOF segment and evaluate calibration and tier
+    # superiority only on the later segment. This keeps the labels used to
+    # fit the mapping out of the evidence used by the runtime gate.
+    fit_count = int(len(oof_labels) * 0.7)
+    eval_start = fit_count
+    fit_probability = raw_oof[:fit_count]
+    fit_labels = oof_labels[:fit_count]
+    eval_probability = raw_oof[eval_start:]
+    eval_labels = oof_labels[eval_start:]
+    eval_positions = valid_positions[eval_start:]
+    calibration_metrics: Dict[str, Any] = {
+        "calibration_status": "insufficient_oof_data",
+        "calibration_fit_samples": int(len(fit_labels)),
+        "calibration_samples": int(len(eval_labels)),
+        "probability_calibrated": False,
+    }
+    if len(fit_labels) >= 2 and len(eval_labels) >= 2:
+        try:
+            calibrator.fit(fit_labels, fit_probability, method=config.calibrator_method)
+            calibration_metrics["calibration_status"] = calibrator.rejection_reason or "fitted"
+        except ValueError as exc:
+            calibrator.rejection_reason = calibrator.rejection_reason or type(exc).__name__
+            calibration_metrics["calibration_status"] = calibrator.rejection_reason
+    calibrated_oof = calibrator.transform(eval_probability)
+    eval_brier_before = float(np.mean((eval_probability - eval_labels) ** 2)) if len(eval_labels) else None
+    eval_brier_after = float(np.mean((calibrated_oof - eval_labels) ** 2)) if len(eval_labels) else None
+    calibration_metrics["probability_calibrated"] = bool(
+        calibrator.is_calibrated and eval_brier_before is not None
+        and eval_brier_after is not None and eval_brier_after < eval_brier_before
+    )
+    calibration_metrics["calibrator_brier_before"] = calibrator.brier_before
+    calibration_metrics["calibrator_brier_after_fit"] = calibrator.brier_after
+    calibration_metrics["calibration_brier_before_evaluation"] = eval_brier_before
+    calibration_metrics["calibration_brier_after_evaluation"] = eval_brier_after
+
+    if len(eval_labels):
+        decomposition = compute_brier_decomposition(eval_labels, calibrated_oof)
+        curve = compute_calibration_curve(eval_labels, calibrated_oof)
+        calibration_metrics.update({
+            "calibration_brier_decomposition": decomposition.__dict__,
+            "calibration_curve": curve.__dict__,
+            "ece": curve.ece,
+            "mce": curve.mce,
+        })
+        _save_reliability_plot(
+            eval_labels, calibrated_oof,
+            os.path.join(report_dir, f"{model_version}_reliability_diagram.png"), curve,
+        )
+
+    ml_tier_frame = pd.DataFrame({
+        "confidence": np.where(calibrated_oof >= config.high_threshold, "HIGH",
+            np.where(calibrated_oof >= config.medium_threshold, "MEDIUM", "LOW")),
+        "win": eval_labels,
+        "pnl_points": pd.to_numeric(trade_df.iloc[eval_positions]["pnl_points"], errors="coerce").to_numpy(),
+    }) if len(eval_labels) else pd.DataFrame(columns=["confidence", "win", "pnl_points"])
+    ml_significance = test_tier_significance(
+        ml_tier_frame, alpha=alpha, min_samples=30,
+    )
+    calibration_metrics["ml_tier_significance"] = ml_significance.to_dict()
+
+    if "signal_confidence" in trade_df:
+        historical_tiers = trade_df.iloc[eval_positions][["signal_confidence", "label", "pnl_points"]].rename(
+            columns={"signal_confidence": "confidence", "label": "win"}
+        )
+    else:
+        historical_tiers = ml_tier_frame
+    tier_significance = test_tier_significance(
+        historical_tiers, alpha=alpha, min_samples=30,
+    )
+    calibration_metrics["tier_significance"] = tier_significance.to_dict()
+
+    stratified = trade_df.iloc[eval_positions].copy()
+    stratified["confidence"] = (
+        stratified["signal_confidence"] if "signal_confidence" in stratified
+        else np.where(
+            np.isfinite(eval_probability),
+            np.where(eval_probability >= config.high_threshold, "HIGH",
+                np.where(eval_probability >= config.medium_threshold, "MEDIUM", "LOW")),
+            "LOW",
+        )
+    )
+    stratified["win"] = eval_labels
+    stratified["probability"] = calibrated_oof
+    StratifiedCalibrationEvaluator(stratified).export_json(
+        os.path.join(report_dir, "confidence_calibration_stratified_report.json"), alpha=alpha,
+    )
+
+    record = {
+        **tier_significance.to_dict(),
+        "tier_significance": tier_significance.to_dict(),
+        "ml_tier_significance": ml_significance.to_dict(),
+        "auc_roc": float(mean_auc) if mean_auc is not None and np.isfinite(mean_auc) else None,
+        "calibration_status": calibration_metrics["calibration_status"],
+        "probability_calibrated": calibration_metrics["probability_calibrated"],
+        "model_version": model_version,
+    }
+    with open(os.path.join(report_dir, "calibration_validation_record.json"), "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=2, allow_nan=False)
+    calibration_metrics["validation_record_path"] = os.path.join(report_dir, "calibration_validation_record.json")
+    calibration_metrics["stratified_report_path"] = os.path.join(
+        report_dir, "confidence_calibration_stratified_report.json"
+    )
+    return calibrator, calibration_metrics
 
 
 from ml_signal.pipeline_market_movement import MarketMovementPipeline
@@ -1201,6 +1441,7 @@ def main(argv=None) -> None:
     _clear_versioned_shap_artifacts(repo, next_version)
 
     stage1_model, stage2_model = None, None
+    runtime_calibrator = None
     market_df = None
     promoted = False
     gate_error = None
@@ -1277,9 +1518,23 @@ def main(argv=None) -> None:
             market_df = pipe1.prepare_dataset(rows)
             
         _, metrics = pipe.run_walk_forward(trade_df, market_snapshots_df=market_df, n_splits=args.folds)
-        
+
         final_metrics = metrics.copy()
         leakage_guard_passed = metrics.get("leakage_guard_passed", False)
+        oof_predictions = getattr(pipe, "oof_predictions", None)
+        oof_mask = getattr(pipe, "oof_mask", None)
+        if not trade_df.empty and oof_predictions is not None and oof_mask is not None:
+            runtime_calibrator, calibration_metrics = _write_walk_forward_calibration_artifacts(
+                trade_df=trade_df,
+                probabilities=oof_predictions,
+                valid_mask=oof_mask,
+                report_dir=os.path.join(repo, "reports", "ml"),
+                model_version=next_version,
+                mean_auc=metrics.get("mean_auc"),
+                alpha=config.calibration_alpha,
+                config=config,
+            )
+            final_metrics.update(calibration_metrics)
         
         if args.promote:
             from ml_signal.promotion_gate import evaluate_promotion_gate
@@ -1424,6 +1679,9 @@ def main(argv=None) -> None:
                     else:
                         # Persist as legacy standalone model
                         joblib.dump(stage2_model, save_path)
+
+                    if runtime_calibrator is not None:
+                        joblib.dump(runtime_calibrator, f"{save_path}.calibrator.joblib")
                         
                     if promoted:
                         print(f"[+] Promoted Model -> {save_path}")

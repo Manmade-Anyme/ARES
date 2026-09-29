@@ -12,6 +12,7 @@ from models import (
     OIWallTelemetry,
     OIWallEntryDecision,
 )
+from ml_signal.calibration_policy import ConfidenceCalibrationPolicy
 from config import settings
 
 
@@ -390,7 +391,7 @@ class OIWallDetector:
         entry_zone = (trigger_price - entry_zone_offset, trigger_price + entry_zone_offset)
         strike_to_trade = int(round(spot / strike_interval) * strike_interval)
 
-        return AresSignal(
+        signal = AresSignal(
             setup_type=SetupType.OI_WALL_REJECTION,
             direction=direction,
             trigger_price=trigger_price,
@@ -405,6 +406,7 @@ class OIWallDetector:
             option_type=option_type,
             oi_wall_context=decision.telemetry.to_dict(),
         )
+        return ConfidenceCalibrationPolicy().apply_to_signal(signal)
 
     def _build_signal(
         self,

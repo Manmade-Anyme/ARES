@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional, List
 
 from models import OHLCVCandle, ResistanceLevel, AresSignal, SetupType, Direction, confidence_from_score
+from ml_signal.calibration_policy import ConfidenceCalibrationPolicy
 from config import settings
 
 
@@ -232,7 +233,7 @@ class TrendContinuationDetector:
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)
         strike_to_trade = int(round(candle.close / settings.strike_interval) * settings.strike_interval)
 
-        return AresSignal(
+        signal = AresSignal(
             setup_type=SetupType.TREND_CONTINUATION,
             direction=direction,
             trigger_price=candle.close,
@@ -246,3 +247,4 @@ class TrendContinuationDetector:
             strike_to_trade=strike_to_trade,
             option_type=option_type,
         )
+        return ConfidenceCalibrationPolicy().apply_to_signal(signal)

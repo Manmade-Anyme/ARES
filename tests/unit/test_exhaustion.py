@@ -46,7 +46,9 @@ def test_exhaustion_confidence_high(exhaustion_detector, sample_levels):
         exhaustion_detector.volume_history.append(100000)
     signal = exhaustion_detector.update(candle=candle, iv_current=25.0, iv_prev=15.0, levels=levels)
     assert signal is not None
-    assert signal.confidence == "HIGH"
+    assert signal.confidence == "MEDIUM"
+    assert signal.market_context["uncalibrated_high_suppressed"] is True
+    assert any("[CONFIDENCE GATE]" in reason for reason in signal.reasons)
 
 def test_exhaustion_confidence_medium(exhaustion_detector):
     # Standard climax volume (1000000 vs avg 100000 * 2.5 = 250000, but not extreme 1.5x) -> 0 points (mult 2.5 * 1.5 * 100000 = 375000, wait, 1000000 is still > 375000, so it gets 1 point)

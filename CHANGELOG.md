@@ -4,6 +4,7 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
+- **Confidence calibration (MANM-157)**: Added Brier decomposition, reliability curves, one-sided tier significance tests, stratified calibration JSON reports, monotonic probability calibration, and a fail-safe HIGH-to-MEDIUM runtime gate. Detector suppression reasons and context flags are persisted, and offline training now writes reliability diagrams and validation records.
 
 ### Fixed
 - **SHAP data leakage prevention (MANM-156)**: Re-ordered dataset splitting and computation of evaluation bounds to prevent Stage 1 training data from leaking future market outcomes into the SHAP report.

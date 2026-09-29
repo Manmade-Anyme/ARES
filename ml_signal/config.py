@@ -28,6 +28,10 @@ class MLConfig:
     # Confidence tiers
     high_threshold: float = 0.70
     medium_threshold: float = 0.55
+    enable_calibration_policy: bool = True
+    calibration_alpha: float = 0.05
+    calibration_record_path: str = "reports/ml/calibration_validation_record.json"
+    calibrator_method: str = "isotonic"
 
     # Feature flags
     use_candle_features: bool = True
