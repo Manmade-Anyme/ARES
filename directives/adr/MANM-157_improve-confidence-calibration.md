@@ -102,6 +102,7 @@ Implement multi-axis stratification to identify which specific market conditions
    - *Afternoon / Pre-Close Trend*: 13:30 to 15:30 IST (institutional flows, expiry squaring).
 
 For every stratum, the evaluator computes: sample size $N$, win rate by tier, mean expectancy (PnL points) by tier, ECE, Brier score decomposition, and Fisher/Mann-Whitney significance test results.
+Calibration and stratum sample counts include valid LOW-tier predictions, even when realized PnL is unavailable; tier superiority tests use only HIGH and MEDIUM rows with realized PnL.
 
 ### Decision 3: Enforce Strict Production Policy Gate (`ml_signal/calibration_policy.py`)
 Enforce a hard architectural constraint at signal creation and live emission:
@@ -360,6 +361,7 @@ Assign implementation of **MANM-157** to the **Code Generator Agent** across the
 - **Fail-Safe Degradation**: If the calibration record file is missing or corrupted, the system fails safe by downgrading `HIGH` to `MEDIUM`, preventing unvalidated risk exposure while allowing trading to proceed normally.
 - **Thread Safety**: All calibration evaluation functions are purely functional and stateless.
 - **Audit Logging**: Every suppression of a `HIGH` tier leaves an explicit trace in `AresSignal.reasons` and `trade_analytics.market_context`.
+- **Deployment Evidence**: The scheduled promotion commit carries `calibration_validation_record.json` and `confidence_calibration_stratified_report.json` with the model artifact so fresh deployments can load the evidence used by the runtime gate.
 
 ---
 

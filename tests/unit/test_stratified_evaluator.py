@@ -5,8 +5,12 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 from ml_signal.stratified_evaluator import StratifiedCalibrationEvaluator
-from ml_signal.calibration_policy import ConfidenceCalibrationPolicy
+from ml_signal.calibration_policy import (
+    ConfidenceCalibrationPolicy,
+    DEFAULT_DETECTOR_CALIBRATION_POLICY,
+)
 from models import Direction, SetupType
 
 
@@ -77,6 +81,43 @@ def test_missing_iv_is_reported_as_unknown():
     assert report.by_volatility_regime["UNKNOWN"]["sample_size"] == 1
 
 
+def test_low_tiers_and_missing_pnl_still_contribute_to_calibration():
+    frame = pd.DataFrame({
+        "confidence": ["HIGH", "MEDIUM", "LOW", "LOW"],
+        "win": [1, 0, 0, 1],
+        "pnl_points": [2.0, -1.0, None, None],
+        "probability": [0.9, 0.8, 0.2, 0.1],
+        "iv_level": [10.0, 20.0, 30.0, 40.0],
+        "setup_type": ["FAILED_BREAKOUT", "FAILED_BREAKOUT",
+                       "EXHAUSTION_REVERSAL", "EXHAUSTION_REVERSAL"],
+    })
+
+    report = StratifiedCalibrationEvaluator(frame).evaluate()
+
+    assert report.overall["sample_size"] == 4
+    assert report.overall_brier["brier_score"] == pytest.approx(0.375)
+    assert report.overall_ece == pytest.approx(0.5)
+    assert report.overall["by_tier"]["HIGH"]["sample_size"] == 1
+    assert report.overall["by_tier"]["MEDIUM"]["sample_size"] == 1
+    assert report.by_setup["EXHAUSTION_REVERSAL"]["sample_size"] == 2
+    assert report.by_setup["EXHAUSTION_REVERSAL"]["brier"] is not None
+    assert report.by_volatility_regime["HIGH_IV"]["sample_size"] == 2
+
+
+def test_tier_report_without_probability_has_no_calibration_metrics():
+    frame = pd.DataFrame({
+        "confidence": ["HIGH", "MEDIUM", "LOW"],
+        "win": [1, 0, 1],
+        "pnl_points": [2.0, -1.0, None],
+    })
+
+    report = StratifiedCalibrationEvaluator(frame).evaluate()
+
+    assert report.overall["sample_size"] == 3
+    assert report.overall_brier is None
+    assert report.overall_ece is None
+
+
 def test_policy_downgrades_unvalidated_high_tier():
     context = {"iv_level": 18.0, "timestamp": datetime(2026, 9, 1, 10, 0)}
     reasons = ["setup heuristic score supports HIGH"]
@@ -131,6 +172,77 @@ def test_policy_preserves_non_high_tier():
 
     assert tier == "MEDIUM"
     assert reasons == ["medium setup"]
+
+
+def test_corrupt_nested_strata_fail_closed(tmp_path):
+    significant = {
+        "high_count": 40, "medium_count": 40,
+        "is_statistically_superior": True,
+        "fisher_p_value": 0.001, "mann_whitney_p_value": 0.001,
+        "win_rate_diff": 0.2, "expectancy_diff": 1.0,
+    }
+    record_path = tmp_path / "calibration_validation_record.json"
+    record_path.write_text(json.dumps(significant))
+    (tmp_path / "confidence_calibration_stratified_report.json").write_text(
+        json.dumps({"by_setup": None, "by_direction": {"BULLISH": None}})
+    )
+    policy = ConfidenceCalibrationPolicy(str(record_path))
+
+    tier, reasons = policy.evaluate_signal_tier(
+        "FAILED_BREAKOUT", "BULLISH", "HIGH", 5, 5, [], {}
+    )
+
+    assert tier == "MEDIUM"
+    assert len(reasons) == 1
+    assert policy.check_validation_status("FAILED_BREAKOUT", "BULLISH") is False
+
+
+def test_malformed_superiority_flag_does_not_enable_high(tmp_path):
+    record_path = tmp_path / "calibration_validation_record.json"
+    record_path.write_text(json.dumps({
+        "high_count": 40, "medium_count": 40,
+        "is_statistically_superior": "true",
+        "fisher_p_value": 0.001, "mann_whitney_p_value": 0.001,
+        "win_rate_diff": 0.2, "expectancy_diff": 1.0,
+    }))
+
+    policy = ConfidenceCalibrationPolicy(str(record_path))
+
+    assert policy.is_high_validated(setup_type="FAILED_BREAKOUT", direction="BULLISH") is False
+
+
+def test_overflowing_validation_count_fails_closed(tmp_path):
+    record_path = tmp_path / "calibration_validation_record.json"
+    record_path.write_text(
+        '{"high_count": 1e309, "medium_count": 40, '
+        '"is_statistically_superior": true}'
+    )
+
+    policy = ConfidenceCalibrationPolicy(str(record_path))
+    tier, _ = policy.evaluate_signal_tier(
+        "FAILED_BREAKOUT", "BULLISH", "HIGH", 5, 5, [], {}
+    )
+
+    assert tier == "MEDIUM"
+
+
+def test_engine_injects_startup_cache_and_direct_detectors_remain_opt_in():
+    from engine import AresEngine
+    from detectors.breakout import FailedBreakoutDetector
+    from detectors.continuation import TrendContinuationDetector
+    from detectors.exhaustion import ExhaustionDetector
+    from detectors.oi_wall import OIWallDetector
+
+    active = AresEngine()
+    disabled = AresEngine(calibration_policy=None)
+    for detector_name in (
+        "breakout_detector", "continuation_detector", "exhaustion_detector", "oi_wall_detector"
+    ):
+        assert getattr(active, detector_name).calibration_policy is DEFAULT_DETECTOR_CALIBRATION_POLICY
+        assert getattr(disabled, detector_name).calibration_policy is None
+    assert all(detector.calibration_policy is None for detector in (
+        FailedBreakoutDetector(), TrendContinuationDetector(), ExhaustionDetector(), OIWallDetector()
+    ))
 
 
 def test_inverted_auc_disables_ml_high_but_does_not_change_detector_gate(tmp_path):

@@ -22,6 +22,7 @@ from config import settings
 from config_profiles import NON_EXPIRY_CONFIG, EXPIRY_CONFIG
 from models import OHLCVCandle, ResistanceLevel
 from detectors.breakout import FailedBreakoutDetector
+from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 
 class TestWritersActiveThresholdConfig(unittest.TestCase):
@@ -39,7 +40,7 @@ class BreakoutScoringHarness(unittest.TestCase):
 
     def setUp(self):
         settings.apply_profile(NON_EXPIRY_CONFIG)
-        self.detector = FailedBreakoutDetector()
+        self.detector = FailedBreakoutDetector(calibration_policy=DEFAULT_DETECTOR_CALIBRATION_POLICY)
         self.levels = [
             ResistanceLevel(price=24000.0, source="PDL", strength=3),
             ResistanceLevel(price=24100.0, source="PDH", strength=3),

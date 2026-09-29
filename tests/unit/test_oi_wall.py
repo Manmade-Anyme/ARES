@@ -3,10 +3,11 @@ from unittest.mock import patch
 from models import OHLCVCandle, Direction
 from datetime import datetime
 from detectors.oi_wall import OIWallDetector
+from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 class TestOIWallDetector(unittest.TestCase):
     def setUp(self):
-        self.detector = OIWallDetector()
+        self.detector = OIWallDetector(calibration_policy=DEFAULT_DETECTOR_CALIBRATION_POLICY)
 
     @patch('detectors.oi_wall.settings')
     def test_oi_wall_confidence_high(self, mock_settings):

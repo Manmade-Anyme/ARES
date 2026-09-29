@@ -3,7 +3,6 @@ from datetime import datetime
 from typing import Optional, List
 
 from models import OHLCVCandle, ResistanceLevel, AresSignal, SetupType, Direction, confidence_from_score
-from ml_signal.calibration_policy import ConfidenceCalibrationPolicy
 from config import settings
 
 
@@ -33,9 +32,10 @@ class FailedBreakoutDetector:
     (looking at CE OI) and downward breakdowns (looking at PE OI).
     """
 
-    def __init__(self):
+    def __init__(self, calibration_policy=None):
         """Initialize the detector with no active breakout."""
         self.active: Optional[BreakoutState] = None
+        self.calibration_policy = calibration_policy
 
     def update(
         self,
@@ -217,4 +217,4 @@ class FailedBreakoutDetector:
             strike_to_trade=strike_to_trade,
             option_type=option_type
         )
-        return ConfidenceCalibrationPolicy().apply_to_signal(signal)
+        return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal

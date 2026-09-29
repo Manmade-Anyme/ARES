@@ -62,22 +62,32 @@ class ConfidenceCalibrationPolicy:
             return (
                 int(high_n) >= self.min_samples
                 and int(medium_n) >= self.min_samples
-                and bool(result.get("is_statistically_superior", False))
+                and result.get("is_statistically_superior") is True
                 and float(result.get("fisher_p_value", 1.0)) < self.alpha
                 and float(result.get("mann_whitney_p_value", 1.0)) < self.alpha
                 and float(result.get("win_rate_diff", 0.0)) > 0.0
                 and float(result.get("expectancy_diff", 0.0)) > 0.0
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return False
 
     def _detector_strata(self, setup_type: str, direction: str):
         report = self.stratified_record or {}
         setup = getattr(setup_type, "value", setup_type)
         directional = getattr(direction, "value", direction)
-        setup_result = report.get("by_setup", {}).get(str(setup), {}).get("significance", {})
-        direction_result = report.get("by_direction", {}).get(str(directional), {}).get("significance", {})
+        def significance_for(axis, value):
+            records = report.get(axis)
+            row = records.get(str(value)) if isinstance(records, dict) else None
+            result = row.get("significance") if isinstance(row, dict) else None
+            return result if isinstance(result, dict) else {}
+
+        setup_result = significance_for("by_setup", setup)
+        direction_result = significance_for("by_direction", directional)
         return [setup_result, direction_result]
+
+    def check_validation_status(self, setup_type: str, direction: str) -> bool:
+        """Report whether this detector setup and direction may emit HIGH."""
+        return self.is_high_validated(setup_type=setup_type, direction=direction)
 
     def is_calibrator_validated(self, model_version: Optional[str]) -> bool:
         """Require held-out approval for this exact model before using its sidecar."""
@@ -172,3 +182,8 @@ class ConfidenceCalibrationPolicy:
         )
         signal.market_context = context
         return signal
+
+
+# Detector modules import this once at process startup; live signals reuse the
+# loaded validation data without reading files in the candle generation path.
+DEFAULT_DETECTOR_CALIBRATION_POLICY = ConfidenceCalibrationPolicy()

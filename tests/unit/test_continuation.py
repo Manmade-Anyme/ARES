@@ -14,6 +14,7 @@ from config import settings
 from config_profiles import TuningConfig, NON_EXPIRY_CONFIG, EXPIRY_CONFIG
 from models import OHLCVCandle, ResistanceLevel, SetupType, Direction
 from detectors.continuation import TrendContinuationDetector
+from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 
 def candle(close, vwap, open_=None, high=None, low=None, volume=100000, minute=0):
@@ -49,7 +50,7 @@ class TestContinuationStateMachine(unittest.TestCase):
 
     def setUp(self):
         settings.apply_profile(NON_EXPIRY_CONFIG)
-        self.det = TrendContinuationDetector()
+        self.det = TrendContinuationDetector(calibration_policy=DEFAULT_DETECTOR_CALIBRATION_POLICY)
         self.pdh, self.pdl = 24200.0, 24000.0
 
     def tearDown(self):

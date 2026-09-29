@@ -58,6 +58,8 @@ class StratifiedCalibrationEvaluator:
         frame["confidence"] = frame["confidence"].astype(str).str.upper()
         frame["win"] = pd.to_numeric(frame["win"], errors="coerce")
         frame["pnl"] = pd.to_numeric(frame["pnl"], errors="coerce")
+        if cols["probability"] is not None:
+            frame["probability"] = pd.to_numeric(frame["probability"], errors="coerce")
         return frame, cols
 
     @staticmethod
@@ -80,10 +82,10 @@ class StratifiedCalibrationEvaluator:
 
     @staticmethod
     def _stratum_summary(frame, alpha):
-        frame = frame.dropna(subset=["confidence", "win", "pnl"])
+        tier_rows = frame.dropna(subset=["pnl"])
         by_tier = {}
         for tier in ("HIGH", "MEDIUM"):
-            part = frame[frame["confidence"] == tier]
+            part = tier_rows[tier_rows["confidence"] == tier]
             by_tier[tier] = {
                 "sample_size": int(len(part)),
                 "win_rate": float(part["win"].mean()) if len(part) else None,
@@ -93,27 +95,24 @@ class StratifiedCalibrationEvaluator:
             "sample_size": int(len(frame)),
             "by_tier": by_tier,
             "significance": test_tier_significance(
-                frame,
+                tier_rows,
                 tier_col="confidence", outcome_col="win", pnl_col="pnl", alpha=alpha,
             ).to_dict(),
             "brier": None,
             "calibration": None,
         }
         if "probability" in frame:
-            valid = frame.dropna(subset=["probability"])
+            valid = frame[frame["probability"].between(0.0, 1.0)]
             if len(valid):
                 y, p = valid["win"].to_numpy(), valid["probability"].to_numpy()
-                try:
-                    result["brier"] = asdict(compute_brier_decomposition(y, p))
-                    curve = compute_calibration_curve(y, p)
-                    result["calibration"] = asdict(curve)
-                except ValueError:
-                    pass
+                result["brier"] = asdict(compute_brier_decomposition(y, p))
+                curve = compute_calibration_curve(y, p)
+                result["calibration"] = asdict(curve)
         return result
 
     def evaluate(self, alpha: float = 0.05) -> StratifiedCalibrationReport:
         frame, cols = self._prepare()
-        valid = frame[frame["confidence"].isin(["HIGH", "MEDIUM"])].copy()
+        valid = frame[frame["win"].isin([0, 1])].copy()
 
         def evaluate_axis(column):
             if not column or column not in valid:

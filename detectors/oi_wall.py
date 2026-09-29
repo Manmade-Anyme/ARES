@@ -12,7 +12,6 @@ from models import (
     OIWallTelemetry,
     OIWallEntryDecision,
 )
-from ml_signal.calibration_policy import ConfidenceCalibrationPolicy
 from config import settings
 
 
@@ -43,12 +42,13 @@ class OIWallDetector:
     - `build_signal()` constructs the final `AresSignal` only from a qualified `OIWallEntryDecision`.
     """
 
-    def __init__(self):
+    def __init__(self, calibration_policy=None):
         self.current_wall_key: Optional[str] = None
         self.first_seen: Optional[datetime] = None
         self.last_seen: Optional[datetime] = None
         self.persistence_snapshots: int = 0
         self.has_interacted: bool = False
+        self.calibration_policy = calibration_policy
 
     def release_terminal_wall(self, wall_key: Optional[str]) -> None:
         """Release priority only when the filter terminates the tracked wall."""
@@ -406,7 +406,7 @@ class OIWallDetector:
             option_type=option_type,
             oi_wall_context=decision.telemetry.to_dict(),
         )
-        return ConfidenceCalibrationPolicy().apply_to_signal(signal)
+        return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal
 
     def _build_signal(
         self,

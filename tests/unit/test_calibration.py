@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.stats import fisher_exact
 
 from ml_signal.calibration import (
     compute_brier_decomposition,
@@ -104,7 +105,8 @@ def test_tier_significance_reports_233_trade_audit_without_superiority():
     assert result.medium_expectancy == pytest.approx(220.85 / 195)
     assert result.is_statistically_superior is False
     assert result.verdict == "INVERTED"
-    assert 0 <= result.fisher_p_value <= 1
+    assert result.fisher_p_value == pytest.approx(0.6037, abs=0.0001)
+    assert fisher_exact([[12, 26], [63, 132]], alternative="two-sided").pvalue == 1.0
     assert 0 <= result.mann_whitney_p_value <= 1
 
 
@@ -278,3 +280,53 @@ def test_live_calibrator_requires_sidecar_and_heldout_approval(
         assert "runtime calibrator unavailable" in result["reasons"][0]
     elif not record_approved:
         assert "no held-out approval" in result["reasons"][0]
+
+
+def test_event_signal_persists_ml_suppression_audit_without_replacing_detector_tier():
+    from main import _attach_ml_prediction_to_signal
+
+    signal = SimpleNamespace(
+        confidence="HIGH",
+        reasons=["detector validated"],
+        market_context={"tentative_confidence": "HIGH"},
+    )
+    prediction = {
+        "confidence_tier": "MEDIUM",
+        "model_version": "v9",
+        "reasons": ["[CONFIDENCE GATE] HIGH tier suppressed to MEDIUM: no held-out approval"],
+        "market_context": {
+            "tentative_confidence": "HIGH",
+            "uncalibrated_high_suppressed": True,
+            "calibrator_applied": False,
+        },
+    }
+
+    _attach_ml_prediction_to_signal(signal, prediction)
+
+    assert signal.ml_prediction is prediction
+    assert signal.confidence == "HIGH"
+    assert signal.market_context["tentative_confidence"] == "HIGH"
+    assert signal.market_context["uncalibrated_high_suppressed"] is True
+    assert signal.market_context["ml_confidence_gate"] == {
+        "tentative_confidence": "HIGH",
+        "emitted_confidence": "MEDIUM",
+        "model_version": "v9",
+        "calibrator_applied": False,
+        "uncalibrated_high_suppressed": True,
+    }
+    assert any("[ML PREDICTION] [CONFIDENCE GATE]" in reason for reason in signal.reasons)
+
+
+def test_event_signal_keeps_approved_ml_prediction_without_audit_mutation():
+    from main import _attach_ml_prediction_to_signal
+
+    signal = SimpleNamespace(
+        confidence="MEDIUM", reasons=["detector reason"], market_context={}
+    )
+    prediction = {"confidence_tier": "HIGH", "market_context": {}, "reasons": []}
+
+    _attach_ml_prediction_to_signal(signal, prediction)
+
+    assert signal.ml_prediction is prediction
+    assert signal.reasons == ["detector reason"]
+    assert signal.market_context == {}

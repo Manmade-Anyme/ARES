@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import Optional, List
 
 from models import OHLCVCandle, ResistanceLevel, AresSignal, SetupType, Direction, confidence_from_score
-from ml_signal.calibration_policy import ConfidenceCalibrationPolicy
 from config import settings
 
 
@@ -44,9 +43,10 @@ class TrendContinuationDetector:
     filters that out at the cost of one candle's worth of entry price.
     """
 
-    def __init__(self):
+    def __init__(self, calibration_policy=None):
         """Initialize the detector with no active regime candidate."""
         self.state: Optional[ContinuationState] = None
+        self.calibration_policy = calibration_policy
 
     def update(
         self,
@@ -247,4 +247,4 @@ class TrendContinuationDetector:
             strike_to_trade=strike_to_trade,
             option_type=option_type,
         )
-        return ConfidenceCalibrationPolicy().apply_to_signal(signal)
+        return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal

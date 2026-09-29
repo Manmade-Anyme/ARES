@@ -2,6 +2,7 @@ import pytest
 from datetime import datetime
 from models import OHLCVCandle, ResistanceLevel
 from detectors.exhaustion import ExhaustionDetector
+from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 @pytest.fixture
 def sample_levels():
@@ -13,7 +14,7 @@ def sample_levels():
 
 @pytest.fixture
 def exhaustion_detector():
-    return ExhaustionDetector()
+    return ExhaustionDetector(calibration_policy=DEFAULT_DETECTOR_CALIBRATION_POLICY)
 
 # NOTE (TASK-185): the per-detector "dynamic target selection", the fixed
 # target_1_pts/target_2_pts fallback, and the T1/T2 ordering-swap were removed
