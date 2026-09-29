@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -64,15 +65,15 @@ class OptionRow:
     """
     strike: int
     option_type: str  # "CE" or "PE"
-    ltp: float
-    iv: float
-    oi: int
-    oi_prev: int
-    oi_change_pct: float
-    gamma: float = 0.0
-    theta: float = 0.0
-    delta: float = 0.0
-    vega: float = 0.0
+    ltp: Optional[float] = None
+    iv: Optional[float] = None
+    oi: Optional[int] = None
+    oi_prev: Optional[int] = None
+    oi_change_pct: Optional[float] = None
+    gamma: Optional[float] = None
+    theta: Optional[float] = None
+    delta: Optional[float] = None
+    vega: Optional[float] = None
 
 
 @dataclass
@@ -129,8 +130,16 @@ class AresSignal:
     timestamp: datetime
     strike_to_trade: int
     option_type: str
-    signal_id: str = field(default_factory=lambda: f"{random.randint(0, 9999):04d}")
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    display_id: str = field(default_factory=lambda: f"{random.randint(0, 9999):04d}")
     db_id: Optional[int] = None  # ares_signals row id, set after log_signal; joins trade_analytics to ares_signals
+    trade_id: Optional[str] = None  # UUID populated if a trade is executed by PositionManager
+    
+    @property
+    def signal_id(self) -> str:
+        """Deprecated: use display_id for presentation or id for database join."""
+        return self.display_id
+        
     suggested_lots: Optional[int] = None
     option_sl: Optional[float] = None
     option_target: Optional[float] = None

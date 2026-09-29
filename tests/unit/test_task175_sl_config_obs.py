@@ -13,7 +13,6 @@ Tests for TASK-175:
 3. (Observation-only Discord alerts were removed in TASK-182 — every signal
    is tradeable now, so the alert always carries the full entry/SL/targets.)
 """
-import asyncio
 import dataclasses
 import unittest
 from datetime import datetime
