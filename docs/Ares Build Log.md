@@ -2,6 +2,41 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-09-29 · MANM-156 Final Refit and Report Failure Regression Coverage
+
+Validated the exact Stage 1 subset bounded by the trade holdout before fitting,
+and refreshed the reserved Stage 2 frame after cross-fitted probabilities are
+assigned. Shared the resolution purge and embargo filter across final and
+cross-fitting boundaries. Versioned SHAP outputs are invalidated before each
+training attempt and cleared on report exceptions, including partial writes.
+CLI regression tests cover real XGBoost fitting, bundle persistence, holdout
+explanations, missing/stale transfer inputs, degenerate bounded subsets, and
+both plots' import/render/save failure paths.
+
+Validation: `PYTHONPATH=. pytest -q --import-mode=importlib` passed 779 tests
+and 10 subtests. Importlib mode avoids the local `tests.unit` collection conflict.
+
+Follow-up: CLI stability audits now include both the retained training rows and
+the current holdout. Real-XGBoost regression cases verify that a holdout-only
+shift is detected, stationary data stays stable, and split metadata is preserved.
+
+## 2026-09-12 · Enable SHAP Package Support, Native TreeSHAP Fallback, and Drift Stability Auditing (MANM-156)
+
+Architected resilient multi-tier SHAP explainability, raw-margin additivity validation, and rolling-window feature drift stability auditing.
+
+**Problem**
+- In audit/evaluation environments lacking the Python `shap` package, `train_offline.py` caught `ModuleNotFoundError` (`if exc.name == "shap": return`) and returned early, failing to invoke the native XGBoost TreeSHAP fallback.
+- Training degraded to global split gain, losing sample-level local attribution, directional sign (positive vs. negative contribution), and raw-margin additivity.
+- No beeswarm distribution plots, rolling-window drift detection, or comprehensive metadata capture were present.
+
+**Architecture & Decisions (ADR-156)**
+- Dependency isolation: added `shap>=0.47.0,<0.50.0` and `matplotlib>=3.7.0,<4.0.0` to root `requirements.txt` and `ml_signal/requirements.txt`. Live serving path remains strictly decoupled from `shap`.
+- Multi-tier resilient explanation: Tier 1 (`shap_tree_explainer`) normalizes diverse output shapes to `(N, M)`; Tier 2 (`xgboost_pred_contribs`) automatically handles `ModuleNotFoundError` or explainer failures via native XGBoost `pred_contribs=True`; Tier 3 non-fatal failure guard.
+- Raw-margin log-odds additivity: validated via `np.allclose(contributions[:, :-1].sum(axis=1) + contributions[:, -1], raw_margin)`.
+- Multi-plot suite: summary bar chart (`{version}_shap_summary.png`) and directional beeswarm plot (`{version}_shap_beeswarm.png`) with pure Matplotlib scatter/jitter fallback for environments without `shap`.
+- Feature drift audit: `audit_shap_stability(...)` computes rank correlation ($\rho_s$), top-5 turnover, and attribution drift across rolling windows with graceful sparse data handling.
+- Pipeline CLI integration: the active market-only or trade-outcome training path reserves a purged chronological evaluation tail before fitting the persisted model, then publishes a SHAP report for that exact model/tail pair and merges SHAP metadata into the canonical `task183_offline_metrics.json` output. Final refits apply the existing resolution-time purge and the configured pre-test embargo (15 minutes for Stage 1, 30 minutes for Stage 2). Rejected or skipped SHAP generation removes the versioned report and both plots so stale explanations are never published.
+- Implementation tasks assigned to Code Generator Agent via ADR-156.
 ## 2026-09-28 · MANM-155 Trade Identity Preservation
 
 Preserved trade and snapshot identifiers as non-feature metadata through flattening. Trade-outcome deduplication now chooses `trade_id` with a per-row `snapshot_uuid` fallback, so mixed historical frames retain distinct executions instead of grouping missing trade identifiers together.

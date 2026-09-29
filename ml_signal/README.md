@@ -104,15 +104,34 @@ python -m ml_signal.train_offline
 
 The chronological held-out test split is explained with `shap.TreeExplainer`,
 using the fitted model's `best_iteration`. On Python 3.10 SHAP/XGBoost
-compatibility failures, the trainer falls back to XGBoost's native exact
-TreeSHAP contributions and checks additivity in raw-margin units. If the SHAP
-package is genuinely missing, explanation is skipped as a nonfatal condition.
+compatibility failures, or when the SHAP package is unavailable, the trainer
+falls back to XGBoost's native exact TreeSHAP contributions and checks
+additivity in raw-margin units. A failed explanation remains nonfatal.
+
+The CLI reserves a purged chronological evaluation tail before fitting the
+persisted market or trade-outcome model, then passes that same fitted model and
+untouched tail to the SHAP reporter; it never retrains a second generic model
+for the report. Final refits exclude prefix rows whose labels overlap the
+evaluation start and apply the configured pre-test embargo (15 minutes for
+Stage 1, 30 minutes for Stage 2). In hybrid runs, Stage 1 is bounded by the
+trade evaluation start, and its exact training subset must contain both
+classes. Stage 2's reserved frame receives fresh cross-fitted probabilities;
+evaluation probabilities come from the persisted Stage 1 model.
+The stability audit covers the combined training and evaluation rows in time
+order; training/testing metadata retains the original separate boundaries.
+
+Each training attempt clears prior versioned SHAP artifacts before fitting.
+Skipped or failed report generation also removes the versioned JSON and both
+plots, including partially written outputs. Plot rendering failures remove the
+affected PNG; cleanup I/O failures are logged without aborting training.
 
 Training writes the model under `ml_signal/models/`, a canonical report at
 `reports/ml/task183_offline_metrics.json`, a versioned report at
-`reports/ml/v{n}_offline_metrics.json`, and (when SHAP is available) a
-headless 150-DPI bar chart at `reports/ml/v{n}_shap_summary.png`. Reports
-include the model version, stable SHAP status/backend/output-unit fields, and
+`reports/ml/v{n}_offline_metrics.json`, plus headless 150-DPI summary and
+beeswarm charts at `reports/ml/v{n}_shap_summary.png` and
+`reports/ml/v{n}_shap_beeswarm.png`. Reports include the model version,
+training/testing windows, feature schema metadata, drift-audit results, and
+stable SHAP status/backend/output-unit fields, as well as
 an annualized active-trading-day Sharpe diagnostic computed from realized NIFTY
 spot P&L at a zero risk-free rate. The diagnostic groups P&L by the trade's IST
 exit date, includes only days with a closed trade, reports its date window and

@@ -1,30 +1,26 @@
 # Session Checkpoint
-**Date:** 2026-09-25  
-**Session:** MANM-155 (Refactor ML training: separate self-labeled vs realized outcomes and implement walk-forward validation)
+**Date:** 2026-09-28
+**Session:** MANM-156 / MANM-155 mainline sync
 
 ## Completed This Session
-- **Merge Conflict Resolution**:
-  - Integrated latest `origin/main` into `feature/MANM-155-ml-training-refactor`.
-  - Resolved merge conflicts in `directives/adr/INDEX.md`, `tasks/BACKLOG.md`, `tasks/SPRINT_PLAN.md`, and `CHECKPOINT.md`.
-  - Stored incoming completed work from main: MANM-154 (feature versioning & missing data remediation), TASK-153 (prediction persistence), MANM-150 (canonical signal joins), and MANM-152 (exit timestamp validation).
-- **PM Agent**: Created directive `directives/TASK-155_ml-training-refactor.md` and initialized sprint plan for decoupling ML training pipelines and implementing walk-forward validation.
-- **Architect Agent**: Drafted `ADR-155` (`directives/adr/TASK-155_ml-training-refactor.md`) defining the decoupled architecture (`MarketMovementPipeline` vs `TradeOutcomePipeline`), purged & embargoed walk-forward cross-validation, 4 hard data leakage invariant guards, $N=232$ sample starvation analysis with two-stage hybrid transfer architecture, and production promotion gating. Updated `directives/adr/INDEX.md`.
+- Integrated latest `origin/main` into `feature/MANM-156-shap-support`.
+- Preserved the MANM-155 mainline work: feature versioning and missing-data remediation, prediction persistence, canonical signal joins, exit-timestamp validation, and decoupled ML training/promotion gating.
+- MANM-156 [Enable SHAP package support, interpretability reporting, and native fallback] — Directive created by PM Agent.
+- MANM-156 — ADR-156 completed and pushed to `feature/MANM-156-shap-support` by Architect Agent.
+- MANM-156 — Implementation completed by Code Generator Agent.
+- MANM-156 — QA and PR Reviewer Agents approved PR #111.
 
 ## Open Tasks
-- [x] Resolve merge conflict with `origin/main` on PR #115.
-- [ ] Review and approve ADR-155.
-- [ ] Implement decoupled pipelines (`MarketMovementPipeline` and `TradeOutcomePipeline`) in `ml_signal/`.
-- [ ] Implement purged & embargoed walk-forward CV engine and leakage guards.
-- [ ] Implement production model promotion gate.
-- [ ] QA test verification and coverage audit.
+- MANM-156 [Enable SHAP package support, interpretability reporting, and native fallback] — awaiting human review and merge gate.
 
 ## Blockers
-- Awaiting human approval of ADR-155 before implementation begins (Design-First Mode).
+- None.
 
 ## Agent States
-- **Software Architect**: Completed ADR-155 draft; waiting for human ADR review and approval.
-- **Code Generator**: Waiting for ADR approval to begin implementation.
-- **QA**: Ready to verify once implementation commences.
+- Architect: Idle.
+- Code Generator: Idle.
+- QA: Idle (Review passed).
+- PR Reviewer: Idle (Review passed).
 
 ## Resume Instructions
-Once the human reviewer approves ADR-155, hand off implementation tasks to the Code Generator Agent.
+Awaiting human approval and merge of PR #111. Once merged, human should trigger the post-merge workflow to finalize branch cleanup and Obsidian sync.

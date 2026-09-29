@@ -16,6 +16,7 @@
 | TASK-073 | 2026-09-05 | OI-wall directional bias, delayed entry qualification, and telemetry | Approved via PR #102; implementation under PR #103 review |
 | TASK-073-R1 | 2026-09-05 | Replay evidence audit and repair contract (`TASK-073_replay-evidence-remediation.md`) | Superseded by human replay-waiver direction; no runtime changes |
 | TASK-108 | 2026-09-09 | Remove automatic BE time-stop from trade exits | Approved |
+| MANM-156 | 2026-09-12 | Enable SHAP Package Support, Interpretability Reporting, and Native Fallback | Proposed |
 | MANM-152 | 2026-09-12 | Trade Exit Timestamp Validation, Anomaly Flagging, and Lifecycle Invariants | Proposed |
 | TASK-153 | 2026-09-12 | Machine Learning Prediction Persistence in ml_predictions | Implemented |
 | MANM-154 | 2026-09-12 | Feature Versioning, Missing Data Remediation, and Storage Contracts | Proposed |
