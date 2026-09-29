@@ -113,9 +113,15 @@ persisted market or trade-outcome model, then passes that same fitted model and
 untouched tail to the SHAP reporter; it never retrains a second generic model
 for the report. Final refits exclude prefix rows whose labels overlap the
 evaluation start and apply the configured pre-test embargo (15 minutes for
-Stage 1, 30 minutes for Stage 2).
-If a final refit or SHAP generation is rejected, the versioned SHAP report and
-both plots are removed so failed runs cannot publish stale explanations.
+Stage 1, 30 minutes for Stage 2). In hybrid runs, Stage 1 is bounded by the
+trade evaluation start, and its exact training subset must contain both
+classes. Stage 2's reserved frame receives fresh cross-fitted probabilities;
+evaluation probabilities come from the persisted Stage 1 model.
+
+Each training attempt clears prior versioned SHAP artifacts before fitting.
+Skipped or failed report generation also removes the versioned JSON and both
+plots, including partially written outputs. Plot rendering failures remove the
+affected PNG; cleanup I/O failures are logged without aborting training.
 
 Training writes the model under `ml_signal/models/`, a canonical report at
 `reports/ml/task183_offline_metrics.json`, a versioned report at

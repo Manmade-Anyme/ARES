@@ -164,9 +164,8 @@ def _reserved_refit_split(
     earlier than the configured pre-test embargo boundary. Missing boundary
     timestamps are excluded from the refit rather than treated as safe.
     """
-    ordered = df.sort_values(timestamp_col).reset_index(drop=True)
     train_candidate, eval_df = chronological_split(
-        ordered, train_frac=train_frac, date_col=timestamp_col
+        df, train_frac=train_frac, date_col=timestamp_col
     )
     if eval_df.empty or resolution_col not in train_candidate.columns:
         return train_candidate.iloc[0:0].copy(), eval_df
@@ -174,14 +173,27 @@ def _reserved_refit_split(
     eval_start = pd.to_datetime(
         eval_df[timestamp_col], errors="coerce", utc=True
     ).min()
+    return _purge_before_evaluation(
+        train_candidate, eval_start, embargo_window, timestamp_col, resolution_col
+    ), eval_df
+
+
+def _purge_before_evaluation(
+    df: pd.DataFrame,
+    eval_start: pd.Timestamp,
+    embargo_window: pd.Timedelta,
+    timestamp_col: str = "timestamp",
+    resolution_col: str = "resolution_timestamp",
+) -> pd.DataFrame:
+    """Keep only resolved history outside the evaluation embargo boundary."""
     if pd.isna(eval_start):
-        return train_candidate.iloc[0:0].copy(), eval_df
+        return df.iloc[0:0].copy()
 
     candidate_timestamps = pd.to_datetime(
-        train_candidate[timestamp_col], errors="coerce", utc=True
+        df[timestamp_col], errors="coerce", utc=True
     )
     candidate_resolutions = pd.to_datetime(
-        train_candidate[resolution_col], errors="coerce", utc=True
+        df[resolution_col], errors="coerce", utc=True
     )
     embargo_start = eval_start - embargo_window
     eligible = (
@@ -190,7 +202,7 @@ def _reserved_refit_split(
         & (candidate_resolutions < eval_start)
         & (candidate_timestamps < embargo_start)
     )
-    return train_candidate.loc[eligible].reset_index(drop=True), eval_df
+    return df.loc[eligible].reset_index(drop=True)
 
 
 def _with_persisted_stage1_probability(
@@ -908,6 +920,7 @@ def _generate_shap_report(
         print(f"[+] Report saved -> {report_path}")
         return metrics
     except Exception as exc:
+        _clear_versioned_shap_artifacts(repo, version)
         metrics = _shap_metrics()
         metrics.update({
             "shap_status": "failed",
@@ -1181,6 +1194,9 @@ def main(argv=None) -> None:
     from ml_signal.predictor import get_next_model_version_and_path
     models_dir = os.path.join(repo, "ml_signal", "models")
     save_path, next_version = get_next_model_version_and_path(models_dir)
+    # Rejected runs reuse the version. Invalidate its prior explanations before
+    # any pipeline/refit can fail, including failures before the report guard.
+    _clear_versioned_shap_artifacts(repo, next_version)
 
     stage1_model, stage2_model = None, None
     market_df = None
@@ -1282,20 +1298,23 @@ def main(argv=None) -> None:
                 passed = False
                 reasons = [*reasons, stage2_class_reason]
             stage1_refit_reason = _stage1_refit_reason(market_df) if args.hybrid else None
-            stage1_class_reason = (
-                _final_refit_class_reason(
-                    market_df,
-                    "Stage 1",
-                    embargo_window=pd.Timedelta(minutes=15),
+            # Materialize and validate the exact frames used by the final fit.
+            # Both stages must respect the trade evaluation boundary.
+            if refit_size_reason is None and stage2_class_reason is None:
+                trade_train_df, trade_eval_df = _reserved_refit_split(
+                    trade_df, embargo_window=pd.Timedelta(minutes=30)
                 )
-                if args.hybrid and stage1_refit_reason is None else None
-            )
+                if args.hybrid and stage1_refit_reason is None:
+                    trade_eval_start = pd.to_datetime(
+                        trade_eval_df["timestamp"], errors="coerce", utc=True
+                    ).min()
+                    market_train_df = _purge_before_evaluation(
+                        market_df, trade_eval_start, pd.Timedelta(minutes=15)
+                    )
+                    stage1_refit_reason = _stage1_refit_reason(market_train_df)
             if stage1_refit_reason:
                 passed = False
                 reasons = [*reasons, stage1_refit_reason]
-            if stage1_class_reason:
-                passed = False
-                reasons = [*reasons, stage1_class_reason]
             promoted = passed
             if not passed:
                 gate_error = ModelPromotionError(f"Promotion gate failed: {reasons}", reasons=reasons)
@@ -1308,53 +1327,26 @@ def main(argv=None) -> None:
                     refit_size_reason
                     or stage2_class_reason
                     or stage1_refit_reason
-                    or stage1_class_reason
                 )
                 if refit_reason:
                     print(f"[!] Skipping final refit: {refit_reason}")
-                if not refit_reason:
-                    trade_train_df, trade_eval_df = _reserved_refit_split(
-                        trade_df, embargo_window=pd.Timedelta(minutes=30)
-                    )
                 if not refit_reason and args.hybrid:
                     stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
-                    trade_eval_start = pd.to_datetime(
-                        trade_eval_df["timestamp"], errors="coerce", utc=True
-                    ).min()
-                    
-                    if pd.isna(trade_eval_start):
-                        market_train_df, _ = _reserved_refit_split(
-                            market_df, embargo_window=pd.Timedelta(minutes=15)
-                        )
-                    else:
-                        market_candidate_ts = pd.to_datetime(market_df["timestamp"], errors="coerce", utc=True)
-                        market_resolution_ts = pd.to_datetime(market_df["resolution_timestamp"], errors="coerce", utc=True)
-                        market_keep = (
-                            market_resolution_ts.notna()
-                            & market_candidate_ts.notna()
-                            & (market_resolution_ts < trade_eval_start)
-                            & (market_candidate_ts < (trade_eval_start - pd.Timedelta(minutes=15)))
-                        )
-                        market_train_df = market_df[market_keep].reset_index(drop=True)
-                    
-                    # Generate cross-fitted probabilities for Stage 2 training using WalkForwardPurgedCV
-                    from ml_signal.validation import WalkForwardPurgedCV
-                    cv = WalkForwardPurgedCV(n_splits=args.folds, min_train_samples=100, embargo_window=pd.Timedelta(minutes=15))
-                    
-                    # For simplicity in the final promotion step, we can use a basic K-Fold to cross-fit,
-                    # but strictly, we should use chronological cross-fitting.
+
+                    # Generate historical transfer probabilities with the same
+                    # resolution purge and embargo used by the final Stage 1.
                     from sklearn.model_selection import TimeSeriesSplit
                     tscv = TimeSeriesSplit(n_splits=args.folds)
                     
                     # Ensure trade_df is sorted
                     trade_df = trade_df.sort_values("timestamp").reset_index(drop=True)
                     market_probs = pd.Series(index=trade_df.index, dtype=float)
-                    for train_idx, test_idx in tscv.split(trade_df):
-                        # Get max timestamp in train
+                    for _, test_idx in tscv.split(trade_df):
                         test_start_ts = trade_df.iloc[test_idx]["timestamp"].min()
-                        
-                        # Train stage 1 on market data up to max_train_ts
-                        train_market = market_df[market_df["resolution_timestamp"] < test_start_ts]
+
+                        train_market = _purge_before_evaluation(
+                            market_df, test_start_ts, pd.Timedelta(minutes=15)
+                        )
                         if len(train_market) < 50 or train_market["label"].nunique() < 2:
                             continue
                             
@@ -1365,9 +1357,14 @@ def main(argv=None) -> None:
                         test_trades = trade_df.iloc[test_idx]
                         market_probs.iloc[test_idx] = fold_model.predict_proba(test_trades.reindex(columns=stage1_feat_cols))[:, 1]
                     
-                    # Fill any NaNs from the initial folds with the median or the first fold
+                    # Preserve the chronological fallback for unscored early rows.
                     market_probs = market_probs.ffill().fillna(0.5)
                     trade_df["meta_features__market_movement_prob"] = market_probs
+                    # Splits are independent frames: refresh after augmentation
+                    # so Stage 2 sees the generated probabilities, never stale input.
+                    trade_train_df, trade_eval_df = _reserved_refit_split(
+                        trade_df, embargo_window=pd.Timedelta(minutes=30)
+                    )
                     
                     # Fit final Stage 1 model for deployment
                     stage1_model = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
