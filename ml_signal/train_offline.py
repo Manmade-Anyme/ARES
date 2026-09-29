@@ -1258,6 +1258,15 @@ def _write_walk_forward_calibration_artifacts(
     eval_probability = raw_oof[eval_start:]
     eval_labels = oof_labels[eval_start:]
     eval_positions = valid_positions[eval_start:]
+    pnl_column = next(
+        (column for column in ("pnl_points", "trade_pnl", "pnl") if column in trade_df),
+        None,
+    )
+    eval_pnl = (
+        pd.to_numeric(trade_df.iloc[eval_positions][pnl_column], errors="coerce")
+        if pnl_column is not None
+        else pd.Series(np.nan, index=range(len(eval_positions)), dtype=float)
+    )
     calibration_metrics: Dict[str, Any] = {
         "calibration_status": "insufficient_oof_data",
         "calibration_fit_samples": int(len(fit_labels)),
@@ -1301,7 +1310,7 @@ def _write_walk_forward_calibration_artifacts(
         "confidence": np.where(calibrated_oof >= config.high_threshold, "HIGH",
             np.where(calibrated_oof >= config.medium_threshold, "MEDIUM", "LOW")),
         "win": eval_labels,
-        "pnl_points": pd.to_numeric(trade_df.iloc[eval_positions]["pnl_points"], errors="coerce").to_numpy(),
+        "pnl_points": eval_pnl.to_numpy(),
     }) if len(eval_labels) else pd.DataFrame(columns=["confidence", "win", "pnl_points"])
     ml_significance = test_tier_significance(
         ml_tier_frame, alpha=alpha, min_samples=30,
@@ -1309,9 +1318,10 @@ def _write_walk_forward_calibration_artifacts(
     calibration_metrics["ml_tier_significance"] = ml_significance.to_dict()
 
     if "signal_confidence" in trade_df:
-        historical_tiers = trade_df.iloc[eval_positions][["signal_confidence", "label", "pnl_points"]].rename(
+        historical_tiers = trade_df.iloc[eval_positions][["signal_confidence", "label"]].rename(
             columns={"signal_confidence": "confidence", "label": "win"}
         )
+        historical_tiers["pnl_points"] = eval_pnl.to_numpy()
     else:
         historical_tiers = ml_tier_frame
     tier_significance = test_tier_significance(
@@ -1320,6 +1330,7 @@ def _write_walk_forward_calibration_artifacts(
     calibration_metrics["tier_significance"] = tier_significance.to_dict()
 
     stratified = trade_df.iloc[eval_positions].copy()
+    stratified["pnl_points"] = eval_pnl.to_numpy()
     stratified["confidence"] = (
         stratified["signal_confidence"] if "signal_confidence" in stratified
         else np.where(
