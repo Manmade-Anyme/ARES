@@ -1025,14 +1025,17 @@ def run_training(
         calibrator.rejection_reason = calibrator.rejection_reason or "insufficient_oof_data"
         calibration_status = calibrator.rejection_reason
     raw_test_probability = np.asarray(model.predict_proba(X_test)[:, 1], dtype=float)
-    calibrated_probability = np.asarray(calibrator.transform(raw_test_probability), dtype=float)
-    calibration = compute_brier_decomposition(y_test, calibrated_probability)
-    curve = compute_calibration_curve(y_test, calibrated_probability)
+    candidate_probability = np.asarray(calibrator.transform(raw_test_probability), dtype=float)
     test_brier_before = float(np.mean((np.asarray(y_test, dtype=float) - raw_test_probability) ** 2))
-    test_brier_after = float(np.mean((np.asarray(y_test, dtype=float) - calibrated_probability) ** 2))
+    test_brier_after = float(np.mean((np.asarray(y_test, dtype=float) - candidate_probability) ** 2))
     calibration_validated = bool(
         calibrator.is_calibrated and test_brier_after < test_brier_before
     )
+    if calibrator.is_calibrated and not calibration_validated:
+        calibration_status = "no_heldout_brier_improvement"
+    calibrated_probability = candidate_probability if calibration_validated else raw_test_probability
+    calibration = compute_brier_decomposition(y_test, calibrated_probability)
+    curve = compute_calibration_curve(y_test, calibrated_probability)
     metrics.update({
         "calibration_status": calibration_status,
         "calibrator_method": calibrator.method,
@@ -1062,9 +1065,13 @@ def run_training(
         })
         ml_significance = test_tier_significance(ml_tier_frame, alpha=config.calibration_alpha)
         metrics["ml_tier_significance"] = ml_significance.to_dict()
-        if "signal_confidence" in test:
-            tier_frame = test[["signal_confidence", label_col, "pnl_points"]].rename(
-                columns={"signal_confidence": "confidence", label_col: "win"}
+        historical_tier_col = next(
+            (col for col in ("signal_tentative_confidence", "signal_confidence") if col in test),
+            None,
+        )
+        if historical_tier_col is not None:
+            tier_frame = test[[historical_tier_col, label_col, "pnl_points"]].rename(
+                columns={historical_tier_col: "confidence", label_col: "win"}
             )
         else:
             tier_frame = ml_tier_frame
@@ -1133,7 +1140,11 @@ def run_training(
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
         joblib.dump(model, save_path)
         print(f"[+] Model saved -> {save_path}")
-        joblib.dump(calibrator, f"{save_path}.calibrator.joblib")
+        calibrator_path = f"{save_path}.calibrator.joblib"
+        if calibration_validated:
+            joblib.dump(calibrator, calibrator_path)
+        elif os.path.exists(calibrator_path):
+            os.remove(calibrator_path)
 
     if report_path:
         os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
@@ -1280,13 +1291,16 @@ def _write_walk_forward_calibration_artifacts(
         except ValueError as exc:
             calibrator.rejection_reason = calibrator.rejection_reason or type(exc).__name__
             calibration_metrics["calibration_status"] = calibrator.rejection_reason
-    calibrated_oof = calibrator.transform(eval_probability)
+    candidate_oof = calibrator.transform(eval_probability)
     eval_brier_before = float(np.mean((eval_probability - eval_labels) ** 2)) if len(eval_labels) else None
-    eval_brier_after = float(np.mean((calibrated_oof - eval_labels) ** 2)) if len(eval_labels) else None
+    eval_brier_after = float(np.mean((candidate_oof - eval_labels) ** 2)) if len(eval_labels) else None
     calibration_metrics["probability_calibrated"] = bool(
         calibrator.is_calibrated and eval_brier_before is not None
         and eval_brier_after is not None and eval_brier_after < eval_brier_before
     )
+    if calibrator.is_calibrated and not calibration_metrics["probability_calibrated"]:
+        calibration_metrics["calibration_status"] = "no_heldout_brier_improvement"
+    calibrated_oof = candidate_oof if calibration_metrics["probability_calibrated"] else eval_probability
     calibration_metrics["calibrator_brier_before"] = calibrator.brier_before
     calibration_metrics["calibrator_brier_after_fit"] = calibrator.brier_after
     calibration_metrics["calibration_brier_before_evaluation"] = eval_brier_before
@@ -1317,9 +1331,13 @@ def _write_walk_forward_calibration_artifacts(
     )
     calibration_metrics["ml_tier_significance"] = ml_significance.to_dict()
 
-    if "signal_confidence" in trade_df:
-        historical_tiers = trade_df.iloc[eval_positions][["signal_confidence", "label"]].rename(
-            columns={"signal_confidence": "confidence", "label": "win"}
+    historical_tier_col = next(
+        (col for col in ("signal_tentative_confidence", "signal_confidence") if col in trade_df),
+        None,
+    )
+    if historical_tier_col is not None:
+        historical_tiers = trade_df.iloc[eval_positions][[historical_tier_col, "label"]].rename(
+            columns={historical_tier_col: "confidence", "label": "win"}
         )
         historical_tiers["pnl_points"] = eval_pnl.to_numpy()
     else:
@@ -1332,7 +1350,7 @@ def _write_walk_forward_calibration_artifacts(
     stratified = trade_df.iloc[eval_positions].copy()
     stratified["pnl_points"] = eval_pnl.to_numpy()
     stratified["confidence"] = (
-        stratified["signal_confidence"] if "signal_confidence" in stratified
+        stratified[historical_tier_col] if historical_tier_col is not None
         else np.where(
             np.isfinite(eval_probability),
             np.where(eval_probability >= config.high_threshold, "HIGH",
@@ -1361,7 +1379,7 @@ def _write_walk_forward_calibration_artifacts(
     calibration_metrics["stratified_report_path"] = os.path.join(
         report_dir, "confidence_calibration_stratified_report.json"
     )
-    return calibrator, calibration_metrics
+    return calibrator if calibration_metrics["probability_calibrated"] else None, calibration_metrics
 
 
 from ml_signal.pipeline_market_movement import MarketMovementPipeline
@@ -1691,8 +1709,11 @@ def main(argv=None) -> None:
                         # Persist as legacy standalone model
                         joblib.dump(stage2_model, save_path)
 
+                    calibrator_path = f"{save_path}.calibrator.joblib"
                     if runtime_calibrator is not None:
-                        joblib.dump(runtime_calibrator, f"{save_path}.calibrator.joblib")
+                        joblib.dump(runtime_calibrator, calibrator_path)
+                    elif os.path.exists(calibrator_path):
+                        os.remove(calibrator_path)
                         
                     if promoted:
                         print(f"[+] Promoted Model -> {save_path}")

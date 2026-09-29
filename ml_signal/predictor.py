@@ -233,12 +233,21 @@ class SignalPredictor:
         else:
             proba = self.predict_proba(features)
 
-        if self.calibrator is not None:
+        calibrator_applied = bool(
+            self.calibrator is not None
+            and self.calibrator.is_calibrated
+            and self.calibration_policy.is_calibrator_validated(self.loaded_model_version)
+        )
+        if calibrator_applied:
             proba = float(self.calibrator.transform([proba])[0])
             
         confidence = self.classify_confidence(proba)
         gate_reasons: List[str] = []
-        market_context: Dict[str, Any] = {"model_version": self.loaded_model_version}
+        market_context: Dict[str, Any] = {
+            "model_version": self.loaded_model_version,
+            "calibrator_applied": calibrator_applied,
+            "tentative_confidence": confidence,
+        }
         if self.config.enable_calibration_policy:
             confidence, gate_reasons = self.calibration_policy.evaluate_signal_tier(
                 setup_type="ML_PREDICTION",
@@ -255,7 +264,7 @@ class SignalPredictor:
             "confidence_tier": confidence,
             "reasons": gate_reasons,
             "market_context": market_context,
-            "probability_calibrated": bool(self.calibrator and self.calibrator.is_calibrated),
+            "probability_calibrated": calibrator_applied,
             "model_version": self.loaded_model_version or self.config.active_model_version,
             "spot": spot,
             "timestamp": str(timestamp),

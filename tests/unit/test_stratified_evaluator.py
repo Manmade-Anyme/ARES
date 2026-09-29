@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 
 import pandas as pd
 from ml_signal.stratified_evaluator import StratifiedCalibrationEvaluator
@@ -94,6 +95,24 @@ def test_policy_downgrades_unvalidated_high_tier():
     assert tier == "MEDIUM"
     assert any(reason.startswith("[CONFIDENCE GATE] HIGH tier suppressed to MEDIUM:") for reason in updated_reasons)
     assert context["uncalibrated_high_suppressed"] is True
+
+
+def test_policy_preserves_tentative_high_for_shadow_validation(tmp_path):
+    signal = SimpleNamespace(
+        setup_type=SetupType.FAILED_BREAKOUT,
+        direction=Direction.BULLISH,
+        confidence="HIGH",
+        reasons=[],
+        market_context={},
+    )
+    policy = ConfidenceCalibrationPolicy(str(tmp_path / "missing-record.json"))
+
+    policy.apply_to_signal(signal)
+    policy.apply_to_signal(signal)
+
+    assert signal.confidence == "MEDIUM"
+    assert signal.market_context["tentative_confidence"] == "HIGH"
+    assert signal.market_context["uncalibrated_high_suppressed"] is True
 
 
 def test_policy_preserves_non_high_tier():

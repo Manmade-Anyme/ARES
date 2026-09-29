@@ -36,7 +36,7 @@ class StratifiedCalibrationEvaluator:
     def _prepare(self):
         frame = self.df.copy()
         aliases = {
-            "confidence": ["confidence", "tier", "signal_confidence", "confidence_tier"],
+            "confidence": ["confidence", "tier", "signal_tentative_confidence", "signal_confidence", "confidence_tier"],
             "win": ["win", "label", "outcome"],
             "pnl": ["pnl_points", "trade_pnl", "pnl"],
             "setup": ["setup_type", "signal_setup_type", "setup"],

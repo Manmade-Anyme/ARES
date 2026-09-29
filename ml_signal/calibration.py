@@ -15,6 +15,7 @@ class BrierDecomposition:
     uncertainty: float
     base_rate: float
     within_bin_variance: float = 0.0
+    within_bin_covariance: float = 0.0
 
 
 @dataclass
@@ -85,10 +86,10 @@ def _bin_stats(actual, probability, n_bins, strategy):
 
 
 def compute_brier_decomposition(y_true, y_prob, n_bins=10, strategy="uniform"):
-    """Decompose the raw Brier score; within-bin forecast variance keeps it exact."""
+    """Decompose raw Brier score with exact within-bin variance/covariance correction."""
     actual, probability = _validated_arrays(y_true, y_prob)
     base_rate = float(actual.mean())
-    reliability = resolution = within_bin_variance = 0.0
+    reliability = resolution = within_bin_variance = within_bin_covariance = 0.0
     for bin_actual, bin_probability in _bin_stats(actual, probability, n_bins, strategy):
         weight = len(bin_actual) / len(actual)
         observed = float(bin_actual.mean())
@@ -96,15 +97,19 @@ def compute_brier_decomposition(y_true, y_prob, n_bins=10, strategy="uniform"):
         reliability += weight * (predicted - observed) ** 2
         resolution += weight * (observed - base_rate) ** 2
         within_bin_variance += weight * float(np.var(bin_probability))
+        within_bin_covariance += weight * float(np.mean(
+            (bin_probability - predicted) * (bin_actual - observed)
+        ))
     uncertainty = base_rate * (1.0 - base_rate)
     brier_score = float(np.mean((probability - actual) ** 2))
     return BrierDecomposition(
         brier_score=brier_score,
-        reliability=float(reliability + within_bin_variance),
+        reliability=float(reliability + within_bin_variance - 2 * within_bin_covariance),
         resolution=float(resolution),
         uncertainty=float(uncertainty),
         base_rate=base_rate,
         within_bin_variance=float(within_bin_variance),
+        within_bin_covariance=float(within_bin_covariance),
     )
 
 

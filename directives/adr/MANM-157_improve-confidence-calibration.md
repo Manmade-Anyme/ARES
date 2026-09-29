@@ -75,10 +75,10 @@ Implement a dedicated, math-complete calibration module with:
    $$\text{MCE} = \max_{m=1 \dots M} |\bar{y}_m - \bar{p}_m|$$
 
 3. **Brier Score Decomposition (Murphy 1973)**:
-   - Decompose total Brier score $BS = \frac{1}{N}\sum_{i=1}^N (\hat{p}_i - y_i)^2$ into three orthogonal, interpretable components:
+   - Decompose total Brier score $BS = \frac{1}{N}\sum_{i=1}^N (\hat{p}_i - y_i)^2$ into binned components with a correction for probability variation within each bin:
      $$BS = \text{REL} - \text{RES} + \text{UNC}$$
      where base rate $\bar{y} = \frac{1}{N}\sum_{i=1}^N y_i$:
-     - **Reliability ($\text{REL}$)**: $\sum_{m=1}^M \frac{|B_m|}{N} (\bar{p}_m - \bar{y}_m)^2$ (calibration error, lower is better; $0$ is perfectly calibrated).
+     - **Reliability ($\text{REL}$)**: $\sum_{m=1}^M \frac{|B_m|}{N} [(\bar{p}_m - \bar{y}_m)^2 + \operatorname{Var}_{B_m}(\hat p) - 2\operatorname{Cov}_{B_m}(\hat p,y)]$. The first term is the grouped calibration error; the variance and covariance terms preserve the exact Brier identity for continuous probabilities sharing a bin. This corrected component can be negative. Use ECE to summarize calibration error.
      - **Resolution ($\text{RES}$)**: $\sum_{m=1}^M \frac{|B_m|}{N} (\bar{y}_m - \bar{y})^2$ (discrimination ability, higher is better; measures how far bin predictions stray from the base rate).
      - **Uncertainty ($\text{UNC}$)**: $\bar{y}(1 - \bar{y})$ (inherent randomness of the market outcomes).
 
@@ -173,10 +173,12 @@ import numpy as np
 @dataclass
 class BrierDecomposition:
     brier_score: float
-    reliability: float       # REL: Calibration loss (lower is better, >= 0)
+    reliability: float       # REL: Grouped calibration plus within-bin correction
     resolution: float        # RES: Discrimination power (higher is better, >= 0)
     uncertainty: float       # UNC: Inherent base variance y_bar * (1 - y_bar)
     base_rate: float
+    within_bin_variance: float = 0.0
+    within_bin_covariance: float = 0.0
 
 @dataclass
 class ReliabilityCurve:
@@ -310,7 +312,7 @@ Assign implementation of **MANM-157** to the **Code Generator Agent** across the
 ### Task Breakdown & File Specifications
 
 1. **`ml_signal/calibration.py` (New Module)**:
-   - Implement `compute_brier_decomposition(y_true, y_prob, n_bins=10, strategy="uniform")`. Ensure exact mathematical identity: $BS = \text{REL} - \text{RES} + \text{UNC}$ within floating point tolerance ($10^{-6}$) by computing over discrete forecast categories or by grouping and including within-bin variance for continuous probabilities.
+   - Implement `compute_brier_decomposition(y_true, y_prob, n_bins=10, strategy="uniform")`. Ensure exact mathematical identity: $BS = \text{REL} - \text{RES} + \text{UNC}$ within floating point tolerance ($10^{-6}$) by including both within-bin forecast variance and forecast/outcome covariance for continuous probabilities.
    - Implement `compute_calibration_curve(y_true, y_prob, n_bins=10, strategy="uniform")` returning `ReliabilityCurve` containing bin coordinates, counts, ECE, and MCE.
    - Implement `test_tier_significance(df, tier_col, outcome_col, pnl_col, alpha, min_samples)` executing `scipy.stats.fisher_exact` (one-sided `greater`) and `scipy.stats.mannwhitneyu` (one-sided `greater`).
 

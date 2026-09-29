@@ -79,12 +79,22 @@ class ConfidenceCalibrationPolicy:
         direction_result = report.get("by_direction", {}).get(str(directional), {}).get("significance", {})
         return [setup_result, direction_result]
 
+    def is_calibrator_validated(self, model_version: Optional[str]) -> bool:
+        """Require held-out approval for this exact model before using its sidecar."""
+        record = self.validation_record or {}
+        return bool(
+            model_version
+            and record.get("model_version") == model_version
+            and record.get("probability_calibrated") is True
+        )
+
     def is_high_validated(
         self,
         for_ml: bool = False,
         model_version: Optional[str] = None,
         setup_type: Optional[str] = None,
         direction: Optional[str] = None,
+        runtime_calibrated: bool = False,
     ) -> bool:
         result = self._significance(for_ml=for_ml)
         if not self._result_is_superior(result):
@@ -93,8 +103,8 @@ class ConfidenceCalibrationPolicy:
             try:
                 return (
                     (result.get("auc_roc") is None or float(result["auc_roc"]) >= 0.5)
-                    and result.get("probability_calibrated", False) is True
-                    and result.get("model_version") == model_version
+                    and self.is_calibrator_validated(model_version)
+                    and runtime_calibrated
                 )
             except (TypeError, ValueError):
                 return False
@@ -118,6 +128,7 @@ class ConfidenceCalibrationPolicy:
             model_version=market_context.get("model_version") if is_ml else None,
             setup_type=setup_type,
             direction=direction,
+            runtime_calibrated=market_context.get("calibrator_applied") is True if is_ml else False,
         ):
             return tentative_tier, reasons
         result = self._significance(for_ml=is_ml) if is_ml else next(
@@ -133,17 +144,23 @@ class ConfidenceCalibrationPolicy:
         except (TypeError, ValueError):
             p_text, delta_text = "1.0000", "+0.0%"
         reasons = list(reasons)
-        reasons.append(
-            "[CONFIDENCE GATE] HIGH tier suppressed to MEDIUM: "
-            "out-of-sample validation not statistically superior "
-            f"(p={p_text}, Δwin={delta_text})"
-        )
+        if is_ml and not self.is_calibrator_validated(market_context.get("model_version")):
+            detail = "calibrator has no held-out approval for this model"
+        elif is_ml and market_context.get("calibrator_applied") is not True:
+            detail = "validated runtime calibrator unavailable"
+        else:
+            detail = (
+                "out-of-sample validation not statistically superior "
+                f"(p={p_text}, Δwin={delta_text})"
+            )
+        reasons.append(f"[CONFIDENCE GATE] HIGH tier suppressed to MEDIUM: {detail}")
         market_context["uncalibrated_high_suppressed"] = True
         return "MEDIUM", reasons
 
     def apply_to_signal(self, signal):
         """Apply the gate to a completed signal, preserving its existing context."""
         context = signal.market_context if signal.market_context is not None else {}
+        context.setdefault("tentative_confidence", signal.confidence)
         signal.confidence, signal.reasons = self.evaluate_signal_tier(
             setup_type=getattr(signal.setup_type, "value", signal.setup_type),
             direction=getattr(signal.direction, "value", signal.direction),
