@@ -29,5 +29,6 @@ _DUMMY_SUPABASE_KEY = "test-key-never-a-real-credential"
 def pytest_sessionstart(session):
     settings.supabase_url = _DUMMY_SUPABASE_URL
     settings.supabase_key = _DUMMY_SUPABASE_KEY
+    settings.supabase_service_role_key = "test-service-role-key"
     settings.dhan_client_id = "test-client-id"
     settings.dhan_access_token = "test-access-token"

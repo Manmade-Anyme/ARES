@@ -17,7 +17,7 @@ class ExhaustionDetector:
     The detector maintains a rolling history of volume to establish a dynamic baseline.
     """
 
-    def __init__(self):
+    def __init__(self, calibration_policy=None):
         """
         Initialize the volume history deque (last N periods, from
         exhaustion_volume_history_size) to compute a moving average of volume.
@@ -25,8 +25,9 @@ class ExhaustionDetector:
         the config profile is applied (main.py already does this).
         """
         self.volume_history = deque(maxlen=settings.exhaustion_volume_history_size)
+        self.calibration_policy = calibration_policy
 
-    def update(self, candle: OHLCVCandle, iv_current: float, iv_prev: float, levels: List[ResistanceLevel]) -> Optional[AresSignal]:
+    def update(self, candle: OHLCVCandle, iv_current: Optional[float], iv_prev: Optional[float], levels: List[ResistanceLevel]) -> Optional[AresSignal]:
         """
         Process the latest candle to determine if an exhaustion reversal pattern has formed.
         
@@ -60,7 +61,11 @@ class ExhaustionDetector:
             doji_like = (body / candle_range) < settings.exhaustion_body_ratio
             
         # 3. IV Spike (optional confirmation condition)
-        iv_spiked = (iv_current - iv_prev) > settings.exhaustion_iv_spike_threshold
+        iv_spiked = (
+            (iv_current - iv_prev) > settings.exhaustion_iv_spike_threshold
+            if (iv_current is not None and iv_prev is not None)
+            else False
+        )
         
         if volume_climax and doji_like:
             # Determine direction
@@ -151,7 +156,7 @@ class ExhaustionDetector:
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)
         strike_to_trade = int(round(candle.close / settings.strike_interval) * settings.strike_interval)
  
-        return AresSignal(
+        signal = AresSignal(
             setup_type=SetupType.EXHAUSTION_REVERSAL,
             direction=direction,
             trigger_price=candle.close,
@@ -165,3 +170,4 @@ class ExhaustionDetector:
             strike_to_trade=strike_to_trade,
             option_type=option_type
         )
+        return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal

@@ -22,6 +22,7 @@ from config import settings
 from config_profiles import NON_EXPIRY_CONFIG, EXPIRY_CONFIG
 from models import OHLCVCandle, ResistanceLevel
 from detectors.breakout import FailedBreakoutDetector
+from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 
 class TestWritersActiveThresholdConfig(unittest.TestCase):
@@ -39,7 +40,7 @@ class BreakoutScoringHarness(unittest.TestCase):
 
     def setUp(self):
         settings.apply_profile(NON_EXPIRY_CONFIG)
-        self.detector = FailedBreakoutDetector()
+        self.detector = FailedBreakoutDetector(calibration_policy=DEFAULT_DETECTOR_CALIBRATION_POLICY)
         self.levels = [
             ResistanceLevel(price=24000.0, source="PDL", strength=3),
             ResistanceLevel(price=24100.0, source="PDH", strength=3),
@@ -98,12 +99,14 @@ class TestWritersHoldingNotScored(BreakoutScoringHarness):
 class TestWritersActiveScored(BreakoutScoringHarness):
     """Genuine writer defense (>= configured %) still scores and fires."""
 
-    def test_twelve_percent_growth_fires_high(self):
-        """weak_volume + deep_close + writers_active(12%) = 3 of 4 → HIGH (75%)."""
+    def test_twelve_percent_growth_fires_with_high_suppressed_pending_validation(self):
+        """The 3-of-4 score fires; runtime validation suppresses unproven HIGH."""
         self._breakout_up()
         signal = self._fail_back(ce_oi=112, ce_oi_prev=100)
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.confidence, "HIGH")
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertTrue(signal.market_context["uncalibrated_high_suppressed"])
+        self.assertTrue(any("[CONFIDENCE GATE]" in reason for reason in signal.reasons))
 
     def test_threshold_boundary_inclusive(self):
         """Exactly 10.0% growth counts as active."""

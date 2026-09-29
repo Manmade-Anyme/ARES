@@ -1,8 +1,8 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime
-from collections import deque
 import asyncio
+import json
 
 from ml_signal.collector import MLCollector
 from ml_signal.config import MLConfig
@@ -51,7 +51,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         return [lvl1, lvl2]
 
     @patch("ml_signal.collector.create_client")
-    def test_check_table_exists_true(self, mock_create_client):
+    async def test_check_table_exists_true(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_supabase.table().select().limit().execute.return_value = MagicMock(data=[])
         mock_create_client.return_value = mock_supabase
@@ -61,7 +61,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
 
     @patch("ml_signal.collector.create_client")
-    def test_check_table_exists_false(self, mock_create_client):
+    async def test_check_table_exists_false(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_supabase.table().select().limit().execute.side_effect = Exception("relation does not exist")
         mock_create_client.return_value = mock_supabase
@@ -96,7 +96,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
             {"strike": 24100, "ce_oi": 50000, "pe_oi": 60000}
         ]
 
-        collector.snapshot(
+        await collector.snapshot(
             candle=candle,
             atm=atm,
             full_chain=full_chain,
@@ -107,9 +107,6 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
             pdl=24000.0,
             is_expiry=False,
         )
-        
-        # Give event loop tasks a brief moment to execute run_in_executor (covers line 224)
-        await asyncio.sleep(0.05)
 
         stats = collector.stats
         self.assertEqual(stats["total_snapshots"], 1)
@@ -129,9 +126,17 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         mock_signal.signal_id = "1234"
         mock_signal.setup_type = "FAILED_BREAKOUT"
         mock_signal.direction = "BEARISH"
-        mock_signal.confidence = "HIGH"
+        mock_signal.confidence = "MEDIUM"
+        mock_signal.market_context = {"tentative_confidence": "HIGH"}
 
-        collector.snapshot(
+        captured = {}
+        def _mock_upsert(record, *args, **kwargs):
+            captured.update(record)
+            return [record]
+
+        collector._upsert_signal_snapshot = _mock_upsert
+
+        await collector.snapshot(
             candle=candle,
             atm=atm,
             full_chain=[],
@@ -147,6 +152,8 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         stats = collector.stats
         self.assertEqual(stats["total_snapshots"], 1)
         self.assertEqual(stats["signals_recorded"], 1)
+        self.assertEqual(captured["signal_confidence"], "MEDIUM")
+        self.assertEqual(json.loads(captured["meta_features"])["signal_tentative_confidence"], "HIGH")
 
     @patch("ml_signal.collector.create_client")
     async def test_snapshot_insert_called(self, mock_create_client):
@@ -159,7 +166,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         candle = self._make_mock_candle()
         atm = self._make_mock_atm()
 
-        collector.snapshot(
+        await collector.snapshot(
             candle=candle,
             atm=atm,
             full_chain=[],
@@ -186,7 +193,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         atm = self._make_mock_atm()
 
         for _ in range(3):
-            collector.snapshot(
+            await collector.snapshot(
                 candle=candle,
                 atm=atm,
                 full_chain=[],
@@ -229,7 +236,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prices, [24200.0, 24000.0])
 
     @patch("ml_signal.collector.create_client")
-    def test_empty_levels(self, mock_create_client):
+    async def test_empty_levels(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_create_client.return_value = mock_supabase
 
@@ -238,7 +245,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prices, [])
 
     @patch("ml_signal.collector.create_client")
-    def test_stats_initial(self, mock_create_client):
+    async def test_stats_initial(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_create_client.return_value = mock_supabase
 
@@ -264,7 +271,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         atm = self._make_mock_atm()
 
         try:
-            collector.snapshot(
+            await collector.snapshot(
                 candle=candle,
                 atm=atm,
                 full_chain=[],
@@ -282,7 +289,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(collector.stats["total_snapshots"], 1)
 
     @patch("ml_signal.collector.create_client")
-    def test_candle_to_dict_partial_data(self, mock_create_client):
+    async def test_candle_to_dict_partial_data(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_create_client.return_value = mock_supabase
 
@@ -311,7 +318,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         candle = self._make_mock_candle()
         atm = self._make_mock_atm()
 
-        collector.snapshot(
+        await collector.snapshot(
             candle=candle,
             atm=atm,
             full_chain=[],
@@ -325,8 +332,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(collector.stats["total_snapshots"], 1)
 
     @patch("ml_signal.collector.create_client")
-    def test_snapshot_converts_naive_ist_timestamp_to_utc(self, mock_create_client):
-        from datetime import timezone, timedelta
+    async def test_snapshot_converts_naive_ist_timestamp_to_utc(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_create_client.return_value = mock_supabase
 
@@ -337,7 +343,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         naive_dt = datetime(2026, 8, 5, 14, 12, 0)
         captured = {}
         with patch.object(collector, "_insert", lambda rec: captured.update(rec)):
-            collector.snapshot(
+            await collector.snapshot(
                 candle=candle,
                 atm=atm,
                 full_chain=[],
@@ -351,7 +357,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["timestamp"], to_utc_iso(naive_dt))
 
     @patch("ml_signal.collector.create_client")
-    def test_snapshot_handles_utc_aware_timestamp(self, mock_create_client):
+    async def test_snapshot_handles_utc_aware_timestamp(self, mock_create_client):
         from datetime import timezone
         mock_supabase = MagicMock()
         mock_create_client.return_value = mock_supabase
@@ -363,7 +369,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         captured = {}
         utc_ts = datetime(2026, 8, 5, 8, 42, 0, tzinfo=timezone.utc)
         with patch.object(collector, "_insert", lambda rec: captured.update(rec)):
-            collector.snapshot(
+            await collector.snapshot(
                 candle=candle,
                 atm=atm,
                 full_chain=[],
@@ -463,7 +469,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(result["greek_features__net_delta"], 0.2, places=9)
 
     @patch("ml_signal.collector.create_client")
-    def test_snapshot_handles_string_timestamps(self, mock_create_client):
+    async def test_snapshot_handles_string_timestamps(self, mock_create_client):
         mock_supabase = MagicMock()
         mock_create_client.return_value = mock_supabase
 
@@ -473,7 +479,7 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
 
         captured = {}
         with patch.object(collector, "_insert", lambda rec: captured.update(rec)):
-            collector.snapshot(
+            await collector.snapshot(
                 candle=candle,
                 atm=atm,
                 full_chain=[],
@@ -488,8 +494,65 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta_feats["minutes_since_open"], 297.0)
         self.assertEqual(meta_feats["session_phase"], 2)
 
+    @patch("ml_signal.collector.settings")
+    async def test_snapshot_unsupported_schema_mode_raises(self, mock_settings):
+        mock_settings.signal_schema_mode = "unknown"
+        collector = MLCollector(self.url, self.key, self.config)
+        with self.assertRaisesRegex(ValueError, "Unsupported signal schema mode"):
+            await collector.snapshot(
+                candle=self._make_mock_candle(),
+                atm=self._make_mock_atm(),
+                full_chain=[], levels=[], spot=24120.0,
+                signal=MagicMock(),
+            )
 
+    @patch("ml_signal.collector.settings")
+    @patch("ml_signal.collector.asyncio.sleep", new_callable=AsyncMock)
+    async def test_snapshot_insert_no_row_raises(self, mock_sleep, mock_settings):
+        mock_settings.signal_schema_mode = "bridge"
+        collector = MLCollector(self.url, self.key, self.config)
+        collector._upsert_signal_snapshot = MagicMock(return_value=None)
+        
+        with self.assertRaisesRegex(RuntimeError, "Failed to persist signal-bound.*after 3 attempts"):
+            await collector.snapshot(
+                candle=self._make_mock_candle(),
+                atm=self._make_mock_atm(),
+                full_chain=[], levels=[], spot=24120.0,
+                signal=MagicMock(id="uuid-1"),
+            )
+        self.assertEqual(collector._upsert_signal_snapshot.call_count, 3)
+
+    @patch("ml_signal.collector.settings")
+    @patch("ml_signal.collector.asyncio.sleep", new_callable=AsyncMock)
+    async def test_snapshot_insert_mismatched_signal_raises(self, mock_sleep, mock_settings):
+        mock_settings.signal_schema_mode = "bridge"
+        collector = MLCollector(self.url, self.key, self.config)
+        collector._upsert_signal_snapshot = MagicMock(return_value=[{"signal_uuid": "wrong-uuid", "trade_id": "tid"}])
+        
+        with self.assertRaisesRegex(RuntimeError, "after 3 attempts"):
+            await collector.snapshot(
+                candle=self._make_mock_candle(),
+                atm=self._make_mock_atm(),
+                full_chain=[], levels=[], spot=24120.0,
+                signal=MagicMock(id="uuid-1"),
+                trade_id="tid",
+            )
+        
+    @patch("ml_signal.collector.settings")
+    @patch("ml_signal.collector.asyncio.sleep", new_callable=AsyncMock)
+    async def test_snapshot_insert_mismatched_trade_raises(self, mock_sleep, mock_settings):
+        mock_settings.signal_schema_mode = "bridge"
+        collector = MLCollector(self.url, self.key, self.config)
+        collector._upsert_signal_snapshot = MagicMock(return_value=[{"signal_uuid": "uuid-1", "trade_id": "wrong-tid"}])
+        
+        with self.assertRaisesRegex(RuntimeError, "after 3 attempts"):
+            await collector.snapshot(
+                candle=self._make_mock_candle(),
+                atm=self._make_mock_atm(),
+                full_chain=[], levels=[], spot=24120.0,
+                signal=MagicMock(id="uuid-1"),
+                trade_id="tid",
+            )
 
 if __name__ == '__main__':
     unittest.main()
-

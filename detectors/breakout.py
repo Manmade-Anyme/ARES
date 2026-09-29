@@ -32,20 +32,21 @@ class FailedBreakoutDetector:
     (looking at CE OI) and downward breakdowns (looking at PE OI).
     """
 
-    def __init__(self):
+    def __init__(self, calibration_policy=None):
         """Initialize the detector with no active breakout."""
         self.active: Optional[BreakoutState] = None
+        self.calibration_policy = calibration_policy
 
     def update(
         self,
         candle: OHLCVCandle,
         avg_volume: float,
-        iv_change_pct: float,
-        atm_ce_oi: int,
-        atm_ce_oi_prev: int,
-        atm_pe_oi: int,
-        atm_pe_oi_prev: int,
-        levels: List[ResistanceLevel]
+        iv_change_pct: Optional[float] = None,
+        atm_ce_oi: Optional[int] = None,
+        atm_ce_oi_prev: Optional[int] = None,
+        atm_pe_oi: Optional[int] = None,
+        atm_pe_oi_prev: Optional[int] = None,
+        levels: Optional[List[ResistanceLevel]] = None
     ) -> Optional[AresSignal]:
         """
         Evaluate the latest candle against the support/resistance levels to detect
@@ -54,7 +55,7 @@ class FailedBreakoutDetector:
         Args:
             candle: The latest closed 1-minute OHLCV candle.
             avg_volume: A rolling average volume to evaluate volume strength.
-            iv_change_pct: The percentage change in ATM Implied Volatility.
+            iv_change_pct: Optional percentage change in ATM Implied Volatility.
             atm_ce_oi: Current Open Interest for the ATM Call option.
             atm_ce_oi_prev: Previous Open Interest for the ATM Call option.
             atm_pe_oi: Current Open Interest for the ATM Put option.
@@ -96,19 +97,27 @@ class FailedBreakoutDetector:
         # Check bidirectional conditions appropriately
         if was_upward:
             closed_back = candle.close < self.active.level
-            writers_holding = atm_ce_oi >= atm_ce_oi_prev
+            writers_holding = (atm_ce_oi >= atm_ce_oi_prev) if (atm_ce_oi is not None and atm_ce_oi_prev is not None) else False
             direction = Direction.BEARISH
-            oi_change = ((atm_ce_oi - atm_ce_oi_prev) / atm_ce_oi_prev * 100.0) if atm_ce_oi_prev > 0 else 0.0
+            oi_change = (
+                ((atm_ce_oi - atm_ce_oi_prev) / atm_ce_oi_prev * 100.0)
+                if (atm_ce_oi is not None and atm_ce_oi_prev is not None and atm_ce_oi_prev > 0)
+                else 0.0
+            )
             deep_close = (self.active.level - candle.close) >= settings.breakout_deep_close_pts
         else:
             closed_back = candle.close > self.active.level
-            writers_holding = atm_pe_oi >= atm_pe_oi_prev
+            writers_holding = (atm_pe_oi >= atm_pe_oi_prev) if (atm_pe_oi is not None and atm_pe_oi_prev is not None) else False
             direction = Direction.BULLISH
-            oi_change = ((atm_pe_oi - atm_pe_oi_prev) / atm_pe_oi_prev * 100.0) if atm_pe_oi_prev > 0 else 0.0
+            oi_change = (
+                ((atm_pe_oi - atm_pe_oi_prev) / atm_pe_oi_prev * 100.0)
+                if (atm_pe_oi is not None and atm_pe_oi_prev is not None and atm_pe_oi_prev > 0)
+                else 0.0
+            )
             deep_close = (candle.close - self.active.level) >= settings.breakout_deep_close_pts
 
         weak_volume = self.active.breakout_candle.volume < (avg_volume * settings.breakout_weak_volume_ratio)
-        iv_falling = iv_change_pct < settings.breakout_iv_falling_threshold
+        iv_falling = (iv_change_pct < settings.breakout_iv_falling_threshold) if iv_change_pct is not None else False
         writers_active = oi_change >= settings.breakout_writers_active_min_pct
 
         # Score is the sum of True conditions (scale of 0 to 4).
@@ -194,7 +203,7 @@ class FailedBreakoutDetector:
         # Strike should be rounded to the nearest configured interval (e.g., 50)
         strike_to_trade = int(round(candle.close / settings.strike_interval) * settings.strike_interval)
 
-        return AresSignal(
+        signal = AresSignal(
             setup_type=SetupType.FAILED_BREAKOUT,
             direction=direction,
             trigger_price=candle.close,
@@ -208,3 +217,4 @@ class FailedBreakoutDetector:
             strike_to_trade=strike_to_trade,
             option_type=option_type
         )
+        return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal
