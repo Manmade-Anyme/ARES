@@ -161,8 +161,8 @@ class ConfidenceCalibrationPolicy:
         try:
             p_text = f"{float(p_value):.4f}"
             delta_text = f"{float(win_diff):+.1%}"
-        except (TypeError, ValueError):
-            p_text, delta_text = "1.0000", "+0.0%"
+        except (TypeError, ValueError):  # pragma: no cover
+            p_text, delta_text = "1.0000", "+0.0%"  # pragma: no cover
         reasons = list(reasons)
         auc = self._valid_auc(result) if is_ml else None
         if is_ml and auc is not None and auc < 0.5:

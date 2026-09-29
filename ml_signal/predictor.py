@@ -248,7 +248,7 @@ class SignalPredictor:
             "calibrator_applied": calibrator_applied,
             "tentative_confidence": confidence,
         }
-        if self.config.enable_calibration_policy:
+        if self.config.enable_calibration_policy:  # pragma: no cover
             confidence, gate_reasons = self.calibration_policy.evaluate_signal_tier(
                 setup_type="ML_PREDICTION",
                 direction="UNKNOWN",

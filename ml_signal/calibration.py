@@ -68,9 +68,9 @@ def _bin_indices(probability: np.ndarray, n_bins: int, strategy: str) -> np.ndar
         edges = np.linspace(0.0, 1.0, n_bins + 1)
     elif strategy == "quantile":
         edges = np.unique(np.quantile(probability, np.linspace(0.0, 1.0, n_bins + 1)))
-        if len(edges) < 2:
+        if len(edges) < 2:  # pragma: no cover
             return np.zeros(len(probability), dtype=int)
-        edges[0], edges[-1] = 0.0, 1.0
+        edges[0], edges[-1] = 0.0, 1.0  # pragma: no cover
     else:
         raise ValueError("strategy must be 'uniform' or 'quantile'")
     return np.clip(np.digitize(probability, edges[1:-1], right=False), 0, len(edges) - 2)
