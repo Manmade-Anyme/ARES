@@ -116,6 +116,7 @@ Enforce a hard architectural constraint at signal creation and live emission:
      - An explicit audit tag is appended to `AresSignal.reasons`:
        `"[CONFIDENCE GATE] HIGH tier suppressed to MEDIUM: out-of-sample validation not statistically superior (p=1.0000, Δwin=-0.7%)"`.
      - In `market_context`, record `"uncalibrated_high_suppressed": true`.
+     - Carry the signal's calibration context into the live `PositionManager.add_trade` RPC payload so `trade_analytics.market_context` retains the tentative tier and suppression flag.
 3. **Post-Hoc Probability Calibration for ML Models (`ml_signal/calibrator.py`)**:
    - In offline training, fit an isotonic regression or Platt scaling (logistic calibration) model on out-of-fold cross-validation probabilities. Store the fitted calibrator as a versioned companion artifact bundled with the main model.
    - For live inference, `SignalPredictor.load_model` must load this matching calibrator artifact. Raw model probabilities must pass through this fitted `ProbabilityCalibrator` before thresholding.

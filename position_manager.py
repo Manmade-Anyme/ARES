@@ -187,6 +187,7 @@ class PositionManager:
             "confidence": signal.confidence,
             "entry_spot": float(spot)
         }
+        market_context.update(getattr(signal, "market_context", {}) or {})
         if getattr(signal, "suggested_lots", None) is not None:
             market_context["options_sizing"] = {
                 "suggested_lots": signal.suggested_lots,
