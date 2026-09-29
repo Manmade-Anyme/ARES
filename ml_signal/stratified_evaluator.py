@@ -82,20 +82,21 @@ class StratifiedCalibrationEvaluator:
 
     @staticmethod
     def _stratum_summary(frame, alpha):
-        tier_rows = frame.dropna(subset=["pnl"])
+        tier_rows_pnl = frame.dropna(subset=["pnl"])
         by_tier = {}
         for tier in ("HIGH", "MEDIUM"):
-            part = tier_rows[tier_rows["confidence"] == tier]
+            part_all = frame[frame["confidence"] == tier]
+            part_pnl = tier_rows_pnl[tier_rows_pnl["confidence"] == tier]
             by_tier[tier] = {
-                "sample_size": int(len(part)),
-                "win_rate": float(part["win"].mean()) if len(part) else None,
-                "mean_expectancy": float(part["pnl"].mean()) if len(part) else None,
+                "sample_size": int(len(part_all)),
+                "win_rate": float(part_all["win"].mean()) if len(part_all) else None,
+                "mean_expectancy": float(part_pnl["pnl"].mean()) if len(part_pnl) else None,
             }
         result = {
             "sample_size": int(len(frame)),
             "by_tier": by_tier,
             "significance": test_tier_significance(
-                tier_rows,
+                tier_rows_pnl,
                 tier_col="confidence", outcome_col="win", pnl_col="pnl", alpha=alpha,
             ).to_dict(),
             "brier": None,
