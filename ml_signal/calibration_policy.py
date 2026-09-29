@@ -1,5 +1,6 @@
 """Fail-safe confidence gate backed by out-of-sample tier validation."""
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -98,6 +99,17 @@ class ConfidenceCalibrationPolicy:
             and record.get("probability_calibrated") is True
         )
 
+    @staticmethod
+    def _valid_auc(result: Dict[str, Any]) -> Optional[float]:
+        value = result.get("auc_roc")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            auc = float(value)
+        except OverflowError:
+            return None
+        return auc if math.isfinite(auc) and 0.0 <= auc <= 1.0 else None
+
     def is_high_validated(
         self,
         for_ml: bool = False,
@@ -110,14 +122,12 @@ class ConfidenceCalibrationPolicy:
         if not self._result_is_superior(result):
             return False
         if for_ml:
-            try:
-                return (
-                    (result.get("auc_roc") is None or float(result["auc_roc"]) >= 0.5)
-                    and self.is_calibrator_validated(model_version)
-                    and runtime_calibrated
-                )
-            except (TypeError, ValueError):
-                return False
+            auc = self._valid_auc(result)
+            return bool(
+                auc is not None and auc >= 0.5
+                and self.is_calibrator_validated(model_version)
+                and runtime_calibrated
+            )
         strata = self._detector_strata(setup_type, direction)
         return len(strata) == 2 and all(self._result_is_superior(item) for item in strata)
 
@@ -154,10 +164,15 @@ class ConfidenceCalibrationPolicy:
         except (TypeError, ValueError):
             p_text, delta_text = "1.0000", "+0.0%"
         reasons = list(reasons)
-        if is_ml and not self.is_calibrator_validated(market_context.get("model_version")):
+        auc = self._valid_auc(result) if is_ml else None
+        if is_ml and auc is not None and auc < 0.5:
+            detail = f"inverted AUC ({auc:.4f} < 0.5000)"
+        elif is_ml and not self.is_calibrator_validated(market_context.get("model_version")):
             detail = "calibrator has no held-out approval for this model"
         elif is_ml and market_context.get("calibrator_applied") is not True:
             detail = "validated runtime calibrator unavailable"
+        elif is_ml and auc is None and self._result_is_superior(result):
+            detail = "valid AUC evidence unavailable"
         else:
             detail = (
                 "out-of-sample validation not statistically superior "

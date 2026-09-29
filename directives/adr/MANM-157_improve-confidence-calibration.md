@@ -119,7 +119,7 @@ Enforce a hard architectural constraint at signal creation and live emission:
 3. **Post-Hoc Probability Calibration for ML Models (`ml_signal/calibrator.py`)**:
    - In offline training, fit an isotonic regression or Platt scaling (logistic calibration) model on out-of-fold cross-validation probabilities. Store the fitted calibrator as a versioned companion artifact bundled with the main model.
    - For live inference, `SignalPredictor.load_model` must load this matching calibrator artifact. Raw model probabilities must pass through this fitted `ProbabilityCalibrator` before thresholding.
-   - If out-of-fold test AUC $< 0.50$, the ML predictor's confidence tiering is disabled (forced to `"UNRATED"` or `"MEDIUM"`) until retraining achieves monotonic reliability.
+   - A valid, finite numeric out-of-fold AUC must be present to release ML `HIGH`; absent or invalid evidence fails closed to `"MEDIUM"` with an audit reason. If AUC $< 0.50$, `HIGH` is also suppressed and the reason identifies the inverted AUC until retraining achieves monotonic reliability.
 
 ---
 

@@ -263,7 +263,6 @@ def test_inverted_auc_disables_ml_high_but_does_not_change_detector_gate(tmp_pat
         "model_version": "v1",
     }
     record_path = tmp_path / "validation.json"
-    record_path.write_text(json.dumps(record))
     significant = {
         "high_count": 40,
         "medium_count": 60,
@@ -273,6 +272,8 @@ def test_inverted_auc_disables_ml_high_but_does_not_change_detector_gate(tmp_pat
         "mann_whitney_p_value": 0.01,
         "is_statistically_superior": True,
     }
+    record["ml_tier_significance"] = significant
+    record_path.write_text(json.dumps(record))
     stratified_path = tmp_path / "confidence_calibration_stratified_report.json"
     stratified_path.write_text(json.dumps({
         "by_setup": {"FAILED_BREAKOUT": {"significance": significant}},
@@ -283,9 +284,94 @@ def test_inverted_auc_disables_ml_high_but_does_not_change_detector_gate(tmp_pat
     detector_tier, _ = policy.evaluate_signal_tier(
         "FAILED_BREAKOUT", "BULLISH", "HIGH", 4, 4, [], {}
     )
-    ml_tier, _ = policy.evaluate_signal_tier(
-        "ML_PREDICTION", "UNKNOWN", "HIGH", 0, 0, [], {"model_version": "v1"}
+    ml_tier, ml_reasons = policy.evaluate_signal_tier(
+        "ML_PREDICTION", "UNKNOWN", "HIGH", 0, 0, [],
+        {"model_version": "v1", "calibrator_applied": True},
     )
 
     assert detector_tier == "HIGH"
     assert ml_tier == "MEDIUM"
+    assert "inverted AUC" in ml_reasons[0]
+
+
+@pytest.mark.parametrize("auc", [
+    None, float("nan"), float("inf"), "0.9", True, -0.1, 1.1,
+    pytest.param(10 ** 400, id="overflowing-integer"),
+    pytest.param("missing", id="missing-key"),
+])
+def test_missing_or_invalid_auc_disables_ml_high(tmp_path, auc):
+    significance = {
+        "high_count": 40, "medium_count": 60,
+        "win_rate_diff": 0.2, "expectancy_diff": 3.0,
+        "fisher_p_value": 0.01, "mann_whitney_p_value": 0.01,
+        "is_statistically_superior": True,
+    }
+    record_path = tmp_path / "validation.json"
+    record = {
+        "ml_tier_significance": significance,
+        "probability_calibrated": True,
+        "model_version": "v1",
+    }
+    if auc != "missing":
+        record["auc_roc"] = auc
+    record_path.write_text(json.dumps(record))
+    policy = ConfidenceCalibrationPolicy(str(record_path))
+    context = {"model_version": "v1", "calibrator_applied": True}
+
+    tier, reasons = policy.evaluate_signal_tier(
+        "ML_PREDICTION", "UNKNOWN", "HIGH", 0, 0, [], context
+    )
+
+    assert tier == "MEDIUM"
+    assert "AUC evidence unavailable" in reasons[0]
+    assert context["uncalibrated_high_suppressed"] is True
+
+
+@pytest.mark.parametrize("auc", [0.5, 0.9])
+def test_valid_auc_preserves_approved_ml_high(tmp_path, auc):
+    record_path = tmp_path / "validation.json"
+    record_path.write_text(json.dumps({
+        "ml_tier_significance": {
+            "high_count": 40, "medium_count": 60,
+            "win_rate_diff": 0.2, "expectancy_diff": 3.0,
+            "fisher_p_value": 0.01, "mann_whitney_p_value": 0.01,
+            "is_statistically_superior": True,
+        },
+        "auc_roc": auc,
+        "probability_calibrated": True,
+        "model_version": "v1",
+    }))
+    policy = ConfidenceCalibrationPolicy(str(record_path))
+    context = {"model_version": "v1", "calibrator_applied": True}
+
+    tier, reasons = policy.evaluate_signal_tier(
+        "ML_PREDICTION", "UNKNOWN", "HIGH", 0, 0, [], context
+    )
+
+    assert tier == "HIGH"
+    assert reasons == []
+    assert "uncalibrated_high_suppressed" not in context
+
+
+def test_inverted_auc_reason_takes_priority_over_missing_calibrator_approval(tmp_path):
+    record_path = tmp_path / "validation.json"
+    record_path.write_text(json.dumps({
+        "ml_tier_significance": {
+            "high_count": 40, "medium_count": 60,
+            "win_rate_diff": 0.2, "expectancy_diff": 3.0,
+            "fisher_p_value": 0.01, "mann_whitney_p_value": 0.01,
+            "is_statistically_superior": True,
+        },
+        "auc_roc": 0.42,
+        "probability_calibrated": False,
+        "model_version": "v1",
+    }))
+    policy = ConfidenceCalibrationPolicy(str(record_path))
+
+    tier, reasons = policy.evaluate_signal_tier(
+        "ML_PREDICTION", "UNKNOWN", "HIGH", 0, 0, [],
+        {"model_version": "v1", "calibrator_applied": False},
+    )
+
+    assert tier == "MEDIUM"
+    assert "inverted AUC" in reasons[0]
