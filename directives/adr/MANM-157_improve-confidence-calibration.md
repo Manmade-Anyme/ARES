@@ -116,8 +116,8 @@ Enforce a hard architectural constraint at signal creation and live emission:
        `"[CONFIDENCE GATE] HIGH tier suppressed to MEDIUM: out-of-sample validation not statistically superior (p=1.0000, Δwin=-0.7%)"`.
      - In `market_context`, record `"uncalibrated_high_suppressed": true`.
 3. **Post-Hoc Probability Calibration for ML Models (`ml_signal/calibrator.py`)**:
-   - In offline training, fit an isotonic regression or Platt scaling (logistic calibration) model on out-of-fold cross-validation probabilities.
-   - For live inference, raw model probabilities must pass through `ProbabilityCalibrator` before thresholding.
+   - In offline training, fit an isotonic regression or Platt scaling (logistic calibration) model on out-of-fold cross-validation probabilities. Store the fitted calibrator as a versioned companion artifact bundled with the main model.
+   - For live inference, `SignalPredictor.load_model` must load this matching calibrator artifact. Raw model probabilities must pass through this fitted `ProbabilityCalibrator` before thresholding.
    - If out-of-fold test AUC $< 0.50$, the ML predictor's confidence tiering is disabled (forced to `"UNRATED"` or `"MEDIUM"`) until retraining achieves monotonic reliability.
 
 ---
@@ -236,14 +236,18 @@ def test_tier_significance(
 
 ```python
 @dataclass
+class StratifiedCalibrationResult:
+    tier_significance: TierSignificanceResult
+    brier: Optional[BrierDecomposition] = None
+    ece: Optional[float] = None
+
+@dataclass
 class StratifiedCalibrationReport:
-    by_setup: Dict[str, TierSignificanceResult]
-    by_direction: Dict[str, TierSignificanceResult]
-    by_volatility_regime: Dict[str, TierSignificanceResult]
-    by_time_of_day: Dict[str, TierSignificanceResult]
-    overall: TierSignificanceResult
-    overall_brier: Optional[BrierDecomposition] = None
-    overall_ece: Optional[float] = None
+    by_setup: Dict[str, StratifiedCalibrationResult]
+    by_direction: Dict[str, StratifiedCalibrationResult]
+    by_volatility_regime: Dict[str, StratifiedCalibrationResult]
+    by_time_of_day: Dict[str, StratifiedCalibrationResult]
+    overall: StratifiedCalibrationResult
 
 class StratifiedEvaluator:
     def __init__(self, df: pd.DataFrame):
@@ -306,7 +310,7 @@ Assign implementation of **MANM-157** to the **Code Generator Agent** across the
 ### Task Breakdown & File Specifications
 
 1. **`ml_signal/calibration.py` (New Module)**:
-   - Implement `compute_brier_decomposition(y_true, y_prob, n_bins=10, strategy="uniform")`. Ensure exact mathematical identity: $BS = \text{REL} - \text{RES} + \text{UNC}$ within floating point tolerance ($10^{-6}$).
+   - Implement `compute_brier_decomposition(y_true, y_prob, n_bins=10, strategy="uniform")`. Ensure exact mathematical identity: $BS = \text{REL} - \text{RES} + \text{UNC}$ within floating point tolerance ($10^{-6}$) by computing over discrete forecast categories or by grouping and including within-bin variance for continuous probabilities.
    - Implement `compute_calibration_curve(y_true, y_prob, n_bins=10, strategy="uniform")` returning `ReliabilityCurve` containing bin coordinates, counts, ECE, and MCE.
    - Implement `test_tier_significance(df, tier_col, outcome_col, pnl_col, alpha, min_samples)` executing `scipy.stats.fisher_exact` (one-sided `greater`) and `scipy.stats.mannwhitneyu` (one-sided `greater`).
 
@@ -331,7 +335,8 @@ Assign implementation of **MANM-157** to the **Code Generator Agent** across the
    - Update `MLPredictor.predict_from_raw` to run probabilities through `ProbabilityCalibrator` and apply policy suppression if model AUC is uncalibrated.
 
 6. **`models.py` & `detectors/*.py` (Update)**:
-   - Update `confidence_from_score(score, max_score, setup_type=None, direction=None)` in `models.py` to route through `ConfidenceCalibrationPolicy`.
+   - Rather than routing through `confidence_from_score`, gate the completed `AresSignal` at the end of the detector generation pipeline (or extend call sites with an explicit audit payload) so that mutable `reasons` and `market_context` are fully available for the policy's audit contract.
+   - Update `AresSignal` and detector call sites to append the required calibration suppression reasons and context flags after initial generation.
    - Ensure backwards compatibility: if no policy is supplied or during legacy tests, default to existing behavior unless policy is explicitly enabled.
 
 7. **`ml_signal/train_offline.py` (Update)**:
@@ -341,7 +346,7 @@ Assign implementation of **MANM-157** to the **Code Generator Agent** across the
 
 8. **`tests/unit/test_calibration.py` & `tests/unit/test_stratified_evaluator.py` (New Unit Tests)**:
    - Test ECE and Brier decomposition against synthetic vectors with known analytical calibration.
-   - Test Fisher exact test and Mann-Whitney U test on the 233-trade audit distribution (`HIGH` 12/38 vs `MEDIUM` 63/195), verifying exact $p=1.0000$ reproducing the issue.
+   - Test Fisher exact test and Mann-Whitney U test on the 233-trade audit distribution (`HIGH` 12/38 vs `MEDIUM` 63/195), verifying $p \approx 0.6037$ for the one-sided `greater` alternative (and $p=1.0000$ for the two-sided test) reproducing the issue.
    - Test policy gate: ensure `HIGH` signals are clamped to `MEDIUM` when $p \ge 0.05$, and pass through when $p < 0.05$ with positive delta.
    - Test stratified evaluation outputs across all 4 axes with simulated trade frames.
 
