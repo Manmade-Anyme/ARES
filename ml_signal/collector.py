@@ -242,6 +242,11 @@ class MLCollector:
             if signal_generated
             else None
         )
+        if signal_generated:
+            context = getattr(signal, "market_context", None) or {}
+            meta_feats["signal_tentative_confidence"] = str(
+                context.get("tentative_confidence") or signal_confidence
+            )
 
         # Keyed off SetupType itself so a newly added setup gets a column for free
         # instead of silently scoring as all-zeros (TREND_CONTINUATION had no key).

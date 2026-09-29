@@ -12,6 +12,7 @@ from detectors.oi_wall import OIWallDetector
 from detectors.oi_wall_entry import OIWallEntryFilter
 from detectors.exhaustion import ExhaustionDetector
 from detectors.continuation import TrendContinuationDetector
+from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 
 
@@ -61,15 +62,15 @@ class AresEngine:
     It operates completely standalone.
     """
 
-    def __init__(self):
+    def __init__(self, calibration_policy=DEFAULT_DETECTOR_CALIBRATION_POLICY):
         """
         Initialize the detectors and rolling buffers.
         """
-        self.breakout_detector = FailedBreakoutDetector()
-        self.oi_wall_detector = OIWallDetector()
+        self.breakout_detector = FailedBreakoutDetector(calibration_policy=calibration_policy)
+        self.oi_wall_detector = OIWallDetector(calibration_policy=calibration_policy)
         self.oi_wall_filter = OIWallEntryFilter()
-        self.continuation_detector = TrendContinuationDetector()
-        self.exhaustion_detector = ExhaustionDetector()
+        self.continuation_detector = TrendContinuationDetector(calibration_policy=calibration_policy)
+        self.exhaustion_detector = ExhaustionDetector(calibration_policy=calibration_policy)
         
         self.candle_buffer: deque = deque(maxlen=settings.candle_buffer_size)
         self.iv_buffer: deque = deque(maxlen=settings.iv_buffer_size)

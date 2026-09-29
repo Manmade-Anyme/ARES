@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock, AsyncMock
 from datetime import datetime
 import asyncio
+import json
 
 from ml_signal.collector import MLCollector
 from ml_signal.config import MLConfig
@@ -125,9 +126,12 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         mock_signal.signal_id = "1234"
         mock_signal.setup_type = "FAILED_BREAKOUT"
         mock_signal.direction = "BEARISH"
-        mock_signal.confidence = "HIGH"
+        mock_signal.confidence = "MEDIUM"
+        mock_signal.market_context = {"tentative_confidence": "HIGH"}
 
+        captured = {}
         def _mock_upsert(record, *args, **kwargs):
+            captured.update(record)
             return [record]
 
         collector._upsert_signal_snapshot = _mock_upsert
@@ -148,6 +152,8 @@ class TestMLCollector(unittest.IsolatedAsyncioTestCase):
         stats = collector.stats
         self.assertEqual(stats["total_snapshots"], 1)
         self.assertEqual(stats["signals_recorded"], 1)
+        self.assertEqual(captured["signal_confidence"], "MEDIUM")
+        self.assertEqual(json.loads(captured["meta_features"])["signal_tentative_confidence"], "HIGH")
 
     @patch("ml_signal.collector.create_client")
     async def test_snapshot_insert_called(self, mock_create_client):

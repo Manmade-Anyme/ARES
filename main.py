@@ -69,6 +69,25 @@ def format_signal_console(signal, spot):
     print(f"{color}{B}━" * 65 + RESET + "\n")
 
 
+def _attach_ml_prediction_to_signal(signal, prediction):
+    """Carry an ML confidence suppression into the signal's persisted audit."""
+    signal.ml_prediction = prediction
+    context = prediction.get("market_context") or {}
+    if context.get("uncalibrated_high_suppressed") is not True:
+        return
+    signal.reasons.extend(
+        f"[ML PREDICTION] {reason}" for reason in prediction.get("reasons", [])
+    )
+    signal.market_context["uncalibrated_high_suppressed"] = True
+    signal.market_context["ml_confidence_gate"] = {
+        "tentative_confidence": context.get("tentative_confidence"),
+        "emitted_confidence": prediction.get("confidence_tier"),
+        "model_version": prediction.get("model_version"),
+        "calibrator_applied": context.get("calibrator_applied"),
+        "uncalibrated_high_suppressed": True,
+    }
+
+
 def compute_iv_change_pct(
     current_iv: Optional[float],
     prev_iv: Optional[float],
@@ -347,7 +366,7 @@ async def run():
                             dte=days_to_expiry(expiry_date),
                             is_expiry=is_expiry
                         )
-                        signal.ml_prediction = ml_pred
+                        _attach_ml_prediction_to_signal(signal, ml_pred)
                     except Exception as pred_err:
                         print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ ML Prediction failed: {pred_err}{RESET}")
 

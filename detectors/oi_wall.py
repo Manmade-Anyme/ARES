@@ -42,12 +42,13 @@ class OIWallDetector:
     - `build_signal()` constructs the final `AresSignal` only from a qualified `OIWallEntryDecision`.
     """
 
-    def __init__(self):
+    def __init__(self, calibration_policy=None):
         self.current_wall_key: Optional[str] = None
         self.first_seen: Optional[datetime] = None
         self.last_seen: Optional[datetime] = None
         self.persistence_snapshots: int = 0
         self.has_interacted: bool = False
+        self.calibration_policy = calibration_policy
 
     def release_terminal_wall(self, wall_key: Optional[str]) -> None:
         """Release priority only when the filter terminates the tracked wall."""
@@ -390,7 +391,7 @@ class OIWallDetector:
         entry_zone = (trigger_price - entry_zone_offset, trigger_price + entry_zone_offset)
         strike_to_trade = int(round(spot / strike_interval) * strike_interval)
 
-        return AresSignal(
+        signal = AresSignal(
             setup_type=SetupType.OI_WALL_REJECTION,
             direction=direction,
             trigger_price=trigger_price,
@@ -405,6 +406,7 @@ class OIWallDetector:
             option_type=option_type,
             oi_wall_context=decision.telemetry.to_dict(),
         )
+        return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal
 
     def _build_signal(
         self,

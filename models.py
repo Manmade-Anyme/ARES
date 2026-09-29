@@ -148,6 +148,7 @@ class AresSignal:
     option_premium: Optional[float] = None
     risk_pct: Optional[float] = None
     oi_wall_context: Optional[Dict[str, Any]] = None
+    market_context: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

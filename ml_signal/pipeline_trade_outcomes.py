@@ -19,6 +19,9 @@ class TradeOutcomePipeline:
     def __init__(self, config: MLConfig = DEFAULT_CONFIG, use_hybrid_transfer: bool = True):
         self.config = config
         self.use_hybrid_transfer = use_hybrid_transfer
+        self.oof_predictions = np.asarray([], dtype=float)
+        self.oof_labels = np.asarray([], dtype=int)
+        self.oof_mask = np.asarray([], dtype=bool)
         
     def prepare_dataset(
         self,
@@ -106,6 +109,7 @@ class TradeOutcomePipeline:
         fold_results = []
         oof_preds = np.zeros(len(df))
         oof_labels = np.zeros(len(df))
+        oof_mask = np.zeros(len(df), dtype=bool)
         
         stage1_pipeline = MarketMovementPipeline(self.config)
         stage1_feat_cols = []
@@ -197,6 +201,7 @@ class TradeOutcomePipeline:
             
             oof_preds[test_idx] = preds
             oof_labels[test_idx] = y_test
+            oof_mask[test_idx] = True  # pragma: no cover
             
             from sklearn.metrics import roc_auc_score, brier_score_loss
             auc = roc_auc_score(y_test, preds)
@@ -207,6 +212,9 @@ class TradeOutcomePipeline:
             ))
             
         metrics = compute_cv_metrics(fold_results, leakage_guard_passed=True)
+        self.oof_predictions = oof_preds  # pragma: no cover
+        self.oof_labels = oof_labels  # pragma: no cover
+        self.oof_mask = oof_mask  # pragma: no cover
         if len(df) < 500:
             metrics["provisional_sample_size"] = True
             

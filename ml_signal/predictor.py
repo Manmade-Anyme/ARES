@@ -8,6 +8,8 @@ import pandas as pd
 
 from .config import MLConfig, DEFAULT_CONFIG
 from .features import build_feature_vector
+from .calibrator import ProbabilityCalibrator
+from .calibration_policy import ConfidenceCalibrationPolicy
 
 
 def discover_latest_model(models_dir: Optional[str | Path] = None) -> Tuple[str, str]:
@@ -94,6 +96,10 @@ class SignalPredictor:
         self.feature_names = None
         self.loaded_model_path: Optional[str] = None
         self.loaded_model_version: str = config.active_model_version
+        self.calibrator: Optional[ProbabilityCalibrator] = None
+        self.calibration_policy = ConfidenceCalibrationPolicy(
+            config.calibration_record_path, alpha=config.calibration_alpha,
+        )
 
     @property
     def model_filename(self) -> str:
@@ -119,6 +125,11 @@ class SignalPredictor:
 
         self.loaded_model_path = model_path
         self.model = joblib.load(model_path)
+        calibrator_path = f"{model_path}.calibrator.joblib"
+        self.calibrator = joblib.load(calibrator_path) if os.path.isfile(calibrator_path) else None
+        self.calibration_policy = ConfidenceCalibrationPolicy(
+            self.config.calibration_record_path, alpha=self.config.calibration_alpha,
+        )
 
         if isinstance(self.model, HybridPredictorBundle):
             self.feature_names = None # Handled inside predict_from_raw
@@ -149,7 +160,7 @@ class SignalPredictor:
 
         df = df.astype("float64")
 
-        proba = self.model.predict_proba(df)[0, 1]
+        proba = float(self.model.predict_proba(df)[0, 1])
         return float(proba)
 
     def classify_confidence(self, proba: float) -> str:
@@ -221,12 +232,39 @@ class SignalPredictor:
             proba = float(self.model.stage2_model.predict_proba(df2)[:, 1][0])
         else:
             proba = self.predict_proba(features)
+
+        calibrator_applied = bool(
+            self.calibrator is not None
+            and self.calibrator.is_calibrated
+            and self.calibration_policy.is_calibrator_validated(self.loaded_model_version)
+        )
+        if calibrator_applied:
+            proba = float(self.calibrator.transform([proba])[0])
             
         confidence = self.classify_confidence(proba)
+        gate_reasons: List[str] = []
+        market_context: Dict[str, Any] = {
+            "model_version": self.loaded_model_version,
+            "calibrator_applied": calibrator_applied,
+            "tentative_confidence": confidence,
+        }
+        if self.config.enable_calibration_policy:  # pragma: no cover
+            confidence, gate_reasons = self.calibration_policy.evaluate_signal_tier(
+                setup_type="ML_PREDICTION",
+                direction="UNKNOWN",
+                tentative_tier=confidence,
+                heuristic_score=0,
+                max_score=0,
+                reasons=gate_reasons,
+                market_context=market_context,
+            )
 
         return {
             "probability": round(proba, 4),
             "confidence_tier": confidence,
+            "reasons": gate_reasons,
+            "market_context": market_context,
+            "probability_calibrated": calibrator_applied,
             "model_version": self.loaded_model_version or self.config.active_model_version,
             "spot": spot,
             "timestamp": str(timestamp),

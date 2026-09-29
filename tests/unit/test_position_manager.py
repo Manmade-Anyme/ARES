@@ -247,6 +247,55 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
             pass
 
+    @patch('position_manager.settings')
+    async def test_live_trade_rpc_persists_confidence_gate_context(self, mock_settings):
+        mock_settings.trade_dedupe_tolerance_pts = 1.0
+        mock_settings.signal_schema_mode = "bridge"
+        pm = PositionManager()
+        pm.active_trades = []
+        signal = AresSignal(
+            setup_type=SetupType.OI_WALL_REJECTION,
+            direction=Direction.BULLISH,
+            trigger_price=24000.0,
+            entry_zone=(23990.0, 24010.0),
+            stop_loss=23975.0,
+            target_1=24050.0,
+            target_2=24100.0,
+            confidence="HIGH",
+            reasons=["Reason 1"],
+            timestamp=datetime.now(),
+            strike_to_trade=24000,
+            option_type="CE",
+        )
+        signal.confidence = "MEDIUM"
+        signal.reasons.append("[CONFIDENCE GATE] HIGH tier suppressed to MEDIUM")
+        signal.market_context = {
+            "tentative_confidence": "HIGH",
+            "uncalibrated_high_suppressed": True,
+            "ml_confidence_gate": {"suppressed": True},
+        }
+        rpc_payloads = []
+
+        def capture_rpc(name, payload):
+            rpc_payloads.append(payload)
+            response = MagicMock()
+            response.execute.return_value.data = payload["p_trade_id"]
+            return response
+
+        pm.supabase.rpc = MagicMock(side_effect=capture_rpc)
+
+        trade_id, status = await pm.add_trade(signal, 24001.0)
+
+        self.assertEqual(status, "BOUND")
+        self.assertEqual(rpc_payloads[0]["p_trade_id"], trade_id)
+        context = rpc_payloads[0]["p_market_context"]
+        self.assertEqual(context["confidence"], "MEDIUM")
+        self.assertEqual(context["tentative_confidence"], "HIGH")
+        self.assertIs(context["uncalibrated_high_suppressed"], True)
+        self.assertEqual(context["ml_confidence_gate"], {"suppressed": True})
+        self.assertIn("[CONFIDENCE GATE] HIGH tier suppressed to MEDIUM", context["reasons"])
+        self.assertNotIn("reasons", signal.market_context)
+
 
 
     @patch('position_manager.send_trade_update')

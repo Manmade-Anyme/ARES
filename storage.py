@@ -206,6 +206,7 @@ class AnalyticsLogger:
             "confidence": signal.confidence,
             "entry_spot": float(spot)
         }
+        market_context.update(getattr(signal, "market_context", {}) or {})
 
         # Add Option Sizing calculations if populated
         if getattr(signal, "suggested_lots", None) is not None:
