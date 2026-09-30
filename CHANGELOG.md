@@ -3,6 +3,7 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
+- **Bugfix (MANM-158)**: Require the secondary OI wall retest candle to move in the trade direction before immediate entry; a contrary candle keeps the wall ready for a later valid retest.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 
 ### Fixed

@@ -114,9 +114,9 @@ class TestOIWallEntryFilter(unittest.TestCase):
         self.assertEqual(self.filter.state, "RETEST_READY")
         self.assertIsNone(self.filter.latest_watchlist_event)
 
-        # 4. Secondary Re-test Candle: reaches within 20 pts of 24100 (high=24088 >= 24080) and defends (close=24078 <= 24100)
+        # 4. Secondary re-test enters the band, closes below the wall, and rejects downward.
         t4 = self.t0 + timedelta(minutes=4)
-        candle5 = OHLCVCandle(timestamp=t4, open=24065.0, high=24088.0, low=24062.0, close=24078.0, volume=1000)
+        candle5 = OHLCVCandle(timestamp=t4, open=24085.0, high=24088.0, low=24062.0, close=24078.0, volume=1000)
         bias5 = self._make_ce_bias(persistence=5)
         decision5 = self.filter.update(bias=bias5, candle=candle5, levels=[])
         self.assertEqual(decision5.status, "QUALIFIED")
@@ -159,9 +159,9 @@ class TestOIWallEntryFilter(unittest.TestCase):
         self.filter.update(bias=bias3, candle=candle3, levels=[])
         self.assertEqual(self.filter.state, "RETEST_READY")
 
-        # 4. Secondary Re-test: low pulls back to 24018 <= 24020, closes defended at 24028 >= 24000
+        # 4. Secondary re-test enters the band, closes above the wall, and rejects upward.
         t3 = self.t0 + timedelta(minutes=3)
-        candle4 = OHLCVCandle(timestamp=t3, open=24045.0, high=24048.0, low=24018.0, close=24028.0, volume=1000)
+        candle4 = OHLCVCandle(timestamp=t3, open=24020.0, high=24048.0, low=24018.0, close=24028.0, volume=1000)
         bias4 = self._make_pe_bias(persistence=4)
         decision4 = self.filter.update(bias=bias4, candle=candle4, levels=[])
         self.assertEqual(decision4.status, "QUALIFIED")
@@ -233,7 +233,7 @@ class TestOIWallEntryFilter(unittest.TestCase):
         candle3 = OHLCVCandle(timestamp=t2, open=24055.0, high=24060.0, low=24045.0, close=24050.0, volume=1000)
         self.filter.update(bias=self._make_ce_bias(persistence=3), candle=candle3, levels=[])
         t3 = self.t0 + timedelta(minutes=3)
-        candle4 = OHLCVCandle(timestamp=t3, open=24065.0, high=24088.0, low=24062.0, close=24078.0, volume=1000)
+        candle4 = OHLCVCandle(timestamp=t3, open=24085.0, high=24088.0, low=24062.0, close=24078.0, volume=1000)
         qualified_decision = self.filter.update(bias=self._make_ce_bias(persistence=4), candle=candle4, levels=[])
         self.assertEqual(qualified_decision.status, "QUALIFIED")
 
@@ -254,7 +254,7 @@ class TestOIWallEntryFilter(unittest.TestCase):
         candle3 = OHLCVCandle(timestamp=t2, open=24055.0, high=24060.0, low=24045.0, close=24050.0, volume=1000)
         self.filter.update(bias=self._make_ce_bias(persistence=3), candle=candle3, levels=[])
         t3 = self.t0 + timedelta(minutes=3)
-        candle4 = OHLCVCandle(timestamp=t3, open=24065.0, high=24088.0, low=24062.0, close=24078.0, volume=1000)
+        candle4 = OHLCVCandle(timestamp=t3, open=24085.0, high=24088.0, low=24062.0, close=24078.0, volume=1000)
         qualified_decision = self.filter.update(bias=self._make_ce_bias(persistence=4), candle=candle4, levels=[])
         self.assertEqual(qualified_decision.status, "QUALIFIED")
         # Engine rejects due to R:R

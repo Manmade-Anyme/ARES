@@ -261,8 +261,9 @@ class OIWallEntryFilter:
                     else (candle.low <= strike + retest_dist)
                 )
                 defended = (candle.close <= strike) if is_bearish else (candle.close >= strike)
+                rejected = (candle.close < candle.open) if is_bearish else (candle.close > candle.open)
                 
-                if retested and defended:
+                if retested and defended and rejected:
                     decision_id = f"{bias.wall_key}:{int(candle.timestamp.timestamp())}"
                     self.retest_timestamp = candle.timestamp
                     self.state = "QUALIFIED"

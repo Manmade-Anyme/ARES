@@ -142,10 +142,10 @@ class TestImmediateRetest(unittest.TestCase):
         self.filter.update(bias=bias2, candle=candle2, levels=[])
         self.assertEqual(self.filter.state, "RETEST_READY")
 
-        # Re-test candle tests wall and defends: high 24085 (within 20 pts of 24100), close 24075 (<= 24100)
+        # Re-test enters the band and rejects downward on the same candle.
         candle3 = OHLCVCandle(
             timestamp=t0 + timedelta(minutes=2),
-            open=24060.0, high=24085.0, low=24058.0, close=24075.0, volume=1000,
+            open=24080.0, high=24085.0, low=24058.0, close=24075.0, volume=1000,
         )
         bias3 = self.detector.update(spot=24075.0, full_chain=CE_WALL_CHAIN, candle=candle3, levels=[])
         decision3 = self.filter.update(bias=bias3, candle=candle3, levels=[])
