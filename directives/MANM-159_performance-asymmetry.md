@@ -1,6 +1,6 @@
 # MANM-159 Investigate and resolve directional performance asymmetry (Bullish vs Bearish)
 **Date:** 2026-09-12
-**Status:** ready_for_review
+**Status:** deferred — investigation retained; live rule changes postponed
 **ADR:** [ADR-159](directives/adr/MANM-159_directional-performance-asymmetry.md)
 
 ## Goal

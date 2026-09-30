@@ -1,10 +1,16 @@
 # ADR-159: Resolve Directional Performance Asymmetry via Regime-Aware Gating, Setup Pruning, and Asymmetric Geometry
 
-- **Status**: Proposed
+- **Status**: Deferred — analysis retained; live trading changes postponed
 - **Date**: 2026-09-12
 - **Task ID**: MANM-159
 - **Author**: Software Architect Agent (`d2d4e328-096d-4658-8d90-44aa7b51ed05`)
 - **Applies to**: `engine.py`, `config_profiles.py`, `detectors/continuation.py`, `position_manager.py`
+
+**Decision update (2026-09-30):** The proposed runtime changes were reverted at the user's request because they alter signal selection and exits across multiple setups. Current trading rules remain in effect. Before revisiting this ADR, run an out-of-sample candle replay and measure directional signal counts, PnL, drawdown, and bearish performance. The 233-trade source and intratrade candle paths used for the historical analysis are not available in this checkout; the existing 129-trade exports cannot validate the proposed target and stop sequence.
+
+The July-to-September direction reversal is consistent with market regime being the main driver of the observed gap. This is a working hypothesis, not proof that the existing signal or exit logic is defective. The first replay should compare bullish and bearish results within comparable market regimes before testing any rule changes.
+
+The user chose to keep this branch open and observe ML predictions and other live features for the next few days. The similar reported T1/score win rates (33.1% bearish, 31.1% bullish) make signal selection worth examining, but win rate alone cannot explain the PnL gap: winner and loser sizes also matter. Review both by direction and regime when work resumes.
 
 ---
 

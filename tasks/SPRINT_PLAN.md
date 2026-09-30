@@ -14,7 +14,7 @@ Refactor the ML training pipeline for ARES to decouple self-labeled and realized
 - **TASK-153**: Prediction persistence in `ml_predictions` (Merged from `main`).
 - **MANM-150**: Canonical signal-to-trade UUID joins (Merged from `main`).
 
-## Current work: MANM-159 (2026-09-30)
+## Deferred: MANM-159 (2026-09-30)
 - [x] PM: Create directive and backlog.
 - [x] Architect: Complete statistical diagnostics and ADR-159.
-- [ ] Code Generator: Implement ADR-159 remediation.
+- [ ] Validate proposed rules offline before any live implementation. Runtime changes were reverted at the user's request.

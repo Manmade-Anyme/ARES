@@ -23,6 +23,7 @@
   - [x] Safe read-only validation query and backfill plan
 
 ## Medium / Low Priority
+- **MANM-159 (deferred; branch retained)**: Observe current ML predictions and other live features. On return, compare directional win rate, win/loss size, and regime; replay any proposed change on out-of-sample candle data before changing live rules.
 - Monitor live signal accuracy during the next NSE session.
 - Observe how the new dynamic confidence levels impact trade suggestion filters.
 
