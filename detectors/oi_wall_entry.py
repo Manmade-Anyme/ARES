@@ -38,7 +38,6 @@ class OIWallEntryFilter:
         self.favourable_excursion_pts: float = 0.0
         self.retest_timestamp: Optional[datetime] = None
         self.retest_ready_timestamp: Optional[datetime] = None
-        self._retest_candidate: Optional[OHLCVCandle] = None
         self.rejection_reason: Optional[str] = None
         self._latest_bias: Optional[OIWallBias] = None
         self.latest_watchlist_event: Optional[OIWallBias] = None
@@ -51,7 +50,6 @@ class OIWallEntryFilter:
         self.favourable_excursion_pts = 0.0
         self.retest_timestamp = None
         self.retest_ready_timestamp = None
-        self._retest_candidate = None
         self.rejection_reason = None
         self.latest_watchlist_event = None
         self.state = "NO_WALL"
@@ -206,19 +204,24 @@ class OIWallEntryFilter:
             )
 
         # Track initial interaction (can happen on snapshot 1, 2, or later)
-        interaction_dist = _setting_float("oi_wall_initial_interaction_distance_pts", 20.0)
         req_persistence = _setting_int("oi_wall_persistence_snapshots", 3)
         min_excursion = _setting_float("oi_wall_min_excursion_pts", 12.0)
         retest_dist = _setting_float("oi_wall_retest_distance_pts", 20.0)
 
+        approach_dist = _setting_float("oi_wall_approach_distance", 80.0)
+        test_dist = _setting_float("oi_wall_test_distance", 20.0)
+
         if self.initial_interaction_timestamp is None:
-            interacted = (
-                (candle.high >= strike - interaction_dist)
-                if is_bearish
-                else (candle.low <= strike + interaction_dist)
-            )
+            # Original direction-candidate semantics
+            # Use candle.close as spot proxy (spot is only available in OIWallDetector).
+            distance_to_wall = abs(strike - candle.close)
+            approaching = distance_to_wall < approach_dist
+            
+            tested_wall = (candle.high >= strike - test_dist) if is_bearish else (candle.low <= strike + test_dist)
+            rejected = (candle.close < candle.open) if is_bearish else (candle.close > candle.open)
             defended = (candle.close <= strike) if is_bearish else (candle.close >= strike)
-            if interacted and defended:
+            
+            if approaching and tested_wall and rejected and defended:
                 self.initial_interaction_timestamp = candle.timestamp
                 self.initial_interaction_price = candle.close
                 self.state = "INTERACTED"
@@ -257,37 +260,24 @@ class OIWallEntryFilter:
                     if is_bearish
                     else (candle.low <= strike + retest_dist)
                 )
-                candidate = self._retest_candidate
-                if candidate is not None and candle.timestamp > candidate.timestamp:
-                    # Like the existing continuation gate, a touch only arms:
-                    # a later directional candle must prove follow-through.
-                    confirmed = (
-                        candle.close < candle.open and candle.close < candidate.low
-                        if is_bearish
-                        else candle.close > candle.open and candle.close > candidate.high
+                defended = (candle.close <= strike) if is_bearish else (candle.close >= strike)
+                
+                if retested and defended:
+                    decision_id = f"{bias.wall_key}:{int(candle.timestamp.timestamp())}"
+                    self.retest_timestamp = candle.timestamp
+                    self.state = "QUALIFIED"
+                    telemetry = self._build_telemetry(bias, entry_status="QUALIFIED", filter_state="QUALIFIED", candle=candle)
+                    return OIWallEntryDecision(
+                        status="QUALIFIED",
+                        wall_key=bias.wall_key,
+                        decision_id=decision_id,
+                        bias=bias,
+                        telemetry=telemetry,
+                        trigger_price=candle.close,
+                        retest_timestamp=candle.timestamp,
+                        rejection_reason=None,
+                        reference_price=strike,
                     )
-                    self._retest_candidate = None
-                    if confirmed:
-                        decision_id = f"{bias.wall_key}:{int(candle.timestamp.timestamp())}"
-                        self.retest_timestamp = candidate.timestamp
-                        self.state = "QUALIFIED"
-                        telemetry = self._build_telemetry(bias, entry_status="QUALIFIED", filter_state="QUALIFIED", candle=candle)
-                        return OIWallEntryDecision(
-                            status="QUALIFIED",
-                            wall_key=bias.wall_key,
-                            decision_id=decision_id,
-                            bias=bias,
-                            telemetry=telemetry,
-                            trigger_price=candle.close,
-                            retest_timestamp=candidate.timestamp,
-                            rejection_reason=None,
-                            reference_price=strike,
-                        )
-
-                # A failed confirmation can arm a fresh defended re-test;
-                # repeated evaluations of the same candle cannot confirm it.
-                if retested and self._retest_candidate is None:
-                    self._retest_candidate = candle
 
         # Still waiting / tracking
         telemetry = self._build_telemetry(bias, entry_status="WAITING", filter_state=self.state, candle=candle)
@@ -341,7 +331,6 @@ class OIWallEntryFilter:
 
         elif outcome in ("SUPPRESSED_BY_COOLDOWN", "SUPPRESSED_BY_PRIORITY"):
             self.state = "RETEST_READY"
-            self._retest_candidate = None
             self.retest_timestamp = None
             self.retest_ready_timestamp = decision.retest_timestamp
             telemetry = OIWallTelemetry(

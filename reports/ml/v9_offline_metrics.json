@@ -1,0 +1,166 @@
+{
+  "auc_roc": 0.4802631578947368,
+  "precision": 0.375,
+  "recall": 0.15789473684210525,
+  "f1": 0.2222222222222222,
+  "brier_score": 0.25098683914075354,
+  "accuracy": 0.5882352941176471,
+  "precision_top20": 0.4,
+  "n_samples": 254,
+  "n_train": 203,
+  "n_test": 51,
+  "pos_rate": 0.3228346456692913,
+  "provisional": false,
+  "sharpe_status": "computed",
+  "sharpe_annualized": 1.002222,
+  "sharpe_daily": 0.063134,
+  "sharpe_days": 45,
+  "sharpe_trades": 254,
+  "sharpe_window_start": "2026-07-20",
+  "sharpe_window_end": "2026-09-18",
+  "sharpe_total_pnl_points": 236.45,
+  "sharpe_pnl_unit": "active-trading-day NIFTY spot P&L points",
+  "sharpe_day_basis": "active_trading_days",
+  "sharpe_missing_exit_timestamps": 0,
+  "sharpe_risk_free_rate": 0.0,
+  "shap_computed": true,
+  "shap_top_features": [
+    {
+      "feature": "meta_features__minutes_since_open",
+      "mean_abs_shap": 0.298039
+    },
+    {
+      "feature": "volume_features__vol_ratio",
+      "mean_abs_shap": 0.095662
+    },
+    {
+      "feature": "candle_features__body_pct",
+      "mean_abs_shap": 0.063963
+    },
+    {
+      "feature": "iv_features__iv_change_5",
+      "mean_abs_shap": 0.059788
+    },
+    {
+      "feature": "greek_features__gamma_theta_ratio",
+      "mean_abs_shap": 0.05905
+    },
+    {
+      "feature": "oi_features__p85_ce_oi",
+      "mean_abs_shap": 0.058785
+    },
+    {
+      "feature": "candle_features__lower_wick_pct",
+      "mean_abs_shap": 0.054177
+    },
+    {
+      "feature": "iv_features__iv_level",
+      "mean_abs_shap": 0.052909
+    },
+    {
+      "feature": "oi_features__atm_pe_oi_change_pct",
+      "mean_abs_shap": 0.041103
+    },
+    {
+      "feature": "oi_features__oi_bias",
+      "mean_abs_shap": 0.038375
+    },
+    {
+      "feature": "structure_features__dist_to_nearest_support",
+      "mean_abs_shap": 0.037672
+    },
+    {
+      "feature": "candle_features__body_to_range_ratio",
+      "mean_abs_shap": 0.035173
+    },
+    {
+      "feature": "volume_features__vol_slope_5",
+      "mean_abs_shap": 0.02951
+    },
+    {
+      "feature": "oi_features__pcr_oi",
+      "mean_abs_shap": 0.028974
+    },
+    {
+      "feature": "oi_features__p85_pe_oi",
+      "mean_abs_shap": 0.027665
+    }
+  ],
+  "shap_output_unit": "raw_margin_log_odds",
+  "shap_explained_rows": 51,
+  "shap_backend": "xgboost_pred_contribs",
+  "shap_status": "computed",
+  "shap_plot_saved": true,
+  "shap_plot_status": "saved",
+  "shap_plot_error_type": null,
+  "shap_fallback_reason": "ValueError: could not convert string to float: '[5E-1]'",
+  "shap_error_type": null,
+  "shap_iteration_range": [
+    0,
+    31
+  ],
+  "shap_raw_margin_additivity": true,
+  "model_version": "v9",
+  "top_features": [
+    {
+      "feature": "meta_features__minutes_since_open",
+      "gain": 0.04770153760910034
+    },
+    {
+      "feature": "iv_features__iv_change_1",
+      "gain": 0.03349166736006737
+    },
+    {
+      "feature": "oi_features__strikes_with_ce_oi",
+      "gain": 0.03345369175076485
+    },
+    {
+      "feature": "iv_features__iv_level",
+      "gain": 0.03286350890994072
+    },
+    {
+      "feature": "volume_features__vol_ratio",
+      "gain": 0.032363083213567734
+    },
+    {
+      "feature": "structure_features__dist_to_pdh",
+      "gain": 0.03197941556572914
+    },
+    {
+      "feature": "iv_features__iv_change_5",
+      "gain": 0.03152419999241829
+    },
+    {
+      "feature": "oi_features__atm_pe_oi_change_pct",
+      "gain": 0.03104124777019024
+    },
+    {
+      "feature": "volume_features__vol_slope_5",
+      "gain": 0.030846429988741875
+    },
+    {
+      "feature": "candle_features__body_to_range_ratio",
+      "gain": 0.03075852431356907
+    },
+    {
+      "feature": "meta_features__session_phase",
+      "gain": 0.030116645619273186
+    },
+    {
+      "feature": "oi_features__max_pe_oi",
+      "gain": 0.030051639303565025
+    },
+    {
+      "feature": "candle_features__body_pct",
+      "gain": 0.0286314208060503
+    },
+    {
+      "feature": "candle_features__volume",
+      "gain": 0.02729879505932331
+    },
+    {
+      "feature": "oi_features__max_ce_oi",
+      "gain": 0.027102719992399216
+    }
+  ]
+}
