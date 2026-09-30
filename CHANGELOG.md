@@ -5,8 +5,11 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 - **Bugfix (MANM-158)**: Require the secondary OI wall retest candle to move in the trade direction before immediate entry; a contrary candle keeps the wall ready for a later valid retest.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
+- **Confidence calibration (MANM-157)**: Added Brier decomposition, reliability curves, one-sided tier significance tests, stratified calibration JSON reports, monotonic probability calibration, and a fail-safe HIGH-to-MEDIUM runtime gate. Detector suppression reasons and context flags are persisted, and offline training now writes reliability diagrams and validation records.
 
 ### Fixed
+- **Confidence calibration deployment and audit (MANM-157)**: Publish validation and stratified reports with promoted models, include LOW predictions and rows without PnL in calibration metrics, inject the startup-cached gate through the engine while preserving direct detector defaults, fail closed on malformed report strata or missing AUC evidence, persist suppression context in live trade records, and discard old calibrator state before every refit attempt.
+- **Confidence calibration review fixes (MANM-157)**: Corrected the exact binned Brier identity with within-bin covariance; require a present, held-out-approved calibrator before applying live probability scaling or releasing ML HIGH; retain the tentative signal tier in collection metadata for future validation while emitting the gated tier.
 - **SHAP data leakage prevention (MANM-156)**: Re-ordered dataset splitting and computation of evaluation bounds to prevent Stage 1 training data from leaking future market outcomes into the SHAP report.
 - **Stale SHAP summary cleanup (MANM-156)**: Added safe PNG removal when SHAP plot rendering fails, preventing the previous run's summary image from being incorrectly published.
 

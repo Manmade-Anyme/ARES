@@ -3,6 +3,7 @@ from datetime import datetime
 from models import OHLCVCandle, SetupType, Direction, ResistanceLevel
 from config import settings
 from detectors.breakout import FailedBreakoutDetector
+from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 @pytest.fixture
 def sample_levels():
@@ -14,7 +15,7 @@ def sample_levels():
 
 @pytest.fixture
 def breakout_detector():
-    return FailedBreakoutDetector()
+    return FailedBreakoutDetector(calibration_policy=DEFAULT_DETECTOR_CALIBRATION_POLICY)
 
 def test_bearish_failed_breakout_dynamic_targets(breakout_detector, sample_levels):
     # Upward breakout cross above 24100
@@ -76,7 +77,28 @@ def test_failed_breakout_confidence_high(breakout_detector, sample_levels):
     )
     signal = breakout_detector.update(candle2, 100000.0, -15.0, 110, 100, 100, 100, sample_levels)
     assert signal is not None
+    assert signal.confidence == "MEDIUM"
+    assert signal.market_context["uncalibrated_high_suppressed"] is True
+    assert any("[CONFIDENCE GATE]" in reason for reason in signal.reasons)
+
+
+def test_direct_detector_without_policy_retains_tentative_high(sample_levels):
+    detector = FailedBreakoutDetector()
+    detector.update(
+        OHLCVCandle(timestamp=datetime.now(), open=24090.0, high=24120.0,
+                    low=24080.0, close=24110.0, volume=50000),
+        100000.0, 5.0, 100, 100, 100, 100, sample_levels,
+    )
+    signal = detector.update(
+        OHLCVCandle(timestamp=datetime.now(), open=24110.0, high=24115.0,
+                    low=24080.0, close=24090.0, volume=40000),
+        100000.0, -15.0, 110, 100, 100, 100, sample_levels,
+    )
+
+    assert signal is not None
     assert signal.confidence == "HIGH"
+    assert not signal.market_context.get("uncalibrated_high_suppressed", False)
+
 
 def test_failed_breakout_weak_failure_rejected(breakout_detector, sample_levels):
     # closed_back is a hard gate, not a scored point (TASK-172 audit item 8);
@@ -155,4 +177,3 @@ def test_failed_breakout_with_missing_iv_change_pct(breakout_detector, sample_le
     assert signal.setup_type == SetupType.FAILED_BREAKOUT
     assert signal.direction == Direction.BEARISH
     assert not any("IV crush" in r for r in signal.reasons)
-

@@ -32,9 +32,10 @@ class FailedBreakoutDetector:
     (looking at CE OI) and downward breakdowns (looking at PE OI).
     """
 
-    def __init__(self):
+    def __init__(self, calibration_policy=None):
         """Initialize the detector with no active breakout."""
         self.active: Optional[BreakoutState] = None
+        self.calibration_policy = calibration_policy
 
     def update(
         self,
@@ -202,7 +203,7 @@ class FailedBreakoutDetector:
         # Strike should be rounded to the nearest configured interval (e.g., 50)
         strike_to_trade = int(round(candle.close / settings.strike_interval) * settings.strike_interval)
 
-        return AresSignal(
+        signal = AresSignal(
             setup_type=SetupType.FAILED_BREAKOUT,
             direction=direction,
             trigger_price=candle.close,
@@ -216,3 +217,4 @@ class FailedBreakoutDetector:
             strike_to_trade=strike_to_trade,
             option_type=option_type
         )
+        return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal

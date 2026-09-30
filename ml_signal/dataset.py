@@ -44,6 +44,9 @@ _META_COLS = {
     "snapshot_uuid",
     "signal_id",
     "signal_setup_type",
+    "signal_direction",
+    "signal_confidence",
+    "signal_tentative_confidence",
     "resolution_timestamp",
 }
 
@@ -138,19 +141,28 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
             nd = _numeric_only(_load(r.get(g)))
             groups[g] = nd
             keys_by_group[g].update(nd.keys())
-        parsed.append((ts, close, feature_version, groups, r.get("trade_id"), r.get("snapshot_uuid")))
+        parsed.append((
+            ts, close, feature_version, groups, r.get("trade_id"), r.get("snapshot_uuid"),
+            r.get("signal_setup_type"), r.get("signal_direction"), r.get("signal_confidence"),
+            _load(r.get("meta_features")).get("signal_tentative_confidence") or r.get("signal_confidence"),
+        ))
 
     feature_cols = sorted(
         f"{g}__{k}" for g in FEATURE_GROUPS for k in keys_by_group[g]
     )
 
     records = []
-    for ts, close, feature_version, groups, trade_id, snapshot_uuid in parsed:
+    for (ts, close, feature_version, groups, trade_id, snapshot_uuid,
+         signal_setup_type, signal_direction, signal_confidence, signal_tentative_confidence) in parsed:
         row: Dict[str, Any] = {
             "timestamp": ts,
             "date": ts.date() if ts is not None and not pd.isna(ts) else None,
             "close": close, "trade_id": trade_id, "snapshot_uuid": snapshot_uuid,
             "feature_version": feature_version,
+            "signal_setup_type": signal_setup_type,
+            "signal_direction": signal_direction,
+            "signal_confidence": signal_confidence,
+            "signal_tentative_confidence": signal_tentative_confidence,
         }
         # NaN, not 0.0. _numeric_only drops a None value, so an unknown feature
         # reaches here as an absent key. Filling 0.0 made every unknown
@@ -191,7 +203,8 @@ def flatten_features(rows: Sequence[Dict[str, Any]]) -> pd.DataFrame:
 
     ordered = [
         "timestamp", "date", "close", "feature_version", "trade_id",
-        "snapshot_uuid",
+        "snapshot_uuid", "signal_setup_type", "signal_direction", "signal_confidence",
+        "signal_tentative_confidence",
     ] + feature_cols + indicator_cols
     if df.empty:
         return pd.DataFrame(columns=ordered)
