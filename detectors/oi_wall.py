@@ -306,18 +306,18 @@ class OIWallDetector:
         oi_val = bias.wall_oi
         if oi_val >= conviction_mult * min_oi:
             extra_reasons.append(
-                f"Massive wall size confirms strong barrier "
+                f"Large OI concentration at wall "
                 f"(>{conviction_mult}x min)"
             )
             mag_score = 1
         else:
             mag_score = 0
 
-        # 2. Active Defence (OI Growth)
+        # 2. OI Growth
         oi_change_pct = bias.wall_oi_change_pct
         if oi_change_pct >= conviction_mult * min_oi_change:
             extra_reasons.append(
-                f"Aggressive active defending by option writers "
+                f"OI growth exceeds conviction threshold "
                 f"(>{conviction_mult}x min change)"
             )
             growth_score = 1
@@ -378,7 +378,7 @@ class OIWallDetector:
             f"Price approached massive OI wall at {strike}",
             f"Wall size: {oi_lakhs:.1f}L contracts (+{bias.wall_oi_change_pct:.1f}% change)",
             f"Confirmed {bias.persistence_snapshots} snapshot persistence",
-            "Secondary pullback re-test confirmed holding defended side",
+            "Directional secondary re-test candle closed on defended side",
         ]
 
         confidence, extra_reasons = self._evaluate_confidence(candle, bias, levels)

@@ -90,5 +90,5 @@ The index is optional if query plans show no benefit; JSON shape and null semant
 - A regression test proving detector/filter advancement during cooldown and higher-priority signal emission.
 - Storage/collector tests proving identical serialized wall context (including optional VWAP and opening range), null handling, and no extra API calls.
 - Integration coverage proving `main.py` forwards the engine's latest wall context into the collector for non-entry observations.
-- Alert tests proving the watchlist is opt-in, no signal alert is sent before final acknowledgement, and the sample Discord message renders with the agreed fields.
+- Alert tests proving the watchlist obeys its profile setting (enabled in both active profiles by MANM-158), no signal alert is sent before final acknowledgement, and the sample Discord message renders with the agreed fields.
 - Replay report for the 18 reviewed trades with baseline and Phase 1 metrics, including cases that never qualified. The report must explicitly confirm that the fixed stop policy was used.

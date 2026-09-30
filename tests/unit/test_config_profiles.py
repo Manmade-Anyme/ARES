@@ -51,6 +51,11 @@ class TestTuningConfig:
         assert NON_EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 10.0
         assert NON_EXPIRY_CONFIG.level_scan_range == 500.0
 
+    def test_oi_wall_watchlist_alert_enabled_in_both_profiles(self):
+        assert TuningConfig().oi_wall_enable_watchlist_alert is True
+        assert NON_EXPIRY_CONFIG.oi_wall_enable_watchlist_alert is True
+        assert EXPIRY_CONFIG.oi_wall_enable_watchlist_alert is True
+
 
 # ─── Settings Facade Tests ──────────────────────────────────────────────────
 

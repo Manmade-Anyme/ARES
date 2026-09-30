@@ -89,7 +89,7 @@ OIFetcher + closed candle
 | `engine.py` | Advance the bias detector and entry filter on every candle; acknowledge only the final outcome after cooldown/priority/risk gates; retain existing risk-level and R:R behavior. Expose the latest wall context through a read-only property without making the collector infer trading state. |
 | `main.py` | Pass `engine.latest_oi_wall_context` into the existing `MLCollector.snapshot()` call on every cycle after `engine.tick()`. When `settings.oi_wall_enable_watchlist_alert` is True and `engine.latest_watchlist_event` is present, dispatch `alerts.send_watchlist_alert()`. |
 | `alerts.py` | Define `send_watchlist_alert(bias: OIWallBias, spot: float)` with dry-run test seams, render enriched wall context in `send_discord`, and preserve existing alert contracts. |
-| `config.py` / `config_profiles.py` | Add profile-backed persistence and re-test parameters with the defaults specified below, plus the opt-in `oi_wall_enable_watchlist_alert` setting. Existing wall thresholds and stop settings remain unchanged. |
+| `config.py` / `config_profiles.py` | Add profile-backed persistence and re-test parameters with the defaults specified below, plus the `oi_wall_enable_watchlist_alert` setting (enabled in both active profiles by MANM-158). Existing wall thresholds and stop settings remain unchanged. |
 | `storage.py` | Persist wall telemetry on `ares_signals` and `trade_analytics` using the normalized serialization contract. Preserve exception suppression and async executor behavior. |
 | `ml_signal/collector.py` | Accept optional per-cycle wall context and write it even when no trade signal is emitted. Do not add API calls or change existing feature calculations. |
 | `ml_signal/schema.sql` | Document the new `ml_collection.oi_wall_context` JSONB column and indexes if required. |
@@ -203,7 +203,7 @@ MLCollector.snapshot(..., oi_wall_context: Optional[Dict[str, Any]] = None) -> N
 | `oi_wall_min_excursion_pts` | `float` | existing `oi_wall_test_distance` | Minimum later favourable move from the wall strike before a re-test can arm. Must be measured on a later candle. |
 | `oi_wall_retest_distance_pts` | `float` | existing `oi_wall_test_distance` | Maximum wall-distance for the secondary re-test. Reuse the current test-distance default; do not widen stops. |
 | `oi_wall_retest_confirmation_candles` | `int` | `1` | One re-test candle must close back on the defended side of the wall. Phase 1 does not add a multi-candle tuning surface. |
-| `oi_wall_enable_watchlist_alert` | `bool` | `False` | Opt-in toggle to send Discord watchlist heads-up on transition to `RETEST_READY`. Off by default. |
+| `oi_wall_enable_watchlist_alert` | `bool` | `False` in Phase 1; `True` after MANM-158 | Send a Discord heads-up on transition to `RETEST_READY`. Enabled in both active profiles by MANM-158. |
 
 Existing `oi_wall_min_oi`, `oi_wall_min_oi_change_pct`, confidence scoring, `entry_zone_offset_pts`, per-type stop settings, `target_*`, and `signal_cooldown_minutes` retain their current profile values.
 
@@ -279,9 +279,9 @@ Discord notifications maintain ARES standard embed styling while making the two-
        - Secondary pullback re-test rejection holding defended side.
        - Structural SL buffer relation to wall strike.
 
-2. **Watchlist / Heads-Up Alert (Opt-in via `oi_wall_enable_watchlist_alert`)**:
-   When `settings.oi_wall_enable_watchlist_alert` is set to `True` (default `False`), `main.py` checks `engine.latest_watchlist_event` following `engine.tick()`. If a new wall reaches `RETEST_READY`, `main.py` dispatches `await alerts.send_watchlist_alert(event, spot)` to the configured webhook. A session-level deduplication latch ensures each `wall_key` emits at most one watchlist notification per session, keeping manual traders informed of developing morning structure without issuing an order or triggering cooldown:
-   - **Header**: `🛡️ 🟡 #{wall_key} SETUP WATCH: OI_WALL_PERSISTENT ({direction})`
+2. **Watchlist / Heads-Up Alert (controlled by `oi_wall_enable_watchlist_alert`)**:
+   When `settings.oi_wall_enable_watchlist_alert` is `True` (both profiles after MANM-158), `main.py` checks `engine.latest_watchlist_event` following `engine.tick()`. If a new wall reaches `RETEST_READY`, `main.py` dispatches `await alerts.send_watchlist_alert(event, spot)` to the configured webhook. A session-level deduplication latch ensures each `wall_key` emits at most one watchlist notification per session, keeping manual traders informed of developing morning structure without issuing an order or triggering cooldown:
+   - **Header**: `🛡️ 🟡 #{wall_key} SETUP WATCH: OI_WALL_RETEST_READY ({direction})` (MANM-158: emitted on the ready transition)
    - **Body**: Wall strike, size, persistence duration, and guidance: *"Awaiting pullback re-test near {wall_strike}. Do NOT chase breakdown."*
 
 3. **Trade Lifecycle Updates (`send_trade_update`)**:
@@ -335,7 +335,7 @@ The system deterministically isolates two distinct failure classes:
 - Assert that an interaction/excursion observed before snapshot 3 is preserved when persistence reaches 3; the common touch-then-move-away sequence must not be forced to touch a third time.
 - Assert collector/storage payload equality, null handling, UTC timestamp normalization, and no extra broker/API call.
 - Assert `main.py` passes the engine's latest wall context into `MLCollector.snapshot()` for non-entry observations.
-- Assert Discord execution and watchlist payloads: no signal alert before final acknowledgement, watchlist output is opt-in, enriched wall fields render, and existing non-OI-wall alert fields remain unchanged. Use a mocked webhook/test channel; do not require a live webhook in the unit suite.
+- Assert Discord execution and watchlist payloads: no signal alert before final acknowledgement, the configured watchlist gate is honoured, enriched wall fields render, and existing non-OI-wall alert fields remain unchanged. Use a mocked webhook/test channel; do not require a live webhook in the unit suite.
 - The 18-trade historical replay gate is skipped by human direction because the repository has no comparable historical replay runners or fixtures for breakout, continuation, exhaustion, or expiry-detector trade paths, and the available TASK-073 replay inputs cannot support faithful historical acceptance evidence without complete closed-OHLCV, strike-chain, profile, and expiry data.
 - Validate the entry changes the same way as the rest of ARES: focused unit tests and engine integration tests against existing detector, risk, cooldown, priority, acknowledgement, and telemetry logic. Keep any replay-like diagnostics clearly labelled as synthetic or incomplete; they are not release acceptance evidence.
 - The replay audit and proposed repair contract are in `directives/adr/TASK-073_replay-evidence-remediation.md`. PR #103's initial replay at `346cfb6` is synthetic filter exercise evidence, not a valid production replay. The human-directed skip retires the replay gate; it does not approve synthetic success claims or bypass the standard regression suite.

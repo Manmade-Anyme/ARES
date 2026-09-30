@@ -319,10 +319,12 @@ async def run():
             # Run the engine
             signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
 
-            # Watchlist alert when engine flags a new persistent/retest-ready wall
+            # Watchlist alert while an undelivered wall remains retest-ready.
             if engine.latest_watchlist_event:
                 try:
-                    await send_watchlist_alert(engine.latest_watchlist_event, spot)
+                    watchlist_event = engine.latest_watchlist_event
+                    if await send_watchlist_alert(watchlist_event, spot):
+                        engine.oi_wall_filter.acknowledge_watchlist(watchlist_event.wall_key)
                 except Exception as wl_err:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Watchlist alert failed: {wl_err}{RESET}")
 

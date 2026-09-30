@@ -105,6 +105,7 @@ class TestOIWallEntryFilter(unittest.TestCase):
         self.assertEqual(self.filter.state, "RETEST_READY")
         self.assertIsNotNone(self.filter.latest_watchlist_event)
         self.assertEqual(self.filter.latest_watchlist_event.wall_key, "CE:24100")
+        self.filter.acknowledge_watchlist("CE:24100")
 
         # Snapshot 4: Still in RETEST_READY, watchlist alert must not repeat for same key
         t3 = self.t0 + timedelta(minutes=3)
@@ -136,6 +137,26 @@ class TestOIWallEntryFilter(unittest.TestCase):
         bias6 = self._make_ce_bias(persistence=6)
         decision6 = self.filter.update(bias=bias6, candle=candle6, levels=[])
         self.assertEqual(decision6.status, "CONSUMED")
+
+    def test_watchlist_event_retries_until_delivery_is_acknowledged(self):
+        interaction = OHLCVCandle(timestamp=self.t0, open=24085.0, high=24085.0, low=24055.0, close=24075.0, volume=1000)
+        self.filter.update(bias=self._make_ce_bias(persistence=1), candle=interaction, levels=[])
+
+        armed_at = self.t0 + timedelta(minutes=1)
+        armed = OHLCVCandle(timestamp=armed_at, open=24070.0, high=24072.0, low=24050.0, close=24055.0, volume=1000)
+        self.filter.update(bias=self._make_ce_bias(persistence=3), candle=armed, levels=[])
+        self.assertEqual(self.filter.latest_watchlist_event.wall_key, "CE:24100")
+
+        retry_at = self.t0 + timedelta(minutes=2)
+        retry = OHLCVCandle(timestamp=retry_at, open=24055.0, high=24065.0, low=24048.0, close=24060.0, volume=1000)
+        self.filter.update(bias=self._make_ce_bias(persistence=4), candle=retry, levels=[])
+        self.assertEqual(self.filter.latest_watchlist_event.wall_key, "CE:24100")
+
+        self.filter.acknowledge_watchlist("CE:24100")
+        next_at = self.t0 + timedelta(minutes=3)
+        next_candle = OHLCVCandle(timestamp=next_at, open=24060.0, high=24066.0, low=24050.0, close=24062.0, volume=1000)
+        self.filter.update(bias=self._make_ce_bias(persistence=5), candle=next_candle, levels=[])
+        self.assertIsNone(self.filter.latest_watchlist_event)
 
     def test_pe_wall_full_lifecycle_to_qualified(self):
         # Bullish PE wall 24000. Approach from above, bounce, re-test

@@ -218,13 +218,29 @@ def test_breach_expiration_remains_authoritative(profile, side):
     assert (decision.status, decision.telemetry.rejection_reason) == ("EXPIRED", expired.rejection_reason)
 
 
-def tick(engine, side, minute, prices):
+def tick(engine, side, minute, prices, day_offset=0):
     current = candle(side, minute, prices)
+    current.timestamp += timedelta(days=day_offset)
     atm = ATMStrikes(current.close, *[
         OptionRow(24100, option_type, 100.0, 12.0, 100000, 100000, 0.0)
         for option_type in ("CE", "PE")
     ])
     return engine.tick(current, chain(side), atm, 0.0, [])
+
+
+def test_oi_wall_watchlist_and_consumed_key_reset_for_next_session(profile):
+    engine = AresEngine()
+    for day_offset in (0, 1):
+        for minute, prices in enumerate(GEOMETRY):
+            signal = tick(engine, "PE", minute, prices, day_offset=day_offset)
+            if minute == 2:
+                assert engine.latest_watchlist_event is not None, f"missing watchlist on day offset {day_offset}"
+                assert engine.latest_watchlist_event.wall_key == "PE:24100"
+            if minute == 4:
+                assert signal is not None
+                assert signal.setup_type.value == "OI_WALL_REJECTION"
+        # The live cooldown clock advances overnight; clear it in this compressed replay.
+        engine.last_signal_time = None
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])
@@ -599,4 +615,3 @@ def test_pre_interaction_tracked_wall_does_not_block_closer_opposite_wall(profil
     )
     decision2 = entry_filter.update(bias2, c2, [])
     assert decision2.wall_key == opp_wall_key
-

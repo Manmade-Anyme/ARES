@@ -3,6 +3,7 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
+- **Discord clarity (MANM-158)**: Enable an earlier `RETEST_READY` OI-wall heads-up in both profiles, retry failed webhook delivery while the wall remains ready, display the later retest time/close and earlier interaction/excursion in final signal alerts, reset OI-wall state at a new candle date, and describe OI size/growth without claiming confirmed writer defense.
 - **Bugfix (MANM-158)**: Require the secondary OI wall retest candle to move in the trade direction before immediate entry; a contrary candle keeps the wall ready for a later valid retest.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
 - **Confidence calibration (MANM-157)**: Added Brier decomposition, reliability curves, one-sided tier significance tests, stratified calibration JSON reports, monotonic probability calibration, and a fail-safe HIGH-to-MEDIUM runtime gate. Detector suppression reasons and context flags are persisted, and offline training now writes reliability diagrams and validation records.

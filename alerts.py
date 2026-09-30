@@ -3,6 +3,19 @@ from datetime import datetime, timezone, timedelta
 from models import AresSignal, OIWallBias
 from config import settings, detector_names, SESSION_DISPLAY
 
+
+def _format_wall_event_time(raw_timestamp):
+    if not isinstance(raw_timestamp, str):
+        return None
+    try:
+        event_time = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if event_time.tzinfo is None:
+        return None
+    return event_time.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%d-%b-%Y %H:%M IST")
+
+
 def format_signal(signal: AresSignal, spot: float) -> str:
     """
     Formats the AresSignal into a premium, color-coded Discord message using diff blocks.
@@ -105,6 +118,20 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         wall_text = f"**{w_strike:.0f} {w_opt}** ({w_oi:.1f}L contracts, +{w_change:.1f}%) | {snaps}/3 snapshots persistent"
         fields.append({"name": "🛡️ Wall Context", "value": wall_text, "inline": False})
 
+        retest_time = _format_wall_event_time(oi_ctx.get("retest_timestamp"))
+        if retest_time:
+            retest_text = (
+                f"At **{retest_time}**, spot closed **{signal.trigger_price:.2f}** "
+                f"near **{w_strike:.0f} {w_opt}**."
+            )
+            interaction_time = _format_wall_event_time(oi_ctx.get("initial_interaction_timestamp"))
+            if interaction_time:
+                retest_text += f"\nInitial wall interaction: **{interaction_time}**"
+            excursion = oi_ctx.get("favourable_excursion_pts")
+            if isinstance(excursion, (int, float)):
+                retest_text += f" | Favourable excursion: **{excursion:.2f} pts**"
+            fields.append({"name": "🔁 Retest Confirmation", "value": retest_text, "inline": False})
+
     # Sizing fields
     if getattr(signal, "suggested_lots", None) is not None:
         fields.append({"name": f"📐 Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%)", "value": "Calculations based on current capital", "inline": False})
@@ -147,7 +174,7 @@ def format_watchlist_alert(bias: OIWallBias, spot: float) -> str:
     """
     wall_oi_lakhs = bias.wall_oi / 100000.0
     return (
-        f"🛡️ 🟡 #{bias.wall_key} SETUP WATCH: OI_WALL_PERSISTENT ({bias.direction.value})\n"
+        f"🛡️ 🟡 #{bias.wall_key} SETUP WATCH: OI_WALL_RETEST_READY ({bias.direction.value})\n"
         f"Spot: {spot:.2f} | Wall: {bias.wall_strike:.0f} {bias.wall_option_type} "
         f"({wall_oi_lakhs:.1f}L, +{bias.wall_oi_change_pct:.1f}%) | "
         f"Persistence: {bias.persistence_snapshots} snapshots\n"
@@ -155,20 +182,20 @@ def format_watchlist_alert(bias: OIWallBias, spot: float) -> str:
     )
 
 
-async def send_watchlist_alert(bias: OIWallBias, spot: float) -> None:
+async def send_watchlist_alert(bias: OIWallBias, spot: float) -> bool:
     """
     Sends an informational heads-up alert to Discord when a qualifying OI wall
     reaches RETEST_READY. Gated by settings.oi_wall_enable_watchlist_alert.
     """
     if not settings.oi_wall_enable_watchlist_alert or not settings.discord_webhook_url:
-        return
+        return False
 
     ist = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
 
     wall_oi_lakhs = bias.wall_oi / 100000.0
     direction_desc = bias.direction.value
-    header = f"🛡️ 🟡 #{bias.wall_key} SETUP WATCH: OI_WALL_PERSISTENT ({direction_desc})"
+    header = f"🛡️ 🟡 #{bias.wall_key} SETUP WATCH: OI_WALL_RETEST_READY ({direction_desc})"
 
     fields = [
         {"name": "🕒 Time", "value": f"{now_ist} IST", "inline": True},
@@ -193,8 +220,10 @@ async def send_watchlist_alert(bias: OIWallBias, spot: float) -> None:
         try:
             response = await client.post(settings.discord_webhook_url, json=payload)
             response.raise_for_status()
+            return True
         except Exception as e:
             print(f"[-] Alerts: Failed to send watchlist alert: {e}")
+            return False
 
 async def send_startup_alert(
     pdh: float,
