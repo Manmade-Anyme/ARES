@@ -7,7 +7,9 @@
 
 ## Goal
 
-Run a Jev forward predictor alongside the ARES trading process in the **existing Fly app**. For each fired signal, use the market snapshot ARES already collects for ML, estimate T1, T2, and SL outcomes and market regime, save the result to `llm_predictions`, and send a separate follow-up Discord alert. Jev's output is observational: it must not gate orders or change the XGBoost forecast.
+Run a Jev forward predictor alongside the ARES trading process in the **existing Fly app**. When any of ARES's four trade setups fires from live market data, use that signal's market snapshot to estimate T1, T2, and SL outcomes and market regime, save the result to `llm_predictions`, and send a separate follow-up Discord alert. Jev's output is observational: it must not gate orders or change the XGBoost forecast.
+
+**Inference only:** Jev is a hosted model called for each new live signal. There is no Jev training, offline fitting, retraining schedule, training dataset, or local model artifact. Historical outcomes may later be used to *evaluate* its probabilities, not to train Jev in this POC.
 
 ## Boundaries
 
@@ -16,6 +18,12 @@ Run a Jev forward predictor alongside the ARES trading process in the **existing
 - Run the lightweight Jev consumer in a second **process group of the current Fly app**, on its own Machine and memory allocation. The shared `fly.toml` must define both `app` and `jev` commands. Do not put the Jev process on the 768 MB trading Machine.
 - Keep the first Discord alert unchanged. Send Jev's result in a separate, identifiable follow-up message after successful persistence.
 - Give the Jev process no Dhan calls. It reads existing Supabase rows and calls TypeSafe. The shared database contract is intentional; there is no shared application-code reference.
+
+## Live trigger contract
+
+The four supported setup types are `FAILED_BREAKOUT`, `OI_WALL_REJECTION`, `EXHAUSTION_REVERSAL`, and `TREND_CONTINUATION`. Each enters the same signal path with the current one-minute candle, option chain/ATM context, structural levels, IV, and detector reasons. Jev receives one signal-time snapshot for the fired setup, plus its entry, targets, and stop. It must not predict on every market-data cycle or wait for a training run.
+
+The existing `MLCollector` persists that live snapshot after the signal fires. The separate Jev process reads it promptly by `signal_uuid`; this database handoff preserves the no-import boundary. It introduces a measurable write/poll delay, so the POC must report signal-to-Jev latency rather than assume that Jev's short model response time is the entire wait.
 
 ## Data flow
 
@@ -53,7 +61,7 @@ The consumer polls for signal-bound `ml_collection` rows at a short, measured in
 ## Acceptance criteria
 
 1. One Fly app runs `app` and `jev` on separate Machines. A Jev failure/OOM does not stop the trading Machine. No Jev import or direct call is added to `main.py`, `SignalPredictor`, `ml_signal`, `storage.py`, or `alerts.py`.
-2. Jev uses the existing signal-bound ML snapshot and signal record, makes zero Dhan requests, and records snapshot provenance and all measured latency stages. The XGBoost result may be joined for evaluation but is not a prerequisite.
+2. Each of the four live setup types can trigger one Jev inference from its existing signal-bound ML snapshot and signal record. Jev makes zero Dhan requests, does not wait for XGBoost or training, and records snapshot provenance and all measured latency stages. The XGBoost result may be joined for evaluation but is not a prerequisite.
 3. Valid snapshots produce non-null T1, T2, SL, and regime in `llm_predictions`; invalid or missing inputs produce an auditable failure state instead of invented percentages. One chosen Jev result is stored per signal UUID.
 4. A successful persisted result leads to one separate, signal-identifiable Discord follow-up. The original alert and trade path remain unaffected.
 5. New-unit tests use mocked TypeSafe/Supabase/Discord boundaries and cover geometry, source selection, probability invariants, missing data, idempotency, failure/retry paths, and alert behavior. Target 100% coverage for the new unit.

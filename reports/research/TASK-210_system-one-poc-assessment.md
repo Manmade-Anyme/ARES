@@ -5,11 +5,15 @@
 
 ## Recommendation
 
-Use Jev as a second forward predictor in the **existing ARES Fly app**, on a separate process-group Machine. Consume the signal-time data ARES already writes to `ml_collection` and `ares_signals`; do not fetch the market again. Persist Jev's estimates to `llm_predictions` and post a separate follow-up Discord alert. Jev code lives in its own `system_one/` package, with no application-code imports in either direction between it and XGBoost.
+Use Jev as a second forward predictor in the **existing ARES Fly app**, on a separate process-group Machine. When any of the four ARES trade setups fires, consume the live signal-time data ARES already writes to `ml_collection` and `ares_signals`; do not fetch the market again. Call Jev once for that signal, persist its estimates to `llm_predictions`, and post a separate follow-up Discord alert. Jev code lives in its own `system_one/` package, with no application-code imports in either direction between it and XGBoost.
+
+Jev performs **inference only**. Unlike the XGBoost module, this POC has no offline training, fitting, retraining, or model artifact. Historical labels are for measuring whether Jev's live probabilities are reliable, not for training Jev.
 
 This replaces the earlier proposal for a second Fly app and independent Dhan collector. The user's latest instruction is to run alongside the main app and reuse the ML data. A separate process group fits that requirement while giving the trading process its own 768 MB Machine. [Fly process-group documentation](https://fly.io/docs/launch/processes/).
 
 ## What the repository provides
+
+The four live setup types are `FAILED_BREAKOUT`, `OI_WALL_REJECTION`, `EXHAUSTION_REVERSAL`, and `TREND_CONTINUATION` (`models.SetupType`). The engine evaluates them from the latest closed one-minute candle, option chain/ATM data, IV change, and structural levels, then returns a signal with entry, targets, stop, and reasons. The Jev POC runs only for a fired signal of one of these types; it is not a continuous every-bar forecaster.
 
 | Existing record | Signal-time content | Role for Jev |
 | --- | --- | --- |
@@ -42,7 +46,7 @@ sequenceDiagram
 
 The worker has no Dhan calls, avoiding the rate contention created by the earlier collector proposal. It still shares Supabase reads, Fly app configuration, image, and app-level secrets; resource isolation applies to the Machines, not to those shared services. Fly's process groups are configured in one `fly.toml`, and each group runs on its own Machine. A deploy would create the Jev Machine after the configuration is merged, so deployment is a separate reviewed step. [Fly process-group documentation](https://fly.io/docs/launch/processes/).
 
-Jev's model response may be fast, but total latency includes the existing snapshot write, polling interval, database read, context building, API round trip, prediction insert, and Discord send. Start with a one-second poll and measure p50/p95 signal-to-prediction and signal-to-alert times. Do not claim a fixed ~200 ms result before a real account call. If polling dominates, evaluate an event-driven handoff later.
+Jev's model response may be fast, but total latency includes the existing live snapshot write, polling interval, database read, context building, API round trip, prediction insert, and Discord send. Start with a one-second poll and measure p50/p95 signal-to-prediction and signal-to-alert times for all four setup types. Do not claim a fixed ~200 ms result before a real account call. If polling dominates, evaluate an event-driven handoff later.
 
 ## Exact context and Jev question contract
 
