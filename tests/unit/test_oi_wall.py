@@ -3,10 +3,11 @@ from unittest.mock import patch
 from models import OHLCVCandle, Direction
 from datetime import datetime
 from detectors.oi_wall import OIWallDetector
+from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 class TestOIWallDetector(unittest.TestCase):
     def setUp(self):
-        self.detector = OIWallDetector()
+        self.detector = OIWallDetector(calibration_policy=DEFAULT_DETECTOR_CALIBRATION_POLICY)
 
     @patch('detectors.oi_wall.settings')
     def test_oi_wall_confidence_high(self, mock_settings):
@@ -47,10 +48,12 @@ class TestOIWallDetector(unittest.TestCase):
             option_type="PE",
             levels=[]
         )
-        self.assertEqual(signal.confidence, "HIGH")
-        self.assertTrue(any("Massive wall size" in r for r in signal.reasons))
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertIs(signal.market_context["uncalibrated_high_suppressed"], True)
+        self.assertTrue(any("[CONFIDENCE GATE]" in reason for reason in signal.reasons))
+        self.assertTrue(any("Large OI concentration" in r for r in signal.reasons))
         self.assertTrue(any("tested wall deeply" in r for r in signal.reasons))
-        self.assertFalse(any("Aggressive active defending" in r for r in signal.reasons))
+        self.assertFalse(any("OI growth exceeds conviction threshold" in r for r in signal.reasons))
 
     @patch('detectors.oi_wall.settings')
     def test_oi_wall_confidence_medium(self, mock_settings):
@@ -93,8 +96,8 @@ class TestOIWallDetector(unittest.TestCase):
         )
         self.assertEqual(signal.confidence, "MEDIUM")
         self.assertFalse(any("tested wall deeply" in r for r in signal.reasons))
-        self.assertFalse(any("Massive wall size" in r for r in signal.reasons))
-        self.assertFalse(any("Aggressive active defending" in r for r in signal.reasons))
+        self.assertFalse(any("Large OI concentration" in r for r in signal.reasons))
+        self.assertFalse(any("OI growth exceeds conviction threshold" in r for r in signal.reasons))
 
     @patch('detectors.oi_wall.settings')
     def test_oi_wall_update_ce_wall_detected(self, mock_settings):

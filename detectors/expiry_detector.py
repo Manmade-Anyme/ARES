@@ -98,7 +98,7 @@ async def is_expiry_day_from_api() -> bool:
             return False
 
         # API responded but not with success (e.g., auth failure) — fall back
-        print(f"\033[93m[ARES] ⚠️ Expiry API returned non-success, falling back to Tuesday rule.\033[0m")
+        print("\033[93m[ARES] ⚠️ Expiry API returned non-success, falling back to Tuesday rule.\033[0m")
         return is_expiry_day_simple()
 
     except Exception as e:

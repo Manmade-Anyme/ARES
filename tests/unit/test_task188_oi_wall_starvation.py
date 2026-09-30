@@ -42,8 +42,14 @@ class TestOIWallNotStarved(unittest.TestCase):
 
     def _atm(self, spot=24000.0):
         atm = MagicMock(spec=ATMStrikes)
-        atm.ce = MagicMock(); atm.ce.iv = 12.0; atm.ce.oi = 1000; atm.ce.oi_prev = 1000
-        atm.pe = MagicMock(); atm.pe.iv = 12.0; atm.pe.oi = 1000; atm.pe.oi_prev = 1000
+        atm.ce = MagicMock()
+        atm.ce.iv = 12.0
+        atm.ce.oi = 1000
+        atm.ce.oi_prev = 1000
+        atm.pe = MagicMock()
+        atm.pe.iv = 12.0
+        atm.pe.oi = 1000
+        atm.pe.oi_prev = 1000
         atm.spot_price = spot
         return atm
 

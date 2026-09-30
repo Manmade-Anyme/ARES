@@ -14,6 +14,7 @@ from config import settings
 from config_profiles import TuningConfig, NON_EXPIRY_CONFIG, EXPIRY_CONFIG
 from models import OHLCVCandle, ResistanceLevel, SetupType, Direction
 from detectors.continuation import TrendContinuationDetector
+from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 
 def candle(close, vwap, open_=None, high=None, low=None, volume=100000, minute=0):
@@ -49,7 +50,7 @@ class TestContinuationStateMachine(unittest.TestCase):
 
     def setUp(self):
         settings.apply_profile(NON_EXPIRY_CONFIG)
-        self.det = TrendContinuationDetector()
+        self.det = TrendContinuationDetector(calibration_policy=DEFAULT_DETECTOR_CALIBRATION_POLICY)
         self.pdh, self.pdl = 24200.0, 24000.0
 
     def tearDown(self):
@@ -164,10 +165,9 @@ class TestContinuationStateMachine(unittest.TestCase):
     def test_full_bearish_continuation_emits_signal(self):
         pdh, pdl = 24200.0, 23900.0
         n = settings.continuation_regime_min_candles
-        sig = None
         for i in range(n):
-            sig = self.det.update(candle(24010.0, 24050.0, minute=i), avg_volume=100000, levels=[],
-                                   pdh=pdh, pdl=pdl)
+            self.det.update(candle(24010.0, 24050.0, minute=i), avg_volume=100000, levels=[],
+                            pdh=pdh, pdl=pdl)
         self.assertTrue(self.det.state.armed)
         self.assertEqual(self.det.state.direction, Direction.BEARISH)
 
@@ -278,4 +278,6 @@ class TestContinuationStateMachine(unittest.TestCase):
         resume = candle(24115.0, 24100.0, open_=24108.0, volume=200000, minute=2 * n + 2)
         signal = self.det.update(resume, avg_volume=100000, levels=levels, pdh=self.pdh, pdl=self.pdl)
         self.assertIsNotNone(signal)
-        self.assertEqual(signal.confidence, "HIGH")
+        self.assertEqual(signal.confidence, "MEDIUM")
+        self.assertTrue(signal.market_context["uncalibrated_high_suppressed"])
+        self.assertTrue(any("[CONFIDENCE GATE]" in reason for reason in signal.reasons))

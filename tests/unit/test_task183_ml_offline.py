@@ -13,11 +13,11 @@ import tempfile
 import types
 import builtins
 from contextlib import redirect_stdout
-from datetime import datetime
 from unittest.mock import mock_open, patch
 
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 
 from ml_signal.dataset import (
     flatten_features,
@@ -30,13 +30,18 @@ from ml_signal.train_offline import (
     chronological_split,
     run_training,
     _compute_shap,
+    _clear_versioned_shap_artifacts,
     _fetch_ml_collection,
     _fetch_trade_exit_timestamps,
+    _generate_shap_report,
     _native_shap_values,
     _offline_report_paths,
+    _positive_class_base_value,
     _print_shap_summary,
+    _save_shap_beeswarm_plot,
     _sharpe_metrics,
     _shap_metrics,
+    _with_persisted_stage1_probability,
 )
 from ml_signal.config import MLConfig
 
@@ -105,29 +110,29 @@ class TestFlatten(unittest.TestCase):
 class TestLabelForwardPoints(unittest.TestCase):
     def test_up_move_is_win(self):
         # +25 on the next candle, tp=20 -> clean up move -> 1
-        labels = label_forward_points([100, 125, 100, 100], lookforward=3,
+        labels, res = label_forward_points([100, 125, 100, 100], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], 1)
 
     def test_down_move_is_win(self):
-        labels = label_forward_points([100, 75, 100, 100], lookforward=3,
+        labels, res = label_forward_points([100, 75, 100, 100], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], 1)
 
     def test_stop_before_target_is_loss(self):
         # drops 12 (past bull sl 10) first, never a clean 20-pt move -> 0
-        labels = label_forward_points([100, 88, 105, 103], lookforward=3,
+        labels, res = label_forward_points([100, 88, 105, 103], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], 0)
 
     def test_inconclusive_is_minus_one(self):
         # tiny wiggles, neither tp nor sl -> -1
-        labels = label_forward_points([100, 105, 98, 101], lookforward=3,
+        labels, res = label_forward_points([100, 105, 98, 101], [1, 2, 3, 4], lookforward=3,
                                       tp_points=20, sl_points=10)
         self.assertEqual(labels[0], -1)
 
     def test_tail_rows_have_no_forward_window(self):
-        labels = label_forward_points([100, 100], lookforward=3,
+        labels, res = label_forward_points([100, 100], [1, 2], lookforward=3,
                                       tp_points=20, sl_points=10)
         # not enough forward candles -> inconclusive
         self.assertEqual(labels[-1], -1)
@@ -186,7 +191,6 @@ class TestChronologicalSplit(unittest.TestCase):
 class TestRunTrainingSmallDataGuard(unittest.TestCase):
     def test_tiny_dataset_does_not_crash(self):
         # a handful of separable rows; run_training must complete and return metrics
-        import numpy as np
         rng = list(range(40))
         df = pd.DataFrame({
             "timestamp": pd.to_datetime([f"2026-07-08T09:{i:02d}:00" for i in rng]),
@@ -209,6 +213,12 @@ class TestSharpeMetrics(unittest.TestCase):
                 "2026-08-05T04:00:00+00:00",
             ],
             "pnl_points": [10.0, -2.0, -4.0, 8.0],
+            "entry_timestamp": [
+                "2026-08-03T04:00:00+00:00",
+                "2026-08-03T05:00:00+00:00",
+                "2026-08-04T04:00:00+00:00",
+                "2026-08-05T04:00:00+00:00",
+            ],
             "exit_timestamp": [
                 "2026-08-03T04:00:00+00:00",
                 "2026-08-03T05:00:00+00:00",
@@ -235,6 +245,10 @@ class TestSharpeMetrics(unittest.TestCase):
                 "2026-08-03T04:00:00+00:00",
                 "2026-08-04T04:00:00+00:00",
             ],
+            "entry_timestamp": [
+                "2026-08-03T04:00:00+00:00",
+                "2026-08-04T04:00:00+00:00",
+            ],
             "exit_timestamp": [
                 "2026-08-05T04:00:00+00:00",
                 "2026-08-06T04:00:00+00:00",
@@ -256,12 +270,23 @@ class TestSharpeMetrics(unittest.TestCase):
     def test_requires_two_distinct_trading_days(self):
         df = pd.DataFrame({
             "timestamp": ["2026-08-03T04:00:00+00:00"],
+            "entry_timestamp": ["2026-08-03T04:00:00+00:00"],
             "exit_timestamp": ["2026-08-03T04:00:00+00:00"],
             "pnl_points": [10.0],
         })
         metrics = _sharpe_metrics(df)
         self.assertEqual(metrics["sharpe_status"], "insufficient_days")
         self.assertIsNone(metrics["sharpe_annualized"])
+
+    def test_invalid_chronology_count(self):
+        df = pd.DataFrame({
+            "timestamp": ["2026-08-03T04:00:00+00:00", "2026-08-04T04:00:00+00:00"],
+            "entry_timestamp": ["2026-08-03T10:00:00+00:00", "2026-08-04T10:00:00+00:00"],
+            "exit_timestamp": ["2026-08-03T09:00:00+00:00", "2026-08-04T11:00:00+00:00"],
+            "pnl_points": [10.0, 5.0],
+        })
+        metrics = _sharpe_metrics(df)
+        self.assertEqual(metrics["sharpe_invalid_chronology_count"], 1)
 
 
 class TestDetectorScoresFeature(unittest.TestCase):
@@ -319,7 +344,6 @@ class TestDetectorScoresFeature(unittest.TestCase):
         df = flatten_features([row_with, row_without])
 
         self.assertIn("detector_scores__failed_breakout", df.columns)
-        import numpy as np
         self.assertTrue(pd.isna(df.iloc[1]["detector_scores__failed_breakout"]),
                         "Pre-migration rows must have NaN, not 0.0")
 
@@ -381,7 +405,7 @@ class TestDetectorScoresFeature(unittest.TestCase):
 
             def execute(self):
                 return types.SimpleNamespace(data=[
-                    {"id": "trade-1", "exit_timestamp": "2026-08-05T04:00:00+00:00"},
+                    {"id": "trade-1", "exit_timestamp": "2026-08-05T04:00:00+00:00", "entry_timestamp": "2026-08-05T03:00:00+00:00", "time_metrics_excluded": False},
                 ])
 
         query = Query()
@@ -394,8 +418,12 @@ class TestDetectorScoresFeature(unittest.TestCase):
         supabase = Supabase()
         exits = _fetch_trade_exit_timestamps(supabase)
         self.assertEqual(supabase.table_name, "trade_analytics")
-        self.assertEqual(query.selected_columns, "id,exit_timestamp")
-        self.assertEqual(exits["trade-1"], "2026-08-05T04:00:00+00:00")
+        self.assertEqual(query.selected_columns, "id,exit_timestamp,entry_timestamp,time_metrics_excluded")
+        self.assertEqual(exits["trade-1"], {
+            "exit_timestamp": "2026-08-05T04:00:00+00:00",
+            "entry_timestamp": "2026-08-05T03:00:00+00:00",
+            "time_metrics_excluded": False
+        })
 
 
 def _training_frame(n=64, feature_names=None):
@@ -412,25 +440,41 @@ def _training_frame(n=64, feature_names=None):
 
 def _fake_shap(values, observed=None):
     """External SHAP boundary fake; run_training and XGBoost remain real."""
+    def _base_values(model, X, vals, tree_limit):
+        raw_margin = model.get_booster().predict(
+            xgb.DMatrix(X),
+            output_margin=True,
+            iteration_range=(0, tree_limit),
+        )
+        return raw_margin - np.asarray(vals, dtype=float).sum(axis=1)
+
     class Explanation:
-        def __init__(self, vals):
+        def __init__(self, vals, base_values):
             self.values = np.asarray(vals, dtype=float)
+            self.base_values = np.asarray(base_values, dtype=float)
 
     class TreeExplainer:
-        def __init__(self, model):
+        def __init__(self, model, **kwargs):
+            self.model = model
             self.expected_value = 0.0
+            if observed is not None:
+                observed["feature_perturbation"] = kwargs.get("feature_perturbation")
 
         def shap_values(self, X, tree_limit=None, check_additivity=True):
+            vals = np.asarray(values, dtype=float)
+            self.expected_value = _base_values(self.model, X, vals, tree_limit)
             if observed is not None:
                 observed.update({
                     "X": X.copy(),
                     "tree_limit": tree_limit,
                     "check_additivity": check_additivity,
                 })
-            return np.asarray(values, dtype=float)
+            return vals
 
         def __call__(self, X, **kwargs):
-            return Explanation(np.asarray(values, dtype=float))
+            vals = np.asarray(values, dtype=float)
+            base = _base_values(self.model, X, vals, kwargs["tree_limit"])
+            return Explanation(vals, base)
 
     return types.SimpleNamespace(TreeExplainer=TreeExplainer)
 
@@ -460,6 +504,7 @@ class TestOfflineShapContract(unittest.TestCase):
         )
         self.assertEqual(observed["tree_limit"], int(model.best_iteration) + 1)
         self.assertIs(observed["check_additivity"], True)
+        self.assertEqual(observed["feature_perturbation"], "tree_path_dependent")
         self.assertIs(metrics["shap_computed"], True)
         self.assertIsInstance(metrics["shap_top_features"], list)
         self.assertEqual(metrics["shap_output_unit"], "raw_margin_log_odds")
@@ -467,6 +512,14 @@ class TestOfflineShapContract(unittest.TestCase):
         self.assertEqual(metrics["shap_backend"], "shap_tree_explainer")
         self.assertEqual(metrics["shap_status"], "computed")
         self.assertIs(metrics["shap_plot_saved"], False)
+
+    def test_two_row_class_base_value_is_not_mistaken_for_per_row_values(self):
+        np.testing.assert_allclose(
+            _positive_class_base_value(
+                np.array([0.2, 0.8]), 2, class_expected_value=True
+            ),
+            np.array([0.8, 0.8]),
+        )
 
     def test_top_fifteen_descending_nonnegative_and_feature_aligned(self):
         features = [f"f{i}" for i in range(20)]
@@ -508,10 +561,10 @@ class TestOfflineShapContract(unittest.TestCase):
                 _, metrics = run_training(df, ["alpha", "beta", "gamma"],
                                            config=self._config(), save_path=model_path,
                                            report_path=report_path)
-            self.assertFalse(metrics["shap_computed"])
-            self.assertEqual(metrics["shap_status"], "shap_unavailable")
-            self.assertEqual(metrics["shap_explained_rows"], 0)
-            self.assertEqual(metrics["shap_top_features"], [])
+            self.assertTrue(metrics["shap_computed"])
+            self.assertEqual(metrics["shap_status"], "computed")
+            self.assertEqual(metrics["shap_backend"], "xgboost_pred_contribs")
+            self.assertGreater(len(metrics["shap_top_features"]), 0)
             self.assertTrue(os.path.isfile(model_path))
             self.assertTrue(os.path.isfile(report_path))
 
@@ -564,22 +617,44 @@ class TestOfflineShapContract(unittest.TestCase):
         n_test = len(df) - int(len(df) * 0.8)
 
         class CallableExplainer:
+            def __init__(self, model):
+                self.model = model
+
             def __call__(self, X, **kwargs):
-                return types.SimpleNamespace(values=np.ones((len(X), 3)))
+                values = np.ones((len(X), 3))
+                raw_margin = self.model.get_booster().predict(
+                    xgb.DMatrix(X),
+                    output_margin=True,
+                    iteration_range=(0, kwargs["tree_limit"]),
+                )
+                return types.SimpleNamespace(
+                    values=values,
+                    base_values=raw_margin - values.sum(axis=1),
+                )
 
         with patch.dict(sys.modules, {"shap": types.SimpleNamespace(
-                TreeExplainer=lambda model: CallableExplainer())}):
+                TreeExplainer=lambda model, **kwargs: CallableExplainer(model))}):
             _, callable_metrics = run_training(
                 df, ["alpha", "beta", "gamma"], config=self._config())
         self.assertTrue(callable_metrics["shap_computed"])
         self.assertEqual(callable_metrics["shap_explained_rows"], n_test)
 
         class ListExplainer:
+            def __init__(self, model):
+                self.model = model
+
             def shap_values(self, X, **kwargs):
-                return [np.zeros((len(X), 3)), np.full((len(X), 3), 0.25)]
+                values = [np.zeros((len(X), 3)), np.full((len(X), 3), 0.25)]
+                raw_margin = self.model.get_booster().predict(
+                    xgb.DMatrix(X),
+                    output_margin=True,
+                    iteration_range=(0, kwargs["tree_limit"]),
+                )
+                self.expected_value = raw_margin - values[1].sum(axis=1)
+                return values
 
         with patch.dict(sys.modules, {"shap": types.SimpleNamespace(
-                TreeExplainer=lambda model: ListExplainer())}):
+                TreeExplainer=lambda model, **kwargs: ListExplainer(model))}):
             _, list_metrics = run_training(
                 df, ["alpha", "beta", "gamma"], config=self._config())
         self.assertTrue(list_metrics["shap_computed"])
@@ -596,6 +671,28 @@ class TestOfflineShapContract(unittest.TestCase):
         self.assertEqual(metrics["shap_backend"], "xgboost_pred_contribs")
         self.assertIn("ValueError", metrics["shap_fallback_reason"])
         self.assertEqual(metrics["shap_explained_rows"], metrics["n_test"])
+
+    def test_external_nonadditive_values_fall_back_to_native(self):
+        df = _training_frame()
+
+        class NonAdditiveExplainer:
+            def __init__(self, model, **kwargs):
+                self.expected_value = 0.0
+
+            def shap_values(self, X, **kwargs):
+                return np.zeros((len(X), 3))
+
+        fake = types.SimpleNamespace(TreeExplainer=NonAdditiveExplainer)
+        with patch.dict(sys.modules, {"shap": fake}):
+            _, metrics = run_training(
+                df,
+                ["alpha", "beta", "gamma"],
+                config=self._config(),
+            )
+
+        self.assertTrue(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_backend"], "xgboost_pred_contribs")
+        self.assertIn("not additive", metrics["shap_fallback_reason"])
 
     def test_nested_import_error_falls_back_to_native(self):
         df = _training_frame()
@@ -716,9 +813,9 @@ class TestOfflineShapContract(unittest.TestCase):
             with patch.dict(sys.modules, {"shap": None}):
                 _, metrics = run_training(df, ["alpha", "beta", "gamma"],
                                            config=self._config(), shap_plot_path=plot_path)
-            self.assertFalse(os.path.exists(plot_path))
-        self.assertFalse(metrics["shap_computed"])
-        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
+            self.assertTrue(os.path.exists(plot_path))
+        self.assertTrue(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "saved")
 
     def test_requested_plot_without_shap_removes_stale_file(self):
         df = _training_frame()
@@ -731,11 +828,11 @@ class TestOfflineShapContract(unittest.TestCase):
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
                 )
-            self.assertFalse(os.path.exists(plot_path))
+            self.assertTrue(os.path.exists(plot_path))
         self.assertIsNotNone(model)
         self.assertEqual(metrics["n_samples"], len(df))
-        self.assertFalse(metrics["shap_computed"])
-        self.assertEqual(metrics["shap_plot_status"], "not_saved_no_shap")
+        self.assertTrue(metrics["shap_computed"])
+        self.assertEqual(metrics["shap_plot_status"], "saved")
 
     def test_requested_plot_without_shap_preserves_symlink_and_target(self):
         df = _training_frame()
@@ -745,7 +842,8 @@ class TestOfflineShapContract(unittest.TestCase):
             with open(target_path, "wb") as target_file:
                 target_file.write(b"SHAP plot target")
             os.symlink(target_path, plot_path)
-            with patch.dict(sys.modules, {"shap": None}):
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")):
                 model, metrics = run_training(
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
@@ -763,7 +861,8 @@ class TestOfflineShapContract(unittest.TestCase):
             plot_path = os.path.join(directory, "notes.txt")
             with open(plot_path, "wb") as plot_file:
                 plot_file.write(b"unrelated training notes")
-            with patch.dict(sys.modules, {"shap": None}):
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")):
                 model, metrics = run_training(
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
@@ -780,7 +879,8 @@ class TestOfflineShapContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             plot_path = os.path.join(directory, "existing-plot-directory")
             os.mkdir(plot_path)
-            with patch.dict(sys.modules, {"shap": None}):
+            with patch.dict(sys.modules, {"shap": None}), \
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")):
                 model, metrics = run_training(
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
@@ -797,18 +897,16 @@ class TestOfflineShapContract(unittest.TestCase):
             with open(plot_path, "wb") as plot_file:
                 plot_file.write(b"stale SHAP plot")
             with patch.dict(sys.modules, {"shap": None}), \
-                    patch("ml_signal.train_offline.os.remove",
-                          side_effect=OSError("permission denied")):
+                 patch("ml_signal.train_offline._native_shap_values", side_effect=RuntimeError("fallback failed")), \
+                 patch("ml_signal.train_offline.os.remove", side_effect=OSError("permission denied")):
                 model, metrics = run_training(
                     df, ["alpha", "beta", "gamma"], config=self._config(),
                     shap_plot_path=plot_path,
                 )
             self.assertTrue(os.path.isfile(plot_path))
         self.assertIsNotNone(model)
-        self.assertEqual(metrics["n_samples"], len(df))
         self.assertFalse(metrics["shap_computed"])
         self.assertEqual(metrics["shap_plot_status"], "stale_cleanup_failed")
-        self.assertEqual(metrics["shap_plot_error_type"], "OSError")
 
     def test_report_paths_and_both_shap_summary_output_branches(self):
         paths = _offline_report_paths("/repo", "v42")
@@ -816,6 +914,7 @@ class TestOfflineShapContract(unittest.TestCase):
             "/repo/reports/ml/task183_offline_metrics.json",
             "/repo/reports/ml/v42_offline_metrics.json",
             "/repo/reports/ml/v42_shap_summary.png",
+            "/repo/reports/ml/v42_shap_beeswarm.png",
         ))
         computed = _shap_metrics()
         computed.update({"shap_computed": True, "shap_top_features": [
@@ -833,52 +932,184 @@ class TestOfflineShapContract(unittest.TestCase):
             self.assertIn(expected, text)
             output.close()
 
-    def test_main_orchestrates_versioned_shap_report_without_live_io(self):
-        from ml_signal.train_offline import main
+    def test_generate_shap_report_uses_versioned_artifact_paths(self):
+        df = _training_frame()
+        train_df, test_df = chronological_split(df)
+        expected = _shap_metrics()
+        expected.update({"shap_computed": True, "shap_status": "computed"})
+        fitted_model = object()
 
-        frame = _training_frame(n=4, feature_names=["alpha"])
-        metrics = {
-            "n_samples": 4, "n_train": 3, "n_test": 1,
-            "pos_rate": 0.5, "provisional": True, "auc_roc": 0.75,
-            "precision": 0.5, "recall": 0.5, "precision_top20": 0.5,
-            "top_features": [{"feature": "alpha", "gain": 0.5}],
-            "shap_computed": True,
-            "shap_top_features": [{"feature": "alpha", "mean_abs_shap": 0.25}],
-            "shap_status": "computed",
-        }
-        captured = {}
+        def explain(model, X_test, feature_cols, metrics):
+            self.assertIs(model, fitted_model)
+            pd.testing.assert_frame_equal(
+                X_test.reset_index(drop=True),
+                test_df[feature_cols].reset_index(drop=True),
+            )
+            metrics.update(expected)
+            return np.zeros((len(X_test), len(feature_cols)))
 
-        def fake_run_training(*args, **kwargs):
-            captured["kwargs"] = kwargs
-            return object(), metrics
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("ml_signal.train_offline.run_training") as train, \
+                patch("ml_signal.train_offline._compute_shap", side_effect=explain), \
+                patch("ml_signal.train_offline._save_shap_plot") as save_summary, \
+                patch("ml_signal.train_offline._save_shap_beeswarm_plot") as save_beeswarm, \
+                patch("ml_signal.train_offline.audit_shap_stability",
+                      return_value={"status": "computed"}):
+            observed = _generate_shap_report(
+                directory,
+                "v42",
+                fitted_model,
+                train_df,
+                ["alpha", "beta", "gamma"],
+                test_df,
+            )
+            with open(os.path.join(directory, "reports", "ml", "v42_offline_metrics.json")) as report_file:
+                report = json.load(report_file)
 
-        fake_supabase = types.SimpleNamespace(create_client=lambda url, key: object())
-        fake_dotenv = types.SimpleNamespace(load_dotenv=lambda path: None)
-        with patch.dict(os.environ, {"SUPABASE_URL": "url", "SUPABASE_KEY": "key"}), \
-                patch.dict(sys.modules, {"supabase": fake_supabase, "dotenv": fake_dotenv}), \
-                patch("ml_signal.train_offline._fetch_ml_collection", return_value=[{"row": 1}]), \
-                patch("ml_signal.train_offline._fetch_trade_exit_timestamps", return_value={}), \
-                patch("ml_signal.dataset.build_real_outcome_frame", return_value=frame), \
-                patch("ml_signal.train_offline.feature_columns", return_value=["alpha"]), \
-                patch("ml_signal.predictor.get_next_model_version_and_path",
-                      return_value=("/models/v42.joblib", "v42")), \
-                patch("ml_signal.train_offline.run_training", side_effect=fake_run_training), \
-                patch("builtins.open", mock_open()), \
-                patch("ml_signal.train_offline.json.dump"):
-            output = tempfile.SpooledTemporaryFile(mode="w+")
-            with redirect_stdout(output):
-                main()
-            output.seek(0)
-            stdout = output.read()
-            output.close()
+        self.assertTrue(observed["shap_computed"])
+        self.assertEqual(observed["shap_status"], "computed")
+        train.assert_not_called()
+        self.assertEqual(
+            save_summary.call_args.args[1],
+            os.path.join(directory, "reports", "ml", "v42_shap_summary.png"),
+        )
+        self.assertEqual(
+            save_beeswarm.call_args.args[3],
+            os.path.join(directory, "reports", "ml", "v42_shap_beeswarm.png"),
+        )
+        self.assertEqual(report["model_version"], "v42")
 
-        self.assertEqual(captured["kwargs"]["model_version"], "v42")
-        self.assertTrue(captured["kwargs"]["shap_plot_path"].endswith(
-            "reports/ml/v42_shap_summary.png"))
-        self.assertIn("SHAP Feature Importance", stdout)
-        self.assertIn("raw margin/log-odds", stdout)
-        self.assertIn("alpha", stdout)
+
+class TestSHAPP2Regressions(unittest.TestCase):
+    def test_skipped_generation_clears_all_versioned_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = _offline_report_paths(directory, "v42")[1:]
+            for path in paths:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as artifact:
+                    artifact.write(b"stale")
+
+            _clear_versioned_shap_artifacts(directory, "v42")
+
+            self.assertTrue(all(not os.path.exists(path) for path in paths))
+
+    def test_beeswarm_stale_artifact_is_removed_when_shap_is_unavailable(self):
+        df = pd.DataFrame({"alpha": [1.0], "beta": [2.0]})
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "v42_shap_beeswarm.png")
+            with open(path, "wb") as artifact:
+                artifact.write(b"stale")
+
+            _save_shap_beeswarm_plot(
+                None, df, ["alpha", "beta"], path, "none"
+            )
+
+            self.assertFalse(os.path.exists(path))
+
+    def test_beeswarm_stale_artifact_is_removed_when_rendering_fails(self):
+        df = pd.DataFrame({"alpha": [1.0], "beta": [2.0]})
+        values = np.ones((1, 2))
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "v42_shap_beeswarm.png")
+            with open(path, "wb") as artifact:
+                artifact.write(b"stale")
+
+            with patch(
+                "ml_signal.train_offline.os.makedirs",
+                side_effect=RuntimeError("render failure"),
+            ):
+                _save_shap_beeswarm_plot(
+                    values, df, ["alpha", "beta"], path, "none"
+                )
+
+            self.assertFalse(os.path.exists(path))
+
+    def test_hybrid_eval_feature_uses_persisted_stage1_model(self):
+        class PersistedStage1:
+            def predict_proba(self, features):
+                self.features = features.copy()
+                return np.array([[0.2, 0.8], [0.7, 0.3]])
+
+        model = PersistedStage1()
+        evaluation = pd.DataFrame({
+            "timestamp": pd.date_range("2026-08-01", periods=2, freq="h"),
+            "market_a": [10.0, 20.0],
+            "fold_specific_probability": [0.1, 0.9],
+        })
+
+        observed = _with_persisted_stage1_probability(
+            model, evaluation, ["market_a"]
+        )
+
+        np.testing.assert_allclose(
+            observed["meta_features__market_movement_prob"], [0.8, 0.3]
+        )
+        self.assertNotIn("meta_features__market_movement_prob", evaluation)
+        self.assertEqual(list(model.features.columns), ["market_a"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestOfflineExclusions(unittest.TestCase):
+    def test_run_training_excludes_flagged_trades(self):
+        rng = list(range(100))
+        df = pd.DataFrame({
+            "timestamp": pd.date_range("2026-07-08", periods=100, freq="min"),
+            "f1": [i % 2 for i in rng],
+            "f2": [(i * 7) % 5 for i in rng],
+            "label": [i % 2 for i in rng],
+            "time_metrics_excluded": [True if i < 10 else False for i in rng],
+        })
+        with patch("ml_signal.train_offline.audit_shap_stability",
+                   return_value={"status": "computed"}) as audit:
+            model, metrics = run_training(df, ["f1", "f2"], min_samples=1)
+        self.assertEqual(metrics["n_samples"], 90)
+        audited_df = audit.call_args.args[0]
+        self.assertEqual(len(audited_df), 90)
+        self.assertFalse(audited_df["time_metrics_excluded"].any())
+
+    def test_run_training_aborts_without_saving_when_all_trades_are_excluded(self):
+        df = _training_frame(n=20, feature_names=["f1", "f2"])
+        df["time_metrics_excluded"] = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = os.path.join(directory, "model.joblib")
+            report_path = os.path.join(directory, "metrics.json")
+            with patch("ml_signal.train_offline._train_xgb") as train_xgb, \
+                    patch("ml_signal.train_offline.joblib.dump") as dump_model:
+                with self.assertRaisesRegex(
+                        ValueError,
+                        "No training rows remain after applying time_metrics_excluded"):
+                    run_training(
+                        df,
+                        ["f1", "f2"],
+                        min_samples=1,
+                        save_path=model_path,
+                        report_path=report_path,
+                    )
+
+            train_xgb.assert_not_called()
+            dump_model.assert_not_called()
+            self.assertFalse(os.path.exists(model_path))
+            self.assertFalse(os.path.exists(report_path))
+
+class TestBuildRealOutcomeFrame(unittest.TestCase):
+    def test_metadata_columns_preserved(self):
+        from ml_signal.dataset import build_real_outcome_frame
+        rows = [
+            {
+                "timestamp": "2026-07-08T09:15:00+00:00",
+                "trade_outcome": "win",
+                "trade_pnl": 15.0,
+                "exit_timestamp": "2026-07-08T09:20:00+00:00",
+                "entry_timestamp": "2026-07-08T09:15:00+00:00",
+                "time_metrics_excluded": True,
+            }
+        ]
+        with patch("ml_signal.labeling.classify_ares_outcome", return_value=1):
+            df = build_real_outcome_frame(rows)
+        self.assertIn("time_metrics_excluded", df.columns)
+        self.assertIn("entry_timestamp", df.columns)
+        self.assertTrue(df.iloc[0]["time_metrics_excluded"])
+        self.assertEqual(df.iloc[0]["entry_timestamp"], "2026-07-08T09:15:00+00:00")

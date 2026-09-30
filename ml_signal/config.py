@@ -1,9 +1,14 @@
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass
+
+
+CURRENT_FEATURE_VERSION: int = 4
 
 
 @dataclass
 class MLConfig:
+
+    # Feature & schema versioning (MANM-154)
+    feature_version: int = CURRENT_FEATURE_VERSION
 
     # Model
     model_path: str = "ml_signal/models/v1.joblib"
@@ -16,11 +21,17 @@ class MLConfig:
     lookforward_candles: int = 5
     tp_points: float = 35.0
     sl_points: float = 25.0
+    mm_tp_points: float = 15.0
+    mm_sl_points: float = 10.0
     label_exclude_inconclusive: bool = True
 
     # Confidence tiers
     high_threshold: float = 0.70
     medium_threshold: float = 0.55
+    enable_calibration_policy: bool = True
+    calibration_alpha: float = 0.05
+    calibration_record_path: str = "reports/ml/calibration_validation_record.json"
+    calibrator_method: str = "isotonic"
 
     # Feature flags
     use_candle_features: bool = True

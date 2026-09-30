@@ -66,3 +66,15 @@ def test_ml_workflow_structure():
     assert 'rm -f "$METRICS_PATH"' in content
     assert "continue-on-error: true" in content
     assert "active-trading-day" in content
+
+
+def test_promoted_model_commits_runtime_calibration_evidence():
+    with open(WORKFLOW_PATH, "r") as f:
+        content = f.read()
+
+    # The deploy job checks out main afresh, so artifact upload alone cannot
+    # supply these files to the runtime confidence gate.
+    assert 'git add ml_signal/models/v[0-9]*.joblib "$METRICS_PATH"' in content
+    assert 'git add reports/ml/calibration_validation_record.json' in content
+    assert 'reports/ml/confidence_calibration_stratified_report.json' in content
+    assert 'test -f reports/ml/calibration_validation_record.json' in content

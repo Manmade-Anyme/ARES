@@ -5,9 +5,7 @@ Ensures Secrets can be instantiated without requiring DISCORD_WEBHOOK_URL or oth
 secrets to be set, preventing ValidationError in headless / offline environments
 like GitHub Actions ML model training.
 """
-import os
 from unittest.mock import patch
-import pytest
 from config import Secrets, Settings
 
 

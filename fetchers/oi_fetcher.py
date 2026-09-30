@@ -1,10 +1,28 @@
 import asyncio
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 from dhanhq import dhanhq
 
 from models import ATMStrikes, OptionRow
 from config import settings
+
+
+def _parse_float(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_int(val: Any) -> Optional[int]:
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
 
 
 class OIFetcher:
@@ -216,51 +234,63 @@ class OIFetcher:
             # ---------------------------
             # CE Processing
             # ---------------------------
-            ce_oi = int(ce_data.get("oi", 0))
+            ce_oi = _parse_int(ce_data.get("oi"))
             # Dhan API uses 'last_price' in the oc dictionary
-            ce_ltp = float(ce_data.get("last_price", 0.0))
-            ce_iv = float(ce_data.get("implied_volatility", 0.0))
+            ce_ltp = _parse_float(ce_data.get("last_price"))
+            ce_iv = _parse_float(ce_data.get("implied_volatility"))
             
-            ce_greeks = ce_data.get("greeks", {})
-            ce_gamma = float(ce_greeks.get("gamma", 0.0))
-            ce_theta = float(ce_greeks.get("theta", 0.0))
-            ce_delta = float(ce_greeks.get("delta", 0.0))
-            ce_vega = float(ce_greeks.get("vega", 0.0))
+            ce_greeks = ce_data.get("greeks") if isinstance(ce_data.get("greeks"), dict) else {}
+            ce_gamma = _parse_float(ce_greeks.get("gamma"))
+            ce_theta = _parse_float(ce_greeks.get("theta"))
+            ce_delta = _parse_float(ce_greeks.get("delta"))
+            ce_vega = _parse_float(ce_greeks.get("vega"))
             
             ce_key = f"{strike}_CE"
-            ce_oi_prev = self._prev_oi_snapshot.get(ce_key, ce_oi)
-            
-            if ce_oi_prev == 0:
-                ce_oi_change_pct = 0.0
+            if ce_oi is not None:
+                ce_oi_prev = self._prev_oi_snapshot.get(ce_key)
+                if ce_oi_prev is None:
+                    # First observation or first post-gap cycle: baseline is unobserved
+                    ce_oi_change_pct = None
+                elif ce_oi_prev == 0:
+                    ce_oi_change_pct = 0.0
+                else:
+                    ce_oi_change_pct = ((ce_oi - ce_oi_prev) / ce_oi_prev) * 100.0
+                # Update snapshot for next cycle
+                self._prev_oi_snapshot[ce_key] = ce_oi
             else:
-                ce_oi_change_pct = ((ce_oi - ce_oi_prev) / ce_oi_prev) * 100.0
-                
-            # Update snapshot for next cycle
-            self._prev_oi_snapshot[ce_key] = ce_oi
+                self._prev_oi_snapshot.pop(ce_key, None)
+                ce_oi_prev = None
+                ce_oi_change_pct = None
             
             # ---------------------------
             # PE Processing
             # ---------------------------
-            pe_oi = int(pe_data.get("oi", 0))
-            pe_ltp = float(pe_data.get("last_price", 0.0))
-            pe_iv = float(pe_data.get("implied_volatility", 0.0))
+            pe_oi = _parse_int(pe_data.get("oi"))
+            pe_ltp = _parse_float(pe_data.get("last_price"))
+            pe_iv = _parse_float(pe_data.get("implied_volatility"))
             
-            pe_greeks = pe_data.get("greeks", {})
-            pe_gamma = float(pe_greeks.get("gamma", 0.0))
-            pe_theta = float(pe_greeks.get("theta", 0.0))
-            pe_delta = float(pe_greeks.get("delta", 0.0))
-            pe_vega = float(pe_greeks.get("vega", 0.0))
+            pe_greeks = pe_data.get("greeks") if isinstance(pe_data.get("greeks"), dict) else {}
+            pe_gamma = _parse_float(pe_greeks.get("gamma"))
+            pe_theta = _parse_float(pe_greeks.get("theta"))
+            pe_delta = _parse_float(pe_greeks.get("delta"))
+            pe_vega = _parse_float(pe_greeks.get("vega"))
             
             pe_key = f"{strike}_PE"
-            pe_oi_prev = self._prev_oi_snapshot.get(pe_key, pe_oi)
-            
-            if pe_oi_prev == 0:
-                pe_oi_change_pct = 0.0
+            if pe_oi is not None:
+                pe_oi_prev = self._prev_oi_snapshot.get(pe_key)
+                if pe_oi_prev is None:
+                    # First observation or first post-gap cycle: baseline is unobserved
+                    pe_oi_change_pct = None
+                elif pe_oi_prev == 0:
+                    pe_oi_change_pct = 0.0
+                else:
+                    pe_oi_change_pct = ((pe_oi - pe_oi_prev) / pe_oi_prev) * 100.0
+                # Update snapshot for next cycle
+                self._prev_oi_snapshot[pe_key] = pe_oi
             else:
-                pe_oi_change_pct = ((pe_oi - pe_oi_prev) / pe_oi_prev) * 100.0
-                
-            # Update snapshot for next cycle
-            self._prev_oi_snapshot[pe_key] = pe_oi
+                self._prev_oi_snapshot.pop(pe_key, None)
+                pe_oi_prev = None
+                pe_oi_change_pct = None
             
             # Append to full chain list
             full_chain.append({

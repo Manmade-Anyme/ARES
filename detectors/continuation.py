@@ -43,9 +43,10 @@ class TrendContinuationDetector:
     filters that out at the cost of one candle's worth of entry price.
     """
 
-    def __init__(self):
+    def __init__(self, calibration_policy=None):
         """Initialize the detector with no active regime candidate."""
         self.state: Optional[ContinuationState] = None
+        self.calibration_policy = calibration_policy
 
     def update(
         self,
@@ -232,7 +233,7 @@ class TrendContinuationDetector:
         entry_zone = (candle.close - settings.entry_zone_offset_pts, candle.close + settings.entry_zone_offset_pts)
         strike_to_trade = int(round(candle.close / settings.strike_interval) * settings.strike_interval)
 
-        return AresSignal(
+        signal = AresSignal(
             setup_type=SetupType.TREND_CONTINUATION,
             direction=direction,
             trigger_price=candle.close,
@@ -246,3 +247,4 @@ class TrendContinuationDetector:
             strike_to_trade=strike_to_trade,
             option_type=option_type,
         )
+        return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal
