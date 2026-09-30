@@ -43,17 +43,6 @@ _PER_TYPE_LEVELS_DEFAULT = {
     "FAILED_BREAKOUT":     SetupLevels(12.0, 20.0, 55.0),
 }
 
-_DIRECTIONAL_LEVELS_DEFAULT = {
-    "TREND_CONTINUATION_BULLISH": SetupLevels(20.0, 20.0, 50.0),
-    "TREND_CONTINUATION_BEARISH": SetupLevels(25.0, 25.0, 80.0),
-    "EXHAUSTION_REVERSAL_BULLISH": SetupLevels(10.0, 18.0, 40.0),
-    "EXHAUSTION_REVERSAL_BEARISH": SetupLevels(10.0, 18.0, 40.0),
-    "OI_WALL_REJECTION_BULLISH": SetupLevels(12.0, 20.0, 35.0),
-    "OI_WALL_REJECTION_BEARISH": SetupLevels(16.0, 25.0, 40.0),
-    "FAILED_BREAKOUT_BULLISH": SetupLevels(10.0, 15.0, 40.0),
-    "FAILED_BREAKOUT_BEARISH": SetupLevels(12.0, 20.0, 55.0),
-}
-
 
 @dataclass
 class TuningConfig:
@@ -175,19 +164,13 @@ class TuningConfig:
     continuation_pullback_vwap_pts: float = 10.0
     continuation_pullback_max_candles: int = 10
     continuation_resume_volume_ratio: float = 1.2
-    bullish_continuation_volume_ratio: float = 1.4
     continuation_min_score: int = 2
-
-    gate_counter_trend_fades: bool = True
 
     # Per-setup-type SL / T1 / T2 (TASK-185). Applied centrally in the engine,
     # keyed by SetupType.value. See SetupLevels above. Same table in both
     # profiles for now; expiry may diverge after a month of live re-tuning.
     per_type_levels: dict = field(
         default_factory=lambda: dict(_PER_TYPE_LEVELS_DEFAULT)
-    )
-    directional_levels: dict = field(
-        default_factory=lambda: dict(_DIRECTIONAL_LEVELS_DEFAULT)
     )
 
     # Zones (T1/T2 distances now live per setup type in per_type_levels above)

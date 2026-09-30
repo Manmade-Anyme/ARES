@@ -38,10 +38,9 @@
 - [x] Documentation is present for data retention.
 
 ## MANM-159: Directional performance asymmetry
-**Status:** Implemented in feature branch; out-of-sample replay pending.
+**Status:** ADR complete; implementation pending.
 
 ### Acceptance criteria
 - [x] Identify structural causes and document them in ADR-159.
-- [x] Implement the ADR geometry, regime gating, and continuation confirmation.
-- [x] Verify rule behavior with tests.
-- [ ] Replay against out-of-sample candle and trade data before measuring performance impact.
+- [ ] Implement the approved asymmetric geometry, regime gating, and continuation confirmation.
+- [ ] Verify behavior with tests.

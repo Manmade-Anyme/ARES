@@ -91,7 +91,7 @@ class TestEngineEfficiencyGates(unittest.TestCase):
 
     def _disable_per_type(self):
         settings.apply_profile(
-            dataclasses.replace(NON_EXPIRY_CONFIG, per_type_levels={}, directional_levels={})
+            dataclasses.replace(NON_EXPIRY_CONFIG, per_type_levels={})
         )
 
     def test_rr_gate_rejects_risk_greater_than_reward(self):
@@ -129,7 +129,6 @@ class TestEngineEfficiencyGates(unittest.TestCase):
         settings.apply_profile(dataclasses.replace(
             NON_EXPIRY_CONFIG,
             per_type_levels={"OI_WALL_REJECTION": SetupLevels(50.0, 35.0, 70.0)},
-            directional_levels={},
         ))
         signal = self._make_signal(setup_type=SetupType.OI_WALL_REJECTION)
         result = self._tick_with(signal)

@@ -366,12 +366,9 @@ class OIWallEntryFilter:
                 reference_price=decision.reference_price,
             )
 
-        elif outcome in ("REJECTED_BY_RR", "REJECTED_BY_REGIME"):
+        elif outcome == "REJECTED_BY_RR":
             self.state = "EXPIRED"
-            self.rejection_reason = (
-                "Rejected by counter-trend regime gate"
-                if outcome == "REJECTED_BY_REGIME" else "Rejected by R:R gate"
-            )
+            self.rejection_reason = "Rejected by R:R gate"
             telemetry = OIWallTelemetry(
                 bias=decision.bias,
                 entry_status="EXPIRED",

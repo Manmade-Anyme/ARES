@@ -17,5 +17,4 @@ Refactor the ML training pipeline for ARES to decouple self-labeled and realized
 ## Current work: MANM-159 (2026-09-30)
 - [x] PM: Create directive and backlog.
 - [x] Architect: Complete statistical diagnostics and ADR-159.
-- [x] Code Generator: Implement ADR-159 remediation and regression tests.
-- [ ] Validate the strategy change with out-of-sample market replay.
+- [ ] Code Generator: Implement ADR-159 remediation.

@@ -1,5 +1,4 @@
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import get_type_hints
 from unittest.mock import MagicMock, patch
@@ -119,35 +118,6 @@ class TestEngineOIWallEntry(unittest.TestCase):
         self.engine.oi_wall_filter.update.assert_called_once()
         self.engine.oi_wall_filter.acknowledge.assert_called_once_with(decision, "SUPPRESSED_BY_COOLDOWN")
 
-    def test_regime_rejection_expires_qualified_bullish_wall(self):
-        bias = replace(self._make_bias(), direction=Direction.BULLISH)
-        decision = self._make_decision(bias=bias)
-        self.engine.oi_wall_detector.update = MagicMock(return_value=bias)
-        self.engine.oi_wall_filter.update = MagicMock(return_value=decision)
-        self.engine.oi_wall_detector.build_signal = MagicMock(return_value=AresSignal(
-            setup_type=SetupType.OI_WALL_REJECTION,
-            direction=Direction.BULLISH,
-            trigger_price=24075.0,
-            entry_zone=(24070.0, 24080.0),
-            stop_loss=24060.0,
-            target_1=24100.0,
-            target_2=24125.0,
-            confidence="HIGH",
-            reasons=[],
-            timestamp=self.t0,
-            strike_to_trade=24050,
-            option_type="CE",
-        ))
-        self.engine.breakout_detector.update = MagicMock(return_value=None)
-        self.engine.continuation_detector.update = MagicMock(return_value=None)
-        self.engine.exhaustion_detector.update = MagicMock(return_value=None)
-
-        candle = self._make_candle(24075.0)
-        candle.vwap = 24100.0
-        assert self.engine.tick(candle, [], self._make_atm(24075.0), pdh=24150.0, pdl=23900.0) is None
-        assert self.engine.oi_wall_filter.state == "EXPIRED"
-        assert self.engine.latest_oi_wall_context["rejection_reason"] == "Rejected by counter-trend regime gate"
-
     def test_advances_during_breakout_priority_and_acknowledges_suppressed(self):
         bias = self._make_bias()
         decision = self._make_decision(status="QUALIFIED", bias=bias)
@@ -213,7 +183,7 @@ class TestEngineOIWallEntry(unittest.TestCase):
         candle = self._make_candle(24075.0)
         atm = self._make_atm(24075.0)
         # Do not leave an instance override shadowing every later profile.
-        with patch.object(settings, "per_type_levels", {}), patch.object(settings, "directional_levels", {}):
+        with patch.object(settings, "per_type_levels", {}):
             signal = self.engine.tick(candle, [], atm, 0.0, [])
 
         self.assertIsNone(signal)

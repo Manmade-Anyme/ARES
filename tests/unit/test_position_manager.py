@@ -315,11 +315,11 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         }
         pm.active_trades = [trade]
         
-        # 1. Price reaches T1 -> state trails to T1_HIT, SL locks two points
+        # 1. Price reaches T1 -> state trails to T1_HIT, SL = entry
         # (TASK-172 fill-at-level: events are reported at the touched level)
         await pm.update_trades(24060.0)
         self.assertEqual(trade["state"], "T1_HIT")
-        self.assertEqual(trade["stop_loss"], 24002.0)
+        self.assertEqual(trade["stop_loss"], 24000.0)
         mock_send_trade_update.assert_called_with(trade, 24050.0, "T1_HIT")
 
         # 2. Price hits SL -> CLOSED, update_type = STOPPED_OUT_AT_BE
@@ -328,10 +328,10 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             await pm.update_trades(23999.0)
             await _flush_trade_writes(pm)
             self.assertEqual(trade["state"], "CLOSED")
-            mock_send_trade_update.assert_called_with(trade, 24002.0, "STOPPED_OUT_AT_BE")
+            mock_send_trade_update.assert_called_with(trade, 24000.0, "STOPPED_OUT_AT_BE")
             _check_log_exit(mock_log_exit, 
-                "trade-bullish", 24002.0, "STOPPED_OUT_AT_BE",
-                pnl_points_override=52.0,
+                "trade-bullish", 24000.0, "STOPPED_OUT_AT_BE",
+                pnl_points_override=50.0,
             )
 
     @patch('position_manager.send_trade_update')
@@ -630,7 +630,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         await pm.update_trades(24040.0, candle_high=24052.0, candle_low=24035.0)
 
         self.assertEqual(trade["state"], "T1_HIT")
-        self.assertEqual(trade["stop_loss"], 24002.0)
+        self.assertEqual(trade["stop_loss"], 24000.0)
         mock_alert.assert_called_with(trade, 24050.0, "T1_HIT")
 
     @patch('position_manager.send_trade_update')

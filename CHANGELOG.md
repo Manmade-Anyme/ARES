@@ -3,7 +3,6 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
-- **Directional asymmetry (MANM-159)**: Added direction-specific trade levels, suppressed bullish OI wall and failed-breakout fades in a confirmed downtrend, required stronger bullish continuation volume and a close above the 20-candle average, and locked two spot points on bullish T1 trailing stops. Bearish level and exit policy remain unchanged.
 - **Discord clarity (MANM-158)**: Enable an earlier `RETEST_READY` OI-wall heads-up in both profiles, retry failed webhook delivery while the wall remains ready, display the later retest time/close and earlier interaction/excursion in final signal alerts, reset OI-wall state at a new candle date, and describe OI size/growth without claiming confirmed writer defense.
 - **Bugfix (MANM-158)**: Require the secondary OI wall retest candle to move in the trade direction before immediate entry; a contrary candle keeps the wall ready for a later valid retest.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
