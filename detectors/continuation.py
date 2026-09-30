@@ -1,3 +1,4 @@
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional, List
 
@@ -47,6 +48,8 @@ class TrendContinuationDetector:
         """Initialize the detector with no active regime candidate."""
         self.state: Optional[ContinuationState] = None
         self.calibration_policy = calibration_policy
+        self._recent_closes = deque(maxlen=20)
+        self._session_date = None
 
     def update(
         self,
@@ -72,6 +75,12 @@ class TrendContinuationDetector:
         Returns:
             An AresSignal if a trend-continuation setup resolves, otherwise None.
         """
+        session_date = candle.timestamp.date()
+        if self._session_date != session_date:
+            self._recent_closes.clear()
+            self._session_date = session_date
+        self._recent_closes.append(candle.close)
+
         if pdh is None or pdl is None:
             return None
 
@@ -193,7 +202,17 @@ class TrendContinuationDetector:
             state.pullback_extreme > candle.vwap if bull else state.pullback_extreme < candle.vwap
         )
         # 2. Resumption volume: this candle confirms with above-average participation.
-        resume_volume = avg_volume > 0 and candle.volume >= settings.continuation_resume_volume_ratio * avg_volume
+        volume_ratio = (
+            settings.bullish_continuation_volume_ratio if bull
+            else settings.continuation_resume_volume_ratio
+        )
+        resume_volume = avg_volume > 0 and candle.volume >= volume_ratio * avg_volume
+        if bull and (
+            not resume_volume
+            or len(self._recent_closes) < 20
+            or candle.close <= sum(self._recent_closes) / 20
+        ):
+            return None
         # 3. Strong regime: persisted well past the bare arming minimum.
         strong_regime = state.regime_candles >= 2 * settings.continuation_regime_min_candles
         # 4. Room to run: the nearest opposing structural level is far enough
@@ -219,7 +238,7 @@ class TrendContinuationDetector:
         if resume_volume:
             reasons.append(
                 f"Resumption volume confirms participation "
-                f"(>= {settings.continuation_resume_volume_ratio}x average)"
+                f"(>= {volume_ratio}x average)"
             )
         if strong_regime:
             reasons.append("Regime persisted well beyond the minimum arming window")

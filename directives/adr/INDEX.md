@@ -23,4 +23,4 @@
 | MANM-154 | 2026-09-12 | Feature Versioning, Missing Data Remediation, and Storage Contracts | Proposed |
 | TASK-155 | 2026-09-12 | Decoupled ML Pipelines, Purged Walk-Forward CV & Promotion Gating | Proposed |
 | MANM-158 | 2026-09-30 | OI Wall Retest Diagnosis and Validation | Implemented; out-of-sample validation pending |
-| MANM-159 | 2026-09-12 | Resolve Directional Performance Asymmetry via Regime Gating & Asymmetric Geometry | Proposed |
+| MANM-159 | 2026-09-12 | Resolve Directional Performance Asymmetry via Regime Gating & Asymmetric Geometry | Proposed; implemented in feature branch, replay pending |

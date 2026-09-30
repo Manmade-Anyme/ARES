@@ -257,3 +257,9 @@ Assign implementation of ticket **MANM-159** to the **Code Generator Agent** acr
 - [ ] Unit tests added in `tests/unit/test_manm159_performance_asymmetry.py` covering all new behaviors.
 - [ ] 100% of existing tests pass (`pytest`).
 - [ ] No regression to existing Bearish strategy profitability.
+
+## 6. Implementation and validation note (2026-09-30)
+
+The feature branch now implements the directional levels, downtrend fade gate, bullish continuation volume and 20-candle moving-average checks, and the bullish T1 profit lock. The OI wall gate expires a qualified wall with an explicit regime rejection reason; other detectors remain eligible in the same tick. Unit and integration tests verify rule behavior and preserve bearish geometry.
+
+The historical summary above is the ADR's analysis of 233 trades. This checkout contains only earlier 129-trade CSV exports and no intratrade candle paths for those trades. It cannot independently reproduce the 233-trade bootstrap statistics or determine whether revised SL/T1/T2 would have been touched first. The projected PnL improvement from filtering historical setup totals is a selection calculation, not a replay of the new live rules. Out-of-sample candle replay remains required before claiming improved profitability or no loss of bearish edge.

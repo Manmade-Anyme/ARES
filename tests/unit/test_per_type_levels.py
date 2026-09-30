@@ -50,7 +50,8 @@ def make_signal(setup_type, direction, entry, stop_loss, target_1, target_2):
 
 @pytest.fixture
 def settings():
-    return TuningConfig()
+    # Exercise the legacy per-type fallback independently of directional overrides.
+    return TuningConfig(directional_levels={})
 
 
 # ── SL / T1 become fixed per-type distances, both directions ──────────────────
@@ -150,6 +151,7 @@ def test_default_configs_pass_rr_gate(settings, setup_key):
 def test_unknown_setup_type_leaves_levels_untouched():
     settings = TuningConfig()
     settings.per_type_levels = {}  # nothing configured
+    settings.directional_levels = {}
     entry = 25000.0
     sig = make_signal(
         SetupType.OI_WALL_REJECTION, Direction.BULLISH, entry,

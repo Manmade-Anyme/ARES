@@ -258,9 +258,10 @@ def test_real_engine_confirmation_keeps_central_risk_policy(profile, side):
     assert signals[:4] == [None] * 4
     signal = signals[4]
     assert signal is not None
+    expected = (12.0, 20.0, 35.0) if side == "PE" else (16.0, 25.0, 40.0)
     assert (signal.setup_type, abs(signal.stop_loss - signal.trigger_price),
             abs(signal.target_1 - signal.trigger_price), abs(signal.target_2 - signal.trigger_price)) == (
-        SetupType.OI_WALL_REJECTION, 16.0, 25.0, 40.0,
+        SetupType.OI_WALL_REJECTION, *expected,
     )
 
 

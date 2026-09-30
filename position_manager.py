@@ -320,6 +320,7 @@ class PositionManager:
             update_type = None
             event_price = spot_price
             direction = trade["direction"]
+            was_t1_hit = trade["state"] == "T1_HIT"
 
             # Evaluate trailing stop logic
             if direction == "BULLISH":
@@ -332,7 +333,7 @@ class PositionManager:
                 # Check if T1 hit and we haven't trailed yet
                 elif trade["state"] == "OPEN" and high >= trade["target_1"]:
                     trade["state"] = "T1_HIT"
-                    trade["stop_loss"] = trade["entry_price"]
+                    trade["stop_loss"] = trade["entry_price"] + 2.0
                     state_changed = True
                     update_type = "T1_HIT"
                     event_price = trade["target_1"]
@@ -341,7 +342,7 @@ class PositionManager:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     event_price = trade["stop_loss"]
-                    if trade["stop_loss"] == trade["entry_price"]:
+                    if was_t1_hit or trade["stop_loss"] == trade["entry_price"]:
                         update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
                     else:
                         update_type = "SL_HIT"
@@ -375,7 +376,7 @@ class PositionManager:
                 pnl_points_override = None
                 if trade["state"] in ["CLOSED", "STOPPED_OUT"] and update_type == "STOPPED_OUT_AT_BE":
                     if direction == "BULLISH":
-                        pnl_points_override = trade["target_1"] - trade["entry_price"]
+                        pnl_points_override = trade["target_1"] - trade["entry_price"] + max(0.0, trade["stop_loss"] - trade["entry_price"])
                     else:
                         pnl_points_override = trade["entry_price"] - trade["target_1"]
 

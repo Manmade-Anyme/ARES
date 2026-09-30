@@ -27,7 +27,10 @@ def apply_per_type_levels(signal: AresSignal, settings, levels=None) -> None:
         exists it falls back to the per-type distance.
     Unknown/unconfigured setup types are left untouched (no per-type entry).
     """
-    lv = settings.per_type_levels.get(signal.setup_type.value)
+    key = f"{signal.setup_type.value}_{signal.direction.value}"
+    lv = getattr(settings, "directional_levels", {}).get(key)
+    if lv is None:
+        lv = settings.per_type_levels.get(signal.setup_type.value)
     if lv is None:
         return
     entry = signal.trigger_price
@@ -255,6 +258,29 @@ class AresEngine:
             atm_pe_oi_prev=atm.pe.oi_prev if (atm and atm.pe) else None,
             levels=levels,
         )
+
+        # Reject counter-trend fades before priority selection so a valid
+        # lower-priority continuation or exhaustion can still be considered.
+        downtrend = (
+            settings.gate_counter_trend_fades
+            and pdh is not None and pdl is not None
+            and candle.close < candle.vwap and candle.close < pdh
+        )
+        def blocked_fade(candidate):
+            return (
+                downtrend and candidate is not None
+                and candidate.direction == Direction.BULLISH
+                and candidate.setup_type in (SetupType.OI_WALL_REJECTION, SetupType.FAILED_BREAKOUT)
+            )
+
+        if blocked_fade(breakout_signal):
+            breakout_signal = None
+        if blocked_fade(oi_wall_candidate):
+            if oi_wall_decision.status == "QUALIFIED":
+                ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "REJECTED_BY_REGIME")
+                self._release_terminal_oi_wall(ack)
+                self._latest_oi_wall_context = ack.telemetry.to_dict()
+            oi_wall_candidate = None
 
         if breakout_signal:
             if oi_wall_decision.status == "QUALIFIED":
