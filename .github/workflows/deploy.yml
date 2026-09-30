@@ -60,7 +60,28 @@ jobs:
       # until it hits `context deadline exceeded` (~10m) and fails the deploy.
       # The runner has Docker and the image is a trivial slim-python build, so a
       # local build removes that infra dependency entirely.
-      - run: flyctl deploy --local-only
+      - name: Deploy (retry transient registry timeout)
+        run: |
+          for attempt in 1 2 3; do
+            set +e
+            output="$(flyctl deploy --local-only 2>&1)"
+            status=$?
+            set -e
+            printf '%s\n' "$output"
+
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if ! printf '%s\n' "$output" | grep -Fq 'error rendering push status stream'; then
+              exit "$status"
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+
+            echo "::warning::Fly registry timed out; retrying deploy ($attempt/3)"
+            sleep "$((attempt * 15))"
+          done
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
