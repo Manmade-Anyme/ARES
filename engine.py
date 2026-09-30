@@ -77,6 +77,7 @@ class AresEngine:
 
         self.last_signal_time: Optional[datetime] = None
         self._latest_oi_wall_context: Optional[Dict[str, Any]] = None
+        self._oi_wall_session_date = None
 
     @property
     def latest_oi_wall_context(self) -> Optional[Dict[str, Any]]:
@@ -85,7 +86,7 @@ class AresEngine:
 
     @property
     def latest_watchlist_event(self) -> Optional[OIWallBias]:
-        """Latest watchlist event emitted when an OI wall becomes RETEST_READY."""
+        """Undelivered watchlist event while an OI wall remains RETEST_READY."""
         return self.oi_wall_filter.latest_watchlist_event
 
     @property
@@ -147,6 +148,15 @@ class AresEngine:
         Returns:
             An AresSignal if a detector triggers and cooldown is clear, otherwise None.
         """
+        candle_date = candle.timestamp.date()
+        if self._oi_wall_session_date is None:
+            self._oi_wall_session_date = candle_date
+        elif candle_date != self._oi_wall_session_date:
+            self.oi_wall_detector.release_terminal_wall(self.oi_wall_detector.current_wall_key)
+            self.oi_wall_filter = OIWallEntryFilter()
+            self._latest_oi_wall_context = None
+            self._oi_wall_session_date = candle_date
+
         levels = levels or []
         # 1. Update buffers
         self.candle_buffer.append(candle)

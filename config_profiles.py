@@ -99,7 +99,7 @@ class TuningConfig:
     oi_wall_test_distance: float = 20.0
     oi_wall_wick_rejection_ratio: float = 0.4
     # Multiplier over the min OI / min OI-change bars that upgrades wall
-    # magnitude and writer defense to their "high conviction" scored variants
+    # magnitude and OI growth to their "high conviction" scored variants
     # (TASK-175; was hardcoded 1.5 in both places).
     oi_wall_conviction_multiplier: float = 1.5
     # Minimum candle range (pts) before the wick-rejection scored condition is
@@ -109,7 +109,7 @@ class TuningConfig:
     oi_wall_persistence_snapshots: int = 3
     oi_wall_min_excursion_pts: float = 20.0
     oi_wall_retest_distance_pts: float = 20.0
-    oi_wall_enable_watchlist_alert: bool = False
+    oi_wall_enable_watchlist_alert: bool = True
 
     # Exhaustion Detector
     exhaustion_volume_multiplier: float = 2.5
@@ -206,7 +206,7 @@ NON_EXPIRY_CONFIG = TuningConfig(
     oi_wall_persistence_snapshots=3,
     oi_wall_min_excursion_pts=20.0,
     oi_wall_retest_distance_pts=20.0,
-    oi_wall_enable_watchlist_alert=False,
+    oi_wall_enable_watchlist_alert=True,
     exhaustion_volume_multiplier=2.5,
     exhaustion_body_ratio=0.35,
     exhaustion_iv_spike_threshold=3.0,
@@ -235,7 +235,7 @@ EXPIRY_CONFIG = TuningConfig(
     oi_wall_persistence_snapshots=3,
     oi_wall_min_excursion_pts=10.0,
     oi_wall_retest_distance_pts=10.0,
-    oi_wall_enable_watchlist_alert=False,
+    oi_wall_enable_watchlist_alert=True,
 
     # Exhaustion — higher bar
     exhaustion_volume_multiplier=3.5,

@@ -300,7 +300,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
             reasons=(),
         )
         with patch('httpx.AsyncClient') as mock_client:
-            await send_watchlist_alert(bias, spot=24075.0)
+            self.assertFalse(await send_watchlist_alert(bias, spot=24075.0))
             mock_client.assert_not_called()
 
     @patch('alerts.settings')
@@ -333,16 +333,19 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
             favourable_excursion_pts=25.0,
             reasons=(),
         )
-        await send_watchlist_alert(bias, spot=24075.0)
+        self.assertTrue(await send_watchlist_alert(bias, spot=24075.0))
         mock_client.post.assert_called_once()
         mock_response.raise_for_status.assert_called_once()
         payload = mock_client.post.call_args.kwargs["json"]
         embed = payload["embeds"][0]
-        self.assertIn("SETUP WATCH: OI_WALL_PERSISTENT", embed["title"])
+        self.assertIn("SETUP WATCH: OI_WALL_RETEST_READY", embed["title"])
         field_names = [f["name"] for f in embed["fields"]]
         self.assertIn("🛡️ Wall Barrier", field_names)
         self.assertIn("⏱️ Persistence", field_names)
         self.assertIn("💡 Trader Guidance", field_names)
+
+        mock_client.post.side_effect = Exception("Webhook unavailable")
+        self.assertFalse(await send_watchlist_alert(bias, spot=24075.0))
 
     @patch('alerts.settings')
     @patch('httpx.AsyncClient')
@@ -376,6 +379,9 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
                 "wall_oi_change_pct": 12.5,
                 "persistence_snapshots": 3,
                 "entry_status": "QUALIFIED",
+                "initial_interaction_timestamp": "2026-09-28T03:47:00+00:00",
+                "favourable_excursion_pts": 27.45,
+                "retest_timestamp": "2026-09-28T03:49:00+00:00",
             }
         )
         await send_discord(signal, spot=24075.0)
@@ -388,6 +394,60 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("50.0L contracts", field_dict["🛡️ Wall Context"])
         self.assertIn("3/3 snapshots persistent", field_dict["🛡️ Wall Context"])
         self.assertIn("9.0 pts from wall 24100", field_dict["🛑 SL"])
+        self.assertIn("28-Sep-2026 09:19 IST", field_dict["🔁 Retest Confirmation"])
+        self.assertIn("24075.00", field_dict["🔁 Retest Confirmation"])
+        self.assertIn("24100 CE", field_dict["🔁 Retest Confirmation"])
+        self.assertIn("28-Sep-2026 09:17 IST", field_dict["🔁 Retest Confirmation"])
+        self.assertIn("27.45 pts", field_dict["🔁 Retest Confirmation"])
+
+    @patch('alerts.settings')
+    @patch('httpx.AsyncClient')
+    async def test_september_28_pe_retest_is_explicit_in_final_alert(self, mock_client_class, mock_settings):
+        mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        signal = AresSignal(
+            setup_type=SetupType.OI_WALL_REJECTION,
+            direction=Direction.BULLISH,
+            trigger_price=22954.10,
+            entry_zone=(22949.10, 22959.10),
+            stop_loss=22938.10,
+            target_1=22979.10,
+            target_2=23000.00,
+            confidence="MEDIUM",
+            reasons=["Directional secondary re-test candle closed on defended side"],
+            timestamp=datetime(2026, 9, 28, 9, 19),
+            strike_to_trade=22950,
+            option_type="CE",
+            display_id="4539",
+            oi_wall_context={
+                "wall_strike": 22950,
+                "wall_option_type": "PE",
+                "wall_oi": 6299085,
+                "wall_oi_change_pct": 9.943955345797786,
+                "persistence_snapshots": 4,
+                "entry_status": "CONSUMED",
+                "initial_interaction_timestamp": "2026-09-28T03:47:00+00:00",
+                "favourable_excursion_pts": 27.45,
+                "retest_timestamp": "2026-09-28T03:49:00+00:00",
+            },
+        )
+        await send_discord(signal, spot=22954.10)
+
+        fields = {
+            field["name"]: field["value"]
+            for field in mock_client.post.call_args.kwargs["json"]["embeds"][0]["fields"]
+        }
+        self.assertIn("22950 PE", fields["🛡️ Wall Context"])
+        retest = fields["🔁 Retest Confirmation"]
+        self.assertIn("28-Sep-2026 09:19 IST", retest)
+        self.assertIn("22954.10", retest)
+        self.assertIn("28-Sep-2026 09:17 IST", retest)
+        self.assertIn("27.45 pts", retest)
 
 
 if __name__ == '__main__':

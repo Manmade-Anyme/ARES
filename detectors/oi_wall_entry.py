@@ -44,6 +44,12 @@ class OIWallEntryFilter:
         self.latest_expired_decision: Optional[OIWallEntryDecision] = None
         self._watchlist_emitted_keys: Set[str] = set()
 
+    def acknowledge_watchlist(self, wall_key: str) -> None:
+        """Mark a watchlist heads-up delivered only after the webhook succeeds."""
+        if self.state == "RETEST_READY" and self.current_wall_key == wall_key:
+            self._watchlist_emitted_keys.add(wall_key)
+            self.latest_watchlist_event = None
+
     def _reset_candidate(self) -> None:
         self.initial_interaction_timestamp = None
         self.initial_interaction_price = None
@@ -245,9 +251,6 @@ class OIWallEntryFilter:
             if self.state in ("INTERACTED", "PERSISTENT") and persistence_met and excursion_met:
                 self.state = "RETEST_READY"
                 self.retest_ready_timestamp = candle.timestamp
-                if bias.wall_key not in self._watchlist_emitted_keys:
-                    self.latest_watchlist_event = bias
-                    self._watchlist_emitted_keys.add(bias.wall_key)
 
             # In RETEST_READY, check for secondary re-test
             if (
@@ -261,8 +264,9 @@ class OIWallEntryFilter:
                     else (candle.low <= strike + retest_dist)
                 )
                 defended = (candle.close <= strike) if is_bearish else (candle.close >= strike)
+                rejected = (candle.close < candle.open) if is_bearish else (candle.close > candle.open)
                 
-                if retested and defended:
+                if retested and defended and rejected:
                     decision_id = f"{bias.wall_key}:{int(candle.timestamp.timestamp())}"
                     self.retest_timestamp = candle.timestamp
                     self.state = "QUALIFIED"
@@ -278,6 +282,10 @@ class OIWallEntryFilter:
                         rejection_reason=None,
                         reference_price=strike,
                     )
+
+        # Retry a failed heads-up on later evaluations while this wall is still ready.
+        if self.state == "RETEST_READY" and bias.wall_key not in self._watchlist_emitted_keys:
+            self.latest_watchlist_event = bias
 
         # Still waiting / tracking
         telemetry = self._build_telemetry(bias, entry_status="WAITING", filter_state=self.state, candle=candle)

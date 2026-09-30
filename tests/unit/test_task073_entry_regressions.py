@@ -46,8 +46,8 @@ GEOMETRY = [
     (-20, -5, -30, -25),  # interaction in both profiles
     (-25, -23, -50, -45),  # excursion
     (-45, -40, -55, -50),  # persistence -> ready
-    (-35, -5, -38, -22),  # later defended re-test, not confirmation
-    (-22, -20, -45, -40),  # directional close beyond the re-test extreme
+    (-35, -5, -38, -22),  # near wall and defended, but contrary candle
+    (-22, -9, -45, -40),  # directional retest inside both profile bands
 ]
 
 
@@ -162,19 +162,18 @@ def test_tracked_wall_breach_evaluates_and_resets_detector(profile, side):
 def test_defended_retest_qualifies_immediately(profile, side):
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
     decisions = [update(detector, entry_filter, side, i, p) for i, p in enumerate(GEOMETRY)]
-    assert [decision.status for decision in decisions[:4]] == ["WAITING"] * 3 + ["QUALIFIED"]
+    assert [decision.status for decision in decisions] == ["WAITING"] * 4 + ["QUALIFIED"]
     assert (
-        decisions[3].retest_timestamp, decisions[3].telemetry.retest_timestamp,
-    ) == (candle(side, 3, GEOMETRY[3]).timestamp,) * 2
+        decisions[4].retest_timestamp, decisions[4].telemetry.retest_timestamp,
+    ) == (candle(side, 4, GEOMETRY[4]).timestamp,) * 2
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])
 @pytest.mark.parametrize("prices", [
-    (-40, -39, -42, -40),  # flat body, even beyond candidate extreme
-    (-45, -39, -46, -40),  # wrong body direction despite extreme break
-    (-22, -20, -39, -38),  # equality with candidate extreme is not a break
+    (-25, -9, -39, -25),  # flat body inside the retest band
+    (-45, -9, -46, -40),  # wrong body direction inside the retest band
 ])
-def test_confirmation_requires_direction_and_strict_extreme_break(profile, side, prices):
+def test_retest_requires_directional_candle(profile, side, prices):
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
     for index, geometry in enumerate(GEOMETRY[:4]):
         update(detector, entry_filter, side, index, geometry)
@@ -182,11 +181,11 @@ def test_confirmation_requires_direction_and_strict_extreme_break(profile, side,
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])
-def test_same_timestamp_cannot_confirm_retest(profile, side):
+def test_arming_timestamp_cannot_qualify_as_retest(profile, side):
     detector, entry_filter = OIWallDetector(), OIWallEntryFilter()
-    for index, prices in enumerate(GEOMETRY[:4]):
+    for index, prices in enumerate(GEOMETRY[:3]):
         update(detector, entry_filter, side, index, prices)
-    assert update(detector, entry_filter, side, 3, GEOMETRY[4]).status == "WAITING"
+    assert update(detector, entry_filter, side, 2, GEOMETRY[4]).status == "WAITING"
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])
@@ -197,7 +196,7 @@ def test_suppression_requires_a_fresh_retest(profile, side, outcome):
     # More follow-through is not a new wall touch.
     decision = update(detector, entry_filter, side, 5, (-40, -35, -55, -50))
     assert decision.status == "WAITING"
-    assert update(detector, entry_filter, side, 6, GEOMETRY[3]).status == "QUALIFIED"
+    assert update(detector, entry_filter, side, 6, GEOMETRY[4]).status == "QUALIFIED"
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])
@@ -219,13 +218,29 @@ def test_breach_expiration_remains_authoritative(profile, side):
     assert (decision.status, decision.telemetry.rejection_reason) == ("EXPIRED", expired.rejection_reason)
 
 
-def tick(engine, side, minute, prices):
+def tick(engine, side, minute, prices, day_offset=0):
     current = candle(side, minute, prices)
+    current.timestamp += timedelta(days=day_offset)
     atm = ATMStrikes(current.close, *[
         OptionRow(24100, option_type, 100.0, 12.0, 100000, 100000, 0.0)
         for option_type in ("CE", "PE")
     ])
     return engine.tick(current, chain(side), atm, 0.0, [])
+
+
+def test_oi_wall_watchlist_and_consumed_key_reset_for_next_session(profile):
+    engine = AresEngine()
+    for day_offset in (0, 1):
+        for minute, prices in enumerate(GEOMETRY):
+            signal = tick(engine, "PE", minute, prices, day_offset=day_offset)
+            if minute == 2:
+                assert engine.latest_watchlist_event is not None, f"missing watchlist on day offset {day_offset}"
+                assert engine.latest_watchlist_event.wall_key == "PE:24100"
+            if minute == 4:
+                assert signal is not None
+                assert signal.setup_type.value == "OI_WALL_REJECTION"
+        # The live cooldown clock advances overnight; clear it in this compressed replay.
+        engine.last_signal_time = None
 
 
 @pytest.mark.parametrize("side", ["CE", "PE"])
@@ -240,8 +255,8 @@ def test_real_engine_never_emits_on_flat_two_point_candles(profile, side):
 def test_real_engine_confirmation_keeps_central_risk_policy(profile, side):
     engine = AresEngine()
     signals = [tick(engine, side, i, prices) for i, prices in enumerate(GEOMETRY)]
-    assert signals[:3] == [None] * 3
-    signal = signals[3]
+    assert signals[:4] == [None] * 4
+    signal = signals[4]
     assert signal is not None
     assert (signal.setup_type, abs(signal.stop_loss - signal.trigger_price),
             abs(signal.target_1 - signal.trigger_price), abs(signal.target_2 - signal.trigger_price)) == (
@@ -600,4 +615,3 @@ def test_pre_interaction_tracked_wall_does_not_block_closer_opposite_wall(profil
     )
     decision2 = entry_filter.update(bias2, c2, [])
     assert decision2.wall_key == opp_wall_key
-
