@@ -23,6 +23,7 @@
   - [x] Safe read-only validation query and backfill plan
 
 ## Medium / Low Priority
+- **MANM-159 (deferred; branch retained)**: Observe current ML predictions and other live features. On return, compare directional win rate, win/loss size, and regime; replay any proposed change on out-of-sample candle data before changing live rules.
 - Monitor live signal accuracy during the next NSE session.
 - Observe how the new dynamic confidence levels impact trade suggestion filters.
 
@@ -36,3 +37,11 @@
 - [x] All required fields are correctly populated (timestamp, probability, confidence_tier, model_version, signal_id, trade_id, spot price, source, feature_snapshot).
 - [x] Tests prove both persistence success and graceful error handling.
 - [x] Documentation is present for data retention.
+
+## MANM-159: Directional performance asymmetry
+**Status:** ADR complete; implementation pending.
+
+### Acceptance criteria
+- [x] Identify structural causes and document them in ADR-159.
+- [ ] Implement the approved asymmetric geometry, regime gating, and continuation confirmation.
+- [ ] Verify behavior with tests.

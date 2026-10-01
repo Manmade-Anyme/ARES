@@ -1,26 +1,17 @@
 # Session Checkpoint
-**Date:** 2026-09-28
-**Session:** MANM-156 / MANM-155 mainline sync
+**Date:** 2026-09-30
+**Session:** MANM-159 branch sync
 
 ## Completed This Session
-- Integrated latest `origin/main` into `feature/MANM-156-shap-support`.
-- Preserved the MANM-155 mainline work: feature versioning and missing-data remediation, prediction persistence, canonical signal joins, exit-timestamp validation, and decoupled ML training/promotion gating.
-- MANM-156 [Enable SHAP package support, interpretability reporting, and native fallback] — Directive created by PM Agent.
-- MANM-156 — ADR-156 completed and pushed to `feature/MANM-156-shap-support` by Architect Agent.
-- MANM-156 — Implementation completed by Code Generator Agent.
-- MANM-156 — QA and PR Reviewer Agents approved PR #111.
+- MANM-159: Created directive and backlog; completed root cause investigation, statistical bootstrap analysis, outlier sensitivity, setup cross-tabs, and ADR-159 (`directives/adr/MANM-159_directional-performance-asymmetry.md`).
+- Integrated current `origin/main` into `feature/MANM-159-performance-asymmetry`, including the MANM-150 through MANM-158 work.
+- Reverted the MANM-159 runtime implementation at the user's request; the ADR remains for future evaluation.
 
 ## Open Tasks
-- MANM-156 [Enable SHAP package support, interpretability reporting, and native fallback] — awaiting human review and merge gate.
+- MANM-159: Deferred while the current live rules and ML predictions are observed. Keep this branch open for later review.
 
 ## Blockers
 - None.
 
-## Agent States
-- Architect: Idle.
-- Code Generator: Idle.
-- QA: Idle (Review passed).
-- PR Reviewer: Idle (Review passed).
-
 ## Resume Instructions
-Awaiting human approval and merge of PR #111. Once merged, human should trigger the post-merge workflow to finalize branch cleanup and Obsidian sync.
+Keep current trading rules and this branch. On return, inspect ML prediction quality and directional outcomes, then use out-of-sample replay before considering live rule changes.
