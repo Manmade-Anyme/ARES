@@ -23,11 +23,8 @@ logger = logging.getLogger("system_one.discord")
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# Webhook URL for Jev follow-up alerts
-WEBHOOK_URL = os.environ.get(
-    "DISCORD_JEV_WEBHOOK_URL",
-    os.environ.get("DISCORD_WEBHOOK_URL", ""),
-)
+# Webhook URL for Jev follow-up alerts - Uses the exact same channel as main ARES alerts
+WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 
 def _check_freshness(
