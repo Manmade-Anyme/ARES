@@ -177,6 +177,17 @@ class OIWallBias:
 
 
 @dataclass(frozen=True)
+class OIWallWatchCancellation:
+    """Immutable expiry notice for a previously delivered watch."""
+    bias: OIWallBias
+    watch_timestamp: datetime
+    timestamp: datetime
+    spot: float
+    reason: str
+    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass(frozen=True)
 class OIWallTelemetry:
     """
     Normalized telemetry contract for Supabase persistence and ML collection.
