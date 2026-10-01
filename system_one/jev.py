@@ -66,15 +66,18 @@ def build_questions() -> Dict[str, Any]:
                 ),
             },
         ),
-        "t2_given_t1": Noul(
+        "t2_given_t1": Choice(
             instructions=(
                 "Assuming Target 1 touched before the original stop loss, "
-                "ARES then moves the stop to `signal.post_t1_stop_price` "
-                "(the entry price). Does Target 2 (`signal.target_2`) touch "
-                "before this post-T1 breakeven stop or session close? "
-                "A touch of the breakeven stop ends the trade; ignore any "
-                "later Target 2 touch."
+                "ARES then moves the stop to `signal.post_t1_stop_price` (the entry price). "
+                "Does Target 2 (`signal.target_2`) touch before this post-T1 breakeven stop or session close? "
+                "A touch of the breakeven stop ends the trade; ignore any later Target 2 touch."
             ),
+            criteria={
+                "t2_hits": "Strong momentum likely carries price to Target 2.",
+                "t2_fails": "Momentum likely stalls, reversing to hit the breakeven stop or closing before T2.",
+                "insufficient_evidence": "The supplied snapshot lacks the necessary volume, OI, or structural data to make a reliable conditional prediction."
+            }
         ),
         "market_regime": Choice(
             instructions="Classify the observed signal-time market regime.",
@@ -95,17 +98,35 @@ def build_questions() -> Dict[str, Any]:
                 ),
             },
         ),
-        "setup_quality": Score(
-            instructions=(
-                "Rate the observed setup quality using only supplied evidence."
-            ),
+        "price_action_strength": Score(
+            instructions="Rate the strength and clarity of the candlestick price action for the chosen direction.",
             criteria=[
-                "Unusable: No discernible edge or contradictory signals.",
-                "Weak: Marginal setup with significant uncertainty.",
-                "Mixed: Some supporting evidence but notable concerns.",
-                "Strong: Clear setup with aligned market factors.",
-                "Exceptional: Textbook setup with overwhelming confluence.",
-            ],
+                "Contradictory or actively hostile price action.",
+                "Weak or ambiguous candle shapes.",
+                "Acceptable price action but lacking standout conviction.",
+                "Strong directional conviction (e.g., clear pin-bar or engulfing).",
+                "Exceptional, textbook price action."
+            ]
+        ),
+        "structural_clarity": Score(
+            instructions="Rate how favorable the structural path (levels, runway, walls) is for the trade.",
+            criteria=[
+                "Blocked by immediate, heavy structure.",
+                "Significant structural friction.",
+                "Moderate runway, standard resistance/support ahead.",
+                "Clear structural runway to targets.",
+                "Wide open structural vacuum to targets."
+            ]
+        ),
+        "confluence_rating": Score(
+            instructions="Rate the alignment of secondary factors (Volume, IV, Options OI) with the trade direction.",
+            criteria=[
+                "Secondary factors strongly contradict the trade.",
+                "Secondary factors lean against the trade or are missing entirely.",
+                "Mixed secondary factors (some supportive, some missing/neutral).",
+                "Good alignment of volume and options data.",
+                "Perfect confluence across all secondary metrics."
+            ]
         ),
         "is_trap": Noul(
             instructions=(
@@ -198,17 +219,28 @@ def invoke_jev(
     p_t1 = barrier.probabilities.get("t1_first", 0.0)
     p_sl = barrier.probabilities.get("sl_first", 0.0)
 
-    # T2 conditional probability
-    p_t2_given_t1 = response.nouls["t2_given_t1"].noul
+    # T2 conditional probability from Choice
+    t2_choice = response.choices["t2_given_t1"]
+    p_t2_given_t1 = t2_choice.probabilities.get("t2_hits", 0.0)
     p_t2 = p_t1 * p_t2_given_t1  # Joint: P(T1 first) × P(T2 | T1)
 
     # Regime
     regime_answer = response.choices["market_regime"]
 
-    # Setup quality: Score returns a continuous value across levels.
-    # 5 levels (0-4), scale to 0-10.
-    quality_answer = response.scores["setup_quality"]
-    quality_scaled = quality_answer.score * (10.0 / (len(quality_answer.legend) - 1))
+    # Composite setup quality:
+    def _scale_score(ans: Any) -> float:
+        return ans.score * (10.0 / (len(ans.legend) - 1))
+
+    pa_ans = response.scores["price_action_strength"]
+    struct_ans = response.scores["structural_clarity"]
+    conf_ans = response.scores["confluence_rating"]
+
+    pa_score = _scale_score(pa_ans)
+    struct_score = _scale_score(struct_ans)
+    conf_score = _scale_score(conf_ans)
+
+    # Composite: 40% PA, 40% Structure, 20% Confluence
+    quality_scaled = (0.4 * pa_score) + (0.4 * struct_score) + (0.2 * conf_score)
 
     # Trap probability
     trap_prob = response.nouls["is_trap"].noul
@@ -221,18 +253,26 @@ def invoke_jev(
             "probabilities": dict(barrier.probabilities),
         },
         "t2_given_t1": {
-            "noul": p_t2_given_t1,
+            "choice": t2_choice.choice,
+            "confidence": t2_choice.confidence,
+            "probabilities": dict(t2_choice.probabilities),
         },
         "market_regime": {
             "choice": regime_answer.choice,
             "confidence": regime_answer.confidence,
             "probabilities": dict(regime_answer.probabilities),
         },
-        "setup_quality": {
-            "score": quality_answer.score,
-            "confidence": quality_answer.confidence,
-            "probabilities": {str(k): v for k, v in quality_answer.probabilities.items()},
-            "legend": {str(k): v for k, v in quality_answer.legend.items()},
+        "price_action_strength": {
+            "score": pa_ans.score,
+            "probabilities": {str(k): v for k, v in pa_ans.probabilities.items()},
+        },
+        "structural_clarity": {
+            "score": struct_ans.score,
+            "probabilities": {str(k): v for k, v in struct_ans.probabilities.items()},
+        },
+        "confluence_rating": {
+            "score": conf_ans.score,
+            "probabilities": {str(k): v for k, v in conf_ans.probabilities.items()},
         },
         "is_trap": {
             "noul": trap_prob,
@@ -245,6 +285,9 @@ def invoke_jev(
         },
     }
 
+    # Minimum confidence among the scored components as a proxy
+    composite_conf = min(pa_ans.confidence, struct_ans.confidence, conf_ans.confidence)
+
     return JevResult(
         t1_hit_prob=round(p_t1, 6),
         t2_hit_prob=round(p_t2, 6),
@@ -253,7 +296,7 @@ def invoke_jev(
         regime_distribution=dict(regime_answer.probabilities),
         regime_confidence=regime_answer.confidence,
         setup_quality=round(quality_scaled, 2),
-        setup_quality_confidence=quality_answer.confidence,
+        setup_quality_confidence=composite_conf,
         is_trap_prob=round(trap_prob, 6),
         engine_name=response.model,
         question_version=QUESTION_VERSION,

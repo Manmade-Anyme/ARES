@@ -136,7 +136,16 @@ def build_context(
     raw_atm_oi = _parse_jsonb(snapshot_row.get("raw_atm_oi"))
     oi_wall_ctx = _parse_jsonb(snapshot_row.get("oi_wall_context"))
 
-    # Build signal context
+    # Semantic assessments to help Jev reason without guessing domain rules
+    rr_assessment = None
+    if reward_to_risk:
+        if reward_to_risk < 1.0:
+            rr_assessment = "Poor R:R, risk exceeds reward to T1."
+        elif reward_to_risk < 1.5:
+            rr_assessment = "Standard acceptable R:R to T1."
+        else:
+            rr_assessment = "Highly favorable asymmetric R:R to T1."
+
     signal_ctx = {
         "setup_type": signal_row.get("setup_type"),
         "direction": direction,
@@ -150,6 +159,7 @@ def build_context(
         "t2_distance_pts": round(t2_distance, 2),
         "sl_distance_pts": round(sl_distance, 2),
         "reward_to_risk": round(reward_to_risk, 4) if reward_to_risk else None,
+        "reward_risk_assessment": rr_assessment,
         "confidence": signal_row.get("confidence"),
         "display_id": signal_row.get("display_id"),
         "reasons": signal_row.get("reasons"),
@@ -184,10 +194,19 @@ def build_context(
     if structure_features and entry_price:
         levels_above_val = _safe_float(structure_features.get("levels_above"))
         levels_below_val = _safe_float(structure_features.get("levels_below"))
-        if direction == "BULLISH":
-            structure_ctx["runway_levels"] = levels_above_val
-        else:
-            structure_ctx["runway_levels"] = levels_below_val
+        runway = levels_above_val if direction == "BULLISH" else levels_below_val
+        
+        assessment = "Unknown"
+        if runway is not None:
+            if runway == 0:
+                assessment = "Immediate structural blockage; no clear runway."
+            elif runway == 1:
+                assessment = "Minimal runway; one level of friction present."
+            else:
+                assessment = "Clear structural runway with multiple levels of clearance."
+                
+        structure_ctx["runway_levels"] = runway
+        structure_ctx["runway_assessment"] = assessment
 
     # OI Wall position relative to entry
     wall_ctx = None

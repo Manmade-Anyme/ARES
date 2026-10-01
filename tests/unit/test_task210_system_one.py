@@ -110,14 +110,16 @@ def test_successful_invocation(mock_ts_client):
     mock_response = MagicMock()
     mock_response.choices = {
         "first_barrier": MagicMock(choice="t1_first", probabilities={"t1_first": 0.6, "sl_first": 0.3}, confidence=0.8),
+        "t2_given_t1": MagicMock(choice="t2_hits", probabilities={"t2_hits": 0.5}, confidence=0.7),
         "market_regime": MagicMock(choice="trending", probabilities={"trending": 0.9}, confidence=0.9)
     }
     mock_response.nouls = {
-        "t2_given_t1": MagicMock(noul=0.5),
         "is_trap": MagicMock(noul=0.1)
     }
     mock_response.scores = {
-        "setup_quality": MagicMock(score=3.0, confidence=0.8, probabilities={}, legend={"a":0,"b":1,"c":2,"d":3,"e":4})
+        "price_action_strength": MagicMock(score=3.0, confidence=0.8, probabilities={}, legend={"a":0,"b":1,"c":2,"d":3,"e":4}),
+        "structural_clarity": MagicMock(score=4.0, confidence=0.8, probabilities={}, legend={"a":0,"b":1,"c":2,"d":3,"e":4}),
+        "confluence_rating": MagicMock(score=2.0, confidence=0.8, probabilities={}, legend={"a":0,"b":1,"c":2,"d":3,"e":4})
     }
     mock_response.model = "jev-test"
     mock_response.request_id = "req-1"
@@ -137,7 +139,8 @@ def test_successful_invocation(mock_ts_client):
     # Range
     assert 0 <= res.t1_hit_prob <= 1
     
-    assert res.setup_quality == 7.5  # 3 * (10 / 4)
+    # 3.0*(10/4)*0.4 + 4.0*(10/4)*0.4 + 2.0*(10/4)*0.2 = 3.0 + 4.0 + 1.0 = 8.0
+    assert res.setup_quality == 8.0
     assert res.engine_name == "jev-test"
     assert res.question_version == QUESTION_VERSION
     assert "usage" in res.raw_response
