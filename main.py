@@ -13,7 +13,7 @@ from position_manager import PositionManager
 from config import settings, detector_names, SESSION_DISPLAY
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple, days_to_expiry
-from alerts import send_discord, send_startup_alert, send_error_alert, send_watchlist_alert
+from alerts import send_discord, send_startup_alert, send_error_alert, dispatch_oi_wall_watch_alerts
 from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
 from ml_signal.predictor import SignalPredictor
@@ -161,6 +161,24 @@ async def _record_ml_snapshot(ml_collector, signal, **snapshot_fields):
                 asyncio.ensure_future(insert_coro)
     except Exception as e:
         print(f"[-] _record_ml_snapshot failed: {e}")
+
+async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle):
+    """Confirm final Discord delivery before resolving a delivered OI watch."""
+    delivered = False
+    reason = "Signal persistence failed; trade entry was aborted"
+    if persisted:
+        reason = "Final signal Discord delivery failed; a trade may already be tracked"
+        try:
+            delivered = await send_discord(signal, spot)
+        except Exception as alert_err:
+            print(f"[-] Discord alert failed: {alert_err}")
+    if signal.setup_type.value == "OI_WALL_REJECTION":
+        context = signal.oi_wall_context or {}
+        wall_key = context.get("wall_key")
+        if wall_key:
+            entry_filter.acknowledge_signal_alert(wall_key, delivered, candle, reason)
+            await dispatch_oi_wall_watch_alerts(entry_filter, spot)
+
 
 async def run():
     """
@@ -319,14 +337,8 @@ async def run():
             # Run the engine
             signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
 
-            # Watchlist alert while an undelivered wall remains retest-ready.
-            if engine.latest_watchlist_event:
-                try:
-                    watchlist_event = engine.latest_watchlist_event
-                    if await send_watchlist_alert(watchlist_event, spot):
-                        engine.oi_wall_filter.acknowledge_watchlist(watchlist_event.wall_key)
-                except Exception as wl_err:
-                    print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Watchlist alert failed: {wl_err}{RESET}")
+            # Close expired watches before publishing fresh watches, retrying failures.
+            await dispatch_oi_wall_watch_alerts(engine.oi_wall_filter, spot)
 
             # Terminal UI: Track Warmup State
             buffer_len = len(engine.candle_buffer)
@@ -417,11 +429,9 @@ async def run():
                         logger.warning("Non-blocking prediction dispatch error: %s", log_err)
                         print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Non-blocking prediction dispatch error: {log_err}{RESET}")
 
-                if trade_executed:
-                    try:
-                        await send_discord(signal, spot)
-                    except Exception as alert_err:
-                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
+                await _deliver_signal_alert(
+                    signal, spot, trade_executed, engine.oi_wall_filter, candle,
+                )
 
             # ML Data Collection: log a feature snapshot every cycle, signal or not.
             #

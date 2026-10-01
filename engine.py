@@ -153,7 +153,7 @@ class AresEngine:
             self._oi_wall_session_date = candle_date
         elif candle_date != self._oi_wall_session_date:
             self.oi_wall_detector.release_terminal_wall(self.oi_wall_detector.current_wall_key)
-            self.oi_wall_filter = OIWallEntryFilter()
+            self.oi_wall_filter.reset_session(candle)
             self._latest_oi_wall_context = None
             self._oi_wall_session_date = candle_date
 

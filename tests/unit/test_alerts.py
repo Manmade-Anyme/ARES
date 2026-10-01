@@ -80,7 +80,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         mock_settings.discord_webhook_url = ""
         # Should return early
         with patch('httpx.AsyncClient') as mock_client:
-            await send_discord(MagicMock(), 23000.0)
+            self.assertFalse(await send_discord(MagicMock(), 23000.0))
             mock_client.assert_not_called()
 
     @patch('alerts.settings')
@@ -108,7 +108,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
             option_type="CE"
         )
 
-        await send_discord(signal, 23000.0)
+        self.assertTrue(await send_discord(signal, 23000.0))
         mock_client.post.assert_called_once()
 
     @patch('alerts.settings')
@@ -135,7 +135,7 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         )
 
         # Exception should be caught and not raised
-        await send_discord(signal, 23000.0)
+        self.assertFalse(await send_discord(signal, 23000.0))
         mock_client.post.assert_called_once()
 
     @patch('alerts.settings')
