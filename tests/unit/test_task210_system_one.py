@@ -79,7 +79,7 @@ def test_nan_inf_treated_as_none():
 def test_missing_feature_groups_produce_none(base_signal_row, base_snapshot_row):
     base_snapshot_row["candle_features"] = None
     ctx = build_context(base_signal_row, base_snapshot_row)
-    assert ctx["candle"]["body_ratio"] is None
+    assert ctx["candle"] is None
 
 def test_full_context_building(base_signal_row, base_snapshot_row):
     xgboost_row = {"probability": 0.85, "confidence_tier": "HIGH", "model_version": "v1"}

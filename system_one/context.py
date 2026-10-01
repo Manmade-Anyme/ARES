@@ -166,29 +166,30 @@ def build_context(
     }
 
     # Build market snapshot context — absent evidence stays None
-    def _extract(features_dict: Optional[Dict], *keys: str) -> Dict[str, Any]:
-        if features_dict is None:
-            return {k: None for k in keys}
-        return {k: _safe_float(features_dict.get(k)) for k in keys}
+    def _clean_dict(features_dict: Optional[Dict]) -> Optional[Dict[str, Any]]:
+        if not features_dict:
+            return None
+        cleaned = {}
+        for k, v in features_dict.items():
+            if v is None:
+                continue
+            if isinstance(v, bool):
+                cleaned[k] = v
+            else:
+                f = _safe_float(v)
+                if f is not None:
+                    cleaned[k] = f
+                elif isinstance(v, str):
+                    cleaned[k] = v  # Preserve categorical strings
+        return cleaned
 
-    candle_ctx = _extract(candle_features,
-        "body_ratio", "upper_wick_ratio", "lower_wick_ratio",
-        "range_pct", "is_green", "close_position", "open_close_spread")
-
-    volume_ctx = _extract(volume_features,
-        "vol_ratio", "vol_slope_5", "vol_percentile", "vol_ratio_20bar")
-
-    iv_ctx = _extract(iv_features,
-        "iv_current", "iv_change_1", "iv_change_5",
-        "iv_spread_ce_pe", "iv_percentile")
-
-    oi_ctx = _extract(oi_features,
-        "pcr_oi", "pcr_change", "oi_concentration_atm",
-        "ce_oi_change_pct", "pe_oi_change_pct")
-
-    structure_ctx = _extract(structure_features,
-        "dist_nearest_level_pct", "levels_above", "levels_below",
-        "dist_pdh_pct", "dist_pdl_pct", "avg_wall_distance_pct")
+    candle_ctx = _clean_dict(candle_features)
+    volume_ctx = _clean_dict(volume_features)
+    iv_ctx = _clean_dict(iv_features)
+    oi_ctx = _clean_dict(oi_features)
+    structure_ctx = _clean_dict(structure_features)
+    greek_ctx = _clean_dict(greek_features)
+    meta_ctx = _clean_dict(meta_features)
 
     # Structural runway: levels between entry and targets
     if structure_features and entry_price:
@@ -264,6 +265,8 @@ def build_context(
         "volume": volume_ctx,
         "iv": iv_ctx,
         "oi": oi_ctx,
+        "greeks": greek_ctx,
+        "meta": meta_ctx,
         "structure": structure_ctx,
         "wick_profile": wick_profile,
         "oi_wall": wall_ctx,
