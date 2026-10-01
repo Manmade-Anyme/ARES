@@ -5,7 +5,7 @@
 
 ## Recommendation
 
-Use Jev as a second forward predictor in the **existing ARES Fly app**, on a separate process-group Machine. When any of the four ARES trade setups fires, consume the live signal-time data ARES already writes to `ml_collection` and `ares_signals`; do not fetch the market again. Call Jev once for that signal, persist its estimates to `llm_predictions`, and post a separate follow-up Discord alert. Jev code lives in its own `system_one/` package, with no application-code imports in either direction between it and XGBoost.
+Use Jev as a second forward predictor in the **existing ARES Fly app**, on a separate process-group Machine. When any of the four ARES trade setups fires, consume the live signal-time data ARES already writes to `ml_collection` and `ares_signals`; do not fetch the market again. Allow at most one automatic Jev dispatch for an eligible live signal, persist a successful result, and post a follow-up while the signal remains fresh. Jev code lives in its own `system_one/` package, with no application-code imports in either direction between it and XGBoost.
 
 Jev performs **inference only**. Unlike the XGBoost module, this POC has no offline training, fitting, retraining, or model artifact. Historical labels are for measuring whether Jev's live probabilities are reliable, not for training Jev.
 
@@ -36,17 +36,38 @@ sequenceDiagram
   participant D as Discord
   A->>DB: Existing signal and ML snapshot writes
   A->>D: Existing immediate alert
-  J->>DB: Poll new signal-bound ML rows (~1 s interval)
+  J->>DB: Load persisted rollout cutoff
+  J->>DB: Poll fresh post-rollout ML rows (~1 s interval)
   DB-->>J: ML snapshot + linked signal
+  J->>DB: Atomic claim, then owned invocation marker
+  DB-->>J: Confirm ownership and dispatch eligibility
   J->>T: One compact state, batched typed questions
   T-->>J: Probabilities and regime judgment
   J->>DB: Idempotent llm_predictions insert
-  J->>D: Separate follow-up alert
+  J->>D: Separate follow-up if still fresh
 ```
 
 The worker has no Dhan calls, avoiding the rate contention created by the earlier collector proposal. It still shares Supabase reads, Fly app configuration, image, and app-level secrets; resource isolation applies to the Machines, not to those shared services. Fly's process groups are configured in one `fly.toml`, and each group runs on its own Machine. A deploy would create the Jev Machine after the configuration is merged, so deployment is a separate reviewed step. [Fly process-group documentation](https://fly.io/docs/launch/processes/).
 
 Jev's model response may be fast, but total latency includes the existing live snapshot write, polling interval, database read, context building, API round trip, prediction insert, and Discord send. Start with a one-second poll and measure p50/p95 signal-to-prediction and signal-to-alert times for all four setup types. Do not claim a fixed ~200 ms result before a real account call. If polling dominates, evaluate an event-driven handoff later.
+
+## Rollout cutoff, ownership, and restart behavior
+
+Before enabling the live consumer, bootstrap its `llm_consumer_state` row once with `live_from` taken from the database clock. Use an atomic insert that leaves an existing row unchanged; every worker start must load that row and stop if it is absent. Keep the same consumer identity and cutoff across restarts, deploys, and model changes. The initial POC age limit is 60 seconds from `ares_signals.created_at`, evaluated with database time. Poll only matching ML snapshots whose signal was created at or after `live_from`, remains within that limit, and belongs to the active trading session. Snapshot insert time must not refresh the signal's age. Thus an empty prediction table at rollout cannot cause historical Jev calls or Discord alerts.
+
+Persist one `llm_prediction_jobs` row per signal UUID. A database transaction must enforce claim ownership before any external request: atomically insert/claim the job with an owner token, lease expiry, pinned snapshot identity, model, and context/question versions. An owned, unexpired `CLAIMED` job can transition to `INVOKING` only once, setting `invocation_started_at`, while rechecking cutoff, age, and session eligibility. A worker can dispatch only after this transition is acknowledged; an uncertain database acknowledgment is not permission to send. Losing workers and expired owners cannot dispatch. Result persistence must verify the matching invocation token.
+
+| Durable state | Recovery action |
+| --- | --- |
+| `CLAIMED`, no invocation marker, lease expired | Atomically transfer ownership to a new token only if the signal is still fresh. The old owner can no longer transition to `INVOKING`. |
+| `INVOKING`, worker lost or request outcome uncertain | Mark `UNKNOWN` after the bounded request/lease deadline; never automatically re-invoke. |
+| `UNKNOWN` | Retain the original invocation identity for audit or reconciliation. A late valid response with that token may complete the result; it cannot cause a second dispatch. |
+| `COMPLETED` | Reuse the persisted result; retry eligible persistence/delivery work without invoking Jev. |
+| `FAILED` / `EXPIRED` | Retain the reason, issue no automatic Jev replay, and suppress live alerts. |
+
+Recheck age immediately before dispatch and before the first Discord send. On restart, resume only unfinished work still inside the live window. A valid response arriving after expiry may be stored for audit, but its alert is suppressed. Historical evaluations require a separate explicit run with live Discord delivery disabled; they do not change the live cutoff or job ledger.
+
+This is an **at-most-once automatic dispatch policy**, not an exactly-once successful inference guarantee. Persisting a unique prediction UUID after the request does not prevent duplicate calls. Disable application, SDK, and transport inference retries: TypeSafe documents `RetryPolicy(max_retries=0)`. The reviewed API documentation does not establish a provider idempotency guarantee, so a timeout or crash after the invocation marker must not be replayed merely with a UUID header. This deliberately favors avoiding duplicate requests over filling every result; any future replay policy requires explicit review of provider guarantees. [SDK retries](https://docs.typesafe.ai/sdk/python/api/retries), [HTTP API](https://docs.typesafe.ai/api).
 
 ## Exact context and Jev question contract
 
@@ -69,7 +90,7 @@ Store the resolved API model name, raw response, context schema version, questio
 Illustrative Python request shape from the TypeSafe SDK documentation; it has **not** been executed with this account:
 
 ```python
-from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
+from typesafe_sdk import Choice, Noul, RetryPolicy, Score, TypeSafeClient
 
 questions = {
     "first_barrier": Choice(
@@ -99,7 +120,10 @@ questions = {
     "is_trap": Noul(instructions="Does the supplied evidence indicate a false break or stop sweep?"),
 }
 
-with TypeSafeClient(model="jev-1.13.0") as client:
+# The consumer must already own an acknowledged INVOKING job before this call.
+with TypeSafeClient(
+    model="jev-1.13.0", retry=RetryPolicy(max_retries=0), timeout=5.0
+) as client:
     response = client.system_one(state=exact_context, questions=questions)
 
 p_t1 = response.choices["first_barrier"].probabilities["t1_first"]
@@ -114,7 +138,7 @@ The API's typed probabilities are **not yet calibrated ARES trade probabilities*
 
 ## Persistence and deployment contract
 
-Create `llm_predictions` with `signal_uuid uuid NOT NULL UNIQUE REFERENCES ares_signals(signal_uuid)` in the current bridge schema, three checked 0–1 probabilities, regime/distribution/confidence, quality/trap scores, resolved engine name, input/source versions, latency, raw state/response, and timestamps. Keep a durable failure and alert-delivery status without writing fake 0% predictions. Enable RLS and grant only server-side access. Handle the later signal UUID column rename in queries. [Supabase API security guidance](https://supabase.com/docs/guides/api/securing-your-api).
+Create `llm_predictions` with `signal_uuid uuid NOT NULL UNIQUE REFERENCES ares_signals(signal_uuid)` in the current bridge schema, three checked 0–1 probabilities, regime/distribution/confidence, quality/trap scores, resolved engine name, input/source versions, latency, raw state/response, and timestamps. Add `llm_consumer_state` for the persistent rollout cutoff/age policy and `llm_prediction_jobs` for unique signal claims, pinned input, owner token, lease, invocation marker, status, error, and alert-delivery state. Commit the result and job completion atomically; on a lost commit acknowledgment, read/retry persistence using the same token and response without rerunning Jev. Enable RLS and grant only server-side access to these tables and the atomic claim operation. Handle the later signal UUID column rename in queries. [Supabase API security guidance](https://supabase.com/docs/guides/api/securing-your-api).
 
 The existing `fly.toml` would gain `[processes] app = "python main.py"` and `jev = "python -m system_one.consumer"`, plus a VM stanza for `jev` while retaining the existing `app` VM allocation. Do not apply this configuration or a database migration as part of the design PR. Fly deploys process groups together from the same image; app-level secrets are shared, so the Jev process should never initialize or call Dhan. If separate secret isolation later becomes necessary, the one-app constraint would need reconsideration. [Fly process-group documentation](https://fly.io/docs/launch/processes/).
 
@@ -124,5 +148,7 @@ The existing `fly.toml` would gain `[processes] app = "python main.py"` and `jev
 2. Static check for zero Jev imports or changed lines in `main.py`, `SignalPredictor`, and `ml_signal`. Kill the Jev Machine and confirm the trading Machine and original alert continue.
 3. With a server-side `TYPESAFE_API_KEY`, run representative saved signals and record actual model version, response time, token cost, coverage, and end-to-end latency. This key was unavailable during the assessment; no live Jev result is claimed.
 4. Build forward barrier labels from signal-time spot data, compare Jev and XGBoost against the same event definition, and inspect calibration by setup type and market regime. Neither model should influence trading until that review.
+5. Verify first rollout with historical signal rows and an empty result table produces zero historical calls/alerts; verify the cutoff survives restarts and model changes. Exercise fresh versus expired restart recovery and late responses without stale Discord delivery.
+6. Test simultaneous claims against a real local database, then mocked provider timeouts/crashes before and after the invocation marker. Verify only the acknowledged owner may dispatch, pre-dispatch stale claims can be recovered, uncertain invocations are never replayed, and persistence retries do not call Jev again. These are implementation acceptance gates; this design PR does not claim they have been executed.
 
 This is a **design POC for review**, not an implemented predictor. It now matches the requested one-app, shared-data architecture and is ready for directive review under the Global Development Pipeline.

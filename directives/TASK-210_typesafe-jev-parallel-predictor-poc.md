@@ -41,15 +41,29 @@ flowchart LR
   P --> D[Separate Discord follow-up]
 ```
 
-The consumer polls for signal-bound `ml_collection` rows at a short, measured interval, initially one second, and joins each row to `ares_signals` by canonical UUID. The existing main loop persists the snapshot after the signal and original alert path, so the Jev result is necessarily a follow-up. Record signal-to-snapshot, queue, TypeSafe, and end-to-end latency. Jev's API speed alone is not the full delay.
+The consumer polls for eligible signal-bound `ml_collection` rows at a short, measured interval, initially one second, and joins each row to `ares_signals` by canonical UUID. Eligibility requires the persisted rollout cutoff and freshness rules below, not merely absence from `llm_predictions`. The existing main loop persists the snapshot after the signal and original alert path, so the Jev result is necessarily a follow-up. Record signal-to-snapshot, queue, TypeSafe, and end-to-end latency. Jev's API speed alone is not the full delay.
+
+## Live eligibility and restart contract
+
+- Before the first live start, explicitly bootstrap one `llm_consumer_state` row for this consumer, with `live_from` set to database time and `max_signal_age_seconds = 60` for the POC. Insert it atomically without replacing an existing row. Workers must load this persisted state before polling and fail closed if it is missing; a restart, redeploy, or model change must never reset `live_from`.
+- Select only signals with `ares_signals.created_at >= live_from`, a matching signal-bound ML snapshot, and age at most 60 seconds according to database time, during the current trading session. A late snapshot must not make an old signal new. Historical signals before rollout are never automatically inferred or alerted.
+- On restart, recover unfinished eligible jobs within this age window. Mark expired jobs that were never invoked `EXPIRED`; retain the invocation status for jobs already dispatched. Recheck freshness before dispatch and before the first Discord send. Persist a late valid response for audit, but suppress its stale follow-up. Historical evaluation runs are separate explicit runs with live Discord delivery disabled.
+
+## Durable claim before inference
+
+- Add `llm_prediction_jobs` with one unique row per signal UUID. Before any Jev request, atomically claim the signal in the database, pin its snapshot and context/model versions, and store an owner token and lease expiry. Concurrent workers must not use a read-then-write claim.
+- Immediately before dispatch, atomically change the owned, unexpired `CLAIMED` job to `INVOKING`, recording `invocation_started_at`. Dispatch only after an acknowledged successful transition. The signal must still satisfy the live cutoff and freshness predicates. An expired lease prevents dispatch; a superseded owner token prevents both dispatch and result publication. After dispatch, a late response is checked against the immutable invocation token, not against the pre-dispatch lease.
+- Permit **at most one automatic Jev dispatch per signal**, with a bounded deadline and SDK/transport retries disabled. RetryPolicy must use `max_retries=0`; a unique prediction row alone cannot deduplicate external calls. An explicit API rejection is `FAILED`; an ambiguous timeout, lost response, or crash after the invocation marker is `UNKNOWN`. Neither is automatically re-invoked. This may leave a signal without a prediction; it does not promise exactly-once successful inference.
+- Recover an expired `CLAIMED` job only when `invocation_started_at` is null, using an atomic ownership change and a new token while the signal remains fresh. A stale `INVOKING` job becomes `UNKNOWN`, never a fresh claim. A late result can complete the original invocation only with its matching token; persistence retries reuse that response and never call Jev again. Keep the invocation marker across redeploys and model changes.
+- Do not assume TypeSafe provides request idempotency. A future retry policy requires a documented provider guarantee and explicit review; passing a UUID header by itself is insufficient.
 
 ## POC scope
 
 1. `system_one/context.py`: Validate direction and barrier geometry. Use Python for exact T1/T2/SL distances, reward-to-risk, structural runway, OI wall position, IV behavior, PCR/OI alignment, volume ratio, and candle wick profile. Derive only what the persisted rows support; represent absent evidence as missing, never as zero.
-2. `system_one/consumer.py`: Read new signal-bound ML snapshots and their signal rows, invoke Jev with bounded timeout and retries, and persist results idempotently by signal UUID. Keep failure state separate from successful predictions.
+2. `system_one/consumer.py`: Load the persisted rollout state, select fresh live snapshots, and obtain a durable database claim before invoking Jev. Apply the ownership, timeout, and stale-claim rules above. Retry database operations safely; reuse an obtained response when retrying persistence, and never automatically replay an uncertain Jev request.
 3. `system_one/jev.py`: Batch narrow TypeSafe questions over one compact state. Map typed responses into `t1_hit_prob`, `t2_hit_prob`, `sl_hit_prob`, `regime`, `setup_quality`, `is_trap_prob`, resolved `engine_name`, and raw response. Version both context and question contracts.
 4. `system_one/discord.py`: Send a separate follow-up alert with the original signal display ID and model version. Retry delivery without rerunning Jev or duplicating an already confirmed alert.
-5. Supabase migration: Add `llm_predictions`, linked one-to-one to the current bridge-mode `ares_signals.signal_uuid`, with 0–1 probability checks, model/version metadata, input provenance, latency, raw state/response, and service-role-only access. Account for the planned UUID primary-key cutover.
+5. Supabase migration: Add `llm_predictions`, linked one-to-one to the current bridge-mode `ares_signals.signal_uuid`, with 0–1 probability checks, model/version metadata, input provenance, latency, and raw state/response. Add `llm_consumer_state` and `llm_prediction_jobs` for the rollout cutoff and durable claim/status contract. Restrict all three tables and the claim operation to server-side access. Account for the planned UUID primary-key cutover.
 6. Fly configuration: Add a `jev` process group to the **existing** app, retaining the `app` process group and its 768 MB Machine. Size and lifecycle of the Jev Machine are measured before deployment. No second Fly app or market-data collector is part of this POC.
 
 ## Output semantics
@@ -62,10 +76,10 @@ The consumer polls for signal-bound `ml_collection` rows at a short, measured in
 ## Acceptance criteria
 
 1. One Fly app runs `app` and `jev` on separate Machines. A Jev failure/OOM does not stop the trading Machine. No Jev import or direct call is added to `main.py`, `SignalPredictor`, `ml_signal`, `storage.py`, or `alerts.py`.
-2. Each of the four live setup types can trigger one Jev inference from its existing signal-bound ML snapshot and signal record. Jev makes zero Dhan requests, does not wait for XGBoost or training, and records snapshot provenance and all measured latency stages. The XGBoost result may be joined for evaluation but is not a prerequisite.
-3. Valid snapshots produce non-null T1, T2, SL, and regime in `llm_predictions`; invalid or missing inputs produce an auditable failure state instead of invented percentages. One chosen Jev result is stored per signal UUID.
-4. A successful persisted result leads to one separate, signal-identifiable Discord follow-up. The original alert and trade path remain unaffected.
-5. New-unit tests use mocked TypeSafe/Supabase/Discord boundaries and cover geometry, source selection, probability invariants, missing data, idempotency, failure/retry paths, and alert behavior. Target 100% coverage for the new unit.
+2. Each of the four live setup types is eligible for at most one automatic Jev dispatch from its existing signal-bound ML snapshot and signal record. Jev makes zero Dhan requests, does not wait for XGBoost or training, and records snapshot provenance and all measured latency stages. The XGBoost result may be joined for evaluation but is not a prerequisite.
+3. Successful inference on valid inputs produces non-null T1, T2, SL, and regime in `llm_predictions`; invalid, missing, expired, failed, or uncertain cases produce an auditable job status instead of invented percentages. One chosen Jev result is stored per signal UUID.
+4. A successful persisted result that is still fresh is eligible for a separate, signal-identifiable Discord follow-up. Pre-rollout and expired signals never emit live follow-ups. The original alert and trade path remain unaffected.
+5. New-unit tests use mocked TypeSafe/Supabase/Discord boundaries and cover geometry, source selection, probability invariants, missing data, first-start historical exclusion, restart freshness, concurrent claim ownership, crashes before/after dispatch, ambiguous timeouts, persistence retries, and stale-alert suppression. Test atomic claims against a real local database as well; mocks alone cannot prove concurrent ownership. Target 100% coverage for the new unit.
 6. Measure a real Jev call and end-to-end signal-to-alert latency with a server-side `TYPESAFE_API_KEY` before claiming this POC meets its speed goal. No live call or deployment is claimed by this design document.
 
 ## Review gate
