@@ -4,7 +4,7 @@ A Discord `RETEST_READY` watch means a wall is armed and awaiting a later qualif
 
 ## Delivered-watch lifecycle
 
-The entry filter records a watch as delivered only after Discord accepts the webhook. If that watched candidate expires, it queues an immutable cancellation containing the original wall, watch-ready timestamp, cancellation candle timestamp and close, reason, and unique event ID.
+The entry filter records a watch as delivered only after Discord accepts the webhook. If that watched candidate expires, or its final signal persistence/delivery fails, it queues an immutable cancellation containing the original wall, watch-ready timestamp, cancellation candle timestamp and close, reason, and unique event ID.
 
 | Event | Watch outcome |
 | --- | --- |
@@ -13,11 +13,14 @@ The entry filter records a watch as delivered only after Discord accepts the web
 | Candle closes beyond the wall on its invalid side | Cancel delivered watch |
 | Engine rejects the qualified candidate at its R:R gate | Cancel delivered watch |
 | First candle with a different date reaches the engine | Cancel prior-session watch and reset trading state |
-| Signal emitted and candidate consumed | Clear active watch; subsequent trade exits use existing position-management alerts |
+| Engine emits signal and consumes candidate | Retain delivered watch until persistence and final Discord delivery resolve |
+| Signal persistence and final Discord delivery succeed | Clear watch without cancellation; subsequent trade exits use existing position-management alerts |
+| Signal persistence fails | Cancel watch; trade entry was aborted |
+| Final signal Discord delivery returns false or raises | Cancel watch with guidance to check recorded signals and any existing trade |
 | Cooldown or detector priority suppresses entry | Keep watch active; require a fresh retest under existing rules |
 | Watch webhook never succeeded | No cancellation for that undelivered watch |
 
-The embed title is **OI WALL WATCH CANCELLED**. Its fields show Wall, Watch armed, Cancelled at, Spot at cancellation, Reason, and Trader Guidance. Times display in IST. Guidance explicitly states that cancellation applies to the watch and does not close an existing trade.
+The embed title is **OI WALL WATCH CANCELLED**. Its fields show Wall, Watch armed, Cancelled at, Spot at cancellation, Reason, and Trader Guidance. Times display in IST. Guidance explicitly states that cancellation applies to the watch and does not close an existing trade. For final signal delivery failures it says: “Final signal alert was not delivered. Check recorded signals and any existing trade. This cancels the watch and does not close a trade.” A trade may already be tracked in that case; the alert does not claim that entry was aborted.
 
 ## Delivery and retry
 
@@ -39,9 +42,9 @@ The stored historical option-chain snapshots are incomplete. They support the re
 
 ## Acceptance summary
 
-- Delivered watches receive a cancellation for each terminal path above; undelivered watches and consumed trades do not.
+- Delivered watches receive a cancellation for each terminal path above; undelivered watches and successfully delivered final signals do not. Engine consumption alone does not resolve the watch.
 - Replacement cancellations retain the original wall identity; retries retain the original time, spot, reason and event ID.
 - Successful delivery removes that event; failed delivery survives candidate/session resets and runs before fresh watches.
 - Existing retest qualification, risk levels and trade-exit behavior remain unchanged.
 
-Implementation: `detectors/oi_wall_entry.py` owns lifecycle and pending notices; `models.py` defines the event; `alerts.py` formats and dispatches it; `main.py` invokes dispatch after engine evaluation; `engine.py` preserves the filter's delivery queue during date rollover.
+Implementation: `detectors/oi_wall_entry.py` owns lifecycle and pending notices; `models.py` defines the event; `alerts.py` formats and dispatches it; `main.py` invokes dispatch after engine evaluation and acknowledges final signal persistence/delivery; `engine.py` preserves the filter's delivery queue during date rollover.

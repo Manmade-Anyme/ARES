@@ -204,3 +204,52 @@ def test_suppressed_retest_keeps_delivered_watch_active(outcome):
     assert not f.pending_watchlist_cancellations
     f.update(None, candle(3), [])
     assert len(f.pending_watchlist_cancellations) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persisted,result", [(False, None), (True, False), (True, RuntimeError("offline")), (True, True)])
+async def test_final_signal_delivery_closes_watch_only_after_confirmation(persisted, result):
+    from main import _deliver_signal_alert
+    from models import SetupType
+    from unittest.mock import MagicMock
+    f = ready()
+    decision = update(f, "CE", 24100, T0 + timedelta(minutes=2), 4, (24085, 24088, 24070, 24075))
+    f.acknowledge(decision, "EMITTED")
+    signal = MagicMock(setup_type=SetupType.OI_WALL_REJECTION, oi_wall_context={"wall_key": "CE:24100"})
+    with patch("main.send_discord", new_callable=AsyncMock) as send, \
+         patch("alerts.send_watchlist_cancellation", new_callable=AsyncMock, return_value=False):
+        if isinstance(result, Exception):
+            send.side_effect = result
+        else:
+            send.return_value = result
+        await _deliver_signal_alert(signal, 24075, persisted, f, candle(close=24075))
+        if not persisted:
+            send.assert_not_awaited()
+    if result is True:
+        f.reset_session(candle(24 * 60))
+        assert not f.pending_watchlist_cancellations
+    else:
+        event = f.pending_watchlist_cancellations[0]
+        assert "persistence" in event.reason if not persisted else "Discord" in event.reason
+        assert f.state == "CONSUMED"
+        f.update(None, candle(3), [])
+        assert f.pending_watchlist_cancellations == (event,)
+
+
+@pytest.mark.asyncio
+async def test_failed_final_alert_cancellation_does_not_claim_no_trade_entry():
+    from alerts import send_watchlist_cancellation
+    f = ready()
+    decision = update(f, "CE", 24100, T0 + timedelta(minutes=2), 4, (24085, 24088, 24070, 24075))
+    f.acknowledge(decision, "EMITTED")
+    f.acknowledge_signal_alert("CE:24100", False, candle(), "Final signal Discord delivery failed; a trade may already be tracked")
+    with patch("alerts.settings") as config, patch("alerts.httpx.AsyncClient") as client_cls:
+        config.discord_webhook_url = "https://discord.invalid/test"
+        client = client_cls.return_value.__aenter__.return_value
+        client.post = AsyncMock()
+        client.post.return_value.raise_for_status = lambda: None
+        assert await send_watchlist_cancellation(f.pending_watchlist_cancellations[0])
+        fields = client.post.call_args.kwargs["json"]["embeds"][0]["fields"]
+        guidance = next(field["value"] for field in fields if field["name"] == "Trader Guidance")
+        assert "No entry" not in guidance
+        assert "existing trade" in guidance

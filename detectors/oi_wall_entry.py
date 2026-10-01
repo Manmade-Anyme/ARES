@@ -75,6 +75,17 @@ class OIWallEntryFilter:
         self._watchlist_emitted_keys.discard(bias.wall_key)
         self._delivered_watch = None
 
+    def acknowledge_signal_alert(
+        self, wall_key: str, delivered: bool, candle: OHLCVCandle, reason: str,
+    ) -> None:
+        """Resolve the watch only after final signal persistence/delivery is known."""
+        if self._delivered_watch is None or self._delivered_watch[0].wall_key != wall_key:
+            return
+        if delivered:
+            self._delivered_watch = None
+        else:
+            self._cancel_delivered_watch(reason, candle)
+
     def reset_session(self, candle: OHLCVCandle) -> None:
         """Reset trading state but retain undelivered cancellation notices."""
         self._cancel_delivered_watch("Trading session changed", candle)
@@ -349,7 +360,7 @@ class OIWallEntryFilter:
         candle_vwap = decision.telemetry.vwap if decision.telemetry else None
 
         if outcome == "EMITTED":
-            self._delivered_watch = None
+            # Engine emission consumes the setup; Discord delivery is confirmed later.
             self.state = "CONSUMED"
             if decision.wall_key:
                 self.consumed_wall_keys.add(decision.wall_key)

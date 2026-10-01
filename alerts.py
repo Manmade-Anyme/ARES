@@ -61,12 +61,12 @@ def format_signal(signal: AresSignal, spot: float) -> str:
 {reasons_str}"""
     return msg
 
-async def send_discord(signal: AresSignal, spot: float) -> None:
+async def send_discord(signal: AresSignal, spot: float) -> bool:
     """
     Formats the signal and sends it asynchronously to the configured Discord webhook using Embed Fields.
     """
     if not settings.discord_webhook_url:
-        return
+        return False
         
     is_bullish = signal.direction.value == "BULLISH"
     webhook_url = settings.discord_webhook_url
@@ -160,12 +160,14 @@ async def send_discord(signal: AresSignal, spot: float) -> None:
         ]
     }
 
-    async with httpx.AsyncClient() as client:
-        try:
+    try:
+        async with httpx.AsyncClient() as client:
             response = await client.post(webhook_url, json=payload)
             response.raise_for_status()
-        except Exception as e:
-            print(f"[-] Discord signal alert failed: {type(e).__name__} - {e}")
+        return True
+    except Exception as e:
+        print(f"[-] Discord signal alert failed: {type(e).__name__} - {e}")
+        return False
 
 
 def format_watchlist_alert(bias: OIWallBias, spot: float) -> str:
@@ -236,6 +238,10 @@ async def send_watchlist_cancellation(event: OIWallWatchCancellation) -> bool:
         value = value.replace(tzinfo=ist) if value.tzinfo is None else value.astimezone(ist)
         return value.strftime("%d-%b-%Y %H:%M:%S IST")
 
+    guidance = "No entry from this watch. Await a fresh setup watch and confirmed signal. This cancels the watch, not an existing trade."
+    if event.reason.startswith("Final signal"):
+        guidance = "Final signal alert was not delivered. Check recorded signals and any existing trade. This cancels the watch and does not close a trade."
+
     payload = {"embeds": [{
         "title": f"🛑 #{event.bias.wall_key} OI WALL WATCH CANCELLED ({event.bias.direction.value})",
         "color": 15158332,
@@ -245,7 +251,7 @@ async def send_watchlist_cancellation(event: OIWallWatchCancellation) -> bool:
             {"name": "Cancelled at", "value": event_time(event.timestamp), "inline": True},
             {"name": "Spot at cancellation", "value": f"{event.spot:.2f}", "inline": True},
             {"name": "Reason", "value": event.reason, "inline": False},
-            {"name": "Trader Guidance", "value": "No entry from this watch. Await a fresh setup watch and confirmed signal. This cancels the watch, not an existing trade.", "inline": False},
+            {"name": "Trader Guidance", "value": guidance, "inline": False},
         ],
         "footer": {"text": f"ARES • Watch cancellation • {event.event_id}"},
     }]}

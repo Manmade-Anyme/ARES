@@ -162,6 +162,24 @@ async def _record_ml_snapshot(ml_collector, signal, **snapshot_fields):
     except Exception as e:
         print(f"[-] _record_ml_snapshot failed: {e}")
 
+async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle):
+    """Confirm final Discord delivery before resolving a delivered OI watch."""
+    delivered = False
+    reason = "Signal persistence failed; trade entry was aborted"
+    if persisted:
+        reason = "Final signal Discord delivery failed; a trade may already be tracked"
+        try:
+            delivered = await send_discord(signal, spot)
+        except Exception as alert_err:
+            print(f"[-] Discord alert failed: {alert_err}")
+    if signal.setup_type.value == "OI_WALL_REJECTION":
+        context = signal.oi_wall_context or {}
+        wall_key = context.get("wall_key")
+        if wall_key:
+            entry_filter.acknowledge_signal_alert(wall_key, delivered, candle, reason)
+            await dispatch_oi_wall_watch_alerts(entry_filter, spot)
+
+
 async def run():
     """
     Main entry point for the ARES Trading System.
@@ -411,11 +429,9 @@ async def run():
                         logger.warning("Non-blocking prediction dispatch error: %s", log_err)
                         print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Non-blocking prediction dispatch error: {log_err}{RESET}")
 
-                if trade_executed:
-                    try:
-                        await send_discord(signal, spot)
-                    except Exception as alert_err:
-                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Discord alert failed: {alert_err}{RESET}")
+                await _deliver_signal_alert(
+                    signal, spot, trade_executed, engine.oi_wall_filter, candle,
+                )
 
             # ML Data Collection: log a feature snapshot every cycle, signal or not.
             #
