@@ -54,7 +54,8 @@ The consumer polls for signal-bound `ml_collection` rows at a short, measured in
 
 ## Output semantics
 
-- Define `t1_hit_prob` as T1 touched before SL by session close; `sl_hit_prob` as SL touched before T1 by close; remaining mass means neither. Compute T2 as T1-first probability multiplied by Jev's conditional probability of T2 after T1 and before SL or close. This keeps `T2 ≤ T1` and `T1 + SL ≤ 1`.
+- Define `t1_hit_prob` as T1 touched before the original SL by session close; `sl_hit_prob` as the original SL touched before T1 by close; remaining mass means neither. After T1, ARES moves the stop to the trade's entry price. Compute T2 as T1-first probability multiplied by Jev's conditional probability of T2 after T1 and before that **post-T1 breakeven stop** or session close. This keeps `T2 ≤ T1` and `T1 + SL ≤ 1`; `sl_hit_prob` does not include a later breakeven exit.
+- Freeze the spot entry price in the context (`signal.entry_price`) from `ares_signals.spot_at_signal`, matching the spot passed to `PositionManager.add_trade`. Preserve `trigger_price` separately. Use the same entry price for the post-T1 breakeven barrier in both the Jev question and evaluation labels. A return to entry after T1 ends the T2 attempt; a subsequent T2 touch is not success. Exclude bars with unknown ordering of T1/original-SL, T1/return-to-entry, or post-T1 T2/breakeven touches.
 - Regime is a typed choice (trending, range-bound/choppy, volatile event, or insufficient evidence), with distribution and confidence. Setup quality is a documented ordinal score scaled to 0–10.
 - Treat all Jev numbers as shadow estimates until evaluated against ARES-specific barrier labels. Do not present them as empirically calibrated market probabilities merely because the API returns probabilities.
 

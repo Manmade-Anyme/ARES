@@ -52,12 +52,14 @@ Jev's model response may be fast, but total latency includes the existing live s
 
 Use Python to validate bullish/bearish barrier order, finite prices, and positive SL distance. Compute T1/T2/SL distances and reward-to-risk. Read runway, wall, IV trend, PCR/OI, volume, and wick values from the persisted feature groups and raw fields. Mark absent or stale values as missing, including structural levels or option-chain details that were not saved. Do not recreate missing facts from `reasons` text or silently replace null with zero.
 
+Freeze `signal.entry_price` from `ares_signals.spot_at_signal`, the same spot passed to `PositionManager.add_trade`; preserve the detector's `trigger_price` separately. Include `signal.original_stop_loss` and `signal.post_t1_stop_price = signal.entry_price` in the state. In production, T1 changes the stop to `entry_price` for both directions, so the conditional T2 event must use this breakeven barrier. [Trade entry and trailing-stop behavior](../../position_manager.py).
+
 Batch five independent questions in one TypeSafe call, using its typed `Choice`, `Noul`, and `Score` primitives:
 
 | Question | Primitive | Output |
 | --- | --- | --- |
-| First barrier before session close | Choice: `t1_first`, `sl_first`, `neither_by_close` | `t1_hit_prob` and `sl_hit_prob` from one distribution |
-| T2 after T1, given T1 first | Noul | `t2_hit_prob = P(t1_first) × P(t2_given_t1)` in Python |
+| First barrier before session close | Choice: T1 before original SL, original SL before T1, or neither | `t1_hit_prob` and `sl_hit_prob` from one distribution; breakeven exits after T1 are excluded from `sl_hit_prob` |
+| T2 after T1, given T1 first, before the post-T1 breakeven stop or session close | Noul | `t2_hit_prob = P(t1_first) × P(t2_given_t1)` in Python |
 | Market regime | Choice | Label, distribution, and confidence |
 | Setup quality | Score | Defined ordinal levels scaled to 0–10 in Python |
 | False-break trap risk | Noul | `is_trap_prob` |
@@ -73,13 +75,13 @@ questions = {
     "first_barrier": Choice(
         instructions="Which event occurs first for this spot-price signal before session close?",
         criteria={
-            "t1_first": "Target 1 touches before stop loss.",
-            "sl_first": "Stop loss touches before Target 1.",
+            "t1_first": "Target 1 touches before the original stop loss.",
+            "sl_first": "The original stop loss touches before Target 1.",
             "neither_by_close": "Neither barrier touches before session close.",
         },
     ),
     "t2_given_t1": Noul(
-        instructions="Assuming Target 1 touched first, does Target 2 touch before stop loss or session close?"
+        instructions="Assuming Target 1 touched before the original stop loss, ARES then moves the stop to `signal.post_t1_stop_price` (the entry price). Does Target 2 touch before this post-T1 breakeven stop or session close? A touch of the breakeven stop ends the trade; ignore any later Target 2 touch."
     ),
     "market_regime": Choice(
         instructions="Classify the observed signal-time market regime.",
@@ -106,7 +108,9 @@ p_t2 = p_t1 * response.nouls["t2_given_t1"].noul
 engine_name = response.model
 ```
 
-The API's typed probabilities are **not yet calibrated ARES trade probabilities**. Define the barrier labels and observation horizon, then compare Jev with realized outcomes, base rates, and XGBoost using Brier score and reliability plots before interpreting percentages as calibrated. A same-bar T1/SL touch without tick order must be labeled ambiguous. The previous assessment's Laya CPU latency claim and the old Obsidian note's calibrated-example language were unsupported; Jev is the initial POC backend.
+The evaluation labels must use the same stop transition: T1 success means T1 before the original SL; T2 success means T1 followed by T2 before a return to entry or session close. For a bullish entry at 24,000, T1 at 24,050, and T2 at 24,100, the path 24,050 → 24,000 → 24,100 is T1 success and T2 failure because the runner exits at breakeven. For a bearish entry at 24,000, T1 at 23,950, and T2 at 23,900, the path 23,950 → 24,000 → 23,900 has the same labels. Once breakeven is touched, later price movements cannot change that T2 failure.
+
+The API's typed probabilities are **not yet calibrated ARES trade probabilities**. Compare them with realized outcomes, base rates, and XGBoost using Brier score and reliability plots before interpreting percentages as calibrated. Bars with unknown ordering of T1/original-SL, T1/return-to-entry, or post-T1 T2/breakeven touches must be labeled ambiguous and excluded from calibration. Production's optimistic candle evaluation may report a target in such a bar; retain that reported result separately from the ordered barrier label. The previous assessment's Laya CPU latency claim and the old Obsidian note's calibrated-example language were unsupported; Jev is the initial POC backend.
 
 ## Persistence and deployment contract
 
@@ -116,7 +120,7 @@ The existing `fly.toml` would gain `[processes] app = "python main.py"` and `jev
 
 ## Verification before operational use
 
-1. Mock TypeSafe, Supabase, and Discord at public boundaries; test exact context math, signal UUID joins, missing evidence, event mapping, probability invariants, retry/idempotency, and alert delivery. Aim for the ticket's 100% new-unit coverage target.
+1. Mock TypeSafe, Supabase, and Discord at public boundaries; test exact context math, signal UUID joins, missing evidence, event mapping, probability invariants, retry/idempotency, and alert delivery. Include both bullish and bearish T1 → breakeven → later T2 paths as T2 failures, direct T1 → T2 paths as successes, and unordered competing barrier touches as ambiguous. Aim for the ticket's 100% new-unit coverage target.
 2. Static check for zero Jev imports or changed lines in `main.py`, `SignalPredictor`, and `ml_signal`. Kill the Jev Machine and confirm the trading Machine and original alert continue.
 3. With a server-side `TYPESAFE_API_KEY`, run representative saved signals and record actual model version, response time, token cost, coverage, and end-to-end latency. This key was unavailable during the assessment; no live Jev result is claimed.
 4. Build forward barrier labels from signal-time spot data, compare Jev and XGBoost against the same event definition, and inspect calibration by setup type and market regime. Neither model should influence trading until that review.
