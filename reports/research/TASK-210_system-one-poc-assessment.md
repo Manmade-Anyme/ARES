@@ -1,7 +1,7 @@
 # TASK-210: Jev forward prediction POC assessment
 
-**Date:** 2026-09-30
-**Status:** Ready for design review; implementation not started
+**Date:** 2026-10-02
+**Status:** Implemented POC; review fixes verified locally
 
 ## Recommendation
 
@@ -23,9 +23,9 @@ The four live setup types are `FAILED_BREAKOUT`, `OI_WALL_REJECTION`, `EXHAUSTIO
 
 `main.py` computes XGBoost from the current candle, option chain, levels, and MLCollector histories; later in the same signal cycle it awaits a signal-bound `MLCollector.snapshot()`. The `ml_collection` row is therefore the best independent handoff. It is **the same market-data cycle**, although its engineered feature dictionary is not guaranteed byte-for-byte identical to `ml_predictions.feature_snapshot`; record both versions when comparing forecasts. Neither `ares_signals` alone nor a second Dhan fetch has the full feature set. [Main signal path](../../main.py), [ML collector](../../ml_signal/collector.py), [ML predictor](../../ml_signal/predictor.py).
 
-The live Supabase project observed in the prior assessment is in bridge mode: `ares_signals.id` is bigint and `signal_uuid` is unique UUID. `ml_collection.signal_uuid` is populated for signal rows; `ml_predictions.signal_id` stores the UUID as text. The future TASK-150 UUID cutover needs an explicit consumer-query adjustment. No schema change is part of this report.
+The live Supabase project observed in the prior assessment is in bridge mode: `ares_signals.id` is bigint and `signal_uuid` is unique UUID. `ml_collection.signal_uuid` is populated for signal rows; `ml_predictions.signal_id` stores the UUID as text. The future TASK-150 UUID cutover needs an explicit consumer-query adjustment. The PR includes the initial `2026-10-01-task210-llm-predictions.sql` migration; this review has not applied it to a live database.
 
-## Proposed flow and timing
+## Implemented flow and timing
 
 ```mermaid
 sequenceDiagram
@@ -43,7 +43,7 @@ sequenceDiagram
   DB-->>J: Confirm ownership and dispatch eligibility
   J->>T: One compact state, batched typed questions
   T-->>J: Probabilities and regime judgment
-  J->>DB: Idempotent llm_predictions insert
+  J->>DB: Atomically archive result and complete invocation
   J->>DB: Atomically mark SENDING with event-time freshness check
   DB-->>J: Acknowledge delivery attempt ownership
   J->>D: Fresh separate follow-up, wait=true, no hidden retries
@@ -63,7 +63,7 @@ Use the pinned signal-bound `ml_collection.timestamp` as `event_at`. In the curr
 
 For the initial POC, pin `expires_at = event_at + 60 seconds` in the job, and require `live_from <= event_at <= database_now < expires_at` for invocation and each allowed delivery attempt, within the active trading session. At the exact expiry boundary the signal is stale. Reject missing, invalid, future-dated, or unverified event timestamps without falling back to insert/receipt time. Neither late inserts nor retries/restarts may change event time or expiry. A cycle before rollout remains excluded even if its signal is inserted afterward. A signal delayed more than 60 seconds before insertion receives zero Jev calls/alerts even when its `created_at` is new. Measure eligible-signal coverage: the conservative cycle-start clock includes fetch time and may suppress more signals than an exact detection clock, which would need a separately reviewed capture change.
 
-Persist one `llm_prediction_jobs` row per signal UUID. A database transaction must enforce claim ownership before any external request: atomically insert/claim the job with an owner token, lease expiry, pinned snapshot identity, model, and context/question versions. An owned, unexpired `CLAIMED` job can transition to `INVOKING` only once, setting `invocation_started_at`, while rechecking cutoff, age, and session eligibility. A worker can dispatch only after this transition is acknowledged; an uncertain database acknowledgment is not permission to send. Losing workers and expired owners cannot dispatch. Result persistence must verify the matching invocation token.
+Persist one `llm_prediction_jobs` row per signal UUID. A database transaction must enforce claim ownership before any external request: atomically insert/claim the job with an owner token, lease expiry, pinned snapshot identity, model, and context/question versions. An owned, unexpired `CLAIMED` job can transition to `INVOKING` only once, setting `invocation_started_at`, while rechecking cutoff, age, and session eligibility. The invocation marker pins a dispatch deadline to the earliest event expiry, lease expiry, or IST session close. The consumer conservatively subtracts the whole RPC round trip from that database-derived budget and checks it again after SDK setup. A worker can dispatch only after this transition is acknowledged; an uncertain database acknowledgment is not permission to send. Losing workers and expired owners cannot dispatch. Result persistence must verify the matching invocation token.
 
 | Durable state | Recovery action |
 | --- | --- |
@@ -95,62 +95,21 @@ Use Python to validate bullish/bearish barrier order, finite prices, and positiv
 
 Freeze `signal.entry_price` from `ares_signals.spot_at_signal`, the same spot passed to `PositionManager.add_trade`; preserve the detector's `trigger_price` separately. Include `signal.original_stop_loss` and `signal.post_t1_stop_price = signal.entry_price` in the state. In production, T1 changes the stop to `entry_price` for both directions, so the conditional T2 event must use this breakeven barrier. [Trade entry and trailing-stop behavior](../../position_manager.py).
 
-Batch five independent questions in one TypeSafe call, using its typed `Choice`, `Noul`, and `Score` primitives:
+The implemented `build_questions()` batches seven independent questions in one call. They see the same prepared state and do not consume each other's answers. The authoritative instructions and criteria are in [system_one/jev.py](../../system_one/jev.py).
 
-| Question | Primitive | Output |
+| Question ID | Primitive | Mapping |
 | --- | --- | --- |
-| First barrier before session close | Choice: T1 before original SL, original SL before T1, or neither | `t1_hit_prob` and `sl_hit_prob` from one distribution; breakeven exits after T1 are excluded from `sl_hit_prob` |
-| T2 after T1, given T1 first, before the post-T1 breakeven stop or session close | Noul | `t2_hit_prob = P(t1_first) × P(t2_given_t1)` in Python |
-| Market regime | Choice | Label, distribution, and confidence |
-| Setup quality | Score | Defined ordinal levels scaled to 0–10 in Python |
-| False-break trap risk | Noul | `is_trap_prob` |
+| `first_barrier` | Choice: T1 first, original SL first, neither by close | T1 and SL probabilities from one distribution |
+| `t2_given_t1` | Choice: T2 hits, T2 fails, insufficient evidence | Python multiplies T1-first probability by `t2_hits`; the post-T1 stop is entry/breakeven |
+| `market_regime` | Choice: trending, range/choppy, volatile event, insufficient evidence | Label, distribution, confidence |
+| `price_action_strength` | Score: five ordinal levels | Scale to 0–10; 40% of quality |
+| `structural_clarity` | Score: five ordinal levels | Scale to 0–10; 40% of quality |
+| `confluence_rating` | Score: five ordinal levels | Scale to 0–10; 20% of quality |
+| `is_trap` | Noul | False-break/stop-sweep probability |
 
-Store the resolved API model name, raw response, context schema version, question-set version, and input provenance. TypeSafe describes `Noul` as a yes probability, `Choice` as a distribution over alternatives, and `Score` as an ordinal judgment. The model must not be asked to do arithmetic or infer unavailable market history. [TypeSafe API](https://docs.typesafe.ai/api), [Python SDK](https://docs.typesafe.ai/sdk/python), [Choice](https://docs.typesafe.ai/primitives/choice), [Noul](https://docs.typesafe.ai/primitives/noul), [Score](https://docs.typesafe.ai/primitives/score).
+`setup_quality = 0.4 × price_action + 0.4 × structure + 0.2 × confluence`, after Python scales each score to 0–10. A displayed quality such as 7.5 is this composite, not a separate probability. Trap risk is Jev's Noul judgment; regime is its Choice judgment over the supplied market evidence. These are shadow estimates awaiting outcome validation.
 
-Illustrative Python request shape from the TypeSafe SDK documentation; it has **not** been executed with this account:
-
-```python
-from typesafe_sdk import Choice, Noul, RetryPolicy, Score, TypeSafeClient
-
-questions = {
-    "first_barrier": Choice(
-        instructions="Which event occurs first for this spot-price signal before session close?",
-        criteria={
-            "t1_first": "Target 1 touches before the original stop loss.",
-            "sl_first": "The original stop loss touches before Target 1.",
-            "neither_by_close": "Neither barrier touches before session close.",
-        },
-    ),
-    "t2_given_t1": Noul(
-        instructions="Assuming Target 1 touched before the original stop loss, ARES then moves the stop to `signal.post_t1_stop_price` (the entry price). Does Target 2 touch before this post-T1 breakeven stop or session close? A touch of the breakeven stop ends the trade; ignore any later Target 2 touch."
-    ),
-    "market_regime": Choice(
-        instructions="Classify the observed signal-time market regime.",
-        criteria={
-            "trending": "Sustained directional movement with confirming participation.",
-            "range_choppy": "Range-bound or reversing movement with weak follow-through.",
-            "volatile_event": "Event volatility dominates the observed structure.",
-            "insufficient_evidence": "The supplied snapshot does not support a classification.",
-        },
-    ),
-    "setup_quality": Score(
-        instructions="Rate the observed setup quality using only supplied evidence.",
-        criteria=["Unusable", "Weak", "Mixed", "Strong", "Exceptional"],
-    ),
-    "is_trap": Noul(instructions="Does the supplied evidence indicate a false break or stop sweep?"),
-}
-
-# The consumer must already own an acknowledged INVOKING job before this call.
-with TypeSafeClient(
-    model="jev-1.13.0", retry=RetryPolicy(max_retries=0), timeout=5.0
-) as client:
-    response = client.system_one(state=exact_context, questions=questions)
-
-p_t1 = response.choices["first_barrier"].probabilities["t1_first"]
-p_sl = response.choices["first_barrier"].probabilities["sl_first"]
-p_t2 = p_t1 * response.nouls["t2_given_t1"].noul
-engine_name = response.model
-```
+The worker uses `TypeSafeClient(model=DEFAULT_MODEL, retry=RetryPolicy(max_retries=0), timeout=DEFAULT_TIMEOUT)` after the acknowledged invocation gate. Defaults are `jev-1.13.0` and five seconds. It stores the resolved model name, all seven typed answers, context/question versions (`v1.1`), and prepared input state. A conditional T2 `insufficient_evidence` distribution remains visible in the raw archive. No live account call was made during this review. [TypeSafe API](https://docs.typesafe.ai/api), [Python SDK](https://docs.typesafe.ai/sdk/python).
 
 The evaluation labels must use the same stop transition: T1 success means T1 before the original SL; T2 success means T1 followed by T2 before a return to entry or session close. For a bullish entry at 24,000, T1 at 24,050, and T2 at 24,100, the path 24,050 → 24,000 → 24,100 is T1 success and T2 failure because the runner exits at breakeven. For a bearish entry at 24,000, T1 at 23,950, and T2 at 23,900, the path 23,950 → 24,000 → 23,900 has the same labels. Once breakeven is touched, later price movements cannot change that T2 failure.
 
@@ -158,15 +117,15 @@ The API's typed probabilities are **not yet calibrated ARES trade probabilities*
 
 ## Persistence and deployment contract
 
-Create `llm_predictions` with `signal_uuid uuid NOT NULL UNIQUE REFERENCES ares_signals(signal_uuid)` in the current bridge schema, three checked 0–1 probabilities, regime/distribution/confidence, quality/trap scores, resolved engine name, input/source versions, latency, raw state/response, and timestamps. Add `llm_consumer_state` for the persistent rollout cutoff/age policy and `llm_prediction_jobs` for unique signal claims, pinned input, owner token, lease, invocation marker, status, error, and alert-delivery state. Commit the result and job completion atomically; on a lost commit acknowledgment, read/retry persistence using the same token and response without rerunning Jev. Enable RLS and grant only server-side access to these tables and the atomic claim operation. Handle the later signal UUID column rename in queries. [Supabase API security guidance](https://supabase.com/docs/guides/api/securing-your-api).
+The migration creates `llm_predictions` with `signal_uuid uuid NOT NULL UNIQUE REFERENCES ares_signals(signal_uuid)` in the current bridge schema, three checked 0–1 probabilities, regime/distribution/confidence, quality/trap scores, resolved engine name, input/source versions, latency, raw state/response, and timestamps. Add `llm_consumer_state` for the persistent rollout cutoff/age policy and `llm_prediction_jobs` for unique signal claims, pinned input, owner token, lease, invocation marker, status, error, and alert-delivery state. Commit the result and job completion atomically; on a lost commit acknowledgment, read/retry persistence using the same token and response without rerunning Jev. Enable RLS and grant only server-side access to these tables and the atomic claim operation. Handle the later signal UUID column rename in queries. [Supabase API security guidance](https://supabase.com/docs/guides/api/securing-your-api).
 
-The existing `fly.toml` would gain `[processes] app = "python main.py"` and `jev = "python -m system_one.consumer"`, plus a VM stanza for `jev` while retaining the existing `app` VM allocation. Do not apply this configuration or a database migration as part of the design PR. Fly deploys process groups together from the same image; app-level secrets are shared, so the Jev process should never initialize or call Dhan. If separate secret isolation later becomes necessary, the one-app constraint would need reconsideration. [Fly process-group documentation](https://fly.io/docs/launch/processes/).
+The PR configures `[processes] app = "python main.py"` and `jev = "python -m system_one.consumer"` in the existing `fly.toml`, with a 256 MB Jev Machine and the 768 MB trading Machine. Apply the reviewed migration before enabling the worker. This review has not deployed Fly configuration or changed the live database. The migration is the initial unmerged schema, not an upgrade for an already deployed TASK-210 schema. Fly deploys process groups together from the same image; app-level secrets are shared, so the Jev process should never initialize or call Dhan. If separate secret isolation later becomes necessary, the one-app constraint would need reconsideration. [Fly process-group documentation](https://fly.io/docs/launch/processes/).
 
 ## Prediction archive and future training export
 
-Both predictors retain their own tables in the same Supabase project: XGBoost writes `ml_predictions`, and the independent Jev worker writes `llm_predictions`. Pair them through the canonical signal UUID, using the current text UUID in `ml_predictions.signal_id` rather than the legacy bigint signal ID. A future read-only export can join these records with `ares_signals`, the pinned market snapshot, and ordered barrier outcomes. Use left joins, explicit missingness flags, and a documented model-version/source selection policy to prevent silent sample loss or duplicate training rows. No export or view is created by this design update. [Supabase joins](https://supabase.com/docs/guides/database/joins-and-nesting).
+Both predictors retain their own tables in the same Supabase project: XGBoost writes `ml_predictions`, and the independent Jev worker writes `llm_predictions`. Pair them through the canonical signal UUID, using the current text UUID in `ml_predictions.signal_id` rather than the legacy bigint signal ID. A future read-only export can join these records with `ares_signals`, the pinned market snapshot, and ordered barrier outcomes. Use left joins, explicit missingness flags, and a documented model-version/source selection policy to prevent silent sample loss or duplicate training rows. The POC does not implement a training export or view. [Supabase joins](https://supabase.com/docs/guides/database/joins-and-nesting).
 
-Persist every successful Jev result even if Discord delivery fails or is suppressed. Archive the exact input state, snapshot identity/source observation times, full typed response including `t2_given_t1`, resolved engine/context/question versions, signal timestamp, invocation start, response receipt, and database persistence time. For consumers of the stored record, persistence time is its `available_at`; asynchronous inserts must not make Jev or XGBoost appear available at an earlier signal timestamp. An XGBoost event's current `timestamp` alone does not establish database availability; a future export that uses it as a decision-time feature must establish an actual availability timestamp or mark it unknown and exclude it from that use.
+Persist every successful Jev result even if Discord delivery fails or is suppressed. Archive the exact input state, snapshot identity/source observation times, full typed response including `t2_given_t1`, resolved engine/context/question versions, signal timestamp, invocation start, response receipt, and database persistence time. `available_at` currently records database transaction time, not a proven commit-visibility timestamp. A future export must establish conservative commit/read availability before treating the result as a decision-time feature; asynchronous inserts must not make Jev or XGBoost appear available at an earlier signal timestamp. An XGBoost event's current `timestamp` alone does not establish database availability; a future export that uses it as a decision-time feature must establish an actual availability timestamp or mark it unknown and exclude it from that use.
 
 Jev outputs can become candidate features for a future ARES model or ensemble; they are not outcome labels. Generate labels separately from the future spot path with the T1/original-SL and T2-before-breakeven definitions above, retaining label version and resolution time. Exclude ambiguous and unresolved labels from supervised examples. Keep the existing production trade result separate, since it may use optimistic same-bar ordering or a different horizon.
 
@@ -181,9 +140,17 @@ This POC collects the archive and required provenance. Training/export implement
 3. With a server-side `TYPESAFE_API_KEY`, run representative saved signals and record actual model version, response time, token cost, coverage, and end-to-end latency. This key was unavailable during the assessment; no live Jev result is claimed.
 4. Build forward barrier labels from signal-time spot data, compare Jev and XGBoost against the same event definition, and inspect calibration by setup type and market regime. Neither model should influence trading until that review.
 5. Verify first rollout with historical signal rows and an empty result table produces zero historical calls/alerts; verify the cutoff survives restarts and model changes. Exercise fresh versus expired restart recovery and late responses without stale Discord delivery.
-6. Test simultaneous claims against a real local database, then mocked provider timeouts/crashes before and after the invocation marker. Verify only the acknowledged owner may dispatch, pre-dispatch stale claims can be recovered, uncertain invocations are never replayed, and persistence retries do not call Jev again. These are implementation acceptance gates; this design PR does not claim they have been executed.
+6. Test simultaneous claims against a real local database, then mocked provider timeouts/crashes before and after the invocation marker. Verify only the acknowledged owner may dispatch, pre-dispatch stale claims can be recovered, uncertain invocations are never replayed, and persistence retries do not call Jev again. The local SQL harness exercises ownership transitions serially; simultaneous multi-connection claim races remain an operational verification gate.
 7. Verify event-time freshness with a market cycle delayed more than 60 seconds before insert, a pre-rollout cycle inserted afterward, missing/future/invalid timestamps, UTC normalization, and restart preserving the pinned expiry. Verify the Discord gate on every permitted attempt: a proven rejection may retry within the window, but a rejection at event age 59 seconds followed by a retry at age 60 seconds is suppressed across restart. Include session close during backoff, unavailable database checks, and disabled hidden transport retries.
-8. Test atomic delivery ownership against a real local database and mock Discord acceptance with a lost response, crashes after the marker both before/after transport, an uncertain database acknowledgment, delayed success persistence, competing workers, and stale owners. Confirm ambiguous attempts become `DELIVERY_UNKNOWN` without a second webhook, while acknowledged persistence retries reuse the same message ID. These delivery tests are implementation gates, not executed runtime tests in this design PR.
+8. Test atomic delivery ownership against a real local database and mock Discord acceptance with a lost response, crashes after the marker both before/after transport, an uncertain database acknowledgment, delayed success persistence, competing workers, and stale owners. Confirm ambiguous attempts become `DELIVERY_UNKNOWN` without a second webhook, while acknowledged persistence retries reuse the same message ID. Mocked transport tests and the local SQL lifecycle harness cover these transitions; real multi-connection races and live provider behavior remain unverified.
 9. Verify the prediction archive retains successful responses when Discord fails or expires. For future export implementation, exercise missing model results, multiple model versions, UUID joins, unresolved/ambiguous outcomes, and delayed responses. Confirm prediction values never become labels, duplicate records do not multiply examples, and records unavailable at the intended decision time cannot become training features. These are planned verification gates, not executed training or database tests.
 
-This is a **design POC for review**, not an implemented predictor. It now matches the requested one-app, shared-data architecture and is ready for directive review under the Global Development Pipeline.
+## PR review verification (2026-10-02)
+
+- `python3 -m pytest tests/unit/test_task210_system_one.py -q`: **44 passed**. Regression cases include slow invocation acknowledgments, expiry during SDK setup, final-dispatch expiry, unavailable gates, lost send responses, ambiguous HTTP errors, success-ack persistence retries, atomic-result acknowledgment retries, and restart delivery from a saved prediction without another Jev call.
+- `PGLITE_MODULE_URL=file:///path/to/pglite/dist/index.js node tests/integration/task210_lifecycle.mjs`: **37 PostgreSQL lifecycle assertions passed** using an isolated `@electric-sql/pglite@0.5.8` installation. The harness executes the actual migration locally with synthetic fixtures; no production data or network is used. Session boundaries are tested, then session eligibility is overridden for deterministic lifecycle cases. Queries run serially, so this does not prove multi-connection race behavior.
+- `python3 -m pytest tests/ -q --import-mode=importlib`: **900 passed, 10 subtests passed**, with nine existing warnings. The ordinary pytest mode encounters an existing `tests.unit` import collision. `git diff --check` and an AST import-boundary check passed; the trading/ML files have no diff against the merged `origin/main`. Independent Debug/QA review confirmed the late acknowledgment/SDK setup gate and found no additional concrete bug.
+- The review fixes preserve both branches' changelog entries when merging `origin/main`, gate claims/invocation/sending using database wall time, and atomically complete results without resetting existing alert delivery on a lost acknowledgment.
+- No live TypeSafe call, Discord send, Supabase migration, Fly deployment, calibration claim, or 100% coverage claim is made. Machine failure isolation, latency/cost, a deployed-schema upgrade, and multi-connection race testing remain rollout checks.
+
+This is an implemented POC on the existing PR, using shared persisted market data and separate application code. The worker can use only fields saved by ARES; it cannot recover unsaved Dhan history or full option-chain details. Future training exports remain separate work.

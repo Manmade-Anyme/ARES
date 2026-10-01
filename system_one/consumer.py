@@ -11,6 +11,7 @@ storage.py, or alerts.py.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 import time
@@ -77,12 +78,16 @@ def _bootstrap_consumer_state(supabase: SupabaseClient) -> Dict[str, Any]:
     insert_result = supabase.table("llm_consumer_state").upsert({
         "consumer_id": CONSUMER_ID,
         "max_signal_age_seconds": MAX_SIGNAL_AGE,
-    }, on_conflict="consumer_id").execute()
+    }, on_conflict="consumer_id", ignore_duplicates=True).execute()
 
-    if not insert_result.data:
+    # A concurrent bootstrap may win. Load the winner without resetting its cutoff.
+    rows = insert_result.data or supabase.table("llm_consumer_state").select("*").eq(
+        "consumer_id", CONSUMER_ID
+    ).execute().data
+    if not rows:
         raise RuntimeError("Failed to bootstrap consumer state")
 
-    row = insert_result.data[0]
+    row = rows[0]
     logger.info("Bootstrapped consumer state: live_from=%s", row["live_from"])
     return row
 
@@ -135,10 +140,12 @@ def _poll_eligible_signals(
             return []
 
         existing = supabase.table("llm_prediction_jobs").select(
-            "signal_uuid"
+            "signal_uuid, status, invocation_started_at"
         ).in_("signal_uuid", signal_uuids).execute()
 
-        claimed = {r["signal_uuid"] for r in (existing.data or [])}
+        # A never-invoked claim can be recovered by the RPC after its lease expires.
+        claimed = {r["signal_uuid"] for r in (existing.data or [])
+                   if r.get("status") != "CLAIMED" or r.get("invocation_started_at")}
         eligible = [r for r in result.data if r["signal_uuid"] not in claimed]
 
         return eligible
@@ -199,6 +206,7 @@ def _claim_signal(
             "p_model_name": DEFAULT_MODEL,
             "p_event_at": event_at,
             "p_max_age_seconds": MAX_SIGNAL_AGE,
+            "p_consumer_id": CONSUMER_ID,
         }).execute()
         if result.data:
             row = result.data[0] if isinstance(result.data, list) else result.data
@@ -216,28 +224,19 @@ def _transition_to_invoking(
     supabase: SupabaseClient,
     signal_uuid: str,
     owner_token: str,
-) -> Optional[str]:
-    """Atomically transition CLAIMED → INVOKING. Returns invocation_token."""
+) -> Optional[Dict[str, Any]]:
+    """Obtain the database-time lease, session, and expiry gate before dispatch."""
     invocation_token = str(uuid.uuid4())
-    invocation_started = datetime.now(timezone.utc).isoformat()
     try:
-        result = supabase.table("llm_prediction_jobs").update({
-            "status": "INVOKING",
-            "invocation_started_at": invocation_started,
-            "invocation_token": invocation_token,
-            "updated_at": invocation_started,
-        }).eq(
-            "signal_uuid", signal_uuid
-        ).eq(
-            "owner_token", owner_token
-        ).eq(
-            "status", "CLAIMED"
-        ).execute()
-
+        result = supabase.rpc("begin_llm_invocation", {
+            "p_signal_uuid": signal_uuid,
+            "p_owner_token": owner_token,
+            "p_invocation_token": invocation_token,
+        }).execute()
         if not result.data:
             logger.warning("Failed to transition %s to INVOKING", signal_uuid)
             return None
-        return invocation_token
+        return result.data[0] if isinstance(result.data, list) else result.data
     except Exception as exc:
         logger.warning("INVOKING transition failed for %s: %s", signal_uuid, exc)
         return None
@@ -251,89 +250,72 @@ def _persist_prediction(
     snapshot_uuid: Optional[str],
     signal_timestamp: str,
     invocation_started_at: str,
+    invocation_token: str,
     latency_snapshot_read_ms: float,
     latency_context_build_ms: float,
     latency_total_ms: float,
 ) -> Optional[int]:
-    """Persist the Jev prediction to llm_predictions. Returns prediction id."""
+    """Atomically archive the response and complete its job; retry only this response."""
     response_received = datetime.now(timezone.utc).isoformat()
-    try:
-        result = supabase.table("llm_predictions").insert({
-            "signal_uuid": signal_uuid,
-            "t1_hit_prob": jev_result.t1_hit_prob,
-            "t2_hit_prob": jev_result.t2_hit_prob,
-            "sl_hit_prob": jev_result.sl_hit_prob,
-            "regime": jev_result.regime,
-            "regime_distribution": jev_result.regime_distribution,
-            "regime_confidence": jev_result.regime_confidence,
-            "setup_quality": jev_result.setup_quality,
-            "is_trap_prob": jev_result.is_trap_prob,
-            "engine_name": jev_result.engine_name,
-            "context_version": CONTEXT_VERSION,
-            "question_version": QUESTION_VERSION,
-            "snapshot_uuid": snapshot_uuid,
-            "input_state": context,
-            "raw_response": jev_result.raw_response,
-            "latency_snapshot_read_ms": latency_snapshot_read_ms,
-            "latency_context_build_ms": latency_context_build_ms,
-            "latency_typesafe_ms": jev_result.latency_ms,
-            "latency_total_ms": latency_total_ms,
-            "signal_timestamp": signal_timestamp,
-            "invocation_started_at": invocation_started_at,
-            "response_received_at": response_received,
-        }).execute()
-        if result.data:
-            return result.data[0].get("id")
-        return None
-    except Exception as exc:
-        logger.error("Failed to persist prediction for %s: %s", signal_uuid, exc)
-        return None
+    prediction = {
+        "signal_uuid": signal_uuid,
+        "t1_hit_prob": jev_result.t1_hit_prob,
+        "t2_hit_prob": jev_result.t2_hit_prob,
+        "sl_hit_prob": jev_result.sl_hit_prob,
+        "regime": jev_result.regime,
+        "regime_distribution": jev_result.regime_distribution,
+        "regime_confidence": jev_result.regime_confidence,
+        "setup_quality": jev_result.setup_quality,
+        "is_trap_prob": jev_result.is_trap_prob,
+        "engine_name": jev_result.engine_name,
+        "context_version": CONTEXT_VERSION,
+        "question_version": QUESTION_VERSION,
+        "snapshot_uuid": snapshot_uuid,
+        "input_state": context,
+        "raw_response": jev_result.raw_response,
+        "latency_snapshot_read_ms": latency_snapshot_read_ms,
+        "latency_context_build_ms": latency_context_build_ms,
+        "latency_typesafe_ms": jev_result.latency_ms,
+        "latency_total_ms": latency_total_ms,
+        "signal_timestamp": signal_timestamp,
+        "invocation_started_at": invocation_started_at,
+        "response_received_at": response_received,
+    }
+    for _ in range(3):
+        try:
+            result = supabase.rpc("complete_llm_prediction_job", {
+                "p_signal_uuid": signal_uuid,
+                "p_invocation_token": invocation_token,
+                "p_prediction": prediction,
+            }).execute()
+            if result.data:
+                row = result.data[0] if isinstance(result.data, list) else result.data
+                return row.get("id")
+            return None
+        except Exception as exc:
+            logger.error("Failed to persist prediction for %s: %s", signal_uuid, exc)
+    return None
 
 
-def _complete_job(
-    supabase: SupabaseClient,
-    signal_uuid: str,
-    invocation_token: str,
-    prediction_id: Optional[int],
-) -> None:
-    """Mark job COMPLETED and set alert_status to PENDING."""
-    try:
-        supabase.table("llm_prediction_jobs").update({
-            "status": "COMPLETED",
-            "prediction_id": prediction_id,
-            "alert_status": "PENDING",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq(
-            "signal_uuid", signal_uuid
-        ).eq(
-            "invocation_token", invocation_token
-        ).execute()
-    except Exception as exc:
-        logger.error("Failed to complete job for %s: %s", signal_uuid, exc)
-
-
-def _fail_job(supabase: SupabaseClient, signal_uuid: str, reason: str, status: str = "FAILED") -> None:
+def _fail_job(supabase: SupabaseClient, signal_uuid: str, reason: str,
+              owner_token: str, status: str = "FAILED") -> None:
     """Mark job as FAILED or UNKNOWN."""
     try:
         supabase.table("llm_prediction_jobs").update({
             "status": status,
             "error_message": reason[:500],
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("signal_uuid", signal_uuid).execute()
+        }).eq("signal_uuid", signal_uuid).eq("owner_token", owner_token).in_(
+            "status", ["CLAIMED", "INVOKING", "UNKNOWN"]
+        ).execute()
     except Exception as exc:
         logger.error("Failed to mark job %s for %s: %s", status, signal_uuid, exc)
 
 
 def _expire_stale_jobs(supabase: SupabaseClient) -> None:
-    """Mark expired pending jobs as EXPIRED."""
+    """Recover stale inference/send markers using database time, never replaying them."""
     try:
-        # Jobs where event_at + max_age has passed and status is still CLAIMED
-        supabase.table("llm_prediction_jobs").update({
-            "status": "EXPIRED",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("status", "CLAIMED").lt(
-            "expires_at", datetime.now(timezone.utc).isoformat()
-        ).is_("invocation_started_at", "null").execute()
+        supabase.rpc("recover_llm_prediction_jobs", {"p_consumer_id": CONSUMER_ID}).execute()
     except Exception as exc:
         logger.debug("Expire stale jobs failed: %s", exc)
 
@@ -369,30 +351,45 @@ def process_signal(
 
     owner_token = job["owner_token"]
 
-    # Transition to INVOKING
-    invocation_token = _transition_to_invoking(supabase, signal_uuid, owner_token)
-    if not invocation_token:
-        return None
-
-    invocation_started = datetime.now(timezone.utc).isoformat()
-
     # Build context
     ctx_start = time.monotonic()
     try:
         xgboost_row = _fetch_xgboost_row(supabase, signal_uuid)
         context = build_context(signal_row, snapshot_row, xgboost_row)
     except (BarrierValidationError, ValueError) as exc:
-        _fail_job(supabase, signal_uuid, f"context_error: {exc}")
+        _fail_job(supabase, signal_uuid, f"context_error: {exc}", owner_token)
         logger.warning("Context build failed for %s: %s", signal_uuid, exc)
         return "FAILED"
     latency_ctx_ms = (time.monotonic() - ctx_start) * 1000
 
+    # Context/database reads may exhaust the age window or lease. Gate last.
+    gate_start = time.monotonic()
+    invocation = _transition_to_invoking(supabase, signal_uuid, owner_token)
+    if not invocation:
+        return None
+    invocation_token = invocation["invocation_token"]
+    invocation_started = invocation["invocation_started_at"]
+
+    # Use a duration from two database timestamps, then subtract the whole RPC
+    # round trip conservatively. Worker clock skew must not extend eligibility.
+    try:
+        dispatch_window = (
+            datetime.fromisoformat(invocation["invocation_dispatch_deadline_at"].replace("Z", "+00:00"))
+            - datetime.fromisoformat(invocation_started.replace("Z", "+00:00"))
+        ).total_seconds()
+        dispatch_deadline = gate_start + dispatch_window
+        if not math.isfinite(dispatch_window) or time.monotonic() >= dispatch_deadline:
+            raise ValueError("invocation dispatch window elapsed")
+    except (KeyError, TypeError, ValueError) as exc:
+        _fail_job(supabase, signal_uuid, str(exc), owner_token, status="UNKNOWN")
+        return "UNKNOWN"
+
     # Invoke Jev
     try:
-        jev_result = invoke_jev(context)
+        jev_result = invoke_jev(context, dispatch_deadline=dispatch_deadline)
     except Exception as exc:
         error_type = type(exc).__name__
-        _fail_job(supabase, signal_uuid, f"{error_type}: {exc}", status="UNKNOWN")
+        _fail_job(supabase, signal_uuid, f"{error_type}: {exc}", owner_token, status="UNKNOWN")
         logger.warning("Jev invocation failed for %s: %s: %s", signal_uuid, error_type, exc)
         return "UNKNOWN"
 
@@ -401,12 +398,14 @@ def process_signal(
     # Persist prediction
     prediction_id = _persist_prediction(
         supabase, signal_uuid, jev_result, context,
-        snapshot_uuid, event_at, invocation_started,
+        snapshot_uuid, event_at, invocation_started, invocation_token,
         latency_read_ms, latency_ctx_ms, latency_total_ms,
     )
 
-    # Complete job
-    _complete_job(supabase, signal_uuid, invocation_token, prediction_id)
+    if prediction_id is None:
+        # Persistence uncertainty must not authorize a webhook or another inference.
+        logger.warning("Prediction/job persistence incomplete for %s", signal_uuid)
+        return "UNKNOWN"
 
     # Send Discord follow-up
     try:
@@ -437,6 +436,29 @@ def process_signal(
     return "COMPLETED"
 
 
+def _recover_pending_alerts(supabase: SupabaseClient) -> None:
+    """Resume only unsent/proven-rejected deliveries using their saved predictions."""
+    jobs = supabase.table("llm_prediction_jobs").select("id,signal_uuid,prediction_id").eq(
+        "consumer_id", CONSUMER_ID
+    ).eq("status", "COMPLETED").in_("alert_status", ["PENDING", "RETRYABLE"]).limit(10).execute().data
+    for job in jobs or []:
+        predictions = supabase.table("llm_predictions").select("*").eq(
+            "id", job["prediction_id"]
+        ).execute().data
+        signal = _fetch_signal_row(supabase, job["signal_uuid"])
+        if not predictions or not signal:
+            continue
+        prediction = predictions[0]
+        send_jev_followup(
+            supabase, job["signal_uuid"], signal.get("display_id", job["signal_uuid"][:8]),
+            signal["setup_type"], signal["direction"],
+            float(prediction["t1_hit_prob"]), float(prediction["t2_hit_prob"]), float(prediction["sl_hit_prob"]),
+            prediction["regime"], float(prediction["regime_confidence"]),
+            float(prediction["setup_quality"]), float(prediction["is_trap_prob"]),
+            prediction["engine_name"], job["id"],
+        )
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -460,17 +482,17 @@ def run() -> None:
 
     while True:
         try:
+            _expire_stale_jobs(supabase)
             if not _is_trading_session():
                 # Outside trading hours: check less frequently
                 now_ist = datetime.now(IST)
-                if now_ist.hour >= SESSION_END_HOUR and now_ist.minute >= SESSION_END_MINUTE:
+                if (now_ist.hour, now_ist.minute) >= (SESSION_END_HOUR, SESSION_END_MINUTE):
                     logger.info("Session ended. Shutting down.")
                     break
                 time.sleep(30)
                 continue
 
-            # Expire stale jobs
-            _expire_stale_jobs(supabase)
+            _recover_pending_alerts(supabase)
 
             # Poll for eligible signals
             eligible = _poll_eligible_signals(supabase, live_from, max_age)

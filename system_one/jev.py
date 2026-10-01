@@ -1,6 +1,6 @@
 """system_one.jev — TypeSafe Jev inference client.
 
-Batches five independent questions over one compact state to the Jev model.
+Batches seven independent questions over one compact state to the Jev model.
 Maps typed responses into probability outputs, regime classification,
 setup quality, and trap assessment.
 
@@ -11,6 +11,7 @@ storage.py, or alerts.py.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -40,7 +41,7 @@ DEFAULT_TIMEOUT = float(os.environ.get("TYPESAFE_TIMEOUT", "5.0"))
 # Question definitions — versioned with QUESTION_VERSION
 # ---------------------------------------------------------------------------
 def build_questions() -> Dict[str, Any]:
-    """Build the five Jev questions for a signal evaluation.
+    """Build the seven Jev questions for a signal evaluation.
 
     All questions evaluate the same state in parallel and cannot see
     each other's outputs. Question IDs are for code consumption only
@@ -179,10 +180,11 @@ def invoke_jev(
     state: Dict[str, Any],
     model: Optional[str] = None,
     timeout: Optional[float] = None,
+    dispatch_deadline: Optional[float] = None,
 ) -> JevResult:
     """Call TypeSafe Jev with the prepared signal context.
 
-    Sends one request with five batched questions. No automatic retries
+    Sends one request with seven batched questions. No automatic retries
     (max_retries=0). The caller must already own an acknowledged INVOKING
     job before calling this function.
 
@@ -190,6 +192,7 @@ def invoke_jev(
         state: Exact context dict from context.build_context().
         model: Jev model identifier. Defaults to TYPESAFE_MODEL env.
         timeout: Request timeout in seconds. Defaults to TYPESAFE_TIMEOUT env.
+        dispatch_deadline: Conservative monotonic freshness deadline from the database gate.
 
     Returns:
         JevResult with all probability outputs and metadata.
@@ -210,7 +213,12 @@ def invoke_jev(
         retry=RetryPolicy(max_retries=0),
         timeout=timeout,
     ) as client:
-        response = client.system_one(state=state, questions=questions)
+        if dispatch_deadline is not None:
+            remaining = dispatch_deadline - time.monotonic()
+            if not math.isfinite(remaining) or remaining <= 0:
+                raise ValueError("invocation dispatch window elapsed during SDK setup")
+            timeout = min(timeout, remaining)
+        response = client.system_one(state=state, questions=questions, timeout=timeout)
 
     elapsed_ms = (time.monotonic() - start) * 1000
 

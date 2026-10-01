@@ -11,7 +11,9 @@ SignalPredictor, or storage.py.
 from __future__ import annotations
 
 import logging
+import math
 import os
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
@@ -31,98 +33,58 @@ def _check_freshness(
     supabase: SupabaseClient,
     signal_uuid: str,
     job_id: int,
-) -> Tuple[bool, Optional[str]]:
+    attempt_token: Optional[str] = None,
+) -> Tuple[bool, Optional[str], float]:
     """Recheck event-time eligibility against database time.
 
-    Returns (is_fresh, reason) where reason explains rejection.
+    Returns (is_fresh, reason, remaining_seconds) from the database gate.
     Must be called immediately before EVERY delivery attempt.
     """
     try:
         result = supabase.rpc("check_jev_alert_freshness", {
             "p_signal_uuid": signal_uuid,
             "p_job_id": job_id,
+            "p_attempt_token": attempt_token,
         }).execute()
         data = result.data
         if isinstance(data, list) and len(data) == 1:
             data = data[0]
         if isinstance(data, dict):
-            return data.get("is_fresh", False), data.get("reason")
-        # Fallback: query job directly
-        return _check_freshness_fallback(supabase, signal_uuid)
+            remaining = float(data.get("remaining_seconds", 0))
+            if data.get("is_fresh") is True and math.isfinite(remaining) and remaining > 0:
+                return True, None, remaining
+            return False, data.get("reason") or "invalid_gate_response", 0
+        return False, "invalid_gate_response", 0
     except Exception as exc:
         logger.warning("Freshness check failed for %s: %s", signal_uuid, exc)
-        return False, f"database_error: {exc}"
-
-
-def _check_freshness_fallback(
-    supabase: SupabaseClient,
-    signal_uuid: str,
-) -> Tuple[bool, Optional[str]]:
-    """Fallback freshness check using direct query when RPC unavailable."""
-    try:
-        job = supabase.table("llm_prediction_jobs").select(
-            "event_at, expires_at, status, alert_status"
-        ).eq("signal_uuid", signal_uuid).single().execute()
-        row = job.data
-        if not row:
-            return False, "job_not_found"
-
-        # Terminal states
-        if row["status"] in ("FAILED", "UNKNOWN", "EXPIRED"):
-            return False, f"job_status_{row['status']}"
-        if row["alert_status"] in ("SENT", "DELIVERY_UNKNOWN", "DELIVERY_FAILED", "SUPPRESSED_EXPIRED"):
-            return False, f"alert_terminal_{row['alert_status']}"
-
-        # Expiry check: use database now() via a lightweight query
-        now_result = supabase.rpc("now").execute()
-        # now_result.data is the timestamp string
-        db_now_str = now_result.data
-        if isinstance(db_now_str, list):
-            db_now_str = db_now_str[0] if db_now_str else None
-        if db_now_str is None:
-            return False, "cannot_determine_db_time"
-
-        db_now = datetime.fromisoformat(str(db_now_str).replace("Z", "+00:00"))
-        expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
-
-        if db_now >= expires_at:
-            return False, "expired"
-
-        return True, None
-    except Exception as exc:
-        return False, f"fallback_error: {exc}"
+        return False, "database_error", 0
 
 
 def _transition_to_sending(
     supabase: SupabaseClient,
     signal_uuid: str,
     payload: Dict[str, Any],
-) -> Optional[str]:
+    job_id: int,
+    destination: str,
+) -> Optional[Dict[str, Any]]:
     """Atomically transition alert_status from PENDING/RETRYABLE to SENDING.
 
-    Returns the attempt_token on success, None if transition fails.
+    Returns the pinned delivery record after an acknowledged database transition.
     """
     attempt_token = str(uuid.uuid4())
-    attempt_start = datetime.now(timezone.utc).isoformat()
-
     try:
-        # Atomic update: only transitions eligible states
-        result = supabase.table("llm_prediction_jobs").update({
-            "alert_status": "SENDING",
-            "alert_attempt_token": attempt_token,
-            "alert_owner": f"jev-{os.getpid()}",
-            "alert_attempt_started_at": attempt_start,
-            "updated_at": attempt_start,
-        }).eq(
-            "signal_uuid", signal_uuid
-        ).in_(
-            "alert_status", ["PENDING", "RETRYABLE"]
-        ).execute()
-
+        result = supabase.rpc("begin_jev_alert_attempt", {
+            "p_signal_uuid": signal_uuid,
+            "p_job_id": job_id,
+            "p_attempt_token": attempt_token,
+            "p_owner": f"jev-{os.getpid()}-{uuid.uuid4()}",
+            "p_payload": payload,
+            "p_destination": destination,
+        }).execute()
         if not result.data:
             logger.info("Failed to transition %s to SENDING (not eligible)", signal_uuid)
             return None
-        return attempt_token
+        return result.data[0] if isinstance(result.data, list) else result.data
     except Exception as exc:
         logger.warning("Transition to SENDING failed for %s: %s", signal_uuid, exc)
         return None
@@ -202,11 +164,13 @@ def send_jev_followup(
         return "NONE"
 
     # Step 1: Fresh eligibility check
-    is_fresh, reason = _check_freshness(supabase, signal_uuid, job_id)
+    is_fresh, reason, _ = _check_freshness(supabase, signal_uuid, job_id)
     if not is_fresh:
         logger.info("Alert suppressed for %s: %s", signal_uuid, reason)
-        _mark_suppressed(supabase, signal_uuid, reason)
-        return "SUPPRESSED_EXPIRED"
+        if reason in ("expired", "session_closed"):
+            _mark_suppressed(supabase, signal_uuid, reason)
+            return "SUPPRESSED_EXPIRED"
+        return "NONE"
 
     # Step 2: Format payload
     payload = format_jev_followup(
@@ -224,46 +188,64 @@ def send_jev_followup(
     )
 
     # Step 3: Atomic transition to SENDING
-    attempt_token = _transition_to_sending(supabase, signal_uuid, payload)
-    if attempt_token is None:
+    attempt = _transition_to_sending(supabase, signal_uuid, payload, job_id, url)
+    if attempt is None:
         return "NONE"  # Another worker owns it or not eligible
+    attempt_token = attempt["alert_attempt_token"]
+    payload = attempt["alert_payload"]
+    url = attempt["alert_destination"]
 
-    # Step 4: Final freshness recheck before transport
-    is_fresh, reason = _check_freshness(supabase, signal_uuid, job_id)
-    if not is_fresh:
-        logger.info("Alert suppressed after SENDING transition for %s: %s", signal_uuid, reason)
-        _mark_suppressed(supabase, signal_uuid, reason)
-        return "SUPPRESSED_EXPIRED"
-
-    # Step 5: Send webhook with wait=true, no hidden retries
+    # Initialize transport before the final gate so setup cannot consume freshness.
     try:
-        with httpx.Client(timeout=10.0) as http_client:
+        with httpx.Client(timeout=10.0, transport=httpx.HTTPTransport(retries=0)) as http_client:
+            gate_start = time.monotonic()
+            is_fresh, reason, remaining = _check_freshness(supabase, signal_uuid, job_id, attempt_token)
+            remaining -= time.monotonic() - gate_start
+            if is_fresh and remaining <= 0:
+                is_fresh, reason = False, "expired"
+            if not is_fresh:
+                # This owner has not started transport. Never overwrite another attempt.
+                if reason in ("expired", "session_closed"):
+                    _mark_suppressed(supabase, signal_uuid, reason, attempt_token)
+                    return "SUPPRESSED_EXPIRED"
+                _mark_failed(supabase, signal_uuid, attempt_token, reason or "gate_failed")
+                return "DELIVERY_FAILED"
+            http_client.timeout = httpx.Timeout(min(10.0, remaining))
             response = http_client.post(
-                f"{url}?wait=true",
+                url,
+                params={"wait": "true"},
                 json=payload,
                 headers={"Content-Type": "application/json"},
             )
 
-        if response.status_code in (200, 201, 204):
+        if response.status_code in (200, 201):
             # Success: extract message ID
             msg_data = response.json() if response.content else {}
             message_id = msg_data.get("id")
-            _mark_sent(supabase, signal_uuid, attempt_token, message_id)
-            return "SENT"
+            if not message_id:
+                _mark_unknown(supabase, signal_uuid, attempt_token, "missing_message_confirmation")
+                return "DELIVERY_UNKNOWN"
+            return "SENT" if _mark_sent(supabase, signal_uuid, attempt_token, message_id) else "DELIVERY_UNKNOWN"
 
         elif response.status_code == 429:
             # Rate limited: documented rejection, retryable
-            retry_after = response.headers.get("Retry-After", "5")
+            retry_after = response.json().get("retry_after", response.headers.get("Retry-After", "5"))
+            backoff = float(retry_after)
+            if not math.isfinite(backoff) or backoff < 0:
+                raise ValueError("Invalid Discord retry_after")
             _mark_retryable(supabase, signal_uuid, attempt_token,
                           f"rate_limited: retry_after={retry_after}",
-                          float(retry_after))
+                          backoff)
             return "RETRYABLE"
 
-        else:
+        elif response.status_code in (400, 401, 403, 404, 405, 413, 422):
             # Non-retryable failure
             _mark_failed(supabase, signal_uuid, attempt_token,
                         f"http_{response.status_code}: {response.text[:200]}")
             return "DELIVERY_FAILED"
+        else:
+            _mark_unknown(supabase, signal_uuid, attempt_token, f"ambiguous_http_{response.status_code}")
+            return "DELIVERY_UNKNOWN"
 
     except httpx.TimeoutException:
         _mark_unknown(supabase, signal_uuid, attempt_token, "timeout")
@@ -273,15 +255,21 @@ def send_jev_followup(
         return "DELIVERY_UNKNOWN"
 
 
-def _mark_sent(supabase: SupabaseClient, signal_uuid: str, token: str, message_id: Optional[str]) -> None:
-    try:
-        supabase.table("llm_prediction_jobs").update({
-            "alert_status": "SENT",
-            "alert_discord_message_id": message_id,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("signal_uuid", signal_uuid).eq("alert_attempt_token", token).execute()
-    except Exception as exc:
-        logger.error("Failed to mark SENT for %s: %s", signal_uuid, exc)
+def _mark_sent(supabase: SupabaseClient, signal_uuid: str, token: str, message_id: str) -> bool:
+    # Retry only persistence of the same acknowledgment, never external delivery.
+    for _ in range(3):
+        try:
+            result = supabase.table("llm_prediction_jobs").update({
+                "alert_status": "SENT",
+                "alert_discord_message_id": message_id,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("signal_uuid", signal_uuid).eq("alert_attempt_token", token).in_(
+                "alert_status", ["SENDING", "DELIVERY_UNKNOWN", "SENT"]
+            ).execute()
+            return bool(result.data)
+        except Exception as exc:
+            logger.error("Failed to persist SENT for %s: %s", signal_uuid, exc)
+    return False
 
 
 def _mark_retryable(supabase: SupabaseClient, signal_uuid: str, token: str, reason: str, backoff_s: float) -> None:
@@ -292,7 +280,7 @@ def _mark_retryable(supabase: SupabaseClient, signal_uuid: str, token: str, reas
             "alert_rejection_reason": reason,
             "alert_backoff_until": backoff_until.isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("signal_uuid", signal_uuid).eq("alert_attempt_token", token).execute()
+        }).eq("signal_uuid", signal_uuid).eq("alert_attempt_token", token).eq("alert_status", "SENDING").execute()
     except Exception as exc:
         logger.error("Failed to mark RETRYABLE for %s: %s", signal_uuid, exc)
 
@@ -303,7 +291,7 @@ def _mark_failed(supabase: SupabaseClient, signal_uuid: str, token: str, reason:
             "alert_status": "DELIVERY_FAILED",
             "alert_rejection_reason": reason,
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("signal_uuid", signal_uuid).eq("alert_attempt_token", token).execute()
+        }).eq("signal_uuid", signal_uuid).eq("alert_attempt_token", token).eq("alert_status", "SENDING").execute()
     except Exception as exc:
         logger.error("Failed to mark DELIVERY_FAILED for %s: %s", signal_uuid, exc)
 
@@ -314,19 +302,22 @@ def _mark_unknown(supabase: SupabaseClient, signal_uuid: str, token: str, reason
             "alert_status": "DELIVERY_UNKNOWN",
             "alert_rejection_reason": reason,
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("signal_uuid", signal_uuid).eq("alert_attempt_token", token).execute()
+        }).eq("signal_uuid", signal_uuid).eq("alert_attempt_token", token).eq("alert_status", "SENDING").execute()
     except Exception as exc:
         logger.error("Failed to mark DELIVERY_UNKNOWN for %s: %s", signal_uuid, exc)
 
 
-def _mark_suppressed(supabase: SupabaseClient, signal_uuid: str, reason: Optional[str]) -> None:
+def _mark_suppressed(supabase: SupabaseClient, signal_uuid: str, reason: Optional[str], token: Optional[str] = None) -> None:
     try:
-        supabase.table("llm_prediction_jobs").update({
+        query = supabase.table("llm_prediction_jobs").update({
             "alert_status": "SUPPRESSED_EXPIRED",
             "alert_rejection_reason": reason,
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("signal_uuid", signal_uuid).in_(
-            "alert_status", ["PENDING", "RETRYABLE", "NONE"]
-        ).execute()
+        }).eq("signal_uuid", signal_uuid)
+        if token:
+            query = query.eq("alert_attempt_token", token).eq("alert_status", "SENDING")
+        else:
+            query = query.in_("alert_status", ["PENDING", "RETRYABLE"])
+        query.execute()
     except Exception as exc:
         logger.error("Failed to mark SUPPRESSED_EXPIRED for %s: %s", signal_uuid, exc)

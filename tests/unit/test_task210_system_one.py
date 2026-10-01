@@ -8,7 +8,7 @@ from typesafe_sdk import TypeSafeError, TypeSafeAPITimeoutError
 from system_one.context import build_context, validate_barrier_geometry, BarrierValidationError, _safe_float
 from system_one.jev import invoke_jev, JevResult, build_questions
 from system_one.discord import format_jev_followup, send_jev_followup
-from system_one.consumer import _bootstrap_consumer_state, _is_trading_session, _poll_eligible_signals, process_signal, _expire_stale_jobs
+from system_one.consumer import _bootstrap_consumer_state, _is_trading_session, _poll_eligible_signals, process_signal, _expire_stale_jobs, _persist_prediction, _recover_pending_alerts
 from system_one import CONTEXT_VERSION, QUESTION_VERSION
 
 # ---------------------------------------------------------------------------
@@ -51,6 +51,18 @@ def base_snapshot_row():
 def mock_supabase():
     mock = MagicMock()
     return mock
+
+
+def fresh_delivery():
+    """Response fields returned by the database freshness/attempt RPCs."""
+    return {"is_fresh": True, "remaining_seconds": 20, "alert_attempt_token": "attempt-1",
+            "alert_payload": {"embeds": []}, "alert_destination": "http://wh"}
+
+
+def claimed_invocation():
+    return {"owner_token": "token-1", "id": 1, "invocation_token": "invocation-1",
+            "invocation_started_at": "2026-10-01T04:30:00Z",
+            "invocation_dispatch_deadline_at": "2026-10-01T04:30:30Z"}
 
 # ---------------------------------------------------------------------------
 # Context Tests
@@ -178,14 +190,14 @@ def test_send_jev_followup_success(mock_httpx, mock_supabase):
     mock_client_instance.post.return_value = mock_response
 
     # Mock freshness check
-    mock_supabase.rpc.return_value.execute.return_value.data = [{"is_fresh": True}]
+    mock_supabase.rpc.return_value.execute.return_value.data = [fresh_delivery()]
     # Mock transition
     mock_supabase.table().update().eq().in_().execute.return_value.data = [{"id": 1}]
 
     res = send_jev_followup(mock_supabase, "sig-1", "SIG-1", "BRK", "BULLISH", 0.6, 0.3, 0.3, "trend", 0.9, 8.0, 0.1, "jev", 1, "http://wh")
     assert res == "SENT"
     mock_client_instance.post.assert_called_once()
-    assert "?wait=true" in mock_client_instance.post.call_args[0][0]
+    assert mock_client_instance.post.call_args.kwargs["params"] == {"wait": "true"}
 
 @patch('system_one.discord.httpx.Client')
 def test_send_jev_followup_rate_limit(mock_httpx, mock_supabase):
@@ -195,9 +207,10 @@ def test_send_jev_followup_rate_limit(mock_httpx, mock_supabase):
     mock_response = MagicMock()
     mock_response.status_code = 429
     mock_response.headers = {"Retry-After": "5"}
+    mock_response.json.return_value = {"retry_after": 5}
     mock_client_instance.post.return_value = mock_response
 
-    mock_supabase.rpc.return_value.execute.return_value.data = [{"is_fresh": True}]
+    mock_supabase.rpc.return_value.execute.return_value.data = [fresh_delivery()]
     mock_supabase.table().update().eq().in_().execute.return_value.data = [{"id": 1}]
 
     res = send_jev_followup(mock_supabase, "sig-1", "SIG-1", "BRK", "BULLISH", 0.6, 0.3, 0.3, "trend", 0.9, 8.0, 0.1, "jev", 1, "http://wh")
@@ -216,7 +229,7 @@ def test_send_jev_followup_timeout(mock_httpx, mock_supabase):
     mock_httpx.return_value.__enter__.return_value = mock_client_instance
     mock_client_instance.post.side_effect = httpx.TimeoutException("timeout")
 
-    mock_supabase.rpc.return_value.execute.return_value.data = [{"is_fresh": True}]
+    mock_supabase.rpc.return_value.execute.return_value.data = [fresh_delivery()]
     mock_supabase.table().update().eq().in_().execute.return_value.data = [{"id": 1}]
 
     res = send_jev_followup(mock_supabase, "sig-1", "SIG-1", "BRK", "BULLISH", 0.6, 0.3, 0.3, "trend", 0.9, 8.0, 0.1, "jev", 1, "http://wh")
@@ -278,7 +291,7 @@ def test_process_signal_success(mock_send, mock_invoke, mock_supabase, base_sign
     mock_supabase.table().select().eq().limit().execute.return_value.data = []
     
     # mock claim
-    mock_supabase.rpc.return_value.execute.return_value.data = [{"owner_token": "token-1", "id": 1}]
+    mock_supabase.rpc.return_value.execute.return_value.data = [claimed_invocation()]
     # mock transition to invoking
     mock_supabase.table().update().eq().eq().eq().execute.return_value.data = [{"id": 1}]
     
@@ -295,7 +308,7 @@ def test_process_signal_success(mock_send, mock_invoke, mock_supabase, base_sign
 def test_process_signal_context_error(mock_invoke, mock_supabase, base_signal_row, base_snapshot_row):
     base_signal_row.pop("target_1")  # Make invalid
     mock_supabase.table().select().eq().execute.return_value.data = [base_signal_row]
-    mock_supabase.rpc.return_value.execute.return_value.data = [{"owner_token": "token-1", "id": 1}]
+    mock_supabase.rpc.return_value.execute.return_value.data = [claimed_invocation()]
     mock_supabase.table().update().eq().eq().eq().execute.return_value.data = [{"id": 1}]
 
     status = process_signal(mock_supabase, {"signal_uuid": "sig-1", "timestamp": "time", "snapshot_uuid": "snap-1"})
@@ -304,7 +317,7 @@ def test_process_signal_context_error(mock_invoke, mock_supabase, base_signal_ro
 @patch('system_one.consumer.invoke_jev')
 def test_process_signal_jev_timeout(mock_invoke, mock_supabase, base_signal_row, base_snapshot_row):
     mock_supabase.table().select().eq().execute.return_value.data = [base_signal_row]
-    mock_supabase.rpc.return_value.execute.return_value.data = [{"owner_token": "token-1", "id": 1}]
+    mock_supabase.rpc.return_value.execute.return_value.data = [claimed_invocation()]
     mock_supabase.table().update().eq().eq().eq().execute.return_value.data = [{"id": 1}]
     
     mock_invoke.side_effect = TypeSafeAPITimeoutError("timeout")
@@ -314,4 +327,204 @@ def test_process_signal_jev_timeout(mock_invoke, mock_supabase, base_signal_row,
 
 def test_expire_stale_jobs(mock_supabase):
     _expire_stale_jobs(mock_supabase)
-    mock_supabase.table().update().eq().lt().is_().execute.assert_called_once()
+    mock_supabase.rpc.assert_called_once_with("recover_llm_prediction_jobs", {"p_consumer_id": "jev-primary"})
+
+
+@patch('system_one.consumer.invoke_jev')
+def test_expired_before_dispatch_never_calls_jev(mock_invoke, mock_supabase, base_signal_row, base_snapshot_row):
+    """A claim can expire while context is read; the final database gate must deny dispatch."""
+    mock_supabase.table().select().eq().execute.return_value.data = [base_signal_row]
+    mock_supabase.table().select().eq().limit().execute.return_value.data = []
+    def rpc(name, params):
+        query = MagicMock()
+        query.execute.return_value.data = (
+            [{"owner_token": "owner", "id": 1}] if name == "claim_llm_prediction_job" else []
+        )
+        return query
+    mock_supabase.rpc.side_effect = rpc
+    mock_supabase.table().update().eq().eq().eq().execute.return_value.data = [{"id": 1}]
+    snapshot = dict(base_snapshot_row, signal_uuid="sig-123", snapshot_uuid="snap-1")
+    process_signal(mock_supabase, snapshot)
+    mock_invoke.assert_not_called()
+
+
+@patch('system_one.discord.httpx.Client')
+def test_discord_server_error_has_uncertain_delivery(mock_httpx, mock_supabase):
+    """A server error cannot prove that Discord did not create the message."""
+    mock_supabase.rpc.return_value.execute.return_value.data = [fresh_delivery()]
+    mock_supabase.table().update().eq().in_().execute.return_value.data = [{"id": 1}]
+    response = mock_httpx.return_value.__enter__.return_value.post.return_value
+    response.status_code = 503
+    result = send_jev_followup(mock_supabase, "sig-1", "SIG-1", "BRK", "BULLISH", .6, .3, .3, "trend", .9, 8., .1, "jev", 1, "http://wh")
+    assert result == "DELIVERY_UNKNOWN"
+
+
+def send_fixture_alert(db):
+    return send_jev_followup(db, "sig-1", "SIG-1", "BRK", "BULLISH", .6, .3, .3,
+                             "trend", .9, 8., .1, "jev", 1, "http://wh")
+
+
+def rpc_result(data):
+    result = MagicMock()
+    result.execute.return_value.data = data
+    return result
+
+
+@pytest.mark.parametrize("bad_gate", [None, [], {}, {"is_fresh": True},
+    {"is_fresh": True, "remaining_seconds": float("nan")},
+    {"is_fresh": True, "remaining_seconds": -1},
+    {"is_fresh": False, "reason": "backoff"}])
+@patch('system_one.discord.httpx.Client')
+def test_missing_or_unusable_database_gate_never_sends(mock_httpx, mock_supabase, bad_gate):
+    mock_supabase.rpc.return_value.execute.return_value.data = bad_gate
+    assert send_fixture_alert(mock_supabase) == "NONE"
+    mock_httpx.assert_not_called()
+    mock_supabase.table.assert_not_called()
+
+
+@patch('system_one.discord.httpx.Client')
+def test_unacknowledged_sending_marker_never_sends(mock_httpx, mock_supabase):
+    def rpc(name, params):
+        if name == "begin_jev_alert_attempt":
+            raise ConnectionError("marker may have committed; acknowledgment lost")
+        return rpc_result(fresh_delivery())
+    mock_supabase.rpc.side_effect = rpc
+    assert send_fixture_alert(mock_supabase) == "NONE"
+    mock_httpx.assert_not_called()
+
+
+@patch('system_one.discord.httpx.Client')
+def test_expiry_after_sending_marker_prevents_transport(mock_httpx, mock_supabase):
+    mock_supabase.rpc.side_effect = [rpc_result(fresh_delivery()), rpc_result([fresh_delivery()]),
+        rpc_result({"is_fresh": False, "reason": "expired"})]
+    assert send_fixture_alert(mock_supabase) == "SUPPRESSED_EXPIRED"
+    mock_httpx.return_value.__enter__.return_value.post.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [httpx.ReadError("accepted but response lost"),
+                                    httpx.TimeoutException("timeout")])
+@patch('system_one.discord.httpx.Client')
+def test_uncertain_delivery_is_never_resent_on_restart(mock_httpx, mock_supabase, failure):
+    client = mock_httpx.return_value.__enter__.return_value
+    client.post.side_effect = failure
+    mock_supabase.rpc.side_effect = [rpc_result(fresh_delivery()), rpc_result([fresh_delivery()]),
+        rpc_result(fresh_delivery()), rpc_result({"is_fresh": False, "reason": "alert_not_pending", "alert_status": "DELIVERY_UNKNOWN"})]
+    assert send_fixture_alert(mock_supabase) == "DELIVERY_UNKNOWN"
+    assert send_fixture_alert(mock_supabase) == "NONE"
+    client.post.assert_called_once()
+
+
+@patch('system_one.discord.httpx.Client')
+def test_success_persistence_retries_do_not_repeat_webhook(mock_httpx, mock_supabase):
+    mock_supabase.rpc.return_value.execute.return_value.data = [fresh_delivery()]
+    client = mock_httpx.return_value.__enter__.return_value
+    client.post.return_value.status_code = 200
+    client.post.return_value.json.return_value = {"id": "created-message"}
+    persist = mock_supabase.table().update().eq().eq().in_().execute
+    persist.side_effect = [ConnectionError("lost commit acknowledgment"), MagicMock(data=[{"id": 1}])]
+    assert send_fixture_alert(mock_supabase) == "SENT"
+    client.post.assert_called_once()
+
+
+@patch('system_one.discord.httpx.Client')
+def test_missing_success_confirmation_stays_unknown(mock_httpx, mock_supabase):
+    mock_supabase.rpc.return_value.execute.return_value.data = [fresh_delivery()]
+    client = mock_httpx.return_value.__enter__.return_value
+    client.post.return_value.status_code = 200
+    client.post.return_value.json.return_value = {}
+    assert send_fixture_alert(mock_supabase) == "DELIVERY_UNKNOWN"
+
+
+@patch('system_one.discord.httpx.Client')
+def test_transport_timeout_uses_remaining_window(mock_httpx, mock_supabase):
+    gate = dict(fresh_delivery(), remaining_seconds=.5)
+    mock_supabase.rpc.return_value.execute.return_value.data = [gate]
+    client = mock_httpx.return_value.__enter__.return_value
+    client.post.return_value.status_code = 200
+    client.post.return_value.json.return_value = {"id": "message"}
+    send_fixture_alert(mock_supabase)
+    assert 0 < client.timeout.connect <= .5
+
+
+@patch('system_one.consumer.send_jev_followup')
+@patch('system_one.consumer.invoke_jev')
+def test_prediction_persistence_failure_cannot_send_alert(mock_invoke, mock_send, mock_supabase, base_signal_row, base_snapshot_row):
+    mock_supabase.table().select().eq().execute.return_value.data = [base_signal_row]
+    mock_supabase.table().select().eq().limit().execute.return_value.data = []
+    mock_supabase.rpc.return_value.execute.return_value.data = [claimed_invocation()]
+    def rpc(name, params):
+        if name == "complete_llm_prediction_job":
+            raise ConnectionError("database unavailable")
+        return rpc_result([claimed_invocation()])
+    mock_supabase.rpc.side_effect = rpc
+    snapshot = dict(base_snapshot_row, signal_uuid="sig-123", snapshot_uuid="snap-1")
+    assert process_signal(mock_supabase, snapshot) == "UNKNOWN"
+    mock_invoke.assert_called_once()
+    mock_send.assert_not_called()
+
+
+def test_concurrent_bootstrap_loads_existing_watermark(mock_supabase):
+    load = mock_supabase.table().select().eq().execute
+    load.side_effect = [MagicMock(data=[]), MagicMock(data=[{"live_from": "original-cutoff"}])]
+    mock_supabase.table().upsert().execute.return_value.data = []
+    assert _bootstrap_consumer_state(mock_supabase)["live_from"] == "original-cutoff"
+    assert mock_supabase.table().upsert.call_args.kwargs["ignore_duplicates"] is True
+
+
+def test_prediction_commit_ack_retry_reuses_response_and_invocation(mock_supabase):
+    mock_supabase.rpc.return_value.execute.side_effect = [
+        ConnectionError("commit acknowledgment lost"), MagicMock(data=[{"id": 7}])]
+    result = MagicMock()
+    assert _persist_prediction(mock_supabase, "sig-1", result, {"state": "fixed"},
+        "snap-1", "event", "invoked", "invocation-1", 1, 2, 3) == 7
+    first, second = mock_supabase.rpc.call_args_list
+    assert first == second
+    assert first.args[0] == "complete_llm_prediction_job"
+    assert first.args[1]["p_invocation_token"] == "invocation-1"
+    mock_supabase.table.assert_not_called()
+
+
+@patch('system_one.consumer.send_jev_followup')
+@patch('system_one.consumer.invoke_jev')
+def test_restart_pending_alert_uses_saved_prediction(mock_invoke, mock_send, mock_supabase, base_signal_row):
+    mock_supabase.table().select().eq().eq().in_().limit().execute.return_value.data = [
+        {"id": 1, "prediction_id": 7, "signal_uuid": "sig-123"}]
+    saved = {"t1_hit_prob": .6, "t2_hit_prob": .3, "sl_hit_prob": .2,
+        "regime": "trending", "regime_confidence": .9, "setup_quality": 7,
+        "is_trap_prob": .1, "engine_name": "original-model"}
+    mock_supabase.table().select().eq().execute.side_effect = [
+        MagicMock(data=[saved]), MagicMock(data=[base_signal_row])]
+    _recover_pending_alerts(mock_supabase)
+    mock_invoke.assert_not_called()
+    mock_send.assert_called_once()
+    assert mock_send.call_args.args[-2:] == ("original-model", 1)
+
+
+@patch('system_one.consumer.invoke_jev')
+def test_slow_invocation_ack_cannot_start_stale_inference(mock_invoke, mock_supabase, base_signal_row, base_snapshot_row):
+    clock = [0.0]
+    mock_supabase.table().select().eq().execute.return_value.data = [base_signal_row]
+    mock_supabase.table().select().eq().limit().execute.return_value.data = []
+    def rpc(name, params):
+        job = claimed_invocation()
+        if name == "begin_llm_invocation":
+            job["invocation_dispatch_deadline_at"] = "2026-10-01T04:30:01Z"
+            clock[0] = 2.0  # Slow acknowledgment consumes the entire one-second budget.
+        return rpc_result([job])
+    mock_supabase.rpc.side_effect = rpc
+    with patch('system_one.consumer.time.monotonic', side_effect=lambda: clock[0]):
+        assert process_signal(mock_supabase, dict(base_snapshot_row, signal_uuid="sig-123")) == "UNKNOWN"
+    mock_invoke.assert_not_called()
+
+
+@patch('system_one.jev.TypeSafeClient')
+def test_sdk_setup_cannot_start_stale_request(mock_client):
+    clock = [0.0]
+    def enter():
+        clock[0] = 2.0
+        return mock_client.return_value
+    mock_client.return_value.__enter__.side_effect = enter
+    with patch('system_one.jev.time.monotonic', side_effect=lambda: clock[0]):
+        with pytest.raises(ValueError, match="dispatch window elapsed"):
+            invoke_jev({}, dispatch_deadline=1.0)
+    mock_client.return_value.system_one.assert_not_called()
