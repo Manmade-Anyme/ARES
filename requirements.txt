@@ -27,3 +27,8 @@ tzdata
 # ML Interpretability (Offline & Audit, required by MANM-156)
 shap>=0.47.0,<0.50.0
 matplotlib>=3.7.0,<4.0.0
+
+# System One: Jev forward predictor (TASK-210). Used only by the jev process
+# group (system_one/consumer.py), not by the main trading loop. The SDK is
+# lightweight and does not pull GPU dependencies.
+typesafe-sdk

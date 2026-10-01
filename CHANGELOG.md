@@ -3,6 +3,7 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
+- **System One: Jev forward predictor POC (TASK-210)**: Added `system_one/` package as a parallel Fly process group that polls for fresh ARES signals, invokes TypeSafe Jev with five batched questions (first barrier, T2 conditional, regime, quality, trap), and persists probability outputs to `llm_predictions`. Includes durable claim semantics via `llm_prediction_jobs`, atomic PENDING→SENDING→SENT Discord delivery with fresh event-time checks, Supabase migration (3 tables + atomic claim RPC), `fly.toml` jev process group, and `typesafe-sdk` dependency. Zero cross-boundary imports with existing trading code.
 - **Discord clarity (MANM-158)**: Enable an earlier `RETEST_READY` OI-wall heads-up in both profiles, retry failed webhook delivery while the wall remains ready, display the later retest time/close and earlier interaction/excursion in final signal alerts, reset OI-wall state at a new candle date, and describe OI size/growth without claiming confirmed writer defense.
 - **Bugfix (MANM-158)**: Require the secondary OI wall retest candle to move in the trade direction before immediate entry; a contrary candle keeps the wall ready for a later valid retest.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
