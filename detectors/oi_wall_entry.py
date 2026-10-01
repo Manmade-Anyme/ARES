@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Set
-from models import OHLCVCandle, ResistanceLevel, Direction, OIWallBias, OIWallTelemetry, OIWallEntryDecision
+from typing import Optional, List, Dict, Any, Set, Tuple
+from models import OHLCVCandle, ResistanceLevel, Direction, OIWallBias, OIWallTelemetry, OIWallEntryDecision, OIWallWatchCancellation
 from config import settings
 
 
@@ -43,12 +43,48 @@ class OIWallEntryFilter:
         self.latest_watchlist_event: Optional[OIWallBias] = None
         self.latest_expired_decision: Optional[OIWallEntryDecision] = None
         self._watchlist_emitted_keys: Set[str] = set()
+        self._delivered_watch: Optional[Tuple[OIWallBias, datetime]] = None
+        self._pending_cancellations: List[OIWallWatchCancellation] = []
+        self._last_candle: Optional[OHLCVCandle] = None
 
     def acknowledge_watchlist(self, wall_key: str) -> None:
         """Mark a watchlist heads-up delivered only after the webhook succeeds."""
         if self.state == "RETEST_READY" and self.current_wall_key == wall_key:
+            if self._latest_bias is not None and self.retest_ready_timestamp is not None:
+                self._delivered_watch = (self._latest_bias, self.retest_ready_timestamp)
             self._watchlist_emitted_keys.add(wall_key)
             self.latest_watchlist_event = None
+
+    @property
+    def pending_watchlist_cancellations(self) -> Tuple[OIWallWatchCancellation, ...]:
+        return tuple(self._pending_cancellations)
+
+    def acknowledge_watchlist_cancellation(self, event_id: str) -> None:
+        self._pending_cancellations = [
+            event for event in self._pending_cancellations if event.event_id != event_id
+        ]
+
+    def _cancel_delivered_watch(self, reason: str, candle: OHLCVCandle) -> None:
+        if self._delivered_watch is None:
+            return
+        bias, watch_timestamp = self._delivered_watch
+        self._pending_cancellations.append(OIWallWatchCancellation(
+            bias=bias, watch_timestamp=watch_timestamp, timestamp=candle.timestamp,
+            spot=candle.close, reason=reason,
+        ))
+        self._watchlist_emitted_keys.discard(bias.wall_key)
+        self._delivered_watch = None
+
+    def reset_session(self, candle: OHLCVCandle) -> None:
+        """Reset trading state but retain undelivered cancellation notices."""
+        self._cancel_delivered_watch("Trading session changed", candle)
+        self._reset_candidate()
+        self.current_wall_key = None
+        self._latest_bias = None
+        self.latest_expired_decision = None
+        self.consumed_wall_keys.clear()
+        self._watchlist_emitted_keys.clear()
+        self._last_candle = None
 
     def _reset_candidate(self) -> None:
         self.initial_interaction_timestamp = None
@@ -96,12 +132,14 @@ class OIWallEntryFilter:
     ) -> OIWallEntryDecision:
         self.latest_watchlist_event = None
         self.latest_expired_decision = None
+        self._last_candle = candle
 
         if bias is None:
             if self.state not in ("NO_WALL", "CONSUMED", "EXPIRED") and self._latest_bias:
                 previous_bias = self._latest_bias
                 self.state = "EXPIRED"
                 self.rejection_reason = "Wall disappeared or no longer qualifies"
+                self._cancel_delivered_watch(self.rejection_reason, candle)
                 telemetry = self._build_telemetry(
                     previous_bias,
                     entry_status="EXPIRED",
@@ -145,6 +183,7 @@ class OIWallEntryFilter:
             if self.state not in ("NO_WALL", "CONSUMED", "EXPIRED") and self._latest_bias:
                 previous_bias = self._latest_bias
                 reason = "Wall replaced by another qualifying strike"
+                self._cancel_delivered_watch(reason, candle)
                 telemetry = self._build_telemetry(
                     previous_bias,
                     entry_status="EXPIRED",
@@ -196,6 +235,7 @@ class OIWallEntryFilter:
             if self.state != "EXPIRED":
                 self.state = "EXPIRED"
                 self.rejection_reason = "Price closed beyond wall strike (breach)"
+                self._cancel_delivered_watch(self.rejection_reason, candle)
             telemetry = self._build_telemetry(bias, entry_status="EXPIRED", filter_state="EXPIRED", candle=candle, rejection_reason=self.rejection_reason)
             return OIWallEntryDecision(
                 status="EXPIRED",
@@ -309,6 +349,7 @@ class OIWallEntryFilter:
         candle_vwap = decision.telemetry.vwap if decision.telemetry else None
 
         if outcome == "EMITTED":
+            self._delivered_watch = None
             self.state = "CONSUMED"
             if decision.wall_key:
                 self.consumed_wall_keys.add(decision.wall_key)
@@ -369,6 +410,8 @@ class OIWallEntryFilter:
         elif outcome == "REJECTED_BY_RR":
             self.state = "EXPIRED"
             self.rejection_reason = "Rejected by R:R gate"
+            if self._last_candle is not None:
+                self._cancel_delivered_watch(self.rejection_reason, self._last_candle)
             telemetry = OIWallTelemetry(
                 bias=decision.bias,
                 entry_status="EXPIRED",

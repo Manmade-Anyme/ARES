@@ -1,6 +1,6 @@
 import httpx
 from datetime import datetime, timezone, timedelta
-from models import AresSignal, OIWallBias
+from models import AresSignal, OIWallBias, OIWallWatchCancellation
 from config import settings, detector_names, SESSION_DISPLAY
 
 
@@ -224,6 +224,55 @@ async def send_watchlist_alert(bias: OIWallBias, spot: float) -> bool:
         except Exception as e:
             print(f"[-] Alerts: Failed to send watchlist alert: {e}")
             return False
+
+async def send_watchlist_cancellation(event: OIWallWatchCancellation) -> bool:
+    """Close a delivered watch even if new watch alerts have since been disabled."""
+    if not settings.discord_webhook_url:
+        return False
+    ist = timezone(timedelta(hours=5, minutes=30))
+
+    def event_time(value):
+        # Naive candle times follow the project's local-market-time convention.
+        value = value.replace(tzinfo=ist) if value.tzinfo is None else value.astimezone(ist)
+        return value.strftime("%d-%b-%Y %H:%M:%S IST")
+
+    payload = {"embeds": [{
+        "title": f"🛑 #{event.bias.wall_key} OI WALL WATCH CANCELLED ({event.bias.direction.value})",
+        "color": 15158332,
+        "fields": [
+            {"name": "Wall", "value": f"{event.bias.wall_strike:.0f} {event.bias.wall_option_type}", "inline": True},
+            {"name": "Watch armed", "value": event_time(event.watch_timestamp), "inline": True},
+            {"name": "Cancelled at", "value": event_time(event.timestamp), "inline": True},
+            {"name": "Spot at cancellation", "value": f"{event.spot:.2f}", "inline": True},
+            {"name": "Reason", "value": event.reason, "inline": False},
+            {"name": "Trader Guidance", "value": "No entry from this watch. Await a fresh setup watch and confirmed signal. This cancels the watch, not an existing trade.", "inline": False},
+        ],
+        "footer": {"text": f"ARES • Watch cancellation • {event.event_id}"},
+    }]}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(settings.discord_webhook_url, json=payload)
+            response.raise_for_status()
+        return True
+    except Exception as exc:
+        print(f"[-] Alerts: Failed to send watch cancellation: {exc}")
+        return False
+
+
+async def dispatch_oi_wall_watch_alerts(entry_filter, spot: float) -> None:
+    """Deliver cancellations before fresh watches; acknowledge only accepted posts."""
+    try:
+        for event in entry_filter.pending_watchlist_cancellations:
+            if not await send_watchlist_cancellation(event):
+                return
+            entry_filter.acknowledge_watchlist_cancellation(event.event_id)
+        watch = entry_filter.latest_watchlist_event
+        if watch is not None and await send_watchlist_alert(watch, spot):
+            entry_filter.acknowledge_watchlist(watch.wall_key)
+    except Exception as exc:
+        # Notification failures must not interrupt signal persistence or trading.
+        print(f"[-] Alerts: OI watch delivery failed: {exc}")
+
 
 async def send_startup_alert(
     pdh: float,

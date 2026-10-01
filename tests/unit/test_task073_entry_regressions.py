@@ -615,3 +615,25 @@ def test_pre_interaction_tracked_wall_does_not_block_closer_opposite_wall(profil
     )
     decision2 = entry_filter.update(bias2, c2, [])
     assert decision2.wall_key == opp_wall_key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", ["CE", "PE"])
+async def test_engine_delivered_watch_cancels_on_session_rollover(profile, side):
+    from unittest.mock import AsyncMock, patch
+    from alerts import dispatch_oi_wall_watch_alerts
+
+    engine = AresEngine()
+    for minute, prices in enumerate(GEOMETRY[:3]):
+        tick(engine, side, minute, prices)
+    with patch("alerts.send_watchlist_alert", new_callable=AsyncMock, return_value=True):
+        await dispatch_oi_wall_watch_alerts(engine.oi_wall_filter, 24050)
+    tick(engine, side, 0, GEOMETRY[0], day_offset=1)
+    event = engine.oi_wall_filter.pending_watchlist_cancellations[0]
+    assert event.bias.wall_key == f"{side}:24100"
+    assert event.reason == "Trading session changed"
+    tick(engine, side, 1, GEOMETRY[1], day_offset=1)
+    assert engine.oi_wall_filter.pending_watchlist_cancellations == (event,)
+    with patch("alerts.send_watchlist_cancellation", new_callable=AsyncMock, return_value=True):
+        await dispatch_oi_wall_watch_alerts(engine.oi_wall_filter, 24050)
+    assert not engine.oi_wall_filter.pending_watchlist_cancellations

@@ -3,6 +3,7 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
+- **OI-wall Discord watch cancellation**: Close a previously delivered watch when the setup expires, is replaced, breaches, fails R:R, or crosses into a new session. Preserve the original event details across webhook retries and session resets, deliver cancellations before fresh watches, and keep emitted trade exits separate from watch cancellation. Pending notices remain process-local.
 - **Discord clarity (MANM-158)**: Enable an earlier `RETEST_READY` OI-wall heads-up in both profiles, retry failed webhook delivery while the wall remains ready, display the later retest time/close and earlier interaction/excursion in final signal alerts, reset OI-wall state at a new candle date, and describe OI size/growth without claiming confirmed writer defense.
 - **Bugfix (MANM-158)**: Require the secondary OI wall retest candle to move in the trade direction before immediate entry; a contrary candle keeps the wall ready for a later valid retest.
 - **Bugfix (MANM-184)**: Restored immediate OI wall retest qualification and removed obsolete post-retest confirmation requirement.
