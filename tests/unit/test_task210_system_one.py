@@ -3,12 +3,12 @@ import pytest
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone, timedelta
 import httpx
-from typesafe_sdk import TypeSafeError, TypeSafeAPITimeoutError
+from typesafe_sdk import TypeSafeError, TypeSafeAPIError, TypeSafeAPIConnectionError, TypeSafeAPITimeoutError
 
 from system_one.context import build_context, validate_barrier_geometry, BarrierValidationError, _safe_float
 from system_one.jev import invoke_jev, JevResult, build_questions
 from system_one.discord import format_jev_followup, send_jev_followup
-from system_one.consumer import _bootstrap_consumer_state, _is_trading_session, _poll_eligible_signals, process_signal, _expire_stale_jobs, _persist_prediction, _recover_pending_alerts
+from system_one.consumer import _bootstrap_consumer_state, _create_supabase_client, _is_trading_session, _poll_eligible_signals, process_signal, _expire_stale_jobs, _persist_prediction, _recover_pending_alerts
 from system_one import CONTEXT_VERSION, QUESTION_VERSION
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,8 @@ def base_snapshot_row():
         "volume_features": {"vol_ratio": 1.2},
         "iv_features": {"iv_current": 15.0},
         "oi_features": {"pcr_oi": 1.1},
-        "structure_features": {"levels_above": 2.0},
+        "structure_features": {"dist_to_nearest_resistance": 15.0, "dist_to_nearest_support": 5.0,
+                               "dist_to_pdh": 20.0, "dist_to_pdl": 10.0},
         "meta_features": {},
         "raw_candle": {"open": 98.0, "high": 101.0, "low": 97.0, "close": 100.0},
         "raw_atm_oi": {"ce": {"iv": 14.0, "delta": 0.5, "oi": 1000}, "pe": {"iv": 15.0, "delta": 0.5, "oi": 1200}},
@@ -109,6 +110,95 @@ def test_full_context_building(base_signal_row, base_snapshot_row):
     # Wick profile computation
     assert ctx["wick_profile"]["body_pct"] == 0.5  # (100-98)/4 = 0.5
     assert ctx["wick_profile"]["is_green"] is True
+
+
+@pytest.mark.parametrize("direction,features,distance,clear", [
+    ("BULLISH", {"dist_to_nearest_resistance": 15, "dist_to_pdh": 25}, 15, True),
+    ("BEARISH", {"dist_to_nearest_support": 8, "dist_to_pdl": 20}, 8, False),
+    ("BULLISH", {"dist_to_nearest_resistance": 30, "dist_to_pdh": 5}, 5, False),
+    ("BEARISH", {"dist_to_pdl": 10, "dist_to_pdh": -30}, 10, False),
+    ("BULLISH", {"dist_to_pdh": 0}, 0, False),
+    ("BULLISH", {"dist_to_pdh": -5, "dist_to_pdl": 10}, None, None),
+    ("BEARISH", {"dist_to_pdl": float("nan")}, None, None),
+])
+def test_runway_from_saved_structure_distances(base_signal_row, base_snapshot_row, direction, features, distance, clear):
+    if direction == "BEARISH":
+        base_signal_row.update(direction=direction, target_1=90, target_2=80, stop_loss=110)
+    base_snapshot_row["structure_features"] = features
+    structure = build_context(base_signal_row, base_snapshot_row)["structure"]
+    assert structure["nearest_opposing_level_distance_pts"] == distance
+    assert structure["path_to_t1_clear"] is clear
+    assert structure["runway_margin_beyond_t1_pts"] == (distance - 10 if distance is not None else None)
+
+
+def test_structure_distance_uses_snapshot_spot_as_origin(base_signal_row, base_snapshot_row):
+    base_snapshot_row.update(spot=105, structure_features={"dist_to_nearest_resistance": 8})
+    structure = build_context(base_signal_row, base_snapshot_row)["structure"]
+    assert structure["nearest_opposing_level_distance_pts"] == 13
+    assert structure["runway_margin_beyond_t1_pts"] == 3
+
+
+def test_missing_snapshot_spot_cannot_prove_runway(base_signal_row, base_snapshot_row):
+    base_snapshot_row["spot"] = None
+    structure = build_context(base_signal_row, base_snapshot_row)["structure"]
+    assert structure["path_to_t1_clear"] is None
+
+
+@pytest.mark.parametrize("direction,expected_distance", [("BULLISH", 15), ("BEARISH", 5)])
+def test_context_consumes_actual_collector_structure_contract(base_signal_row, base_snapshot_row, direction, expected_distance):
+    # Exercise the producer's public contract in the test only. The worker
+    # remains independent of all ML application imports.
+    from ml_signal.features import compute_structure_features
+    if direction == "BEARISH":
+        base_signal_row.update(direction=direction, target_1=90, target_2=80, stop_loss=110)
+    base_snapshot_row["structure_features"] = compute_structure_features(
+        spot=100, levels=[95, 115], full_chain=[], pdh=120, pdl=80)
+    context = build_context(base_signal_row, base_snapshot_row)
+    assert context["structure"]["nearest_opposing_level_distance_pts"] == expected_distance
+
+
+@patch('system_one.consumer.create_client')
+def test_jev_startup_uses_dedicated_service_role_secret(mock_create, monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "http://db.invalid")
+    monkeypatch.setenv("SUPABASE_KEY", "existing-trading-key")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "dedicated-worker-key")
+    _create_supabase_client()
+    mock_create.assert_called_once_with("http://db.invalid", "dedicated-worker-key")
+
+
+@patch('system_one.consumer.create_client')
+def test_jev_startup_requires_documented_service_role_secret(mock_create, monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "http://db.invalid")
+    monkeypatch.setenv("SUPABASE_KEY", "possibly-anon-key")
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="SUPABASE_SERVICE_ROLE_KEY"):
+        _create_supabase_client()
+    mock_create.assert_not_called()
+
+
+@pytest.mark.parametrize("error,expected", [
+    (TypeSafeAPIError(400, {"error": "invalid"}, {}), "FAILED"),
+    (TypeSafeAPIError(401, {"error": "auth"}, {}), "FAILED"),
+    (TypeSafeAPIError(403, {"error": "forbidden"}, {}), "FAILED"),
+    (TypeSafeAPIError(422, {"error": "validation"}, {}), "FAILED"),
+    (TypeSafeAPIError(429, {"error": "rate limit"}, {}), "FAILED"),
+    (TypeSafeAPIError(408, {}, {}), "UNKNOWN"),
+    (TypeSafeAPIError(500, {}, {}), "UNKNOWN"),
+    (TypeSafeAPIConnectionError("connection lost"), "UNKNOWN"),
+    (TypeSafeAPITimeoutError(5), "UNKNOWN"),
+    (TypeSafeError("missing API key"), "FAILED"),
+])
+@patch('system_one.consumer.send_jev_followup')
+@patch('system_one.consumer.invoke_jev')
+def test_definite_jev_rejection_is_separate_from_uncertain_dispatch(mock_invoke, mock_send, mock_supabase, base_signal_row, base_snapshot_row, error, expected):
+    mock_supabase.table().select().eq().execute.return_value.data = [base_signal_row]
+    mock_supabase.table().select().eq().limit().execute.return_value.data = []
+    mock_supabase.rpc.return_value.execute.return_value.data = [claimed_invocation()]
+    mock_invoke.side_effect = error
+    assert process_signal(mock_supabase, dict(base_snapshot_row, signal_uuid="sig-123")) == expected
+    assert mock_supabase.table().update.call_args.args[0]["status"] == expected
+    mock_invoke.assert_called_once()
+    mock_send.assert_not_called()
 
 # ---------------------------------------------------------------------------
 # Jev Tests

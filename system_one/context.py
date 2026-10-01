@@ -191,23 +191,36 @@ def build_context(
     greek_ctx = _clean_dict(greek_features)
     meta_ctx = _clean_dict(meta_features)
 
-    # Structural runway: levels between entry and targets
-    if structure_features and entry_price:
-        levels_above_val = _safe_float(structure_features.get("levels_above"))
-        levels_below_val = _safe_float(structure_features.get("levels_below"))
-        runway = levels_above_val if direction == "BULLISH" else levels_below_val
-        
-        assessment = "Unknown"
-        if runway is not None:
-            if runway == 0:
-                assessment = "Immediate structural blockage; no clear runway."
-            elif runway == 1:
-                assessment = "Minimal runway; one level of friction present."
-            else:
-                assessment = "Clear structural runway with multiple levels of clearance."
-                
-        structure_ctx["runway_levels"] = runway
-        structure_ctx["runway_assessment"] = assessment
+    # Collector distances are measured from snapshot spot, not signal entry.
+    # Reconstruct only saved levels, then find the nearest in the trade's path.
+    if structure_ctx is not None:
+        snapshot_spot = _safe_float(snapshot_row.get("spot"))
+        candidates = []
+        if snapshot_spot is not None and snapshot_spot > 0:
+            for field, sign in (("dist_to_nearest_resistance", 1),
+                                ("dist_to_nearest_support", -1),
+                                ("dist_to_pdh", 1), ("dist_to_pdl", -1)):
+                distance = _safe_float(structure_features.get(field))
+                if distance is None:
+                    continue
+                level = snapshot_spot + sign * distance
+                ahead = level - entry_price if direction == "BULLISH" else entry_price - level
+                if math.isfinite(level) and level > 0 and ahead >= 0:
+                    candidates.append((ahead, field))
+        nearest, source = min(candidates) if candidates else (None, None)
+        margin = nearest - t1_distance if nearest is not None else None
+        clear = margin > 0 if margin is not None else None
+        structure_ctx.update({
+            "nearest_opposing_level_distance_pts": nearest,
+            "nearest_opposing_level_source": source,
+            "runway_margin_beyond_t1_pts": margin,
+            "path_to_t1_clear": clear,
+            "runway_assessment": (
+                "No saved opposing level at or before T1; nearest saved level is beyond T1."
+                if clear else "Saved opposing structure is at or before T1."
+                if clear is False else "Unknown; no usable saved level ahead of entry."
+            ),
+        })
 
     # OI Wall position relative to entry
     wall_ctx = None

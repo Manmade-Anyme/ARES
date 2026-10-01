@@ -76,6 +76,12 @@ The consumer polls for eligible signal-bound `ml_collection` rows at a short, me
 5. Supabase migration: Add `llm_predictions`, linked one-to-one to the current bridge-mode `ares_signals.signal_uuid`, with 0–1 probability checks, model/version metadata, input provenance, latency, and raw state/response. Add `llm_consumer_state` and `llm_prediction_jobs` for the rollout cutoff and durable claim/status contract. Restrict all three tables and the claim operation to server-side access. Account for the planned UUID primary-key cutover.
 6. Fly configuration: Add a `jev` process group to the **existing** app, retaining the `app` process group and its 768 MB Machine. Size and lifecycle of the Jev Machine are measured before deployment. No second Fly app or market-data collector is part of this POC.
 
+## Deployment and error contract
+
+- Provision `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TYPESAFE_API_KEY`, and `DISCORD_WEBHOOK_URL` before enabling the configured Jev process group. The dedicated service-role key is required for its protected tables and RPCs; the worker does not assume the trading process's `SUPABASE_KEY` has that role. See README and `.env.example`.
+- Context version `v1.2` derives runway from the saved collector distance fields and snapshot spot, relative to the frozen signal entry. Select the nearest saved forward level and compare it with T1; do not infer `levels_above`/`levels_below` counts or unrestricted clearance from absent data. Question version remains `v1.1`.
+- Persist definite auth/validation/rate-limit HTTP rejections and local SDK configuration errors as `FAILED`. Keep connection/timeouts, HTTP 408/5xx, and unusable or unexpected outcomes `UNKNOWN`. Both are terminal for automatic inference, with no follow-up and no invented prediction.
+
 ## Output semantics
 
 - Define `t1_hit_prob` as T1 touched before the original SL by session close; `sl_hit_prob` as the original SL touched before T1 by close; remaining mass means neither. After T1, ARES moves the stop to the trade's entry price. Compute T2 as T1-first probability multiplied by Jev's conditional probability of T2 after T1 and before that **post-T1 breakeven stop** or session close. This keeps `T2 ≤ T1` and `T1 + SL ≤ 1`; `sl_hit_prob` does not include a later breakeven exit.

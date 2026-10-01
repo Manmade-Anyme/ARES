@@ -20,6 +20,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from supabase import create_client, Client as SupabaseClient
+from typesafe_sdk import TypeSafeError, TypeSafeAPIError, TypeSafeAPIConnectionError
 
 from . import CONTEXT_VERSION, QUESTION_VERSION
 from .context import build_context, BarrierValidationError
@@ -387,6 +388,18 @@ def process_signal(
     # Invoke Jev
     try:
         jev_result = invoke_jev(context, dispatch_deadline=dispatch_deadline)
+    except TypeSafeError as exc:
+        # HTTP 4xx (except request timeout) and local SDK configuration errors
+        # prove rejection. Connection failures and 5xx remain ambiguous.
+        if isinstance(exc, TypeSafeAPIConnectionError):
+            status = "UNKNOWN"
+        elif isinstance(exc, TypeSafeAPIError):
+            status = "FAILED" if 400 <= exc.status < 500 and exc.status != 408 else "UNKNOWN"
+        else:
+            status = "FAILED"
+        _fail_job(supabase, signal_uuid, f"{type(exc).__name__}: {exc}", owner_token, status=status)
+        logger.warning("Jev %s for %s: %s", status, signal_uuid, exc)
+        return status
     except Exception as exc:
         error_type = type(exc).__name__
         _fail_job(supabase, signal_uuid, f"{error_type}: {exc}", owner_token, status="UNKNOWN")

@@ -341,6 +341,8 @@ DISCORD_HEALTH_WEBHOOK_URL="your_health_webhook"  # Optional: For heartbeats and
 # ==========================================
 SUPABASE_URL="your_supabase_url"
 SUPABASE_KEY="your_supabase_anon_key"
+SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_role_key"  # Required for Jev worker
+TYPESAFE_API_KEY="your_typesafe_key"  # Required for hosted Jev inference
 ```
 
 #### B. Automated Dual-Profile Tuning (`config_profiles.py`)
@@ -452,6 +454,15 @@ Start the monitoring trading engine locally:
 python main.py
 ```
 
+To run the independent Jev worker locally after provisioning its secrets and migration, export the secrets into the shell first. The worker reads environment variables directly and does not load `.env` itself:
+
+```bash
+set -a
+source .env
+set +a
+python -m system_one.consumer
+```
+
 ---
 
 ### 4. Running Unit Tests
@@ -480,8 +491,11 @@ ARES is fully containerized with Docker and configured for **Fly.io**:
 
 1. **Secrets Setup:** Set environment secrets directly on Fly.io:
    ```bash
-   fly secrets set SUPABASE_URL="your_url" SUPABASE_KEY="your_key" DISCORD_WEBHOOK_URL="your_webhook"
+   fly secrets set SUPABASE_URL="your_url" SUPABASE_KEY="your_key" SUPABASE_SERVICE_ROLE_KEY="your_service_role_key" TYPESAFE_API_KEY="your_typesafe_key" DISCORD_WEBHOOK_URL="your_webhook"
    ```
+   The `app` process uses `SUPABASE_KEY`. The separate `jev` process requires `SUPABASE_SERVICE_ROLE_KEY` for its RLS-protected prediction tables and lifecycle RPCs, plus `TYPESAFE_API_KEY` for hosted inference. It does not fall back to `SUPABASE_KEY`, which may be an anon key. Keep the service-role key in backend environment secrets; the placeholders are also in `.env.example` for local use.
+
+   Before deploying the `jev` process group, apply the reviewed initial migration `migrations/2026-10-01-task210-llm-predictions.sql` to the intended Supabase database and provision these secrets. An already deployed earlier TASK-210 schema requires a separate upgrade. Both process groups share the existing Fly app; the Jev Machine uses its own memory allocation and posts a follow-up through `DISCORD_WEBHOOK_URL`.
 2. **Automated CI/CD:** Push to `main` triggers `.github/workflows/deploy.yml` to run unit tests and execute `fly deploy`.
 3. **Automated ML Retraining:** `.github/workflows/ml_training.yml` runs every Saturday at 00:00 UTC (05:30 IST), training XGBoost on `ml_collection` and attaching reports/artifacts to the run.
 
