@@ -45,6 +45,8 @@ The consumer polls for eligible signal-bound `ml_collection` rows at a short, me
 
 ## Live eligibility and restart contract
 
+- Alert recovery uses `poll_jev_alert_jobs`, filtering database-time backoff, session, event freshness and eligible delivery status before its limit. Sort eligible work by expiry then job ID. Recovery selection does not authorize delivery: each attempt still needs a fresh acknowledged atomic send marker.
+
 - Poll through `poll_jev_signals`: use database wall time and the persisted age/cutoff policy to filter expired, future and blocked-job rows before limiting to ten distinct signals. Recover only matching uninvoked claims whose lease expired. Canonical UUID columns are resolved from the catalog for polling, signal reads and claims, supporting bridge/greenfield schemas and a later cutover without shared ML imports.
 
 - The `jev` Machine remains running between sessions, checking the clock every 30 seconds outside 09:15–15:30 IST without database polling or external prediction/delivery requests after bootstrap. It resumes at the next session using the persisted rollout state. Scope Fly's `always` restart policy to `jev` and `never` to `app`; the existing Machine-ID-specific start/stop cron targets only `app`. Jev incurs overnight/non-trading-day running charges. Verify its running state at rollout and explicitly start it if an operator previously stopped it.

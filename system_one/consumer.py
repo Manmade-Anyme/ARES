@@ -439,9 +439,8 @@ def process_signal(
 
 def _recover_pending_alerts(supabase: SupabaseClient) -> None:
     """Resume only unsent/proven-rejected deliveries using their saved predictions."""
-    jobs = supabase.table("llm_prediction_jobs").select("id,signal_uuid,prediction_id").eq(
-        "consumer_id", CONSUMER_ID
-    ).eq("status", "COMPLETED").in_("alert_status", ["PENDING", "RETRYABLE"]).limit(10).execute().data
+    # Database time excludes backoff/expired rows before the bounded batch.
+    jobs = supabase.rpc("poll_jev_alert_jobs", {"p_consumer_id": CONSUMER_ID}).execute().data
     for job in jobs or []:
         predictions = supabase.table("llm_predictions").select("*").eq(
             "id", job["prediction_id"]

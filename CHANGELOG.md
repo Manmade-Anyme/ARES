@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-210 alert backoff review:** Filter backoff, freshness and pending-delivery status in database time before the recovery batch limit; order eligible alerts by earliest expiry and job ID. Preserve final send ownership/freshness checks.
+
 - **TASK-210 expiry and UUID review:** Replace history pagination with one database-time RPC that filters saved rollout/age policy, expiry and blocked jobs before its ten-signal limit. Add a recent-snapshot index and normalize canonical UUID reads/claims across bridge, greenfield and later cutover schemas.
 
 - **TASK-210 polling review:** Paginate past claimed snapshots before enforcing the ten eligible-signal limit, with deterministic timestamp/UUID ordering and signal deduplication. Preserve per-page snapshot query timing and the authoritative claim-time freshness guard.

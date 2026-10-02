@@ -248,9 +248,33 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal
+-- Backoff must be filtered before LIMIT so rejected attempts cannot hide
+-- fresh pending alerts. The send marker still performs the final atomic gate.
+CREATE INDEX IF NOT EXISTS idx_llm_prediction_jobs_ready_alerts
+  ON llm_prediction_jobs (consumer_id, expires_at, id)
+  WHERE status = 'COMPLETED' AND alert_status IN ('PENDING', 'RETRYABLE');
+
+CREATE OR REPLACE FUNCTION poll_jev_alert_jobs(p_consumer_id text)
+RETURNS SETOF llm_prediction_jobs
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $$
+DECLARE v_now timestamptz := clock_timestamp();
+BEGIN
+  IF NOT jev_in_session(v_now) THEN RETURN; END IF;
+  RETURN QUERY
+    SELECT j.* FROM public.llm_prediction_jobs j
+    JOIN public.llm_consumer_state c ON c.consumer_id = j.consumer_id
+    WHERE j.consumer_id = p_consumer_id AND j.status = 'COMPLETED'
+      AND j.prediction_id IS NOT NULL AND j.alert_status IN ('PENDING', 'RETRYABLE')
+      AND (j.alert_backoff_until IS NULL OR j.alert_backoff_until <= v_now)
+      AND j.event_at >= c.live_from AND j.event_at <= v_now AND j.expires_at > v_now
+    ORDER BY j.expires_at, j.id
+    LIMIT 10;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal, poll_jev_alert_jobs
   FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal TO service_role;
+GRANT EXECUTE ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal, poll_jev_alert_jobs TO service_role;
 
 -- Drop the earlier signature so PostgREST has one unambiguous RPC.
 DROP FUNCTION IF EXISTS claim_llm_prediction_job(uuid, uuid, integer, uuid, text, text, text, timestamptz, integer);

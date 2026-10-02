@@ -120,7 +120,8 @@ def flow(monkeypatch):
         def execute():
             if name in state.rpc_errors:
                 raise state.rpc_errors[name]
-            source = {'poll_jev_signals': 'ml_collection', 'read_jev_signal': 'ares_signals'}.get(name)
+            source = {'poll_jev_signals': 'ml_collection', 'read_jev_signal': 'ares_signals',
+                      'poll_jev_alert_jobs': 'llm_prediction_jobs'}.get(name)
             if source:
                 if source in state.table_errors:
                     raise state.table_errors[source]
@@ -413,3 +414,13 @@ def test_poll_uses_database_policy_rpc_without_history_queries(monkeypatch, rows
         'p_model_name': consumer.DEFAULT_MODEL,
     })
     db.table.assert_not_called()
+
+
+@pytest.mark.parametrize('rows', [None, []])
+def test_alert_recovery_uses_database_backoff_rpc_without_dispatch(flow, rows):
+    flow.rows['llm_prediction_jobs'] = rows
+    consumer._recover_pending_alerts(flow.db)
+    flow.db.rpc.assert_called_once_with('poll_jev_alert_jobs', {'p_consumer_id': consumer.CONSUMER_ID})
+    flow.db.table.assert_not_called()
+    flow.invoke.assert_not_called()
+    flow.send.assert_not_called()

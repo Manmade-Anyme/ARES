@@ -212,3 +212,10 @@ The worker pages past consumed snapshots before limiting the batch to ten eligib
 Polling, signal reads, claim lookup and FK wiring resolve canonical UUID columns from the database catalog, preferring bridge `signal_uuid`, otherwise greenfield `ares_signals.id` / `ml_collection.signal_id`; numeric legacy IDs are never used. Dynamic identifier quoting and bound values keep query construction constrained. Resolution on each operation also supports a cutover after this migration was installed. New RPCs use SECURITY INVOKER and grant execution only to service_role. The worker remains independent of the main/ML Python modules.
 
 Updated external-boundary fixtures and added `tests/integration/task210_polling.mjs` for expired history, the eleven-signal burst, persisted age policy, job recovery, permissions, both initial schema layouts, and cutover after installation. No tests or CI were awaited for this push, per user instruction. The prior coverage report is historical evidence, not a claim for this revision. The migration remains the initial unmerged schema; a previously applied version requires a separate reviewed upgrade. No live database or deployment was changed.
+
+
+## Alert recovery backoff review fix (2026-10-03)
+
+`poll_jev_alert_jobs` filters future backoff, stale/future/pre-rollout events, session closure, missing persisted prediction and non-pending delivery state using database time before limiting to ten jobs. Eligible work is ordered by earliest expiry then job ID; ten jobs waiting on backoff cannot hide fresh pending alerts. A partial consumer/expiry/ID index supports this selection. The RPC is SECURITY INVOKER and executable only by service_role. Selection remains advisory: the existing final atomic send marker rechecks freshness, backoff and ownership before every transport attempt. Saved predictions are reused without another Jev call.
+
+Updated boundary fixtures and database contract cases cover backoff starvation, ordering, ready retry, expiry, session and permissions. No tests/CI were awaited for this push per the user's existing instruction; no new coverage claim, live migration or deployment was made.

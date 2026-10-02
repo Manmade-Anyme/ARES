@@ -80,6 +80,26 @@ for (const mode of ['bridge', 'greenfield', 'cutover-after-apply']) {
     equal((await poll()).length, 2, mode + ': expired uninvoked lease is recoverable');
     await db.query("UPDATE llm_prediction_jobs SET status='INVOKING', invocation_started_at=clock_timestamp() WHERE signal_uuid=$1", [first[0].signal_uuid]);
     equal((await poll()).length, 1, mode + ': dispatched claim never re-polled');
+    // Ten rejected alerts in backoff must not hide the later pending result.
+    equal((await claim(remaining[0])).length, 1, mode + ': claim pending alert fixture');
+    await db.exec(`INSERT INTO llm_predictions(signal_uuid,t1_hit_prob,t2_hit_prob,sl_hit_prob,
+      regime,engine_name,context_version,question_version,input_state,raw_response,signal_timestamp)
+      SELECT signal_uuid,.6,.3,.2,'trending','jev','v1.2','v1.1','{}','{}',event_at
+      FROM llm_prediction_jobs;
+      UPDATE llm_prediction_jobs j SET status='COMPLETED',alert_status='RETRYABLE',
+        prediction_id=p.id,alert_backoff_until=clock_timestamp()+interval '30 seconds'
+      FROM llm_predictions p WHERE p.signal_uuid=j.signal_uuid;`);
+    await db.query("UPDATE llm_prediction_jobs SET alert_status='PENDING',alert_backoff_until=NULL WHERE signal_uuid=$1", [remaining[0].signal_uuid]);
+    const alerts = async () => (await db.query("SELECT * FROM poll_jev_alert_jobs('jev-primary')")).rows;
+    equal((await alerts()).map(row => row.signal_uuid), [remaining[0].signal_uuid], mode + ': backoff filtered before limit');
+    await db.query("UPDATE llm_prediction_jobs SET alert_backoff_until=clock_timestamp()-interval '1 second', expires_at=clock_timestamp()+interval '10 seconds' WHERE signal_uuid=$1", [first[0].signal_uuid]);
+    equal((await alerts()).map(row => row.signal_uuid), [first[0].signal_uuid, remaining[0].signal_uuid], mode + ': ready retry ordered by earliest expiry');
+    await db.query("UPDATE llm_prediction_jobs SET expires_at=statement_timestamp()+interval '20 seconds' WHERE signal_uuid=ANY($1::uuid[])", [[first[0].signal_uuid, remaining[0].signal_uuid]]);
+    equal((await alerts()).map(row => row.signal_uuid), [first[0].signal_uuid, remaining[0].signal_uuid], mode + ': equal expiry ordered by job ID');
+    await db.query("UPDATE llm_prediction_jobs SET expires_at=clock_timestamp() WHERE signal_uuid=$1", [first[0].signal_uuid]);
+    equal((await alerts()).map(row => row.signal_uuid), [remaining[0].signal_uuid], mode + ': expired retry excluded');
+    // Preserve an unclaimed older event for the persisted-policy assertion below.
+    await snapshot(20);
     await db.exec('UPDATE llm_consumer_state SET max_signal_age_seconds=2');
     equal(await poll(), [], mode + ': persisted smaller age policy wins');
     equal(await poll('missing'), [], mode + ': absent consumer fails closed');
@@ -89,11 +109,14 @@ for (const mode of ['bridge', 'greenfield', 'cutover-after-apply']) {
       CREATE OR REPLACE FUNCTION jev_in_session(p_now timestamptz)
       RETURNS boolean LANGUAGE sql IMMUTABLE SECURITY INVOKER AS $$ SELECT false $$;`);
     equal(await poll(), [], mode + ': session close fails closed');
+    equal(await alerts(), [], mode + ': alert recovery closed session');
     await db.exec('SET ROLE anon');
     await assert.rejects(poll(), /permission denied/); checks++;
+    await assert.rejects(alerts(), /permission denied/); checks++;
     await assert.rejects(db.query('SELECT read_jev_signal($1)', [remaining[0].signal_uuid]), /permission denied/); checks++;
     await db.exec('RESET ROLE; SET ROLE service_role');
     equal(await poll(), [], mode + ': service role may call bounded poll');
+    equal(await alerts(), [], mode + ': service role may call alert recovery');
   } finally {
     await db.close();
   }

@@ -54,6 +54,8 @@ def mock_supabase():
     def rpc(name, params):
         if name == "read_jev_signal":
             return mock.table().select().eq()
+        if name == "poll_jev_alert_jobs":
+            return mock.table().select().eq().eq().in_().limit()
         return mock.rpc.return_value
     mock.rpc.side_effect = rpc
     return mock
