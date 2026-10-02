@@ -18,10 +18,10 @@ python3 -m pytest tests/unit/test_task210*.py -q \
 | `__init__` | 2/2 | 0/0 |
 | `__main__` | 2/2 | 0/0 |
 | consumer | 239/239 | 44/44 |
-| context | 145/145 | 70/70 |
+| context | 146/146 | 70/70 |
 | Discord | 140/140 | 36/36 |
 | Jev | 63/63 | 4/4 |
-| **Total** | **591/591 (100%)** | **154/154 (100%)** |
+| **Total** | **592/592 (100%)** | **154/154 (100%)** |
 
 The measured prior baseline was 67 tests and approximately 79% combined line/branch coverage. This follow-up adds 137 cases. No `reports/qa/baseline.json` existed; comparison uses the preceding verified full-suite result of 923 tests and 10 subtests. [Coverage summary](TASK-210_coverage-summary.json) contains the exact machine-readable counts. GitHub CI now runs the same strict coverage command after its full regression test.
 

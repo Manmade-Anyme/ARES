@@ -3,8 +3,8 @@
   "command": "python3 -m pytest tests/unit/test_task210*.py -q --cov=system_one --cov-branch --cov-fail-under=100 --cov-report=json",
   "tests_passed": 204,
   "totals": {
-    "covered_lines": 591,
-    "num_statements": 591,
+    "covered_lines": 592,
+    "num_statements": 592,
     "percent_covered": 100.0,
     "percent_covered_display": "100",
     "missing_lines": 0,
@@ -84,8 +84,8 @@
     },
     "system_one/context.py": {
       "summary": {
-        "covered_lines": 145,
-        "num_statements": 145,
+        "covered_lines": 146,
+        "num_statements": 146,
         "percent_covered": 100.0,
         "percent_covered_display": "100",
         "missing_lines": 0,
