@@ -274,13 +274,12 @@ def _mark_sent(supabase: SupabaseClient, signal_uuid: str, token: str, message_i
 
 def _mark_retryable(supabase: SupabaseClient, signal_uuid: str, token: str, reason: str, backoff_s: float) -> None:
     try:
-        backoff_until = datetime.now(timezone.utc) + timedelta(seconds=backoff_s)
-        supabase.table("llm_prediction_jobs").update({
-            "alert_status": "RETRYABLE",
-            "alert_rejection_reason": reason,
-            "alert_backoff_until": backoff_until.isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("signal_uuid", signal_uuid).eq("alert_attempt_token", token).eq("alert_status", "SENDING").execute()
+        supabase.rpc("mark_jev_alert_retryable", {
+            "p_signal_uuid": signal_uuid,
+            "p_attempt_token": token,
+            "p_reason": reason,
+            "p_backoff_seconds": backoff_s,
+        }).execute()
     except Exception as exc:
         logger.error("Failed to mark RETRYABLE for %s: %s", signal_uuid, exc)
 

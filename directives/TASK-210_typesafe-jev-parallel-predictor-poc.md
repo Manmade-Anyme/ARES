@@ -45,6 +45,8 @@ The consumer polls for eligible signal-bound `ml_collection` rows at a short, me
 
 ## Live eligibility and restart contract
 
+- Convert Discord `retry_after` to a deadline inside `mark_jev_alert_retryable`, using database wall time after locking the matching SENDING attempt. Reject invalid delays and stale tokens; never persist a worker-clock retry deadline. Poll/process fresh signals before alert recovery and handle at most one saved delivery per loop, then return to signal polling.
+
 - Alert recovery uses `poll_jev_alert_jobs`, filtering database-time backoff, session, event freshness and eligible delivery status before its limit. Sort eligible work by expiry then job ID. Recovery selection does not authorize delivery: each attempt still needs a fresh acknowledged atomic send marker.
 
 - Poll through `poll_jev_signals`: use database wall time and the persisted age/cutoff policy to filter expired, future and blocked-job rows before limiting to ten distinct signals. Recover only matching uninvoked claims whose lease expired. Canonical UUID columns are resolved from the catalog for polling, signal reads and claims, supporting bridge/greenfield schemas and a later cutover without shared ML imports.

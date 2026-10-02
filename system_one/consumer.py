@@ -441,7 +441,8 @@ def _recover_pending_alerts(supabase: SupabaseClient) -> None:
     """Resume only unsent/proven-rejected deliveries using their saved predictions."""
     # Database time excludes backoff/expired rows before the bounded batch.
     jobs = supabase.rpc("poll_jev_alert_jobs", {"p_consumer_id": CONSUMER_ID}).execute().data
-    for job in jobs or []:
+    # One recovered delivery per loop prevents a ten-request retry drain.
+    for job in (jobs or [])[:1]:
         predictions = supabase.table("llm_predictions").select("*").eq(
             "id", job["prediction_id"]
         ).execute().data
@@ -491,7 +492,6 @@ def run() -> None:
                 continue
 
             _expire_stale_jobs(supabase)
-            _recover_pending_alerts(supabase)
 
             # Poll for eligible signals
             eligible = _poll_eligible_signals(supabase)
@@ -502,6 +502,9 @@ def run() -> None:
                 except Exception as exc:
                     logger.error("Unhandled error processing %s: %s",
                                snapshot.get("signal_uuid", "?")[:8], exc)
+
+            # Fresh inference takes priority; retry one saved delivery, then poll again.
+            _recover_pending_alerts(supabase)
 
         except KeyboardInterrupt:
             logger.info("Consumer stopped by user.")

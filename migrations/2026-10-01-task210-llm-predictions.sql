@@ -272,9 +272,32 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal, poll_jev_alert_jobs
+-- Convert Discord's relative retry interval to a deadline using DB time after
+-- acquiring ownership. Never accept a worker-generated wall-clock deadline.
+CREATE OR REPLACE FUNCTION mark_jev_alert_retryable(
+  p_signal_uuid uuid, p_attempt_token uuid, p_reason text, p_backoff_seconds double precision
+) RETURNS SETOF llm_prediction_jobs
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $$
+DECLARE v_job llm_prediction_jobs; v_now timestamptz;
+BEGIN
+  IF p_backoff_seconds IS NULL OR p_backoff_seconds < 0
+     OR p_backoff_seconds >= 'Infinity'::double precision THEN RETURN; END IF;
+  SELECT * INTO v_job FROM public.llm_prediction_jobs
+    WHERE signal_uuid = p_signal_uuid AND alert_attempt_token = p_attempt_token
+      AND alert_status = 'SENDING' FOR UPDATE;
+  IF NOT FOUND THEN RETURN; END IF;
+  v_now := clock_timestamp();
+  RETURN QUERY UPDATE public.llm_prediction_jobs SET
+    alert_status = 'RETRYABLE', alert_rejection_reason = p_reason,
+    alert_backoff_until = v_now + make_interval(secs => p_backoff_seconds), updated_at = v_now
+    WHERE id = v_job.id AND alert_attempt_token = p_attempt_token AND alert_status = 'SENDING'
+    RETURNING *;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal, poll_jev_alert_jobs, mark_jev_alert_retryable
   FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal, poll_jev_alert_jobs TO service_role;
+GRANT EXECUTE ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal, poll_jev_alert_jobs, mark_jev_alert_retryable TO service_role;
 
 -- Drop the earlier signature so PostgREST has one unambiguous RPC.
 DROP FUNCTION IF EXISTS claim_llm_prediction_job(uuid, uuid, integer, uuid, text, text, text, timestamptz, integer);

@@ -219,3 +219,12 @@ Updated external-boundary fixtures and added `tests/integration/task210_polling.
 `poll_jev_alert_jobs` filters future backoff, stale/future/pre-rollout events, session closure, missing persisted prediction and non-pending delivery state using database time before limiting to ten jobs. Eligible work is ordered by earliest expiry then job ID; ten jobs waiting on backoff cannot hide fresh pending alerts. A partial consumer/expiry/ID index supports this selection. The RPC is SECURITY INVOKER and executable only by service_role. Selection remains advisory: the existing final atomic send marker rechecks freshness, backoff and ownership before every transport attempt. Saved predictions are reused without another Jev call.
 
 Updated boundary fixtures and database contract cases cover backoff starvation, ordering, ready retry, expiry, session and permissions. No tests/CI were awaited for this push per the user's existing instruction; no new coverage claim, live migration or deployment was made.
+
+
+## Retry clock and scheduling review fixes (2026-10-03)
+
+Discord backoff persistence now sends a relative `retry_after` interval to `mark_jev_alert_retryable`. The RPC locks the matching SENDING attempt before reading database wall time, validates the interval, and atomically writes RETRYABLE/deadline/reason. Invalid intervals, obsolete tokens and already-transitioned attempts cannot update or renew the deadline. SECURITY INVOKER and service-role-only execution retain the existing delivery ownership boundary. Worker wall-clock offsets cannot schedule the retry early or late.
+
+The main loop now polls/processes fresh signals before recovering saved alerts. Recovery handles only the first eligible saved job in database expiry/ID order per loop, then returns to polling; it cannot drain ten serial Discord requests ahead of a new signal poll. The existing per-request timeout/freshness and final send marker still apply. This is a scheduling bound on recovery attempts, not a throughput or end-to-end latency guarantee under database/provider stalls.
+
+Added boundary cases for relative scheduling without reading the worker clock, single-job recovery, and fresh inference preceding slow recovery; extended SQL contracts for stale tokens, non-finite/negative intervals, database-relative deadlines, replay and RPC permissions. Syntax/diff checks only; tests/CI were not awaited per user instruction. No live migration, deployment, or new coverage claim was made.

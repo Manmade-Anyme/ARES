@@ -372,7 +372,7 @@ def test_loop_database_failure_is_logged_and_backed_off(live_loop, caplog):
         consumer.run()
     assert 'Consumer loop error' in caplog.text
     consumer.time.sleep.assert_called_once_with(consumer.POLL_INTERVAL)
-    live_loop.invoke.assert_not_called()
+    live_loop.invoke.assert_called_once()  # Fresh inference runs before delivery recovery fails.
 
 
 def test_interrupt_during_poll_stops_loop(live_loop):
@@ -424,3 +424,26 @@ def test_alert_recovery_uses_database_backoff_rpc_without_dispatch(flow, rows):
     flow.db.table.assert_not_called()
     flow.invoke.assert_not_called()
     flow.send.assert_not_called()
+
+
+def test_recovery_handles_only_one_saved_alert_per_loop(flow):
+    flow.rows['llm_prediction_jobs'] = [
+        {'id': i, 'signal_uuid': 'sig', 'prediction_id': 9} for i in range(10)]
+    consumer._recover_pending_alerts(flow.db)
+    flow.send.assert_called_once()
+    flow.invoke.assert_not_called()
+
+
+def test_fresh_inference_precedes_slow_recovery(live_loop, monkeypatch):
+    sequence = []
+    live_loop.invoke.side_effect = lambda *args, **kwargs: sequence.append('inference') or live_loop.result
+    def recover_send(*args, **kwargs):
+        sequence.append('recovered' if args else 'new')
+        live_loop.clock[0] += 10  # Slow recovered delivery consumes its timeout budget.
+        return 'SENT'
+    live_loop.send.side_effect = recover_send
+    live_loop.rows['llm_prediction_jobs'] = [
+        {'id': i, 'signal_uuid': 'sig', 'prediction_id': 9} for i in range(10)]
+    with pytest.raises(KeyboardInterrupt):
+        consumer.run()
+    assert sequence == ['inference', 'new', 'recovered']

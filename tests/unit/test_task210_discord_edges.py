@@ -18,6 +18,22 @@ class DeliveryDatabase:
         self.updates = []
         self.fail_writes = False
         self.rpc = MagicMock()
+        def rpc(name, params):
+            if name != "mark_jev_alert_retryable":
+                return self.rpc.return_value
+            def execute():
+                if self.fail_writes:
+                    raise ConnectionError("database acknowledgment unavailable")
+                if (self.row["signal_uuid"] != params["p_signal_uuid"] or
+                    self.row["alert_attempt_token"] != params["p_attempt_token"] or
+                    self.row["alert_status"] != "SENDING"):
+                    return SimpleNamespace(data=[])
+                # Simulate DB time at this external boundary, independently of worker time.
+                self.row.update(alert_status="RETRYABLE", alert_rejection_reason=params["p_reason"],
+                    updated_at=1000.0, alert_backoff_until=1000.0 + params["p_backoff_seconds"])
+                return SimpleNamespace(data=[dict(self.row)])
+            return SimpleNamespace(execute=execute)
+        self.rpc.side_effect = rpc
         self.rpc.return_value.execute.return_value.data = {
             "is_fresh": True, "remaining_seconds": 20,
             "alert_attempt_token": "attempt-1", "alert_payload": {"embeds": []},
@@ -229,3 +245,17 @@ def test_suppression_cannot_erase_terminal_delivery(status):
     database.row["alert_status"] = status
     discord._mark_suppressed(database, "signal-1", "expired")
     assert database.row["alert_status"] == status
+
+
+def test_retry_deadline_passes_relative_interval_without_reading_worker_clock(delivery, monkeypatch):
+    database, _, _ = delivery
+    worker_clock = MagicMock()
+    worker_clock.now.side_effect = AssertionError("retry scheduling must use database time")
+    monkeypatch.setattr(discord, "datetime", worker_clock)
+    discord._mark_retryable(database, "signal-1", "attempt-1", "rate limited", 7.5)
+    database.rpc.assert_called_once_with("mark_jev_alert_retryable", {
+        "p_signal_uuid": "signal-1", "p_attempt_token": "attempt-1",
+        "p_reason": "rate limited", "p_backoff_seconds": 7.5,
+    })
+    assert database.row["alert_backoff_until"] - database.row["updated_at"] == 7.5
+    worker_clock.now.assert_not_called()

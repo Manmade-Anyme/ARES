@@ -96,6 +96,20 @@ for (const mode of ['bridge', 'greenfield', 'cutover-after-apply']) {
     equal((await alerts()).map(row => row.signal_uuid), [first[0].signal_uuid, remaining[0].signal_uuid], mode + ': ready retry ordered by earliest expiry');
     await db.query("UPDATE llm_prediction_jobs SET expires_at=statement_timestamp()+interval '20 seconds' WHERE signal_uuid=ANY($1::uuid[])", [[first[0].signal_uuid, remaining[0].signal_uuid]]);
     equal((await alerts()).map(row => row.signal_uuid), [first[0].signal_uuid, remaining[0].signal_uuid], mode + ': equal expiry ordered by job ID');
+    const attempt = randomUUID();
+    await db.query("UPDATE llm_prediction_jobs SET alert_status='SENDING',alert_attempt_token=$2 WHERE signal_uuid=$1", [first[0].signal_uuid, attempt]);
+    const retry = async (token, seconds) => (await db.query(
+      "SELECT * FROM mark_jev_alert_retryable($1,$2,'rate limited',$3)",
+      [first[0].signal_uuid, token, seconds])).rows;
+    equal(await retry(randomUUID(), 3), [], mode + ': old retry owner rejected');
+    for (const invalid of [-1, 'NaN', 'Infinity', '-Infinity', null]) {
+      equal(await retry(attempt, invalid), [], mode + ': invalid relative retry delay rejected');
+    }
+    equal((await retry(attempt, 3)).length, 1, mode + ': owned rejection records retry');
+    equal((await db.query("SELECT extract(epoch FROM alert_backoff_until-updated_at)::float8 AS seconds FROM llm_prediction_jobs WHERE signal_uuid=$1", [first[0].signal_uuid])).rows[0].seconds,
+      3, mode + ': retry deadline is database timestamp plus interval');
+    equal(await retry(attempt, 3), [], mode + ': acknowledgment replay cannot extend backoff');
+    equal((await alerts()).map(row => row.signal_uuid), [remaining[0].signal_uuid], mode + ': future database retry deadline excluded');
     await db.query("UPDATE llm_prediction_jobs SET expires_at=clock_timestamp() WHERE signal_uuid=$1", [first[0].signal_uuid]);
     equal((await alerts()).map(row => row.signal_uuid), [remaining[0].signal_uuid], mode + ': expired retry excluded');
     // Preserve an unclaimed older event for the persisted-policy assertion below.
@@ -113,6 +127,7 @@ for (const mode of ['bridge', 'greenfield', 'cutover-after-apply']) {
     await db.exec('SET ROLE anon');
     await assert.rejects(poll(), /permission denied/); checks++;
     await assert.rejects(alerts(), /permission denied/); checks++;
+    await assert.rejects(retry(attempt, 3), /permission denied/); checks++;
     await assert.rejects(db.query('SELECT read_jev_signal($1)', [remaining[0].signal_uuid]), /permission denied/); checks++;
     await db.exec('RESET ROLE; SET ROLE service_role');
     equal(await poll(), [], mode + ': service role may call bounded poll');
