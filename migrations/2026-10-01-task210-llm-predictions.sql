@@ -1,10 +1,17 @@
 -- Migration: 2026-10-01-task210-llm-predictions.sql
 -- Description: Create tables for LLM predictions, consumer state, and prediction jobs.
+--
+-- Greenfield compatibility: This migration detects whether the TASK-150 UUID cutover
+-- has been applied (ares_signals.id exists) or the legacy schema is still active
+-- (ares_signals.signal_uuid exists), and adds FK constraints accordingly.
+-- The Jev consumer queries use signal_uuid column names on the internal tables
+-- regardless of mode because llm_predictions and llm_prediction_jobs own their
+-- own signal_uuid column (the FK target column name is separate from our column name).
 
 -- Table 1: llm_predictions
 CREATE TABLE IF NOT EXISTS llm_predictions (
   id bigserial PRIMARY KEY,
-  signal_uuid uuid NOT NULL UNIQUE REFERENCES ares_signals(signal_uuid),
+  signal_uuid uuid NOT NULL UNIQUE,
 
   -- Probability outputs (0-1 range)
   t1_hit_prob numeric NOT NULL CHECK (t1_hit_prob >= 0 AND t1_hit_prob <= 1),
@@ -68,7 +75,7 @@ CREATE TABLE IF NOT EXISTS llm_consumer_state (
 -- Table 3: llm_prediction_jobs
 CREATE TABLE IF NOT EXISTS llm_prediction_jobs (
   id bigserial PRIMARY KEY,
-  signal_uuid uuid NOT NULL UNIQUE REFERENCES ares_signals(signal_uuid),
+  signal_uuid uuid NOT NULL UNIQUE,
 
   -- Ownership
   consumer_id text NOT NULL REFERENCES llm_consumer_state(consumer_id),
@@ -422,3 +429,47 @@ REVOKE ALL ON FUNCTION jev_in_session, begin_llm_invocation,
 GRANT EXECUTE ON FUNCTION jev_in_session, begin_llm_invocation,
   check_jev_alert_freshness, begin_jev_alert_attempt, recover_llm_prediction_jobs,
   complete_llm_prediction_job, record_llm_prediction_latency TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- Greenfield-aware FK wiring
+-- Detects whether the TASK-150 UUID cutover has been applied and references
+-- the correct parent column (ares_signals.id vs ares_signals.signal_uuid).
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_parent_col text;
+BEGIN
+  -- Check which column exists on ares_signals after potential TASK-150 cutover
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'ares_signals' AND column_name = 'id'
+      AND data_type = 'uuid'
+  ) THEN
+    v_parent_col := 'id';  -- Greenfield: TASK-150 cutover applied
+  ELSE
+    v_parent_col := 'signal_uuid';  -- Legacy schema still active
+  END IF;
+
+  -- Wire FK on llm_predictions if not already present
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE constraint_name = 'llm_predictions_signal_uuid_fkey'
+  ) THEN
+    EXECUTE format(
+      'ALTER TABLE llm_predictions ADD CONSTRAINT llm_predictions_signal_uuid_fkey
+       FOREIGN KEY (signal_uuid) REFERENCES ares_signals(%I)', v_parent_col
+    );
+  END IF;
+
+  -- Wire FK on llm_prediction_jobs if not already present
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE constraint_name = 'llm_prediction_jobs_signal_uuid_fkey'
+  ) THEN
+    EXECUTE format(
+      'ALTER TABLE llm_prediction_jobs ADD CONSTRAINT llm_prediction_jobs_signal_uuid_fkey
+       FOREIGN KEY (signal_uuid) REFERENCES ares_signals(%I)', v_parent_col
+    );
+  END IF;
+END;
+$$;
