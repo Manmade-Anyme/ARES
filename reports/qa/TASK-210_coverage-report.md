@@ -1,7 +1,8 @@
 # TASK-210 coverage and latency verification
 
 **Date:** 2026-10-02 (Asia/Kolkata)
-**Scope:** Existing PR #122, complete `system_one` production Python package.
+**Scope:** Historical verified commit `0653005` of PR #122, complete `system_one` production Python package.
+**Later review fixes:** Polling/UUID changes were pushed without waiting for tests or CI, as requested. The counts below do not certify those later commits.
 **Result:** Local automated coverage and regression gates PASS. Independent read-only P1 lifecycle audit CLEAN; the auditor independently reran all 204 focused tests. The preceding latency change's independent final audit was unavailable because that agent hit its usage limit.
 
 ## Exact coverage

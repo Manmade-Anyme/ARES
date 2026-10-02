@@ -106,66 +106,23 @@ def _is_trading_session() -> bool:
 # ---------------------------------------------------------------------------
 # Signal polling
 # ---------------------------------------------------------------------------
-def _poll_eligible_signals(
-    supabase: SupabaseClient,
-    live_from: str,
-    max_age_seconds: int,
-) -> List[Dict[str, Any]]:
-    """Poll for signal-bound ml_collection rows eligible for Jev prediction.
+def _poll_eligible_signals(supabase: SupabaseClient) -> List[Dict[str, Any]]:
+    """Read at most ten fresh, unclaimed/recoverable snapshots using database time.
 
-    Eligibility requires:
-    - signal_uuid is not null (signal-bound snapshot)
-    - timestamp >= live_from (post-rollout)
-    - timestamp + max_age_seconds > database now() (not expired)
-    - No terminal/dispatched job; never-invoked claims remain recoverable
-    - Page past consumed snapshots before enforcing the ten-signal batch limit
-
-    Freshness and ownership are authoritatively checked by the claim RPC.
+    The RPC loads persisted rollout/age policy and filters expiry/job ownership
+    before LIMIT. It normalizes bridge/greenfield UUID columns to signal_uuid.
+    The atomic claim still rechecks freshness and ownership before dispatch.
     """
     try:
-        eligible = []
-        seen = set()
-        offset = 0
-        batch_size = 10
-        while len(eligible) < batch_size:
-            read_start = time.monotonic()
-            result = supabase.table("ml_collection").select(
-                "snapshot_uuid, signal_uuid, timestamp, spot, "
-                "candle_features, volume_features, iv_features, oi_features, "
-                "greek_features, structure_features, meta_features, "
-                "raw_candle, raw_atm_oi, oi_wall_context"
-            ).not_.is_("signal_uuid", "null").gte(
-                "timestamp", live_from
-            ).order("timestamp", desc=True).order(
-                "snapshot_uuid", desc=True
-            ).range(offset, offset + batch_size - 1).execute()
-            snapshot_read_ms = (time.monotonic() - read_start) * 1000
-            rows = result.data or []
-            if not rows:
-                break
-
-            signal_uuids = [r["signal_uuid"] for r in rows if r.get("signal_uuid")]
-            if signal_uuids:
-                existing = supabase.table("llm_prediction_jobs").select(
-                    "signal_uuid, status, invocation_started_at"
-                ).in_("signal_uuid", signal_uuids).execute()
-                # A never-invoked claim can be recovered by the claim RPC.
-                claimed = {r["signal_uuid"] for r in (existing.data or [])
-                           if r.get("status") != "CLAIMED" or r.get("invocation_started_at")}
-                for row in rows:
-                    signal_uuid = row.get("signal_uuid")
-                    if signal_uuid and signal_uuid not in claimed and signal_uuid not in seen:
-                        eligible.append(dict(row, _jev_snapshot_read_ms=snapshot_read_ms))
-                        seen.add(signal_uuid)
-                eligible = eligible[:batch_size]
-
-            # Count eligible signals, not snapshots already consumed. Equal
-            # timestamps have a UUID tie-breaker; deduplicate shifted offset pages.
-            if len(rows) < batch_size:
-                break
-            offset += batch_size
-
-        return eligible
+        read_start = time.monotonic()
+        result = supabase.rpc("poll_jev_signals", {
+            "p_consumer_id": CONSUMER_ID,
+            "p_context_version": CONTEXT_VERSION,
+            "p_question_version": QUESTION_VERSION,
+            "p_model_name": DEFAULT_MODEL,
+        }).execute()
+        snapshot_read_ms = (time.monotonic() - read_start) * 1000
+        return [dict(row, _jev_snapshot_read_ms=snapshot_read_ms) for row in (result.data or [])]
     except Exception as exc:
         logger.warning("Signal poll failed: %s", exc)
         return []
@@ -177,10 +134,7 @@ def _fetch_signal_row(
 ) -> Optional[Dict[str, Any]]:
     """Fetch the ares_signals row by signal_uuid."""
     try:
-        result = supabase.table("ares_signals").select(
-            "signal_uuid, setup_type, direction, trigger_price, spot_at_signal, "
-            "stop_loss, target_1, target_2, reasons, timestamp, confidence, display_id"
-        ).eq("signal_uuid", signal_uuid).execute()
+        result = supabase.rpc("read_jev_signal", {"p_signal_uuid": signal_uuid}).execute()
         return result.data[0] if result.data else None
     except Exception as exc:
         logger.warning("Failed to fetch signal %s: %s", signal_uuid, exc)
@@ -541,7 +495,7 @@ def run() -> None:
             _recover_pending_alerts(supabase)
 
             # Poll for eligible signals
-            eligible = _poll_eligible_signals(supabase, live_from, max_age)
+            eligible = _poll_eligible_signals(supabase)
 
             for snapshot in eligible:
                 try:

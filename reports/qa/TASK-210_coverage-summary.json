@@ -145,5 +145,7 @@
       "missing_branches": [],
       "excluded_lines": []
     }
-  }
+  },
+  "evidence_commit": "0653005c24a422678e3ebe7d5bdd76095f4735c5",
+  "later_changes_verified": false
 }

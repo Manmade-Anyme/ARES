@@ -41,6 +41,12 @@ def test_snapshot_query_is_measured_separately_from_signal_lookup(monkeypatch):
     def rpc(name, params):
         query = MagicMock()
         def execute():
+            if name == "poll_jev_signals":
+                clock[0] += 2
+                return SimpleNamespace(data=[snapshot])
+            if name == "read_jev_signal":
+                clock[0] += 3
+                return SimpleNamespace(data=[signal])
             if name == "complete_llm_prediction_job":
                 published.update(params["p_prediction"])
                 clock[0] += 7
@@ -60,7 +66,7 @@ def test_snapshot_query_is_measured_separately_from_signal_lookup(monkeypatch):
         return "SENT"
     monkeypatch.setattr(consumer, "invoke_jev", invoke)
     monkeypatch.setattr(consumer, "send_jev_followup", deliver)
-    polled = consumer._poll_eligible_signals(db, snapshot["timestamp"], 60)
+    polled = consumer._poll_eligible_signals(db)
     assert consumer.process_signal(db, polled[0]) == "COMPLETED"
     assert published["latency_snapshot_read_ms"] == 2000
     assert published["latency_signal_read_ms"] == 3000
@@ -114,6 +120,15 @@ def flow(monkeypatch):
         def execute():
             if name in state.rpc_errors:
                 raise state.rpc_errors[name]
+            source = {'poll_jev_signals': 'ml_collection', 'read_jev_signal': 'ares_signals'}.get(name)
+            if source:
+                if source in state.table_errors:
+                    raise state.table_errors[source]
+                clock[0] += state.costs.get(source, 0)
+                rows = state.rows.get(source, [])
+                if name == 'poll_jev_signals':
+                    rows = [row for row in rows if row.get('signal_uuid')]
+                return SimpleNamespace(data=rows)
             if name == 'complete_llm_prediction_job':
                 state.published.update(params['p_prediction'])
             if name == 'record_llm_prediction_latency':
@@ -136,13 +151,13 @@ def flow(monkeypatch):
 @pytest.mark.parametrize('rows', [[], [{'signal_uuid': None}]])
 def test_empty_or_unbound_poll_never_invokes(flow, rows):
     flow.rows['ml_collection'] = rows
-    assert consumer._poll_eligible_signals(flow.db, flow.snapshot['timestamp'], 60) == []
+    assert consumer._poll_eligible_signals(flow.db) == []
     flow.invoke.assert_not_called()
 
 
 def test_snapshot_read_failure_stops_poll_without_inference(flow, caplog):
     flow.table_errors['ml_collection'] = ConnectionError('snapshot unavailable')
-    assert consumer._poll_eligible_signals(flow.db, flow.snapshot['timestamp'], 60) == []
+    assert consumer._poll_eligible_signals(flow.db) == []
     assert 'snapshot unavailable' in caplog.text
     flow.invoke.assert_not_called()
 
@@ -383,67 +398,18 @@ def test_module_entrypoints_wait_at_closed_session(live_loop, monkeypatch, modul
     live_loop.invoke.assert_not_called()
 
 
-@pytest.mark.parametrize('scenario', ['eleven', 'twenty-five', 'empty', 'unbound', 'duplicates', 'full', 'failed-page'])
-def test_poll_pages_past_claimed_rows_before_eligible_limit(monkeypatch, scenario):
-    clock = [0.0]
-    monkeypatch.setattr(consumer.time, 'monotonic', lambda: clock[0])
-    rows = [{'signal_uuid': f'sig-{i}', 'snapshot_uuid': f'snap-{i}',
-             'timestamp': '2026-10-03T04:30:00Z'} for i in range(25)]
-    claimed = set()
-    if scenario == 'eleven':
-        rows = rows[:11]
-        claimed = {f'sig-{i}' for i in range(10)}
-        expected = ['sig-10']
-    elif scenario == 'twenty-five':
-        claimed = {f'sig-{i}' for i in range(20)}
-        expected = [f'sig-{i}' for i in range(20, 25)]
-    elif scenario == 'empty':
-        rows = rows[:10]
-        claimed = {f'sig-{i}' for i in range(10)}
-        expected = []
-    elif scenario == 'unbound':
-        rows = [dict(row, signal_uuid=None) for row in rows[:10]] + rows[10:11]
-        expected = ['sig-10']
-    elif scenario == 'duplicates':
-        rows = [rows[0]] * 10 + rows[1:3]
-        expected = ['sig-0', 'sig-1', 'sig-2']
-    elif scenario == 'full':
-        expected = [f'sig-{i}' for i in range(10)]
-    else:
-        claimed = {f'sig-{i}' for i in range(10)}
-        expected = []
+@pytest.mark.parametrize('rows', [None, [], [{'signal_uuid': 'fresh', 'snapshot_uuid': 'snap'}]])
+def test_poll_uses_database_policy_rpc_without_history_queries(monkeypatch, rows):
+    clock = iter([0.0, 2.0])
+    monkeypatch.setattr(consumer.time, 'monotonic', lambda: next(clock))
     db = MagicMock()
-    pages = []
-    def table(name):
-        query = MagicMock()
-        for method in ('select', 'is_', 'gte', 'order', 'in_'):
-            getattr(query, method).return_value = query
-        query.not_ = query
-        bounds = [0, 9]
-        def page(start, end):
-            bounds[:] = [start, end]
-            pages.append((start, end))
-            return query
-        query.range.side_effect = page
-        def execute():
-            if name == 'ml_collection':
-                if scenario == 'failed-page' and bounds[0] == 10:
-                    raise ConnectionError('next page failed')
-                clock[0] += 2
-                return SimpleNamespace(data=rows[bounds[0]:bounds[1] + 1])
-            clock[0] += 3
-            # Dispatched and terminal rows are excluded; never-invoked CLAIMED
-            # rows still reach the atomic recovery/ownership check.
-            return SimpleNamespace(data=[{'signal_uuid': uuid, 'status': 'COMPLETED'}
-                                         for uuid in claimed] +
-                [{'signal_uuid': 'sig-24', 'status': 'CLAIMED', 'invocation_started_at': None},
-                 {'signal_uuid': 'already-invoked', 'status': 'CLAIMED', 'invocation_started_at': 'now'}])
-        query.execute.side_effect = execute
-        return query
-    db.table.side_effect = table
-    result = consumer._poll_eligible_signals(db, rows[0]['timestamp'], 60)
-    assert [row['signal_uuid'] for row in result] == expected
-    assert all(row['_jev_snapshot_read_ms'] == 2000 for row in result)
-    assert pages == ([(0, 9)] if scenario == 'full' else
-                     [(0, 9), (10, 19), (20, 29)] if scenario == 'twenty-five' else
-                     [(0, 9), (10, 19)])
+    db.rpc.return_value.execute.return_value.data = rows
+    result = consumer._poll_eligible_signals(db)
+    assert result == [dict(row, _jev_snapshot_read_ms=2000) for row in (rows or [])]
+    db.rpc.assert_called_once_with('poll_jev_signals', {
+        'p_consumer_id': consumer.CONSUMER_ID,
+        'p_context_version': consumer.CONTEXT_VERSION,
+        'p_question_version': consumer.QUESTION_VERSION,
+        'p_model_name': consumer.DEFAULT_MODEL,
+    })
+    db.table.assert_not_called()

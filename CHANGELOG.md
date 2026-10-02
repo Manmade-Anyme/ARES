@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-210 expiry and UUID review:** Replace history pagination with one database-time RPC that filters saved rollout/age policy, expiry and blocked jobs before its ten-signal limit. Add a recent-snapshot index and normalize canonical UUID reads/claims across bridge, greenfield and later cutover schemas.
+
 - **TASK-210 polling review:** Paginate past claimed snapshots before enforcing the ten eligible-signal limit, with deterministic timestamp/UUID ordering and signal deduplication. Preserve per-page snapshot query timing and the authoritative claim-time freshness guard.
 
 - **TASK-210 Jev lifecycle P1:** Keep the Jev worker waiting between market sessions and restart its Machine independently with a process-scoped `always` policy. Preserve the trading Machine's `never` policy and cron schedule; document overnight costs and rollout verification. Add after-hours startup and next-session regression tests.

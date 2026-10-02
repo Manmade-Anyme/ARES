@@ -1,12 +1,9 @@
 -- Migration: 2026-10-01-task210-llm-predictions.sql
 -- Description: Create tables for LLM predictions, consumer state, and prediction jobs.
 --
--- Greenfield compatibility: This migration detects whether the TASK-150 UUID cutover
--- has been applied (ares_signals.id exists) or the legacy schema is still active
--- (ares_signals.signal_uuid exists), and adds FK constraints accordingly.
--- The Jev consumer queries use signal_uuid column names on the internal tables
--- regardless of mode because llm_predictions and llm_prediction_jobs own their
--- own signal_uuid column (the FK target column name is separate from our column name).
+-- Resolve canonical UUID columns from the database catalog on each read/claim.
+-- This supports bridge and greenfield schemas, including a cutover after TASK-210.
+-- Internal prediction/job signal_uuid columns keep their stable names.
 
 -- Table 1: llm_predictions
 CREATE TABLE IF NOT EXISTS llm_predictions (
@@ -171,6 +168,90 @@ AS $$
      AND (p_now AT TIME ZONE 'Asia/Kolkata')::time < time '15:30';
 $$;
 
+-- Only canonical UUID columns are permitted; never join a legacy bigint ID.
+CREATE OR REPLACE FUNCTION jev_signal_uuid_column(p_table_name text)
+RETURNS text LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $$
+DECLARE v_column text;
+BEGIN
+  SELECT a.attname INTO v_column
+  FROM pg_catalog.pg_attribute a
+  JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public' AND c.relname = p_table_name
+    AND a.attnum > 0 AND NOT a.attisdropped AND a.atttypid = 'uuid'::regtype
+    AND ((p_table_name = 'ares_signals' AND a.attname IN ('signal_uuid', 'id'))
+      OR (p_table_name = 'ml_collection' AND a.attname IN ('signal_uuid', 'signal_id')))
+  ORDER BY CASE WHEN a.attname = 'signal_uuid' THEN 0 ELSE 1 END
+  LIMIT 1;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Missing canonical signal UUID column on %', p_table_name;
+  END IF;
+  RETURN v_column;
+END;
+$$;
+
+-- Support an indexed scan of only recent signal-bound snapshots. PostgreSQL
+-- retains the index's column identity through the UUID cutover rename.
+DO $$
+BEGIN
+  EXECUTE format('CREATE INDEX IF NOT EXISTS idx_ml_collection_jev_recent
+    ON public.ml_collection (timestamp DESC, snapshot_uuid DESC) WHERE %I IS NOT NULL',
+    jev_signal_uuid_column('ml_collection'));
+END;
+$$;
+
+-- Filter by persisted rollout/age policy and job ownership BEFORE LIMIT.
+-- A single bounded result replaces client-side full-history pagination.
+CREATE OR REPLACE FUNCTION poll_jev_signals(
+  p_consumer_id text, p_context_version text, p_question_version text, p_model_name text
+) RETURNS SETOF jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $$
+DECLARE v_state llm_consumer_state; v_now timestamptz; v_signal_column text;
+BEGIN
+  SELECT * INTO v_state FROM llm_consumer_state WHERE consumer_id = p_consumer_id;
+  IF NOT FOUND OR v_state.max_signal_age_seconds <= 0 THEN RETURN; END IF;
+  v_now := clock_timestamp();
+  IF NOT jev_in_session(v_now) THEN RETURN; END IF;
+  v_signal_column := jev_signal_uuid_column('ml_collection');
+  RETURN QUERY EXECUTE format($query$
+    SELECT candidates.snapshot FROM (
+    SELECT DISTINCT ON (m.%1$I)
+      to_jsonb(m) || jsonb_build_object('signal_uuid', m.%1$I) AS snapshot,
+      m.timestamp, m.snapshot_uuid
+    FROM public.ml_collection m
+    LEFT JOIN public.llm_prediction_jobs j ON j.signal_uuid = m.%1$I
+    WHERE m.%1$I IS NOT NULL AND m.timestamp >= $1
+      AND m.timestamp <= $2 AND m.timestamp > $3
+      AND (j.id IS NULL OR (
+        j.consumer_id = $4 AND j.status = 'CLAIMED'
+        AND j.invocation_started_at IS NULL AND j.lease_expires_at <= $2
+        AND j.expires_at > $2 AND j.snapshot_uuid = m.snapshot_uuid
+        AND j.event_at = m.timestamp AND j.context_version = $5
+        AND j.question_version = $6 AND j.model_name = $7
+      ))
+    ORDER BY m.%1$I, m.timestamp DESC, m.snapshot_uuid DESC
+    ) candidates ORDER BY candidates.timestamp DESC, candidates.snapshot_uuid DESC
+    LIMIT 10
+  $query$, v_signal_column)
+  USING v_state.live_from, v_now,
+    v_now - make_interval(secs => v_state.max_signal_age_seconds),
+    p_consumer_id, p_context_version, p_question_version, p_model_name;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION read_jev_signal(p_signal_uuid uuid)
+RETURNS SETOF jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $$
+BEGIN
+  RETURN QUERY EXECUTE format(
+    'SELECT to_jsonb(s) || jsonb_build_object(''signal_uuid'', s.%1$I)
+     FROM public.ares_signals s WHERE s.%1$I = $1',
+    jev_signal_uuid_column('ares_signals')) USING p_signal_uuid;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION jev_signal_uuid_column, poll_jev_signals, read_jev_signal TO service_role;
+
 -- Drop the earlier signature so PostgREST has one unambiguous RPC.
 DROP FUNCTION IF EXISTS claim_llm_prediction_job(uuid, uuid, integer, uuid, text, text, text, timestamptz, integer);
 CREATE OR REPLACE FUNCTION claim_llm_prediction_job(
@@ -201,9 +282,10 @@ BEGIN
   v_now := clock_timestamp();
   SELECT * INTO v_state FROM llm_consumer_state WHERE consumer_id = p_consumer_id;
   IF NOT FOUND OR v_state.max_signal_age_seconds <= 0 OR p_lease_seconds <= 0 THEN RETURN; END IF;
-  SELECT timestamp INTO v_event_at FROM ml_collection
-    WHERE snapshot_uuid = p_snapshot_uuid AND signal_uuid = p_signal_uuid;
-  IF NOT FOUND OR v_event_at IS NULL OR v_event_at IS DISTINCT FROM p_event_at THEN RETURN; END IF;
+  EXECUTE format('SELECT timestamp FROM public.ml_collection
+    WHERE snapshot_uuid = $1 AND %I = $2', jev_signal_uuid_column('ml_collection'))
+    INTO v_event_at USING p_snapshot_uuid, p_signal_uuid;
+  IF v_event_at IS NULL OR v_event_at IS DISTINCT FROM p_event_at THEN RETURN; END IF;
   -- The persisted policy wins over the caller's environment setting.
   v_expires_at := v_event_at + make_interval(secs => v_state.max_signal_age_seconds);
   IF v_event_at < v_state.live_from OR v_event_at > v_now OR v_now >= v_expires_at
@@ -439,21 +521,13 @@ DO $$
 DECLARE
   v_parent_col text;
 BEGIN
-  -- Check which column exists on ares_signals after potential TASK-150 cutover
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'ares_signals' AND column_name = 'id'
-      AND data_type = 'uuid'
-  ) THEN
-    v_parent_col := 'id';  -- Greenfield: TASK-150 cutover applied
-  ELSE
-    v_parent_col := 'signal_uuid';  -- Legacy schema still active
-  END IF;
+  v_parent_col := jev_signal_uuid_column('ares_signals');
 
   -- Wire FK on llm_predictions if not already present
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.table_constraints
-    WHERE constraint_name = 'llm_predictions_signal_uuid_fkey'
+    WHERE table_schema = 'public' AND table_name = 'llm_predictions'
+      AND constraint_name = 'llm_predictions_signal_uuid_fkey'
   ) THEN
     EXECUTE format(
       'ALTER TABLE llm_predictions ADD CONSTRAINT llm_predictions_signal_uuid_fkey
@@ -464,7 +538,8 @@ BEGIN
   -- Wire FK on llm_prediction_jobs if not already present
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.table_constraints
-    WHERE constraint_name = 'llm_prediction_jobs_signal_uuid_fkey'
+    WHERE table_schema = 'public' AND table_name = 'llm_prediction_jobs'
+      AND constraint_name = 'llm_prediction_jobs_signal_uuid_fkey'
   ) THEN
     EXECUTE format(
       'ALTER TABLE llm_prediction_jobs ADD CONSTRAINT llm_prediction_jobs_signal_uuid_fkey

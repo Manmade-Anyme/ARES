@@ -203,3 +203,12 @@ Five selected lifecycle regressions failed before the implementation change. The
 ## Polling review fix (2026-10-03)
 
 The worker pages past consumed snapshots before limiting the batch to ten eligible signals, so a burst of eleven signals cannot strand the oldest behind ten already-claimed rows. Each page is ordered by timestamp and snapshot UUID, deduplicated by signal UUID, and carries its own measured snapshot-query duration. A never-invoked claim remains eligible for the existing authoritative database claim/recovery gate. Freshness, rollout cutoff, invocation ownership, and delivery guards are unchanged. Tests/CI are not awaited for this push, as requested; earlier coverage numbers are historical evidence and do not certify this revision.
+
+
+## Database expiry and UUID review fixes (2026-10-03)
+
+`poll_jev_signals` replaces client history pagination with one bounded response. It uses database wall time and the persisted consumer policy, excluding expired, pre-rollout, future, and blocked-job rows before returning up to ten distinct signals. Only uninvoked, expired-lease claims matching consumer/snapshot/event/model/context may reappear; the atomic claim still rechecks ownership and freshness. An indexed recent-snapshot scan supports the time predicate. Snapshot latency now measures this actual polling RPC, separately from the canonical signal-read RPC.
+
+Polling, signal reads, claim lookup and FK wiring resolve canonical UUID columns from the database catalog, preferring bridge `signal_uuid`, otherwise greenfield `ares_signals.id` / `ml_collection.signal_id`; numeric legacy IDs are never used. Dynamic identifier quoting and bound values keep query construction constrained. Resolution on each operation also supports a cutover after this migration was installed. New RPCs use SECURITY INVOKER and grant execution only to service_role. The worker remains independent of the main/ML Python modules.
+
+Updated external-boundary fixtures and added `tests/integration/task210_polling.mjs` for expired history, the eleven-signal burst, persisted age policy, job recovery, permissions, both initial schema layouts, and cutover after installation. No tests or CI were awaited for this push, per user instruction. The prior coverage report is historical evidence, not a claim for this revision. The migration remains the initial unmerged schema; a previously applied version requires a separate reviewed upgrade. No live database or deployment was changed.

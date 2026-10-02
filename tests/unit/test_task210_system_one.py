@@ -51,6 +51,11 @@ def base_snapshot_row():
 @pytest.fixture
 def mock_supabase():
     mock = MagicMock()
+    def rpc(name, params):
+        if name == "read_jev_signal":
+            return mock.table().select().eq()
+        return mock.rpc.return_value
+    mock.rpc.side_effect = rpc
     return mock
 
 
@@ -362,16 +367,14 @@ def test_session_hours(mock_datetime):
     assert _is_trading_session() is False
 
 def test_poll_eligible_signals(mock_supabase):
-    mock_supabase.table().select().not_.is_().gte().order().order().range().execute.return_value.data = [
-        {"signal_uuid": "sig-1", "timestamp": "2026-10-01"},
-        {"signal_uuid": "sig-2", "timestamp": "2026-10-01"}
-    ]
-    # sig-1 already has job
-    mock_supabase.table().select().in_().execute.return_value.data = [{"signal_uuid": "sig-1"}]
-    
-    eligible = _poll_eligible_signals(mock_supabase, "2026-01-01", 60)
+    # Job exclusion and database-time expiry are SQL contract tests; the worker
+    # receives only the normalized, bounded RPC result.
+    mock_supabase.rpc.return_value.execute.return_value.data = [
+        {"signal_uuid": "sig-2", "timestamp": "2026-10-01"}]
+    eligible = _poll_eligible_signals(mock_supabase)
     assert len(eligible) == 1
     assert eligible[0]["signal_uuid"] == "sig-2"
+    mock_supabase.table.assert_not_called()
 
 @patch('system_one.consumer.invoke_jev')
 @patch('system_one.consumer.send_jev_followup')
@@ -426,6 +429,8 @@ def test_expired_before_dispatch_never_calls_jev(mock_invoke, mock_supabase, bas
     mock_supabase.table().select().eq().execute.return_value.data = [base_signal_row]
     mock_supabase.table().select().eq().limit().execute.return_value.data = []
     def rpc(name, params):
+        if name == "read_jev_signal":
+            return rpc_result([base_signal_row])
         query = MagicMock()
         query.execute.return_value.data = (
             [{"owner_token": "owner", "id": 1}] if name == "claim_llm_prediction_job" else []
@@ -543,6 +548,8 @@ def test_prediction_persistence_failure_cannot_send_alert(mock_invoke, mock_send
     mock_supabase.table().select().eq().limit().execute.return_value.data = []
     mock_supabase.rpc.return_value.execute.return_value.data = [claimed_invocation()]
     def rpc(name, params):
+        if name == "read_jev_signal":
+            return rpc_result([base_signal_row])
         if name == "complete_llm_prediction_job":
             raise ConnectionError("database unavailable")
         return rpc_result([claimed_invocation()])
@@ -596,6 +603,8 @@ def test_slow_invocation_ack_cannot_start_stale_inference(mock_invoke, mock_supa
     mock_supabase.table().select().eq().execute.return_value.data = [base_signal_row]
     mock_supabase.table().select().eq().limit().execute.return_value.data = []
     def rpc(name, params):
+        if name == "read_jev_signal":
+            return rpc_result([base_signal_row])
         job = claimed_invocation()
         if name == "begin_llm_invocation":
             job["invocation_dispatch_deadline_at"] = "2026-10-01T04:30:01Z"
