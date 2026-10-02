@@ -496,6 +496,8 @@ ARES is fully containerized with Docker and configured for **Fly.io**:
    The `app` process uses `SUPABASE_KEY`. The separate `jev` process requires `SUPABASE_SERVICE_ROLE_KEY` for its RLS-protected prediction tables and lifecycle RPCs, plus `TYPESAFE_API_KEY` for hosted inference. It does not fall back to `SUPABASE_KEY`, which may be an anon key. Keep the service-role key in backend environment secrets; the placeholders are also in `.env.example` for local use.
 
    Before deploying the `jev` process group, apply the reviewed initial migration `migrations/2026-10-01-task210-llm-predictions.sql` to the intended Supabase database and provision these secrets. An already deployed earlier TASK-210 schema requires a separate upgrade. Both process groups share the existing Fly app; the Jev Machine uses its own memory allocation and posts a follow-up through `DISCORD_WEBHOOK_URL`.
+
+   Jev's 256 MB Machine remains running between sessions and waits outside 09:15–15:30 IST, resuming with its persisted cutoff at the next session. Its restart policy is `always`; the trading Machine's policy remains `never`. Overnight/non-trading-day running charges apply. Keep the existing start/stop cron scoped to the trading Machine, and verify Jev is running after rollout; see [lifecycle and scheduled execution](DEPLOYMENT.md#4-scaling-lifecycle--scheduled-execution).
 2. **Automated CI/CD:** Push to `main` triggers `.github/workflows/deploy.yml` to run unit tests and execute `fly deploy`.
 3. **Automated ML Retraining:** `.github/workflows/ml_training.yml` runs every Saturday at 00:00 UTC (05:30 IST), training XGBoost on `ml_collection` and attaching reports/artifacts to the run.
 

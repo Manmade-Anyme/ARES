@@ -519,16 +519,12 @@ def run() -> None:
 
     while True:
         try:
-            _expire_stale_jobs(supabase)
             if not _is_trading_session():
-                # Outside trading hours: check less frequently
-                now_ist = datetime.now(IST)
-                if (now_ist.hour, now_ist.minute) >= (SESSION_END_HOUR, SESSION_END_MINUTE):
-                    logger.info("Session ended. Shutting down.")
-                    break
+                # Keep this Machine ready for the next session without DB/API polling.
                 time.sleep(30)
                 continue
 
+            _expire_stale_jobs(supabase)
             _recover_pending_alerts(supabase)
 
             # Poll for eligible signals

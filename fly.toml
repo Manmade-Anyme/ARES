@@ -36,3 +36,9 @@ primary_region = 'bom'
 
 [[restart]]
   policy = 'never'
+  processes = ['app']
+
+# Jev waits between sessions; restart it independently after process/host exits.
+[[restart]]
+  policy = 'always'
+  processes = ['jev']

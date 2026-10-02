@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-210 Jev lifecycle P1:** Keep the Jev worker waiting between market sessions and restart its Machine independently with a process-scoped `always` policy. Preserve the trading Machine's `never` policy and cron schedule; document overnight costs and rollout verification. Add after-hours startup and next-session regression tests.
+
 - **TASK-210 latency and QA review:** Measure the actual snapshot query separately from signal lookup; finalize event-to-alert latency only after acknowledged persistence and confirmed delivery, including restart recovery. Add stage metrics and preserve unknown delivery as null total latency. Expand failure/startup tests to 100% System One line and branch coverage and enforce that threshold in CI.
 
 - **TASK-210 additional PR review:** Derive structural runway from the collector’s saved distance fields, using snapshot spot and trade entry (context v1.2). Document required Jev service-role/TypeSafe secrets for Fly and local startup. Separate definite Jev rejections (`FAILED`) from uncertain requests (`UNKNOWN`) without automatic retries.

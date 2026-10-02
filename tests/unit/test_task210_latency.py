@@ -253,9 +253,10 @@ def test_restart_delivery_records_end_to_end_without_reinvocation(flow):
 
 class SessionClock(datetime):
     hour = 10
+    day = 2
     @classmethod
     def now(cls, tz=None):
-        return datetime(2026, 10, 2, cls.hour, 35, tzinfo=tz or timezone.utc)
+        return datetime(2026, 10, cls.day, cls.hour, 35, tzinfo=tz or timezone.utc)
 
 
 @pytest.fixture
@@ -268,6 +269,7 @@ def live_loop(flow, monkeypatch):
     monkeypatch.setattr(consumer, 'datetime', SessionClock)
     monkeypatch.setattr(consumer.time, 'sleep', MagicMock(side_effect=KeyboardInterrupt))
     SessionClock.hour = 10
+    SessionClock.day = 2
     return flow
 
 
@@ -278,19 +280,24 @@ def test_worker_before_open_sleeps_then_honors_interrupt(live_loop):
     live_loop.invoke.assert_not_called()
 
 
-def test_worker_after_close_stops_without_dispatch(live_loop):
+def test_worker_after_close_waits_without_dispatch_or_database_polling(live_loop):
     SessionClock.hour = 16
     consumer.run()
-    consumer.time.sleep.assert_not_called()
+    consumer.time.sleep.assert_called_once_with(30)
     live_loop.invoke.assert_not_called()
+    live_loop.db.rpc.assert_not_called()
+    assert [call.args[0] for call in live_loop.db.table.call_args_list] == ['llm_consumer_state']
 
 
-def test_worker_resumes_when_session_opens(live_loop, monkeypatch):
-    SessionClock.hour = 8
+@pytest.mark.parametrize('start_hour', [8, 16])
+def test_worker_resumes_when_session_opens(live_loop, monkeypatch, start_hour):
+    SessionClock.hour = start_hour
     sleeps = []
     def sleep(seconds):
         sleeps.append(seconds)
         if len(sleeps) == 1:
+            if start_hour == 16:
+                SessionClock.day = 5  # Next business session after Friday close.
             SessionClock.hour = 10
             return
         raise KeyboardInterrupt
@@ -299,6 +306,32 @@ def test_worker_resumes_when_session_opens(live_loop, monkeypatch):
         consumer.run()
     assert sleeps == [30, consumer.POLL_INTERVAL]
     live_loop.invoke.assert_called_once()
+
+
+def test_running_worker_predicts_across_session_close_without_rebootstrap(live_loop, monkeypatch):
+    sleeps = []
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 1:
+            live_loop.invoke.assert_called_once()
+            SessionClock.hour = 16
+        elif len(sleeps) == 2:
+            live_loop.invoke.assert_called_once()  # No inference or delivery overnight.
+            live_loop.send.assert_called_once()
+            SessionClock.day = 5
+            SessionClock.hour = 10
+            live_loop.snapshot.update(signal_uuid='next-session', timestamp='2026-10-05T04:30:00Z')
+            live_loop.signal['signal_uuid'] = 'next-session'
+        else:
+            raise KeyboardInterrupt
+    monkeypatch.setattr(consumer.time, 'sleep', sleep)
+    with pytest.raises(KeyboardInterrupt):
+        consumer.run()
+    assert sleeps == [consumer.POLL_INTERVAL, 30, consumer.POLL_INTERVAL]
+    assert live_loop.invoke.call_count == live_loop.send.call_count == 2
+    assert [call.kwargs['signal_uuid'] for call in live_loop.send.call_args_list] == ['sig', 'next-session']
+    assert sum(call.args[0] == 'llm_consumer_state' for call in live_loop.db.table.call_args_list) == 1
+    assert sum(call.args[0] == 'recover_llm_prediction_jobs' for call in live_loop.db.rpc.call_args_list) == 2
 
 
 def test_one_bad_signal_cannot_stop_worker_processing_next_signal(live_loop, caplog):
@@ -340,11 +373,11 @@ def test_empty_bootstrap_fails_before_polling(live_loop):
 
 
 @pytest.mark.parametrize('module', ['system_one', 'system_one.consumer'])
-def test_module_entrypoints_stop_at_closed_session(live_loop, monkeypatch, module):
+def test_module_entrypoints_wait_at_closed_session(live_loop, monkeypatch, module):
     import datetime as datetime_module
     SessionClock.hour = 16
     monkeypatch.setattr(datetime_module, 'datetime', SessionClock)
     with pytest.warns(RuntimeWarning) if module.endswith('.consumer') else nullcontext():
         runpy.run_module(module, run_name='__main__')
-    consumer.time.sleep.assert_not_called()
+    consumer.time.sleep.assert_called_once_with(30)
     live_loop.invoke.assert_not_called()

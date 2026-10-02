@@ -269,8 +269,20 @@ def build_context(
             "pe_oi": _safe_int(pe.get("oi")),
         }
 
+    # Explicit Data Dictionary to prevent LLM hallucination on custom metrics
+    feature_definitions = {
+        "vol_slope_5": "Linear regression slope of volume over the last 5 bars. Positive means volume is expanding.",
+        "vol_ratio_20bar": "Current volume divided by the 20-bar moving average volume.",
+        "pcr_oi": "Put-Call Ratio based on Open Interest. Higher values indicate more puts (often bearish sentiment).",
+        "open_close_spread": "Distance between the open and close of the candle, normalized.",
+        "dist_nearest_level_pct": "Distance to the nearest structural support/resistance level in percentage terms.",
+        "avg_wall_distance_pct": "Average distance to massive OI walls in percentage terms.",
+        "is_green": "True if candle close >= open (Bullish candle)."
+    }
+
     # Assemble full context
     context: Dict[str, Any] = {
+        "feature_definitions": feature_definitions,
         "signal": signal_ctx,
         "candle": candle_ctx,
         "volume": volume_ctx,

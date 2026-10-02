@@ -138,21 +138,28 @@ You should see something like:
 
 ## 4. Scaling, Lifecycle & Scheduled Execution
 
-The system is configured to run strictly during NSE Market Hours (09:15 to 15:30 IST). To minimize costs and ensure reliable starts/stops, we use an external precision scheduling service (specifically [cron-job.com](https://cron-job.com)) targeting the Fly.io Machines API.
+The trading `app` process is configured to run during NSE Market Hours (09:15 to 15:30 IST). To minimize trading Machine costs and ensure reliable starts/stops, we use an external precision scheduling service (specifically [cron-job.com](https://cron-job.com)) targeting that Machine's Fly.io Machines API.
+
+The independent `jev` process has its own lifecycle in the same Fly app: its 256 MB Machine stays running between sessions, waiting 30 seconds between clock checks outside 09:15–15:30 IST. After startup loads its persisted rollout state, it performs no database polling, Jev requests, or Discord delivery outside this window. At the next session it resumes normal polling and database recovery with the same cutoff and freshness guards. An after-hours start waits for the next session instead of exiting.
+
+`fly.toml` scopes `policy = 'never'` to `app` and `policy = 'always'` to `jev`. Jev therefore restarts independently after a process exit or host restart; the trading Machine retains its scheduled shutdown behavior. These are [Fly process-specific restart policies](https://docs.fly.io/reference/configuration#the-restart-section). Keeping Jev ready incurs running-Machine charges overnight and on non-trading days; no daily Jev cron is required.
 
 ### 4.1 Automated Lifecycle Flow
 1. **Auto Start (09:10 IST):** Triggered via a `POST` request from `cron-job.com` to the Fly Machines `/start` API.
 2. **Graceful Exit (15:30 IST):** The ARES engine (`main.py`) monitors the time and breaks the execution loop at 15:30 IST. The process exits normally, which powers down the Fly Machine.
 3. **Auto Stop Safety Backup (15:35 IST):** A secondary `POST` request from `cron-job.com` to the Fly Machines `/stop` API acts as a backup shutdown trigger (does not delete the machine).
 
+Both scheduled requests must target only the `app` Machine ID. After the reviewed deployment, use `fly machine list -a ares-xzy-gq` and `fly machine status <MACHINE_ID> -d -a ares-xzy-gq` to verify each Machine's process group, memory, and restart policy. Confirm the Jev Machine is running. If it was explicitly stopped, start it once with `fly machine start <JEV_MACHINE_ID> -a ares-xzy-gq`; an explicit API/CLI stop is an operational stop, not a promise of automatic restart. Do not add Jev's ID to the 15:35 stop cron. These checks are rollout instructions, not a deployment performed by this PR.
+
 ### 4.2 Step-by-Step Setup Guide
 
 #### Step 1: Retrieve App & Machine Details
-Find your Machine ID and verify your App Name by running:
+Find your trading `app` Machine ID and verify your App Name by running:
 ```bash
 fly machine list
 ```
 *Note: Your app name is `ares-xzy-gq`.*
+Use this `app` Machine ID for `<YOUR_MACHINE_ID>` in both cron jobs below; the separate `jev` Machine remains running independently.
 
 #### Step 2: Generate Fly API Deploy Token
 Generate a scoped token for authorization:
