@@ -33,9 +33,13 @@ CREATE TABLE IF NOT EXISTS llm_predictions (
 
   -- Latency tracking (milliseconds)
   latency_snapshot_read_ms numeric,
+  latency_signal_read_ms numeric,
   latency_context_build_ms numeric,
   latency_typesafe_ms numeric,
-  latency_total_ms numeric,
+  latency_persistence_ms numeric,
+  latency_delivery_ms numeric,
+  latency_signal_to_prediction_ms numeric,
+  latency_total_ms numeric,  -- event to confirmed-delivery finalization; NULL if unconfirmed
 
   -- Timestamps
   signal_timestamp timestamptz NOT NULL,  -- event_at from ml_collection.timestamp
@@ -369,7 +373,8 @@ BEGIN
     signal_uuid, t1_hit_prob, t2_hit_prob, sl_hit_prob, regime, regime_distribution,
     regime_confidence, setup_quality, is_trap_prob, engine_name, context_version,
     question_version, snapshot_uuid, invocation_token, input_state, raw_response,
-    latency_snapshot_read_ms, latency_context_build_ms, latency_typesafe_ms, latency_total_ms,
+    latency_snapshot_read_ms, latency_signal_read_ms, latency_context_build_ms, latency_typesafe_ms,
+    latency_signal_to_prediction_ms,
     signal_timestamp, invocation_started_at, response_received_at
   ) VALUES (
     p_signal_uuid, v_prediction.t1_hit_prob, v_prediction.t2_hit_prob, v_prediction.sl_hit_prob,
@@ -377,7 +382,8 @@ BEGIN
     v_prediction.setup_quality, v_prediction.is_trap_prob, v_prediction.engine_name,
     v_job.context_version, v_job.question_version, v_job.snapshot_uuid, p_invocation_token,
     v_prediction.input_state, v_prediction.raw_response, v_prediction.latency_snapshot_read_ms,
-    v_prediction.latency_context_build_ms, v_prediction.latency_typesafe_ms, v_prediction.latency_total_ms,
+    v_prediction.latency_signal_read_ms, v_prediction.latency_context_build_ms, v_prediction.latency_typesafe_ms,
+    extract(epoch FROM clock_timestamp() - v_job.event_at) * 1000,
     v_job.event_at, v_job.invocation_started_at, v_prediction.response_received_at
   ) RETURNING * INTO v_prediction;
   UPDATE llm_prediction_jobs SET status = 'COMPLETED', prediction_id = v_prediction.id,
@@ -386,9 +392,33 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION record_llm_prediction_latency(
+  p_signal_uuid uuid, p_prediction_id bigint,
+  p_persistence_ms numeric, p_delivery_ms numeric, p_confirmed_sent boolean
+) RETURNS SETOF llm_predictions
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $$
+DECLARE v_job llm_prediction_jobs; v_finished_at timestamptz;
+BEGIN
+  SELECT * INTO v_job FROM llm_prediction_jobs WHERE signal_uuid = p_signal_uuid FOR UPDATE;
+  IF NOT FOUND OR v_job.status <> 'COMPLETED' OR v_job.prediction_id IS DISTINCT FROM p_prediction_id
+     OR p_persistence_ms < 0 OR p_delivery_ms < 0 THEN RETURN; END IF;
+  v_finished_at := clock_timestamp();
+  -- Invoked only after the observer has received persistence and send/status
+  -- acknowledgments. Database event age includes write/queue/restart delay.
+  -- Pin a confirmed sample once; recording/recovery never resets delivery.
+  RETURN QUERY UPDATE llm_predictions p SET
+    latency_persistence_ms = coalesce(p.latency_persistence_ms, p_persistence_ms),
+    latency_delivery_ms = CASE WHEN p.latency_total_ms IS NULL THEN p_delivery_ms ELSE p.latency_delivery_ms END,
+    latency_total_ms = CASE WHEN p_confirmed_sent AND v_job.alert_status = 'SENT' THEN
+      coalesce(p.latency_total_ms, extract(epoch FROM v_finished_at - v_job.event_at) * 1000)
+      ELSE p.latency_total_ms END
+    WHERE p.id = p_prediction_id AND p.signal_uuid = p_signal_uuid RETURNING p.*;
+END;
+$$;
+
 REVOKE ALL ON FUNCTION jev_in_session, begin_llm_invocation,
   check_jev_alert_freshness, begin_jev_alert_attempt, recover_llm_prediction_jobs,
-  complete_llm_prediction_job FROM PUBLIC, anon, authenticated;
+  complete_llm_prediction_job, record_llm_prediction_latency FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION jev_in_session, begin_llm_invocation,
   check_jev_alert_freshness, begin_jev_alert_attempt, recover_llm_prediction_jobs,
-  complete_llm_prediction_job TO service_role;
+  complete_llm_prediction_job, record_llm_prediction_latency TO service_role;

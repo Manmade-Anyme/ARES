@@ -159,7 +159,7 @@ This POC collects the archive and required provenance. Training/export implement
 - `PGLITE_MODULE_URL=file:///path/to/pglite/dist/index.js node tests/integration/task210_lifecycle.mjs`: **37 PostgreSQL lifecycle assertions passed** using an isolated `@electric-sql/pglite@0.5.8` installation. The harness executes the actual migration locally with synthetic fixtures; no production data or network is used. Session boundaries are tested, then session eligibility is overridden for deterministic lifecycle cases. Queries run serially, so this does not prove multi-connection race behavior.
 - `python3 -m pytest tests/ -q --import-mode=importlib`: **900 passed, 10 subtests passed**, with nine existing warnings. The ordinary pytest mode encounters an existing `tests.unit` import collision. `git diff --check` and an AST import-boundary check passed; the trading/ML files have no diff against the merged `origin/main`. Independent Debug/QA review confirmed the late acknowledgment/SDK setup gate and found no additional concrete bug.
 - The review fixes preserve both branches' changelog entries when merging `origin/main`, gate claims/invocation/sending using database wall time, and atomically complete results without resetting existing alert delivery on a lost acknowledgment.
-- No live TypeSafe call, Discord send, Supabase migration, Fly deployment, calibration claim, or 100% coverage claim is made. Machine failure isolation, latency/cost, a deployed-schema upgrade, and multi-connection race testing remain rollout checks.
+- That earlier review did not perform a live TypeSafe/Discord call, Supabase migration, Fly deployment, or calibration evaluation. Machine failure isolation, latency/cost, a deployed-schema upgrade, and multi-connection race testing remain rollout checks.
 
 This is an implemented POC on the existing PR, using shared persisted market data and separate application code. The worker can use only fields saved by ARES; it cannot recover unsaved Dhan history or full option-chain details. Future training exports remain separate work.
 
@@ -168,3 +168,24 @@ This is an implemented POC on the existing PR, using shared persisted market dat
 - Reproduced the runway and error-classification findings with failing tests before changing implementation.
 - `python3 -m pytest tests/unit/test_task210_system_one.py -q`: **67 passed**. Added actual collector-output contract cases, bullish/bearish clearance, prior-day barriers, equality at T1, entry/snapshot offsets, missing evidence, explicit service-role credential behavior, and definite versus ambiguous SDK errors.
 - `python3 -m pytest tests/ -q --import-mode=importlib`: **923 passed, 10 subtests passed**, with nine existing warnings. Independent Debug/QA review confirmed collector units/signs, SDK exception mapping, and zero ML imports; its local credential documentation finding was fixed. `git diff --check` and worker import-boundary checks passed. No schema, live credentials, main trading code, or ML application code changed in this follow-up.
+
+## Latency and coverage review fixes (2026-10-02)
+
+The snapshot metric now times the actual `ml_collection` batch query in the poller and is attached to each returned snapshot. Direct snapshot callers that did not measure a poll record null, not an invented zero or the signal-table read. Signal lookup has its own metric. Query time is shared by rows in one batch; it is not a separate query per row.
+
+| Stored metric | Observed interval |
+| --- | --- |
+| `latency_snapshot_read_ms` | Monotonic duration of the actual snapshot query |
+| `latency_signal_read_ms` | Monotonic duration of the linked signal lookup |
+| `latency_context_build_ms` | Context preparation, including optional XGBoost comparison read |
+| `latency_typesafe_ms` | Jev SDK call/response processing duration |
+| `latency_persistence_ms` | Monotonic duration through acknowledged result/job persistence, including its retries |
+| `latency_delivery_ms` | Latest delivery-processing attempt: gates, transport if attempted, and status acknowledgment; pinned once total is confirmed |
+| `latency_signal_to_prediction_ms` | Database event age when archiving the result, before that transaction's commit acknowledgment |
+| `latency_total_ms` | Database event age at metric finalization after acknowledged persistence and confirmed Discord delivery/status; null for unconfirmed delivery |
+
+`record_llm_prediction_latency` computes total using the pinned event and database wall clock. It includes the upstream write/queue delay, result persistence, and delivery acknowledgment, plus metric-finalization request overhead. It also runs after restart delivery, preserving the initial persistence-stage measurement where available. It never changes job/delivery state or repeats an external request. A caller flag alone cannot fabricate success: the job must reference this persisted prediction and have durable `SENT`. The first confirmed sample is retained on later recording attempts. A failed finalization leaves missing data; metrics failure is logged and never authorizes resend. Compare p50/p95 only among confirmed samples and report missing/failed/suppressed/uncertain counts alongside them.
+
+**Verification:** 202 focused tests, **595/595 statements and 156/156 branches covered (100%)**, no excluded lines or partial branches. The CI test job now enforces `--cov=system_one --cov-branch --cov-fail-under=100`. Full regression: **1,058 tests and 10 subtests passed**, with nine existing warnings. Actual local migration: **48 PostgreSQL lifecycle assertions passed**, including a 40-second pre-consumer event age, optimistic early-total rejection, confirmed/uncertain delivery, identity checks, sample pinning, and service-role restrictions. Coverage describes Python runtime execution, not instrumented SQL coverage or live provider correctness.
+
+See [QA coverage report](../qa/TASK-210_coverage-report.md) and [machine-readable coverage summary](../qa/TASK-210_coverage-summary.json). The independent final QA audit was attempted but hit the agent usage limit; these are directly verified test results, not an independent QA approval. No live service, deployment, or production schema was changed.

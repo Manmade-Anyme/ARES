@@ -76,6 +76,14 @@ The consumer polls for eligible signal-bound `ml_collection` rows at a short, me
 5. Supabase migration: Add `llm_predictions`, linked one-to-one to the current bridge-mode `ares_signals.signal_uuid`, with 0–1 probability checks, model/version metadata, input provenance, latency, and raw state/response. Add `llm_consumer_state` and `llm_prediction_jobs` for the rollout cutoff and durable claim/status contract. Restrict all three tables and the claim operation to server-side access. Account for the planned UUID primary-key cutover.
 6. Fly configuration: Add a `jev` process group to the **existing** app, retaining the `app` process group and its 768 MB Machine. Size and lifecycle of the Jev Machine are measured before deployment. No second Fly app or market-data collector is part of this POC.
 
+## Latency measurement contract
+
+Measure `ml_collection` query time in the poller and linked signal lookup separately. Record null snapshot-read time if the caller did not observe the query. Keep TypeSafe, context preparation, persistence acknowledgment, and delivery-processing durations as separate stages. The database records event-to-prediction age at archive time; this is distinct from commit acknowledgment.
+
+Finalize `latency_total_ms` only after acknowledged prediction persistence and confirmed Discord delivery/status. Derive it from the pinned event and database wall clock, including write/queue/restart age; preserve the first confirmed sample. Leave successful-alert latency null for suppressed, failed, or uncertain delivery and report those counts when interpreting percentiles. Metrics failures must never trigger another Jev call or webhook. Apply the same finalization after restart delivery. The metric includes finalization request overhead.
+
+CI must enforce 100% line and branch coverage for the complete `system_one` Python package. SQL gates are verified separately with the local migration harness; runtime coverage does not establish provider calibration or deployment isolation.
+
 ## Deployment and error contract
 
 - Provision `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TYPESAFE_API_KEY`, and `DISCORD_WEBHOOK_URL` before enabling the configured Jev process group. The dedicated service-role key is required for its protected tables and RPCs; the worker does not assume the trading process's `SUPABASE_KEY` has that role. See README and `.env.example`.

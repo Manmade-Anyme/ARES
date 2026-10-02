@@ -86,13 +86,13 @@ try {
   equal((await query(`SELECT * FROM begin_llm_invocation($1,$2,$3)`, [leased.signal, replacement.owner_token, randomUUID()])).rows.length, 1, 'new owner invokes once');
   equal((await query(`SELECT * FROM begin_llm_invocation($1,$2,$3)`, [leased.signal, replacement.owner_token, randomUUID()])).rows.length, 0, 'invocation marker cannot be replayed');
 
-  const archived = await snapshot(), archiveOwner = randomUUID(), invocation = randomUUID();
+  const archived = await snapshot(40), archiveOwner = randomUUID(), invocation = randomUUID();
   const archiveJob = (await claim(archived, archiveOwner))[0];
   await query('SELECT * FROM begin_llm_invocation($1,$2,$3)', [archived.signal, archiveOwner, invocation]);
   const prediction = { signal_uuid: archived.signal, snapshot_uuid: archived.snap,
     t1_hit_prob: .6, t2_hit_prob: .3, sl_hit_prob: .2, regime: 'trending', regime_distribution: { trending: 1 },
     engine_name: 'jev', context_version: 'v1.1', question_version: 'v1.1',
-    input_state: {}, raw_response: { conditional_t2: .5 } };
+    input_state: {}, raw_response: { conditional_t2: .5 }, latency_total_ms: 1 };
   const complete = (token = invocation, payload = prediction) => query(
     'SELECT * FROM complete_llm_prediction_job($1,$2,$3)', [archived.signal, token, JSON.stringify(payload)]);
   equal((await complete(randomUUID())).rows.length, 0, 'wrong invocation cannot publish');
@@ -101,9 +101,24 @@ try {
   equal((await query('SELECT status FROM llm_prediction_jobs WHERE id=$1', [archiveJob.id])).rows[0].status,
     'INVOKING', 'failed result insert rolls back completion');
   const saved = (await complete()).rows[0];
+  equal(saved.latency_total_ms, null, 'no optimistic end-to-end latency before delivery');
+  equal(Number(saved.latency_signal_to_prediction_ms) >= 40000, true, 'prediction age includes the existing event/queue delay');
   equal((await query('SELECT status,alert_status,prediction_id FROM llm_prediction_jobs WHERE id=$1', [archiveJob.id])).rows[0],
     { status: 'COMPLETED', alert_status: 'PENDING', prediction_id: saved.id }, 'archive and job complete atomically');
+  const record = (id = saved.id, confirmed = true) => query(
+    'SELECT * FROM record_llm_prediction_latency($1,$2,7000,11000,$3)', [archived.signal, id, confirmed]);
+  equal((await record(saved.id + 999)).rows.length, 0, 'wrong prediction cannot publish latency');
+  equal((await record()).rows[0].latency_total_ms, null, 'caller claim cannot fabricate confirmed delivery');
+  await query("UPDATE llm_prediction_jobs SET alert_status='DELIVERY_UNKNOWN' WHERE id=$1", [archiveJob.id]);
+  equal((await record()).rows[0].latency_total_ms, null, 'uncertain delivery has no successful-alert latency');
+  equal((await query('SELECT alert_status FROM llm_prediction_jobs WHERE id=$1', [archiveJob.id])).rows[0].alert_status,
+    'DELIVERY_UNKNOWN', 'metrics never change durable delivery state');
   await query("UPDATE llm_prediction_jobs SET alert_status='SENT' WHERE id=$1", [archiveJob.id]);
+  const timed = (await record()).rows[0];
+  equal(Number(timed.latency_total_ms) >= 40000, true, 'total includes event/queue age beyond processing-only time');
+  equal(Number(timed.latency_persistence_ms), 7000, 'persistence acknowledgment duration retained');
+  equal(Number(timed.latency_delivery_ms), 11000, 'delivery and acknowledgment duration retained');
+  equal((await record()).rows[0].latency_total_ms, timed.latency_total_ms, 'latency persistence retry pins original sample');
   equal((await complete()).rows[0].id, saved.id, 'lost commit acknowledgment returns original result');
   equal((await query('SELECT alert_status FROM llm_prediction_jobs WHERE id=$1', [archiveJob.id])).rows[0].alert_status,
     'SENT', 'persistence retry never resets delivery');
@@ -141,6 +156,8 @@ try {
   equal((await claim(await snapshot())).length, 0, 'session close prevents new inference');
   await db.exec('SET ROLE anon');
   await assert.rejects(query(`SELECT check_jev_alert_freshness($1,$2)`, [session.signal, sessionJob.id]), /permission denied/);
+  checks += 1;
+  await assert.rejects(query(`SELECT * FROM record_llm_prediction_latency($1,$2,1,1,true)`, [archived.signal, saved.id]), /permission denied/);
   checks += 1;
   await db.exec('RESET ROLE; SET ROLE service_role');
   equal((await query(`SELECT check_jev_alert_freshness($1,$2) AS gate`, [session.signal, sessionJob.id])).rows[0].gate.is_fresh, false, 'service role can execute gate');

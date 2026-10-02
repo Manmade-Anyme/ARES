@@ -122,7 +122,7 @@ def build_context(
     sl_distance = abs(entry_price - stop_loss)
     t1_distance = abs(target_1 - entry_price)
     t2_distance = abs(target_2 - entry_price)
-    reward_to_risk = t1_distance / sl_distance if sl_distance > 0 else None
+    reward_to_risk = t1_distance / sl_distance  # Geometry validation guarantees positive risk.
 
     # Parse feature groups from snapshot
     candle_features = _parse_jsonb(snapshot_row.get("candle_features"))
@@ -137,14 +137,12 @@ def build_context(
     oi_wall_ctx = _parse_jsonb(snapshot_row.get("oi_wall_context"))
 
     # Semantic assessments to help Jev reason without guessing domain rules
-    rr_assessment = None
-    if reward_to_risk:
-        if reward_to_risk < 1.0:
-            rr_assessment = "Poor R:R, risk exceeds reward to T1."
-        elif reward_to_risk < 1.5:
-            rr_assessment = "Standard acceptable R:R to T1."
-        else:
-            rr_assessment = "Highly favorable asymmetric R:R to T1."
+    if reward_to_risk < 1.0:
+        rr_assessment = "Poor R:R, risk exceeds reward to T1."
+    elif reward_to_risk < 1.5:
+        rr_assessment = "Standard acceptable R:R to T1."
+    else:
+        rr_assessment = "Highly favorable asymmetric R:R to T1."
 
     signal_ctx = {
         "setup_type": signal_row.get("setup_type"),
@@ -158,7 +156,7 @@ def build_context(
         "t1_distance_pts": round(t1_distance, 2),
         "t2_distance_pts": round(t2_distance, 2),
         "sl_distance_pts": round(sl_distance, 2),
-        "reward_to_risk": round(reward_to_risk, 4) if reward_to_risk else None,
+        "reward_to_risk": round(reward_to_risk, 4),
         "reward_risk_assessment": rr_assessment,
         "confidence": signal_row.get("confidence"),
         "display_id": signal_row.get("display_id"),

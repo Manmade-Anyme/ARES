@@ -120,6 +120,7 @@ def _poll_eligible_signals(
     - No existing llm_prediction_jobs row for this signal_uuid
     """
     try:
+        read_start = time.monotonic()
         # Query signal-bound snapshots that don't have jobs yet
         result = supabase.table("ml_collection").select(
             "snapshot_uuid, signal_uuid, timestamp, spot, "
@@ -131,6 +132,7 @@ def _poll_eligible_signals(
         ).order(
             "timestamp", desc=True
         ).limit(10).execute()
+        snapshot_read_ms = (time.monotonic() - read_start) * 1000
 
         if not result.data:
             return []
@@ -147,7 +149,8 @@ def _poll_eligible_signals(
         # A never-invoked claim can be recovered by the RPC after its lease expires.
         claimed = {r["signal_uuid"] for r in (existing.data or [])
                    if r.get("status") != "CLAIMED" or r.get("invocation_started_at")}
-        eligible = [r for r in result.data if r["signal_uuid"] not in claimed]
+        eligible = [dict(r, _jev_snapshot_read_ms=snapshot_read_ms)
+                    for r in result.data if r["signal_uuid"] not in claimed]
 
         return eligible
     except Exception as exc:
@@ -252,9 +255,9 @@ def _persist_prediction(
     signal_timestamp: str,
     invocation_started_at: str,
     invocation_token: str,
-    latency_snapshot_read_ms: float,
+    latency_snapshot_read_ms: Optional[float],
     latency_context_build_ms: float,
-    latency_total_ms: float,
+    latency_signal_read_ms: float,
 ) -> Optional[int]:
     """Atomically archive the response and complete its job; retry only this response."""
     response_received = datetime.now(timezone.utc).isoformat()
@@ -275,9 +278,9 @@ def _persist_prediction(
         "input_state": context,
         "raw_response": jev_result.raw_response,
         "latency_snapshot_read_ms": latency_snapshot_read_ms,
+        "latency_signal_read_ms": latency_signal_read_ms,
         "latency_context_build_ms": latency_context_build_ms,
         "latency_typesafe_ms": jev_result.latency_ms,
-        "latency_total_ms": latency_total_ms,
         "signal_timestamp": signal_timestamp,
         "invocation_started_at": invocation_started_at,
         "response_received_at": response_received,
@@ -296,6 +299,21 @@ def _persist_prediction(
         except Exception as exc:
             logger.error("Failed to persist prediction for %s: %s", signal_uuid, exc)
     return None
+
+
+def _record_latency(supabase: SupabaseClient, signal_uuid: str, prediction_id: int,
+                    persistence_ms: Optional[float], delivery_ms: float, confirmed_sent: bool) -> None:
+    """Finalize observed stages after persistence/delivery; never repeat a send for metrics."""
+    try:
+        supabase.rpc("record_llm_prediction_latency", {
+            "p_signal_uuid": signal_uuid,
+            "p_prediction_id": prediction_id,
+            "p_persistence_ms": persistence_ms,
+            "p_delivery_ms": delivery_ms,
+            "p_confirmed_sent": confirmed_sent,
+        }).execute()
+    except Exception as exc:
+        logger.warning("Latency finalization failed for %s: %s", signal_uuid, exc)
 
 
 def _fail_job(supabase: SupabaseClient, signal_uuid: str, reason: str,
@@ -335,7 +353,6 @@ def process_signal(
     signal_uuid = snapshot_row["signal_uuid"]
     event_at = snapshot_row["timestamp"]
     snapshot_uuid = snapshot_row.get("snapshot_uuid")
-    total_start = time.monotonic()
 
     # Fetch the signal row
     read_start = time.monotonic()
@@ -406,14 +423,14 @@ def process_signal(
         logger.warning("Jev invocation failed for %s: %s: %s", signal_uuid, error_type, exc)
         return "UNKNOWN"
 
-    latency_total_ms = (time.monotonic() - total_start) * 1000
-
     # Persist prediction
+    persist_start = time.monotonic()
     prediction_id = _persist_prediction(
         supabase, signal_uuid, jev_result, context,
         snapshot_uuid, event_at, invocation_started, invocation_token,
-        latency_read_ms, latency_ctx_ms, latency_total_ms,
+        snapshot_row.get("_jev_snapshot_read_ms"), latency_ctx_ms, latency_read_ms,
     )
+    persistence_ms = (time.monotonic() - persist_start) * 1000
 
     if prediction_id is None:
         # Persistence uncertainty must not authorize a webhook or another inference.
@@ -421,6 +438,8 @@ def process_signal(
         return "UNKNOWN"
 
     # Send Discord follow-up
+    delivery_start = time.monotonic()
+    alert_status = "NONE"
     try:
         alert_status = send_jev_followup(
             supabase=supabase,
@@ -439,12 +458,14 @@ def process_signal(
             job_id=job.get("id", 0),
         )
         logger.info(
-            "Processed %s: T1=%.1f%% SL=%.1f%% regime=%s quality=%.1f alert=%s latency=%.0fms",
+            "Processed %s: T1=%.1f%% SL=%.1f%% regime=%s quality=%.1f alert=%s",
             signal_uuid[:8], jev_result.t1_hit_prob * 100, jev_result.sl_hit_prob * 100,
-            jev_result.regime, jev_result.setup_quality, alert_status, latency_total_ms,
+            jev_result.regime, jev_result.setup_quality, alert_status,
         )
     except Exception as exc:
         logger.warning("Discord follow-up failed for %s: %s", signal_uuid, exc)
+    _record_latency(supabase, signal_uuid, prediction_id, persistence_ms,
+                    (time.monotonic() - delivery_start) * 1000, alert_status == "SENT")
 
     return "COMPLETED"
 
@@ -462,7 +483,8 @@ def _recover_pending_alerts(supabase: SupabaseClient) -> None:
         if not predictions or not signal:
             continue
         prediction = predictions[0]
-        send_jev_followup(
+        delivery_start = time.monotonic()
+        alert_status = send_jev_followup(
             supabase, job["signal_uuid"], signal.get("display_id", job["signal_uuid"][:8]),
             signal["setup_type"], signal["direction"],
             float(prediction["t1_hit_prob"]), float(prediction["t2_hit_prob"]), float(prediction["sl_hit_prob"]),
@@ -470,6 +492,8 @@ def _recover_pending_alerts(supabase: SupabaseClient) -> None:
             float(prediction["setup_quality"]), float(prediction["is_trap_prob"]),
             prediction["engine_name"], job["id"],
         )
+        _record_latency(supabase, job["signal_uuid"], job["prediction_id"], None,
+                        (time.monotonic() - delivery_start) * 1000, alert_status == "SENT")
 
 
 # ---------------------------------------------------------------------------

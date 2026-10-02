@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-210 latency and QA review:** Measure the actual snapshot query separately from signal lookup; finalize event-to-alert latency only after acknowledged persistence and confirmed delivery, including restart recovery. Add stage metrics and preserve unknown delivery as null total latency. Expand failure/startup tests to 100% System One line and branch coverage and enforce that threshold in CI.
+
 - **TASK-210 additional PR review:** Derive structural runway from the collector’s saved distance fields, using snapshot spot and trade entry (context v1.2). Document required Jev service-role/TypeSafe secrets for Fly and local startup. Separate definite Jev rejections (`FAILED`) from uncertain requests (`UNKNOWN`) without automatic retries.
 
 - **TASK-210 PR review:** Use the pinned market-cycle timestamp and persisted age policy for database-time claim, invocation, and delivery gates. Record a durable Discord attempt before sending; ambiguous responses and abandoned attempts remain terminal without resend. Atomically archive Jev results and complete jobs, preserving delivery state on lost database acknowledgments.
