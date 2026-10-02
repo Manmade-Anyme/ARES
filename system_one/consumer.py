@@ -117,40 +117,53 @@ def _poll_eligible_signals(
     - signal_uuid is not null (signal-bound snapshot)
     - timestamp >= live_from (post-rollout)
     - timestamp + max_age_seconds > database now() (not expired)
-    - No existing llm_prediction_jobs row for this signal_uuid
+    - No terminal/dispatched job; never-invoked claims remain recoverable
+    - Page past consumed snapshots before enforcing the ten-signal batch limit
+
+    Freshness and ownership are authoritatively checked by the claim RPC.
     """
     try:
-        read_start = time.monotonic()
-        # Query signal-bound snapshots that don't have jobs yet
-        result = supabase.table("ml_collection").select(
-            "snapshot_uuid, signal_uuid, timestamp, spot, "
-            "candle_features, volume_features, iv_features, oi_features, "
-            "greek_features, structure_features, meta_features, "
-            "raw_candle, raw_atm_oi, oi_wall_context"
-        ).not_.is_("signal_uuid", "null").gte(
-            "timestamp", live_from
-        ).order(
-            "timestamp", desc=True
-        ).limit(10).execute()
-        snapshot_read_ms = (time.monotonic() - read_start) * 1000
+        eligible = []
+        seen = set()
+        offset = 0
+        batch_size = 10
+        while len(eligible) < batch_size:
+            read_start = time.monotonic()
+            result = supabase.table("ml_collection").select(
+                "snapshot_uuid, signal_uuid, timestamp, spot, "
+                "candle_features, volume_features, iv_features, oi_features, "
+                "greek_features, structure_features, meta_features, "
+                "raw_candle, raw_atm_oi, oi_wall_context"
+            ).not_.is_("signal_uuid", "null").gte(
+                "timestamp", live_from
+            ).order("timestamp", desc=True).order(
+                "snapshot_uuid", desc=True
+            ).range(offset, offset + batch_size - 1).execute()
+            snapshot_read_ms = (time.monotonic() - read_start) * 1000
+            rows = result.data or []
+            if not rows:
+                break
 
-        if not result.data:
-            return []
+            signal_uuids = [r["signal_uuid"] for r in rows if r.get("signal_uuid")]
+            if signal_uuids:
+                existing = supabase.table("llm_prediction_jobs").select(
+                    "signal_uuid, status, invocation_started_at"
+                ).in_("signal_uuid", signal_uuids).execute()
+                # A never-invoked claim can be recovered by the claim RPC.
+                claimed = {r["signal_uuid"] for r in (existing.data or [])
+                           if r.get("status") != "CLAIMED" or r.get("invocation_started_at")}
+                for row in rows:
+                    signal_uuid = row.get("signal_uuid")
+                    if signal_uuid and signal_uuid not in claimed and signal_uuid not in seen:
+                        eligible.append(dict(row, _jev_snapshot_read_ms=snapshot_read_ms))
+                        seen.add(signal_uuid)
+                eligible = eligible[:batch_size]
 
-        # Filter out signals that already have jobs
-        signal_uuids = [r["signal_uuid"] for r in result.data if r.get("signal_uuid")]
-        if not signal_uuids:
-            return []
-
-        existing = supabase.table("llm_prediction_jobs").select(
-            "signal_uuid, status, invocation_started_at"
-        ).in_("signal_uuid", signal_uuids).execute()
-
-        # A never-invoked claim can be recovered by the RPC after its lease expires.
-        claimed = {r["signal_uuid"] for r in (existing.data or [])
-                   if r.get("status") != "CLAIMED" or r.get("invocation_started_at")}
-        eligible = [dict(r, _jev_snapshot_read_ms=snapshot_read_ms)
-                    for r in result.data if r["signal_uuid"] not in claimed]
+            # Count eligible signals, not snapshots already consumed. Equal
+            # timestamps have a UUID tie-breaker; deduplicate shifted offset pages.
+            if len(rows) < batch_size:
+                break
+            offset += batch_size
 
         return eligible
     except Exception as exc:

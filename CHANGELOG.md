@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-210 polling review:** Paginate past claimed snapshots before enforcing the ten eligible-signal limit, with deterministic timestamp/UUID ordering and signal deduplication. Preserve per-page snapshot query timing and the authoritative claim-time freshness guard.
+
 - **TASK-210 Jev lifecycle P1:** Keep the Jev worker waiting between market sessions and restart its Machine independently with a process-scoped `always` policy. Preserve the trading Machine's `never` policy and cron schedule; document overnight costs and rollout verification. Add after-hours startup and next-session regression tests.
 
 - **TASK-210 latency and QA review:** Measure the actual snapshot query separately from signal lookup; finalize event-to-alert latency only after acknowledged persistence and confirmed delivery, including restart recovery. Add stage metrics and preserve unknown delivery as null total latency. Expand failure/startup tests to 100% System One line and branch coverage and enforce that threshold in CI.

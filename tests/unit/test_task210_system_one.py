@@ -362,7 +362,7 @@ def test_session_hours(mock_datetime):
     assert _is_trading_session() is False
 
 def test_poll_eligible_signals(mock_supabase):
-    mock_supabase.table().select().not_.is_().gte().order().limit().execute.return_value.data = [
+    mock_supabase.table().select().not_.is_().gte().order().order().range().execute.return_value.data = [
         {"signal_uuid": "sig-1", "timestamp": "2026-10-01"},
         {"signal_uuid": "sig-2", "timestamp": "2026-10-01"}
     ]

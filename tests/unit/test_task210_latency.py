@@ -18,7 +18,7 @@ def test_snapshot_query_is_measured_separately_from_signal_lookup(monkeypatch):
     snapshot = {"signal_uuid": "sig", "snapshot_uuid": "snap", "timestamp": "2026-10-02T04:30:00Z"}
     def table(name):
         query = MagicMock()
-        for method in ("select", "eq", "in_", "gte", "order", "limit", "is_"):
+        for method in ("select", "eq", "in_", "gte", "order", "limit", "is_", "range"):
             getattr(query, method).return_value = query
         query.not_ = query
         def execute():
@@ -98,7 +98,7 @@ def flow(monkeypatch):
     db = MagicMock()
     def table(name):
         query = MagicMock()
-        for method in ('select', 'eq', 'in_', 'gte', 'order', 'limit', 'is_', 'upsert'):
+        for method in ('select', 'eq', 'in_', 'gte', 'order', 'limit', 'is_', 'upsert', 'range'):
             getattr(query, method).return_value = query
         query.not_ = query
         query.update.side_effect = lambda payload: state.updates.append(payload) or query
@@ -381,3 +381,69 @@ def test_module_entrypoints_wait_at_closed_session(live_loop, monkeypatch, modul
         runpy.run_module(module, run_name='__main__')
     consumer.time.sleep.assert_called_once_with(30)
     live_loop.invoke.assert_not_called()
+
+
+@pytest.mark.parametrize('scenario', ['eleven', 'twenty-five', 'empty', 'unbound', 'duplicates', 'full', 'failed-page'])
+def test_poll_pages_past_claimed_rows_before_eligible_limit(monkeypatch, scenario):
+    clock = [0.0]
+    monkeypatch.setattr(consumer.time, 'monotonic', lambda: clock[0])
+    rows = [{'signal_uuid': f'sig-{i}', 'snapshot_uuid': f'snap-{i}',
+             'timestamp': '2026-10-03T04:30:00Z'} for i in range(25)]
+    claimed = set()
+    if scenario == 'eleven':
+        rows = rows[:11]
+        claimed = {f'sig-{i}' for i in range(10)}
+        expected = ['sig-10']
+    elif scenario == 'twenty-five':
+        claimed = {f'sig-{i}' for i in range(20)}
+        expected = [f'sig-{i}' for i in range(20, 25)]
+    elif scenario == 'empty':
+        rows = rows[:10]
+        claimed = {f'sig-{i}' for i in range(10)}
+        expected = []
+    elif scenario == 'unbound':
+        rows = [dict(row, signal_uuid=None) for row in rows[:10]] + rows[10:11]
+        expected = ['sig-10']
+    elif scenario == 'duplicates':
+        rows = [rows[0]] * 10 + rows[1:3]
+        expected = ['sig-0', 'sig-1', 'sig-2']
+    elif scenario == 'full':
+        expected = [f'sig-{i}' for i in range(10)]
+    else:
+        claimed = {f'sig-{i}' for i in range(10)}
+        expected = []
+    db = MagicMock()
+    pages = []
+    def table(name):
+        query = MagicMock()
+        for method in ('select', 'is_', 'gte', 'order', 'in_'):
+            getattr(query, method).return_value = query
+        query.not_ = query
+        bounds = [0, 9]
+        def page(start, end):
+            bounds[:] = [start, end]
+            pages.append((start, end))
+            return query
+        query.range.side_effect = page
+        def execute():
+            if name == 'ml_collection':
+                if scenario == 'failed-page' and bounds[0] == 10:
+                    raise ConnectionError('next page failed')
+                clock[0] += 2
+                return SimpleNamespace(data=rows[bounds[0]:bounds[1] + 1])
+            clock[0] += 3
+            # Dispatched and terminal rows are excluded; never-invoked CLAIMED
+            # rows still reach the atomic recovery/ownership check.
+            return SimpleNamespace(data=[{'signal_uuid': uuid, 'status': 'COMPLETED'}
+                                         for uuid in claimed] +
+                [{'signal_uuid': 'sig-24', 'status': 'CLAIMED', 'invocation_started_at': None},
+                 {'signal_uuid': 'already-invoked', 'status': 'CLAIMED', 'invocation_started_at': 'now'}])
+        query.execute.side_effect = execute
+        return query
+    db.table.side_effect = table
+    result = consumer._poll_eligible_signals(db, rows[0]['timestamp'], 60)
+    assert [row['signal_uuid'] for row in result] == expected
+    assert all(row['_jev_snapshot_read_ms'] == 2000 for row in result)
+    assert pages == ([(0, 9)] if scenario == 'full' else
+                     [(0, 9), (10, 19), (20, 29)] if scenario == 'twenty-five' else
+                     [(0, 9), (10, 19)])
