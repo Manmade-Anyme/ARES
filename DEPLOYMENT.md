@@ -60,6 +60,13 @@ fly secrets set \
   NIFTY_EXCHANGE="IDX_I"
 ```
 
+The `jev` process additionally requires `SUPABASE_SERVICE_ROLE_KEY` and its
+TypeSafe credentials. Configure the service-role key in the Fly app's secure
+secret settings; use the backend Supabase service-role key, not an anon key.
+`SUPABASE_KEY` is a separate binding and is not used by Jev. Never commit or
+share its value in chat. Repository
+Actions secrets do not automatically populate Fly runtime secrets.
+
 ### Step 3: Deploy (bootstrap only)
 
 With the app created and secrets loaded, build and deploy the container once by
@@ -152,10 +159,35 @@ cancelled job's annotations establish the blocked test gate; its raw test logs
 were unavailable during diagnosis, so the reproduction supplies the test-level
 evidence.
 
-After merging the test repair, confirm the new `main` workflow passes tests and
-completes its Fly deploy job. Then check `fly machine list -a ares-xzy-gq` and
-`fly logs -a ares-xzy-gq` for the intended rollout. Passing local tests or merging
-the Singapore configuration alone does not verify deployment.
+After the repair merged, [main run 37131943959](https://github.com/Manmade-Anyme/ARES/actions/runs/37131943959)
+passed tests and deployed successfully. Run `37132294024` confirmed all three
+Machines in Singapore. These checks establish rollout, while worker startup
+requires its own runtime checks below.
+
+### Troubleshooting: Jev exits after a successful deploy
+
+The read-only `check-region.yml` workflow collects Machine states, exit events,
+secret names/status, and recognized startup error signatures without printing
+raw application logs or secret values. After merging the diagnostic workflow,
+dispatch it with:
+
+```bash
+gh workflow run check-region.yml -R Manmade-Anyme/ARES --ref main
+```
+
+Before merge, use `--ref feature/MANM-219-fly-startup-diagnostics`. A successful
+collection job confirms diagnostics completed; it does not mean Jev is healthy.
+
+Run `37132792338` found the primary Jev Machine repeatedly exiting with code 1,
+without OOM or a requested stop. Startup logs identified
+`SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set`; Fly secret metadata
+confirmed `SUPABASE_SERVICE_ROLE_KEY` was missing. Add the backend service-role
+key through Fly's secure secret settings, then repeat diagnostics and verify
+the polling loop initializes without repeated exits. Database migration and
+access readiness remain unverified because startup failed before database
+initialization. If the intended Jev Machine remains stopped after configuration
+is fixed, start that Machine once as described below. Keep the trading `app`
+Machine on its existing market-hours schedule.
 
 ---
 

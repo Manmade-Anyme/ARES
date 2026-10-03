@@ -2,7 +2,7 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
-## 2026-10-03 · Fly Singapore configuration updated; rollout pending (MANM-219)
+## 2026-10-03 · Fly Singapore rollout succeeded; Jev startup prerequisite missing (MANM-219)
 
 Migrated the deployment configuration by updating the primary region in `fly.toml` from Mumbai (`bom`) to Singapore (`sin`). The Mumbai region has been deprecated by Fly.io and no longer accepts new resources, which caused the CI deployment job to fail. Updated references in `DEPLOYMENT.md` and added a changelog entry in `CHANGELOG.md`.
 
@@ -32,9 +32,25 @@ the test failed promptly instead of hanging. A Python 3.10-slim image built
 using locally downloaded wheels, and worker/trading imports and model loading
 passed with network access disabled and dummy credentials.
 
-Rollout remains pending: after merging the repair, verify a successful `main`
-test/deploy workflow and inspect the Fly Machines and logs. No live deployment
-was performed or verified during this follow-up.
+After merging the test repair, main run `37131943959` passed 1,082 tests and 10
+subtests plus the 226-test Jev coverage gate at 100%, then deployed image
+`deployment-01M414TPJSP5MXXFT5VW7YTVKH`. Region-check run `37132294024` confirmed
+all three Machines in Singapore.
+
+The follow-up read-only startup diagnostic workflow passed QA/review and its
+collection run `37132792338` succeeded. Primary Jev Machine `84e4d2b2253108`
+repeatedly exited with code 1, without OOM or a requested stop; standby
+`28636e2f431238` was stopped as expected. Safe log classification identified
+`SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set`. Fly secret metadata
+showed `SUPABASE_URL`, `SUPABASE_KEY`, Discord and TypeSafe names present, but no
+`SUPABASE_SERVICE_ROLE_KEY`.
+
+Runtime remediation awaits the backend service-role key in Fly's secure secret
+settings; an anon key cannot substitute for it. No secret values were printed
+or added to documentation. Worker health and database migration readiness
+remain unverified because startup failed before database initialization. Repeat
+the read-only workflow after configuring the key; start the intended Jev Machine
+once if it remains stopped, preserving the trading Machine's existing schedule.
 
 ## 2026-09-29 · MANM-156 Final Refit and Report Failure Regression Coverage
 
