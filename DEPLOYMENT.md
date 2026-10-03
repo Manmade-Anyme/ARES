@@ -134,6 +134,29 @@ You should see something like:
 [+] Warmup state: Collecting initial candles...
 ```
 
+### Troubleshooting: deploy skipped after a stalled test job
+
+The `deploy` job requires the `test` job to succeed. A cancelled or timed-out
+test job means Fly deployment did not run; inspect the test log before changing
+Fly credentials or region settings. For example, [run 37121217919](https://github.com/Manmade-Anyme/ARES/actions/runs/37121217919)
+cancelled the Test step after 14m51s and skipped deployment after the Singapore
+configuration change in PR #124.
+
+MANM-219 locally reproduced a stall in `test_run_catches_general_exception` in
+`tests/unit/test_task210_system_one.py`: the test mocked sleep but used the real
+market-session clock. Outside trading hours, the worker kept waiting and never
+reached the mocked polling failure or test exit. The regression test now pins
+the session predicate, mocks the delivery thread, and bounds sleep with a
+`KeyboardInterrupt`, verifying polling resumes after the exception. The
+cancelled job's annotations establish the blocked test gate; its raw test logs
+were unavailable during diagnosis, so the reproduction supplies the test-level
+evidence.
+
+After merging the test repair, confirm the new `main` workflow passes tests and
+completes its Fly deploy job. Then check `fly machine list -a ares-xzy-gq` and
+`fly logs -a ares-xzy-gq` for the intended rollout. Passing local tests or merging
+the Singapore configuration alone does not verify deployment.
+
 ---
 
 ## 4. Scaling, Lifecycle & Scheduled Execution

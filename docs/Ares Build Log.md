@@ -2,9 +2,39 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
-## 2026-10-03 · Redeployed ARES to Singapore (sin) to fix CI failure due to Fly.io bom region deprecation
+## 2026-10-03 · Fly Singapore configuration updated; rollout pending (MANM-219)
 
 Migrated the deployment configuration by updating the primary region in `fly.toml` from Mumbai (`bom`) to Singapore (`sin`). The Mumbai region has been deprecated by Fly.io and no longer accepts new resources, which caused the CI deployment job to fail. Updated references in `DEPLOYMENT.md` and added a changelog entry in `CHANGELOG.md`.
+
+PR #124 merged the region configuration change, but this does not establish a
+successful rollout. Main workflow [37121217919](https://github.com/Manmade-Anyme/ARES/actions/runs/37121217919)
+cancelled its Test step after 14m51s and skipped Fly deployment.
+
+The follow-up diagnosis reproduced an after-hours hang in
+`test_run_catches_general_exception`: mocking sleep while retaining the real
+market-session clock kept the worker in its waiting loop. Pinning the session
+predicate let the existing polling-error path complete. The repair isolates
+the delivery thread and uses a bounded sleep sequence, asserting two polling
+attempts and one sleep after a general exception. Production worker behavior
+and Fly configuration are unchanged by this test repair.
+
+Evidence: the cancelled job's annotations establish that tests blocked the
+deployment; raw test logs were unavailable during this diagnosis. Local
+reproduction established the clock-dependent test hang. A separate run on the
+existing non-main region-fix branch, `37121740658`, passed its checks but skipped
+deployment because the deployment workflow requires `main`.
+
+Validation: the full Python 3.10 suite passed 1,082 tests and 10 subtests in
+62.87s (five warnings). The separate Jev coverage gate passed 226 tests with
+100% line and branch coverage. Independent clock checks passed before opening,
+during trading, and after closing on a weekend; forcing a closed session into
+the test failed promptly instead of hanging. A Python 3.10-slim image built
+using locally downloaded wheels, and worker/trading imports and model loading
+passed with network access disabled and dummy credentials.
+
+Rollout remains pending: after merging the repair, verify a successful `main`
+test/deploy workflow and inspect the Fly Machines and logs. No live deployment
+was performed or verified during this follow-up.
 
 ## 2026-09-29 · MANM-156 Final Refit and Report Failure Regression Coverage
 

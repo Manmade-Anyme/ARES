@@ -655,14 +655,20 @@ def test_delivery_loop_caches_supabase_client(mock_trading, mock_recover, mock_c
     assert mock_recover.call_count == 2
 
 
+@patch('system_one.consumer.Thread')
+@patch('system_one.consumer._is_trading_session', return_value=True)
 @patch('system_one.consumer.logger')
 @patch('system_one.consumer._create_supabase_client')
 @patch('system_one.consumer._bootstrap_consumer_state')
 @patch('system_one.consumer._poll_eligible_signals')
 @patch('system_one.consumer.time.sleep')
-def test_run_catches_general_exception(mock_sleep, mock_poll, mock_bootstrap, mock_create, mock_logger):
-    from system_one.consumer import run
+def test_run_catches_general_exception(mock_sleep, mock_poll, mock_bootstrap, mock_create, mock_logger,
+                                      mock_trading, mock_thread):
+    from system_one.consumer import POLL_INTERVAL, run
     mock_bootstrap.return_value = {"live_from": "2026-01-01T00:00:00Z", "max_signal_age_seconds": 3600}
+    # Exercise the polling exception path at any wall-clock time. Bound sleeps
+    # too: a regression into the off-hours branch must fail instead of hang CI.
+    mock_sleep.side_effect = [None, KeyboardInterrupt()]
     
     call_count = [0]
     def side_effect(*args):
@@ -678,6 +684,10 @@ def test_run_catches_general_exception(mock_sleep, mock_poll, mock_bootstrap, mo
     
     from unittest.mock import ANY
     mock_logger.error.assert_any_call("Consumer loop error: %s", ANY)
+    assert mock_poll.call_count == 2
+    mock_sleep.assert_called_once_with(POLL_INTERVAL)
+    mock_thread.return_value.start.assert_called_once()
+    mock_thread.return_value.join.assert_called_once_with(timeout=1)
 
 
 # ---------------------------------------------------------------------------
