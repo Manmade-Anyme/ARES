@@ -655,12 +655,13 @@ def test_delivery_loop_caches_supabase_client(mock_trading, mock_recover, mock_c
     assert mock_recover.call_count == 2
 
 
+@patch('system_one.consumer._is_trading_session', return_value=True)
 @patch('system_one.consumer.logger')
 @patch('system_one.consumer._create_supabase_client')
 @patch('system_one.consumer._bootstrap_consumer_state')
 @patch('system_one.consumer._poll_eligible_signals')
 @patch('system_one.consumer.time.sleep')
-def test_run_catches_general_exception(mock_sleep, mock_poll, mock_bootstrap, mock_create, mock_logger):
+def test_run_catches_general_exception(mock_sleep, mock_poll, mock_bootstrap, mock_create, mock_logger, mock_is_trading_session):
     from system_one.consumer import run
     mock_bootstrap.return_value = {"live_from": "2026-01-01T00:00:00Z", "max_signal_age_seconds": 3600}
     
