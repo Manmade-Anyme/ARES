@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-210 fresh delivery separation:** Remove webhook transport from signal inference. Archive each prediction with durable PENDING delivery, finish the inference batch, then deliver one saved result through the guarded queue. Preserve persistence timing while delivery/total stay unknown until delivery processing.
+
 - **TASK-210 retry clock and scheduling review:** Persist Discord retry intervals as PostgreSQL-time deadlines through an owned RPC. Run fresh-signal polling/inference before recovery and handle only one saved delivery per loop, preventing a ten-request retry drain.
 
 - **TASK-210 alert backoff review:** Filter backoff, freshness and pending-delivery status in database time before the recovery batch limit; order eligible alerts by earliest expiry and job ID. Preserve final send ownership/freshness checks.

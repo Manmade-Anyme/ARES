@@ -14,7 +14,7 @@ def test_snapshot_query_is_measured_separately_from_signal_lookup(monkeypatch):
     monkeypatch.setattr(consumer.time, "monotonic", lambda: clock[0])
     db = MagicMock()
     signal = {"signal_uuid": "sig", "direction": "BULLISH", "spot_at_signal": 100,
-              "target_1": 110, "target_2": 120, "stop_loss": 90}
+              "target_1": 110, "target_2": 120, "stop_loss": 90, "setup_type": "BREAKOUT"}
     snapshot = {"signal_uuid": "sig", "snapshot_uuid": "snap", "timestamp": "2026-10-02T04:30:00Z"}
     def table(name):
         query = MagicMock()
@@ -28,8 +28,8 @@ def test_snapshot_query_is_measured_separately_from_signal_lookup(monkeypatch):
             if name == "ares_signals":
                 clock[0] += 3
                 return SimpleNamespace(data=[signal])
-            if name == "llm_prediction_jobs":
-                clock[0] += 1  # This separate lookup is not snapshot query time.
+            if name == "llm_predictions":
+                return SimpleNamespace(data=[published])
             return SimpleNamespace(data=[])
         query.execute.side_effect = execute
         return query
@@ -41,6 +41,8 @@ def test_snapshot_query_is_measured_separately_from_signal_lookup(monkeypatch):
     def rpc(name, params):
         query = MagicMock()
         def execute():
+            if name == "poll_jev_alert_jobs":
+                return SimpleNamespace(data=[{"id": 1, "signal_uuid": "sig", "prediction_id": 9}])
             if name == "poll_jev_signals":
                 clock[0] += 2
                 return SimpleNamespace(data=[snapshot])
@@ -68,15 +70,19 @@ def test_snapshot_query_is_measured_separately_from_signal_lookup(monkeypatch):
     monkeypatch.setattr(consumer, "send_jev_followup", deliver)
     polled = consumer._poll_eligible_signals(db)
     assert consumer.process_signal(db, polled[0]) == "COMPLETED"
+    consumer._recover_pending_alerts(db)
     assert published["latency_snapshot_read_ms"] == 2000
     assert published["latency_signal_read_ms"] == 3000
     # End-to-end is finalized after both slow persistence and slow delivery,
     # with the database deriving event age. It is not the five-second API time.
     final = [call for call in db.rpc.call_args_list if call.args[0] == "record_llm_prediction_latency"]
-    assert len(final) == 1
+    assert len(final) == 2
     assert final[0].args[1]["p_persistence_ms"] == 7000
-    assert final[0].args[1]["p_delivery_ms"] == 11000
-    assert final[0].args[1]["p_confirmed_sent"] is True
+    assert final[0].args[1]["p_delivery_ms"] is None
+    assert final[0].args[1]["p_confirmed_sent"] is False
+    assert final[1].args[1]["p_persistence_ms"] is None  # SQL retains the first observation.
+    assert final[1].args[1]["p_delivery_ms"] == 11000
+    assert final[1].args[1]["p_confirmed_sent"] is True
     assert published.get("latency_total_ms") is None
 
 
@@ -132,6 +138,10 @@ def flow(monkeypatch):
                 return SimpleNamespace(data=rows)
             if name == 'complete_llm_prediction_job':
                 state.published.update(params['p_prediction'])
+                # External boundary models the migration's atomic pending queue.
+                state.rows['llm_prediction_jobs'] = [{
+                    'id': 1, 'signal_uuid': params['p_signal_uuid'], 'prediction_id': 9}]
+                state.rows['llm_predictions'] = [dict(state.published)]
             if name == 'record_llm_prediction_latency':
                 state.recorded.append(params)
             clock[0] += state.costs.get(name, 0)
@@ -231,6 +241,7 @@ def test_unexpected_provider_failure_stays_unknown_without_replay(flow):
 def test_metrics_write_failure_cannot_repeat_delivery(flow, caplog):
     flow.rpc_errors['record_llm_prediction_latency'] = ConnectionError('metrics acknowledgment lost')
     assert consumer.process_signal(flow.db, flow.snapshot) == 'COMPLETED'
+    consumer._recover_pending_alerts(flow.db)
     assert 'metrics acknowledgment lost' in caplog.text
     flow.send.assert_called_once()
 
@@ -239,13 +250,15 @@ def test_metrics_write_failure_cannot_repeat_delivery(flow, caplog):
 def test_unconfirmed_alert_cannot_publish_success_latency(flow, alert):
     flow.alert = alert
     assert consumer.process_signal(flow.db, flow.snapshot) == 'COMPLETED'
-    assert flow.recorded[0]['p_confirmed_sent'] is False
+    consumer._recover_pending_alerts(flow.db)
+    assert flow.recorded[-1]['p_confirmed_sent'] is False
 
 
 def test_unexpected_delivery_failure_records_only_observed_processing(flow):
     flow.send.side_effect = RuntimeError('delivery failed after persistence')
     assert consumer.process_signal(flow.db, flow.snapshot) == 'COMPLETED'
-    assert flow.recorded[0]['p_confirmed_sent'] is False
+    consumer._recover_pending_alerts(flow.db)
+    assert flow.recorded[-1]['p_confirmed_sent'] is False
     flow.invoke.assert_called_once()
 
 
@@ -345,7 +358,7 @@ def test_running_worker_predicts_across_session_close_without_rebootstrap(live_l
         consumer.run()
     assert sleeps == [consumer.POLL_INTERVAL, 30, consumer.POLL_INTERVAL]
     assert live_loop.invoke.call_count == live_loop.send.call_count == 2
-    assert [call.kwargs['signal_uuid'] for call in live_loop.send.call_args_list] == ['sig', 'next-session']
+    assert [call.args[1] for call in live_loop.send.call_args_list] == ['sig', 'next-session']
     assert sum(call.args[0] == 'llm_consumer_state' for call in live_loop.db.table.call_args_list) == 1
     assert sum(call.args[0] == 'recover_llm_prediction_jobs' for call in live_loop.db.rpc.call_args_list) == 2
 
@@ -446,4 +459,31 @@ def test_fresh_inference_precedes_slow_recovery(live_loop, monkeypatch):
         {'id': i, 'signal_uuid': 'sig', 'prediction_id': 9} for i in range(10)]
     with pytest.raises(KeyboardInterrupt):
         consumer.run()
-    assert sequence == ['inference', 'new', 'recovered']
+    assert sequence == ['inference', 'recovered']
+
+
+def test_inference_archives_pending_prediction_without_webhook(flow):
+    assert consumer.process_signal(flow.db, flow.snapshot) == 'COMPLETED'
+    flow.send.assert_not_called()
+    assert flow.rows['llm_prediction_jobs'][0]['prediction_id'] == 9
+    assert flow.recorded[-1]['p_delivery_ms'] is None
+    assert flow.recorded[-1]['p_confirmed_sent'] is False
+
+
+def test_burst_finishes_inference_before_any_slow_webhook(live_loop):
+    second = dict(live_loop.snapshot, signal_uuid='second', snapshot_uuid='snap-second')
+    live_loop.rows['ml_collection'] = [live_loop.snapshot, second]
+    sequence = []
+    def infer(*args, **kwargs):
+        sequence.append('inference')
+        return live_loop.result
+    def deliver(*args, **kwargs):
+        sequence.append('webhook')
+        live_loop.clock[0] += 10
+        return 'SENT'
+    live_loop.invoke.side_effect = infer
+    live_loop.send.side_effect = deliver
+    with pytest.raises(KeyboardInterrupt):
+        consumer.run()
+    assert sequence == ['inference', 'inference', 'webhook']
+    assert live_loop.invoke.call_count == 2

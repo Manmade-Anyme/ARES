@@ -228,3 +228,10 @@ Discord backoff persistence now sends a relative `retry_after` interval to `mark
 The main loop now polls/processes fresh signals before recovering saved alerts. Recovery handles only the first eligible saved job in database expiry/ID order per loop, then returns to polling; it cannot drain ten serial Discord requests ahead of a new signal poll. The existing per-request timeout/freshness and final send marker still apply. This is a scheduling bound on recovery attempts, not a throughput or end-to-end latency guarantee under database/provider stalls.
 
 Added boundary cases for relative scheduling without reading the worker clock, single-job recovery, and fresh inference preceding slow recovery; extended SQL contracts for stale tokens, non-finite/negative intervals, database-relative deadlines, replay and RPC permissions. Syntax/diff checks only; tests/CI were not awaited per user instruction. No live migration, deployment, or new coverage claim was made.
+
+
+## Fresh inference/webhook separation review fix (2026-10-03)
+
+`process_signal` now stops after atomic prediction archive and PENDING delivery completion. It performs no webhook request. The main loop gives the selected snapshots their gated inference opportunities before processing one eligible saved prediction from the durable delivery queue. New alerts and retries share the same database-time expiry/backoff/ownership/send-marker rules; a slow webhook cannot delay inference for later snapshots in the current batch. Completion state survives worker restarts and no inference is repeated for delivery.
+
+Persistence latency is observed immediately after archive acknowledgment; delivery and total remain null at that stage. Queue processing retains the persistence observation and finalizes delivery/total after the normal confirmation rules. Added ordering and queue-state boundary cases, including two inferences before a deliberately slow webhook. Syntax/diff checks passed; tests/CI were not awaited per the existing user instruction. No live schema/deployment change or current coverage claim was made.

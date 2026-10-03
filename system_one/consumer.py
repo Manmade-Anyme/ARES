@@ -269,7 +269,7 @@ def _persist_prediction(
 
 
 def _record_latency(supabase: SupabaseClient, signal_uuid: str, prediction_id: int,
-                    persistence_ms: Optional[float], delivery_ms: float, confirmed_sent: bool) -> None:
+                    persistence_ms: Optional[float], delivery_ms: Optional[float], confirmed_sent: bool) -> None:
     """Finalize observed stages after persistence/delivery; never repeat a send for metrics."""
     try:
         supabase.rpc("record_llm_prediction_latency", {
@@ -313,8 +313,9 @@ def process_signal(
     supabase: SupabaseClient,
     snapshot_row: Dict[str, Any],
 ) -> Optional[str]:
-    """Process a single signal: claim → build context → invoke Jev → persist → alert.
+    """Claim, evaluate and archive one signal with durable PENDING delivery.
 
+    Webhook transport runs after the inference batch through the saved-job queue.
     Returns status string or None.
     """
     signal_uuid = snapshot_row["signal_uuid"]
@@ -404,41 +405,20 @@ def process_signal(
         logger.warning("Prediction/job persistence incomplete for %s", signal_uuid)
         return "UNKNOWN"
 
-    # Send Discord follow-up
-    delivery_start = time.monotonic()
-    alert_status = "NONE"
-    try:
-        alert_status = send_jev_followup(
-            supabase=supabase,
-            signal_uuid=signal_uuid,
-            signal_display_id=signal_row.get("display_id", signal_uuid[:8]),
-            setup_type=signal_row.get("setup_type", "UNKNOWN"),
-            direction=signal_row.get("direction", "UNKNOWN"),
-            t1_prob=jev_result.t1_hit_prob,
-            t2_prob=jev_result.t2_hit_prob,
-            sl_prob=jev_result.sl_hit_prob,
-            regime=jev_result.regime,
-            regime_confidence=jev_result.regime_confidence,
-            setup_quality=jev_result.setup_quality,
-            is_trap_prob=jev_result.is_trap_prob,
-            engine_name=jev_result.engine_name,
-            job_id=job.get("id", 0),
-        )
-        logger.info(
-            "Processed %s: T1=%.1f%% SL=%.1f%% regime=%s quality=%.1f alert=%s",
-            signal_uuid[:8], jev_result.t1_hit_prob * 100, jev_result.sl_hit_prob * 100,
-            jev_result.regime, jev_result.setup_quality, alert_status,
-        )
-    except Exception as exc:
-        logger.warning("Discord follow-up failed for %s: %s", signal_uuid, exc)
-    _record_latency(supabase, signal_uuid, prediction_id, persistence_ms,
-                    (time.monotonic() - delivery_start) * 1000, alert_status == "SENT")
+    # Completion already queued PENDING delivery atomically with the archive.
+    # Record persistence now; delivery/total remain unknown until queue processing.
+    _record_latency(supabase, signal_uuid, prediction_id, persistence_ms, None, False)
+    logger.info(
+        "Predicted %s: T1=%.1f%% SL=%.1f%% regime=%s quality=%.1f alert=PENDING",
+        signal_uuid[:8], jev_result.t1_hit_prob * 100, jev_result.sl_hit_prob * 100,
+        jev_result.regime, jev_result.setup_quality,
+    )
 
     return "COMPLETED"
 
 
 def _recover_pending_alerts(supabase: SupabaseClient) -> None:
-    """Resume only unsent/proven-rejected deliveries using their saved predictions."""
+    """Deliver one new pending or proven-rejected alert from its saved prediction."""
     # Database time excludes backoff/expired rows before the bounded batch.
     jobs = supabase.rpc("poll_jev_alert_jobs", {"p_consumer_id": CONSUMER_ID}).execute().data
     # One recovered delivery per loop prevents a ten-request retry drain.
@@ -451,14 +431,19 @@ def _recover_pending_alerts(supabase: SupabaseClient) -> None:
             continue
         prediction = predictions[0]
         delivery_start = time.monotonic()
-        alert_status = send_jev_followup(
-            supabase, job["signal_uuid"], signal.get("display_id", job["signal_uuid"][:8]),
-            signal["setup_type"], signal["direction"],
-            float(prediction["t1_hit_prob"]), float(prediction["t2_hit_prob"]), float(prediction["sl_hit_prob"]),
-            prediction["regime"], float(prediction["regime_confidence"]),
-            float(prediction["setup_quality"]), float(prediction["is_trap_prob"]),
-            prediction["engine_name"], job["id"],
-        )
+        alert_status = "NONE"
+        try:
+            alert_status = send_jev_followup(
+                supabase, job["signal_uuid"], signal.get("display_id", job["signal_uuid"][:8]),
+                signal["setup_type"], signal["direction"],
+                float(prediction["t1_hit_prob"]), float(prediction["t2_hit_prob"]), float(prediction["sl_hit_prob"]),
+                prediction["regime"], float(prediction["regime_confidence"]),
+                float(prediction["setup_quality"]), float(prediction["is_trap_prob"]),
+                prediction["engine_name"], job["id"],
+            )
+        except Exception as exc:
+            logger.warning("Discord follow-up failed for %s: %s", job["signal_uuid"], exc)
+
         _record_latency(supabase, job["signal_uuid"], job["prediction_id"], None,
                         (time.monotonic() - delivery_start) * 1000, alert_status == "SENT")
 
@@ -503,7 +488,7 @@ def run() -> None:
                     logger.error("Unhandled error processing %s: %s",
                                snapshot.get("signal_uuid", "?")[:8], exc)
 
-            # Fresh inference takes priority; retry one saved delivery, then poll again.
+            # Batch inference is complete; deliver one saved result, then poll again.
             _recover_pending_alerts(supabase)
 
         except KeyboardInterrupt:

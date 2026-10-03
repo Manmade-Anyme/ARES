@@ -45,6 +45,8 @@ The consumer polls for eligible signal-bound `ml_collection` rows at a short, me
 
 ## Live eligibility and restart contract
 
+- `process_signal` performs inference and atomic archive/PENDING queue completion only; it never sends a webhook. Give every selected snapshot its gated inference opportunity before delivering one eligible saved prediction from the durable queue. Record persistence latency immediately, leave delivery/total unknown, and finalize them after guarded queued delivery.
+
 - Convert Discord `retry_after` to a deadline inside `mark_jev_alert_retryable`, using database wall time after locking the matching SENDING attempt. Reject invalid delays and stale tokens; never persist a worker-clock retry deadline. Poll/process fresh signals before alert recovery and handle at most one saved delivery per loop, then return to signal polling.
 
 - Alert recovery uses `poll_jev_alert_jobs`, filtering database-time backoff, session, event freshness and eligible delivery status before its limit. Sort eligible work by expiry then job ID. Recovery selection does not authorize delivery: each attempt still needs a fresh acknowledged atomic send marker.
