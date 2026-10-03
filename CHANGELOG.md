@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-210 single-machine Jev lifecycle:** Run Jev inside the scheduled 1 GB Fly `app` Machine via `scripts/run_app_with_jev.sh`, removing the independent `jev` process group and always-on restart policy. The existing weekday cron now starts and stops both ARES and Jev together.
+
 - **Fix Fly Region Deprecation**: Updated primary_region in fly.toml and DEPLOYMENT.md from deprecated Mumbai (bom) to Singapore (sin) to resolve CI pipeline failure.
 
 - **Deployment test stall (MANM-219)**: Make the Jev worker general-exception regression independent of market hours, isolate its delivery thread, and bound the mocked polling loop. Main run `37131943959` passed and deployed successfully; all three Fly Machines were subsequently confirmed in Singapore.

@@ -2,6 +2,18 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-10-04 · Single Fly Machine lifecycle for Jev (TASK-210)
+
+Changed the Fly runtime shape from two process groups (`app` plus always-on
+`jev`) to one scheduled 1 GB `app` Machine. The app process now runs
+`scripts/run_app_with_jev.sh`, which starts `python main.py` and
+`python -m system_one.consumer` together, then stops Jev when `main.py` exits at
+market close or when Fly stops the Machine.
+
+This keeps Jev on the same weekday cron lifecycle as ARES. No separate Jev cron
+is required, and the old stopped Jev Machines are no longer part of the desired
+deployment contract.
+
 ## 2026-10-03 · Fly Singapore rollout succeeded; Jev startup prerequisite missing (MANM-219)
 
 Migrated the deployment configuration by updating the primary region in `fly.toml` from Mumbai (`bom`) to Singapore (`sin`). The Mumbai region has been deprecated by Fly.io and no longer accepts new resources, which caused the CI deployment job to fail. Updated references in `DEPLOYMENT.md` and added a changelog entry in `CHANGELOG.md`.

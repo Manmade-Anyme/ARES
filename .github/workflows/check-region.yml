@@ -12,7 +12,7 @@ jobs:
       - run: flyctl machine list -a ares-xzy-gq
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      - name: Inspect Jev startup (read only)
+      - name: Inspect app startup (read only)
         shell: bash
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -28,15 +28,21 @@ jobs:
           }
           fly_read secrets list -a ares-xzy-gq --json | jq '[.[] | {name, status}]'
           machines="$(fly_read machine list -a ares-xzy-gq --json)"
-          jev_ids="$(printf '%s' "$machines" | jq -r '.[] | select(.config.metadata.fly_process_group == "jev") | .id')"
-          if [ -z "$jev_ids" ]; then
-            echo "::error::No Jev Machines found"
+          app_ids="$(printf '%s' "$machines" | jq -r '.[] | select(.config.metadata.fly_process_group == "app") | .id')"
+          if [ -z "$app_ids" ]; then
+            echo "::error::No app Machines found"
             exit 1
           fi
-          for machine_id in $jev_ids; do
+          running_jev_ids="$(printf '%s' "$machines" | jq -r '.[] | select(.config.metadata.fly_process_group == "jev" and .state != "stopped") | .id')"
+          if [ -n "$running_jev_ids" ]; then
+            echo "::error::Separate running Jev Machine found; Jev should run inside the app Machine"
+            exit 1
+          fi
+          for machine_id in $app_ids; do
             printf '%s' "$machines" | jq --arg id "$machine_id" '.[] | select(.id == $id) | {
               id, state, region,
               process_group: .config.metadata.fly_process_group,
+              memory_mb: .config.guest.memory_mb,
               restart: .config.restart,
               events: [.events[]? | {
                 type, status, source, timestamp,
