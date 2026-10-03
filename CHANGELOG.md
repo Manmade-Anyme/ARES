@@ -3,6 +3,27 @@
 All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
+
+- **TASK-210 independent delivery scheduling:** Drain the durable Discord queue on a dedicated thread with its own Supabase client inside the existing Jev worker. Continue fresh snapshot polling/inference during slow new or retried webhook requests; preserve database ownership, expiry, retry, and latency rules.
+
+- **TASK-210 fresh delivery separation:** Remove webhook transport from signal inference. Archive each prediction with durable PENDING delivery, finish the inference batch, then deliver one saved result through the guarded queue. Preserve persistence timing while delivery/total stay unknown until delivery processing.
+
+- **TASK-210 retry clock and scheduling review:** Persist Discord retry intervals as PostgreSQL-time deadlines through an owned RPC. Run fresh-signal polling/inference before recovery and handle only one saved delivery per loop, preventing a ten-request retry drain.
+
+- **TASK-210 alert backoff review:** Filter backoff, freshness and pending-delivery status in database time before the recovery batch limit; order eligible alerts by earliest expiry and job ID. Preserve final send ownership/freshness checks.
+
+- **TASK-210 expiry and UUID review:** Replace history pagination with one database-time RPC that filters saved rollout/age policy, expiry and blocked jobs before its ten-signal limit. Add a recent-snapshot index and normalize canonical UUID reads/claims across bridge, greenfield and later cutover schemas.
+
+- **TASK-210 polling review:** Paginate past claimed snapshots before enforcing the ten eligible-signal limit, with deterministic timestamp/UUID ordering and signal deduplication. Preserve per-page snapshot query timing and the authoritative claim-time freshness guard.
+
+- **TASK-210 Jev lifecycle P1:** Keep the Jev worker waiting between market sessions and restart its Machine independently with a process-scoped `always` policy. Preserve the trading Machine's `never` policy and cron schedule; document overnight costs and rollout verification. Add after-hours startup and next-session regression tests.
+
+- **TASK-210 latency and QA review:** Measure the actual snapshot query separately from signal lookup; finalize event-to-alert latency only after acknowledged persistence and confirmed delivery, including restart recovery. Add stage metrics and preserve unknown delivery as null total latency. Expand failure/startup tests to 100% System One line and branch coverage and enforce that threshold in CI.
+
+- **TASK-210 additional PR review:** Derive structural runway from the collector’s saved distance fields, using snapshot spot and trade entry (context v1.2). Document required Jev service-role/TypeSafe secrets for Fly and local startup. Separate definite Jev rejections (`FAILED`) from uncertain requests (`UNKNOWN`) without automatic retries.
+
+- **TASK-210 PR review:** Use the pinned market-cycle timestamp and persisted age policy for database-time claim, invocation, and delivery gates. Record a durable Discord attempt before sending; ambiguous responses and abandoned attempts remain terminal without resend. Atomically archive Jev results and complete jobs, preserving delivery state on lost database acknowledgments.
+- **System One: Jev forward predictor POC (TASK-210)**: Added `system_one/` package as a parallel Fly process group that polls for fresh ARES signals, invokes TypeSafe Jev with seven batched questions (first barrier, T2 conditional, regime, three quality components, trap), and persists probability outputs to `llm_predictions`. Includes durable claim semantics via `llm_prediction_jobs`, atomic PENDING→SENDING→SENT Discord delivery with fresh event-time checks, Supabase migration (3 tables + lifecycle RPCs), `fly.toml` jev process group, and `typesafe-sdk` dependency. Zero cross-boundary imports with existing trading code.
 - **OI-wall Discord watch cancellation**: Close a previously delivered watch when the setup expires, is replaced, breaches, fails R:R, or crosses into a new session. Preserve the original event details across webhook retries and session resets, deliver cancellations before fresh watches, and keep emitted trade exits separate from watch cancellation. Resolve the watch only after signal persistence and final Discord delivery succeed; failures issue cancellation with guidance that distinguishes aborted entry from a potentially tracked trade. Pending notices remain process-local.
 - **Discord clarity (MANM-158)**: Enable an earlier `RETEST_READY` OI-wall heads-up in both profiles, retry failed webhook delivery while the wall remains ready, display the later retest time/close and earlier interaction/excursion in final signal alerts, reset OI-wall state at a new candle date, and describe OI size/growth without claiming confirmed writer defense.
 - **Bugfix (MANM-158)**: Require the secondary OI wall retest candle to move in the trade direction before immediate entry; a contrary candle keeps the wall ready for a later valid retest.

@@ -12,6 +12,10 @@ primary_region = 'bom'
 [env]
   TZ = 'Asia/Kolkata'
 
+[processes]
+  app = 'python main.py'
+  jev = 'python -m system_one.consumer'
+
 [[vm]]
   memory = '768mb'
   cpu_kind = 'shared'
@@ -20,5 +24,21 @@ primary_region = 'bom'
   processes = ['app']
   size = 'shared-cpu-1x'
 
+# Jev consumer: lightweight process, no Dhan calls, no model loading.
+# Sized independently from the trading Machine.
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256
+  processes = ['jev']
+  size = 'shared-cpu-1x'
+
 [[restart]]
   policy = 'never'
+  processes = ['app']
+
+# Jev waits between sessions; restart it independently after process/host exits.
+[[restart]]
+  policy = 'always'
+  processes = ['jev']

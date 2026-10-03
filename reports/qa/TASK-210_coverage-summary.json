@@ -1,0 +1,151 @@
+{
+  "scope": "system_one/*.py (entire production package, including module entrypoints)",
+  "command": "python3 -m pytest tests/unit/test_task210*.py -q --cov=system_one --cov-branch --cov-fail-under=100 --cov-report=json",
+  "tests_passed": 204,
+  "totals": {
+    "covered_lines": 592,
+    "num_statements": 592,
+    "percent_covered": 100.0,
+    "percent_covered_display": "100",
+    "missing_lines": 0,
+    "excluded_lines": 0,
+    "percent_statements_covered": 100.0,
+    "percent_statements_covered_display": "100",
+    "num_branches": 154,
+    "num_partial_branches": 0,
+    "covered_branches": 154,
+    "missing_branches": 0,
+    "percent_branches_covered": 100.0,
+    "percent_branches_covered_display": "100"
+  },
+  "files": {
+    "system_one/__init__.py": {
+      "summary": {
+        "covered_lines": 2,
+        "num_statements": 2,
+        "percent_covered": 100.0,
+        "percent_covered_display": "100",
+        "missing_lines": 0,
+        "excluded_lines": 0,
+        "percent_statements_covered": 100.0,
+        "percent_statements_covered_display": "100",
+        "num_branches": 0,
+        "num_partial_branches": 0,
+        "covered_branches": 0,
+        "missing_branches": 0,
+        "percent_branches_covered": 100.0,
+        "percent_branches_covered_display": "100"
+      },
+      "missing_lines": [],
+      "missing_branches": [],
+      "excluded_lines": []
+    },
+    "system_one/__main__.py": {
+      "summary": {
+        "covered_lines": 2,
+        "num_statements": 2,
+        "percent_covered": 100.0,
+        "percent_covered_display": "100",
+        "missing_lines": 0,
+        "excluded_lines": 0,
+        "percent_statements_covered": 100.0,
+        "percent_statements_covered_display": "100",
+        "num_branches": 0,
+        "num_partial_branches": 0,
+        "covered_branches": 0,
+        "missing_branches": 0,
+        "percent_branches_covered": 100.0,
+        "percent_branches_covered_display": "100"
+      },
+      "missing_lines": [],
+      "missing_branches": [],
+      "excluded_lines": []
+    },
+    "system_one/consumer.py": {
+      "summary": {
+        "covered_lines": 239,
+        "num_statements": 239,
+        "percent_covered": 100.0,
+        "percent_covered_display": "100",
+        "missing_lines": 0,
+        "excluded_lines": 0,
+        "percent_statements_covered": 100.0,
+        "percent_statements_covered_display": "100",
+        "num_branches": 44,
+        "num_partial_branches": 0,
+        "covered_branches": 44,
+        "missing_branches": 0,
+        "percent_branches_covered": 100.0,
+        "percent_branches_covered_display": "100"
+      },
+      "missing_lines": [],
+      "missing_branches": [],
+      "excluded_lines": []
+    },
+    "system_one/context.py": {
+      "summary": {
+        "covered_lines": 146,
+        "num_statements": 146,
+        "percent_covered": 100.0,
+        "percent_covered_display": "100",
+        "missing_lines": 0,
+        "excluded_lines": 0,
+        "percent_statements_covered": 100.0,
+        "percent_statements_covered_display": "100",
+        "num_branches": 70,
+        "num_partial_branches": 0,
+        "covered_branches": 70,
+        "missing_branches": 0,
+        "percent_branches_covered": 100.0,
+        "percent_branches_covered_display": "100"
+      },
+      "missing_lines": [],
+      "missing_branches": [],
+      "excluded_lines": []
+    },
+    "system_one/discord.py": {
+      "summary": {
+        "covered_lines": 140,
+        "num_statements": 140,
+        "percent_covered": 100.0,
+        "percent_covered_display": "100",
+        "missing_lines": 0,
+        "excluded_lines": 0,
+        "percent_statements_covered": 100.0,
+        "percent_statements_covered_display": "100",
+        "num_branches": 36,
+        "num_partial_branches": 0,
+        "covered_branches": 36,
+        "missing_branches": 0,
+        "percent_branches_covered": 100.0,
+        "percent_branches_covered_display": "100"
+      },
+      "missing_lines": [],
+      "missing_branches": [],
+      "excluded_lines": []
+    },
+    "system_one/jev.py": {
+      "summary": {
+        "covered_lines": 63,
+        "num_statements": 63,
+        "percent_covered": 100.0,
+        "percent_covered_display": "100",
+        "missing_lines": 0,
+        "excluded_lines": 0,
+        "percent_statements_covered": 100.0,
+        "percent_statements_covered_display": "100",
+        "num_branches": 4,
+        "num_partial_branches": 0,
+        "covered_branches": 4,
+        "missing_branches": 0,
+        "percent_branches_covered": 100.0,
+        "percent_branches_covered_display": "100"
+      },
+      "missing_lines": [],
+      "missing_branches": [],
+      "excluded_lines": []
+    }
+  },
+  "evidence_commit": "0653005c24a422678e3ebe7d5bdd76095f4735c5",
+  "later_changes_verified": false
+}
