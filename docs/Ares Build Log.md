@@ -2,6 +2,10 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-10-03 · Redeployed ARES to Singapore (sin) to fix CI failure due to Fly.io bom region deprecation
+
+Migrated the deployment configuration by updating the primary region in `fly.toml` from Mumbai (`bom`) to Singapore (`sin`). The Mumbai region has been deprecated by Fly.io and no longer accepts new resources, which caused the CI deployment job to fail. Updated references in `DEPLOYMENT.md` and added a changelog entry in `CHANGELOG.md`.
+
 ## 2026-09-29 · MANM-156 Final Refit and Report Failure Regression Coverage
 
 Validated the exact Stage 1 subset bounded by the trade holdout before fitting,
