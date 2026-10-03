@@ -45,9 +45,9 @@ The consumer polls for eligible signal-bound `ml_collection` rows at a short, me
 
 ## Live eligibility and restart contract
 
-- `process_signal` performs inference and atomic archive/PENDING queue completion only; it never sends a webhook. Give every selected snapshot its gated inference opportunity before delivering one eligible saved prediction from the durable queue. Record persistence latency immediately, leave delivery/total unknown, and finalize them after guarded queued delivery.
+- `process_signal` performs inference and atomic archive/PENDING queue completion only; it never sends a webhook. A dedicated delivery thread inside the existing Jev worker drains the durable queue with its own Supabase client. Neither new nor retried Discord requests run on the inference polling thread; the next snapshot poll continues while delivery is in flight. Record persistence latency immediately, leave delivery/total unknown, and finalize them after guarded queued delivery.
 
-- Convert Discord `retry_after` to a deadline inside `mark_jev_alert_retryable`, using database wall time after locking the matching SENDING attempt. Reject invalid delays and stale tokens; never persist a worker-clock retry deadline. Poll/process fresh signals before alert recovery and handle at most one saved delivery per loop, then return to signal polling.
+- Convert Discord `retry_after` to a deadline inside `mark_jev_alert_retryable`, using database wall time after locking the matching SENDING attempt. Reject invalid delays and stale tokens; never persist a worker-clock retry deadline. The delivery thread handles one saved alert per pass, waits the configured poll interval, and pauses outside the session. Its client startup/query/transport failures are logged and retried independently of inference polling. Shutdown signals this thread and joins for at most one second; interrupted sends retain the durable unknown/no-replay rules.
 
 - Alert recovery uses `poll_jev_alert_jobs`, filtering database-time backoff, session, event freshness and eligible delivery status before its limit. Sort eligible work by expiry then job ID. Recovery selection does not authorize delivery: each attempt still needs a fresh acknowledged atomic send marker.
 

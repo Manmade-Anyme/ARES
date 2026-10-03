@@ -4,6 +4,8 @@ from unittest.mock import MagicMock
 from contextlib import nullcontext
 from datetime import datetime, timezone
 import runpy
+import threading
+from threading import Event, Thread as NativeThread
 import pytest
 
 import system_one.consumer as consumer
@@ -297,6 +299,10 @@ def live_loop(flow, monkeypatch):
     monkeypatch.setattr(supabase, 'create_client', MagicMock(return_value=flow.db))
     monkeypatch.setattr(consumer, 'datetime', SessionClock)
     monkeypatch.setattr(consumer.time, 'sleep', MagicMock(side_effect=KeyboardInterrupt))
+    # Ordinary loop cases control the background scheduling boundary. The
+    # blocked-webhook regression below uses a real delivery thread instead.
+    monkeypatch.setattr(consumer, 'Thread', MagicMock())
+    monkeypatch.setattr(threading, 'Thread', consumer.Thread)
     SessionClock.hour = 10
     SessionClock.day = 2
     return flow
@@ -346,7 +352,7 @@ def test_running_worker_predicts_across_session_close_without_rebootstrap(live_l
             SessionClock.hour = 16
         elif len(sleeps) == 2:
             live_loop.invoke.assert_called_once()  # No inference or delivery overnight.
-            live_loop.send.assert_called_once()
+            live_loop.send.assert_not_called()  # Delivery has its own execution path.
             SessionClock.day = 5
             SessionClock.hour = 10
             live_loop.snapshot.update(signal_uuid='next-session', timestamp='2026-10-05T04:30:00Z')
@@ -357,8 +363,8 @@ def test_running_worker_predicts_across_session_close_without_rebootstrap(live_l
     with pytest.raises(KeyboardInterrupt):
         consumer.run()
     assert sleeps == [consumer.POLL_INTERVAL, 30, consumer.POLL_INTERVAL]
-    assert live_loop.invoke.call_count == live_loop.send.call_count == 2
-    assert [call.args[1] for call in live_loop.send.call_args_list] == ['sig', 'next-session']
+    assert live_loop.invoke.call_count == 2
+    live_loop.send.assert_not_called()
     assert sum(call.args[0] == 'llm_consumer_state' for call in live_loop.db.table.call_args_list) == 1
     assert sum(call.args[0] == 'recover_llm_prediction_jobs' for call in live_loop.db.rpc.call_args_list) == 2
 
@@ -379,13 +385,13 @@ def test_database_recovery_error_does_not_stop_polling(live_loop, caplog):
     live_loop.invoke.assert_called_once()
 
 
-def test_loop_database_failure_is_logged_and_backed_off(live_loop, caplog):
+def test_delivery_database_failure_is_not_queried_by_inference_loop(live_loop):
     live_loop.table_errors['llm_prediction_jobs'] = ConnectionError('delivery query offline')
     with pytest.raises(KeyboardInterrupt):
         consumer.run()
-    assert 'Consumer loop error' in caplog.text
     consumer.time.sleep.assert_called_once_with(consumer.POLL_INTERVAL)
-    live_loop.invoke.assert_called_once()  # Fresh inference runs before delivery recovery fails.
+    live_loop.invoke.assert_called_once()
+    assert not any(call.args[0] == 'poll_jev_alert_jobs' for call in live_loop.db.rpc.call_args_list)
 
 
 def test_interrupt_during_poll_stops_loop(live_loop):
@@ -447,7 +453,7 @@ def test_recovery_handles_only_one_saved_alert_per_loop(flow):
     flow.invoke.assert_not_called()
 
 
-def test_fresh_inference_precedes_slow_recovery(live_loop, monkeypatch):
+def test_inference_loop_never_drains_saved_alerts(live_loop):
     sequence = []
     live_loop.invoke.side_effect = lambda *args, **kwargs: sequence.append('inference') or live_loop.result
     def recover_send(*args, **kwargs):
@@ -459,7 +465,8 @@ def test_fresh_inference_precedes_slow_recovery(live_loop, monkeypatch):
         {'id': i, 'signal_uuid': 'sig', 'prediction_id': 9} for i in range(10)]
     with pytest.raises(KeyboardInterrupt):
         consumer.run()
-    assert sequence == ['inference', 'recovered']
+    assert sequence == ['inference']
+    live_loop.send.assert_not_called()
 
 
 def test_inference_archives_pending_prediction_without_webhook(flow):
@@ -470,7 +477,7 @@ def test_inference_archives_pending_prediction_without_webhook(flow):
     assert flow.recorded[-1]['p_confirmed_sent'] is False
 
 
-def test_burst_finishes_inference_before_any_slow_webhook(live_loop):
+def test_inference_batch_does_not_send_webhooks(live_loop):
     second = dict(live_loop.snapshot, signal_uuid='second', snapshot_uuid='snap-second')
     live_loop.rows['ml_collection'] = [live_loop.snapshot, second]
     sequence = []
@@ -485,5 +492,75 @@ def test_burst_finishes_inference_before_any_slow_webhook(live_loop):
     live_loop.send.side_effect = deliver
     with pytest.raises(KeyboardInterrupt):
         consumer.run()
-    assert sequence == ['inference', 'inference', 'webhook']
+    assert sequence == ['inference', 'inference']
     assert live_loop.invoke.call_count == 2
+
+
+def test_next_poll_predicts_while_webhook_is_still_blocked(live_loop, monkeypatch):
+    """A newly visible snapshot is archived without waiting for Discord."""
+    monkeypatch.setattr(consumer, 'Thread', NativeThread)
+    entered, release = Event(), Event()
+    delivery_db = MagicMock()
+    delivery_db.rpc.side_effect = live_loop.db.rpc.side_effect
+    delivery_db.table.side_effect = live_loop.db.table.side_effect
+    clients = []
+    def create_client(*args):
+        client = delivery_db if threading.current_thread().name == 'jev-delivery' else live_loop.db
+        clients.append(client)
+        return client
+    monkeypatch.setattr(consumer, 'create_client', create_client)
+    live_loop.rows['llm_prediction_jobs'] = [{'id': 1, 'signal_uuid': 'sig', 'prediction_id': 9}]
+    def deliver(*args, **kwargs):
+        assert args[0] is delivery_db
+        entered.set()
+        assert release.wait(3), 'test did not release the blocked webhook'
+        return 'SENT'
+    live_loop.send.side_effect = deliver
+    rounds = []
+    def next_poll(seconds):
+        rounds.append(seconds)
+        if len(rounds) == 1:
+            assert entered.wait(3), 'delivery thread did not enter transport'
+            live_loop.rows['ml_collection'] = [dict(live_loop.snapshot,
+                signal_uuid='late-visible', snapshot_uuid='snap-late')]
+            return
+        assert live_loop.published['signal_uuid'] == 'late-visible'
+        assert not release.is_set()  # Second inference finished during the webhook.
+        release.set()
+        raise KeyboardInterrupt
+    monkeypatch.setattr(consumer.time, 'sleep', next_poll)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            consumer.run()
+    finally:
+        release.set()
+    assert live_loop.invoke.call_count == 2
+    assert clients == [live_loop.db, delivery_db]
+
+
+@pytest.mark.parametrize('closed,failure', [(True, None), (False, 'client'), (False, 'queue'), (False, None)])
+def test_delivery_loop_waits_and_survives_boundary_failures(flow, monkeypatch, closed, failure, caplog):
+    stop = Event()
+    waits = []
+    def wait(seconds):
+        waits.append(seconds)
+        stop.set()
+        return True
+    monkeypatch.setattr(stop, 'wait', wait)
+    monkeypatch.setattr(consumer, '_is_trading_session', lambda: not closed)
+    client = MagicMock(return_value=flow.db)
+    if failure == 'client':
+        client.side_effect = ConnectionError('client unavailable')
+    elif failure == 'queue':
+        flow.rpc_errors['poll_jev_alert_jobs'] = ConnectionError('delivery query offline')
+    monkeypatch.setattr(consumer, '_create_supabase_client', client)
+    consumer._delivery_loop(stop)
+    assert waits == [30 if closed else consumer.POLL_INTERVAL]
+    if closed:
+        client.assert_not_called()
+        flow.db.rpc.assert_not_called()
+    elif failure:
+        assert 'Delivery loop error' in caplog.text
+    else:
+        client.assert_called_once()
+    flow.invoke.assert_not_called()

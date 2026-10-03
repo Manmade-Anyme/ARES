@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
+from threading import Event, Thread
 from typing import Any, Dict, List, Optional, Tuple
 
 from supabase import create_client, Client as SupabaseClient
@@ -315,7 +316,7 @@ def process_signal(
 ) -> Optional[str]:
     """Claim, evaluate and archive one signal with durable PENDING delivery.
 
-    Webhook transport runs after the inference batch through the saved-job queue.
+    Webhook transport runs independently through the saved-job queue.
     Returns status string or None.
     """
     signal_uuid = snapshot_row["signal_uuid"]
@@ -421,7 +422,7 @@ def _recover_pending_alerts(supabase: SupabaseClient) -> None:
     """Deliver one new pending or proven-rejected alert from its saved prediction."""
     # Database time excludes backoff/expired rows before the bounded batch.
     jobs = supabase.rpc("poll_jev_alert_jobs", {"p_consumer_id": CONSUMER_ID}).execute().data
-    # One recovered delivery per loop prevents a ten-request retry drain.
+    # One delivery per pass keeps shutdown/session checks between attempts.
     for job in (jobs or [])[:1]:
         predictions = supabase.table("llm_predictions").select("*").eq(
             "id", job["prediction_id"]
@@ -451,6 +452,27 @@ def _recover_pending_alerts(supabase: SupabaseClient) -> None:
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+def _delivery_loop(stop: Event) -> None:
+    """Drain saved alerts independently, using a client owned by this thread.
+
+    No database/HTTP client is shared with inference. Database send markers,
+    not thread scheduling, remain the authority for delivery and retries.
+    """
+    supabase = None
+    while not stop.is_set():
+        delay = POLL_INTERVAL
+        try:
+            if not _is_trading_session():
+                delay = 30
+            else:
+                if supabase is None:
+                    supabase = _create_supabase_client()
+                _recover_pending_alerts(supabase)
+        except Exception as exc:
+            logger.error("Delivery loop error: %s", exc)
+        stop.wait(delay)
+
+
 def run() -> None:
     """Main consumer loop."""
     logging.basicConfig(
@@ -469,35 +491,44 @@ def run() -> None:
 
     logger.info("Consumer live_from=%s, max_age=%ss", live_from, max_age)
 
-    while True:
-        try:
-            if not _is_trading_session():
-                # Keep this Machine ready for the next session without DB/API polling.
-                time.sleep(30)
-                continue
+    # A slow webhook must not consume the next snapshot's invocation window.
+    # Queue state is durable; never pass predictions through an in-memory queue.
+    delivery_stop = Event()
+    delivery_thread = Thread(target=_delivery_loop, args=(delivery_stop,),
+                             name="jev-delivery", daemon=True)
+    delivery_thread.start()
+    try:
+        while True:
+            try:
+                if not _is_trading_session():
+                    # Keep this Machine ready for the next session without DB/API polling.
+                    time.sleep(30)
+                    continue
 
-            _expire_stale_jobs(supabase)
+                _expire_stale_jobs(supabase)
 
-            # Poll for eligible signals
-            eligible = _poll_eligible_signals(supabase)
+                # Poll for eligible signals; delivery never runs on this thread.
+                eligible = _poll_eligible_signals(supabase)
 
-            for snapshot in eligible:
-                try:
-                    process_signal(supabase, snapshot)
-                except Exception as exc:
-                    logger.error("Unhandled error processing %s: %s",
-                               snapshot.get("signal_uuid", "?")[:8], exc)
+                for snapshot in eligible:
+                    try:
+                        process_signal(supabase, snapshot)
+                    except Exception as exc:
+                        logger.error("Unhandled error processing %s: %s",
+                                   snapshot.get("signal_uuid", "?")[:8], exc)
 
-            # Batch inference is complete; deliver one saved result, then poll again.
-            _recover_pending_alerts(supabase)
+            except KeyboardInterrupt:
+                logger.info("Consumer stopped by user.")
+                break
+            except Exception as exc:
+                logger.error("Consumer loop error: %s", exc)
 
-        except KeyboardInterrupt:
-            logger.info("Consumer stopped by user.")
-            break
-        except Exception as exc:
-            logger.error("Consumer loop error: %s", exc)
-
-        time.sleep(POLL_INTERVAL)
+            time.sleep(POLL_INTERVAL)
+    finally:
+        delivery_stop.set()
+        # Do not wait for a webhook timeout at shutdown. Any interrupted SENDING
+        # attempt follows the existing durable UNKNOWN/no-replay recovery rule.
+        delivery_thread.join(timeout=1)
 
 
 if __name__ == "__main__":

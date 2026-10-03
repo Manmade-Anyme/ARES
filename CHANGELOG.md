@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-210 independent delivery scheduling:** Drain the durable Discord queue on a dedicated thread with its own Supabase client inside the existing Jev worker. Continue fresh snapshot polling/inference during slow new or retried webhook requests; preserve database ownership, expiry, retry, and latency rules.
+
 - **TASK-210 fresh delivery separation:** Remove webhook transport from signal inference. Archive each prediction with durable PENDING delivery, finish the inference batch, then deliver one saved result through the guarded queue. Preserve persistence timing while delivery/total stay unknown until delivery processing.
 
 - **TASK-210 retry clock and scheduling review:** Persist Discord retry intervals as PostgreSQL-time deadlines through an owned RPC. Run fresh-signal polling/inference before recovery and handle only one saved delivery per loop, preventing a ten-request retry drain.
