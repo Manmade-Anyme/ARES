@@ -629,3 +629,53 @@ def test_sdk_setup_cannot_start_stale_request(mock_client):
         with pytest.raises(ValueError, match="dispatch window elapsed"):
             invoke_jev({}, dispatch_deadline=1.0)
     mock_client.return_value.system_one.assert_not_called()
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests
+# ---------------------------------------------------------------------------
+
+@patch('system_one.consumer._create_supabase_client')
+@patch('system_one.consumer._recover_pending_alerts')
+@patch('system_one.consumer._is_trading_session', return_value=True)
+def test_delivery_loop_caches_supabase_client(mock_trading, mock_recover, mock_create):
+    from threading import Event
+    from system_one.consumer import _delivery_loop
+    stop = Event()
+    call_count = [0]
+    def recover(sb):
+        call_count[0] += 1
+        if call_count[0] >= 2:
+            stop.set()
+    mock_recover.side_effect = recover
+    
+    with patch('system_one.consumer.POLL_INTERVAL', 0.001):
+        _delivery_loop(stop)
+    
+    mock_create.assert_called_once()
+    assert mock_recover.call_count == 2
+
+
+@patch('system_one.consumer.logger')
+@patch('system_one.consumer._create_supabase_client')
+@patch('system_one.consumer._bootstrap_consumer_state')
+@patch('system_one.consumer._poll_eligible_signals')
+@patch('system_one.consumer.time.sleep')
+def test_run_catches_general_exception(mock_sleep, mock_poll, mock_bootstrap, mock_create, mock_logger):
+    from system_one.consumer import run
+    mock_bootstrap.return_value = {"live_from": "2026-01-01T00:00:00Z", "max_signal_age_seconds": 3600}
+    
+    call_count = [0]
+    def side_effect(*args):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise ValueError("test general exception")
+        else:
+            raise KeyboardInterrupt()
+            
+    mock_poll.side_effect = side_effect
+    
+    run()
+    
+    from unittest.mock import ANY
+    mock_logger.error.assert_any_call("Consumer loop error: %s", ANY)
+
