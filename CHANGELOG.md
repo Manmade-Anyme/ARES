@@ -4,6 +4,9 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Fix Fly Region Deprecation**: Updated primary_region in fly.toml and DEPLOYMENT.md from deprecated Mumbai (bom) to Singapore (sin) to resolve CI pipeline failure.
+
+
 - **TASK-210 independent delivery scheduling:** Drain the durable Discord queue on a dedicated thread with its own Supabase client inside the existing Jev worker. Continue fresh snapshot polling/inference during slow new or retried webhook requests; preserve database ownership, expiry, retry, and latency rules.
 
 - **TASK-210 fresh delivery separation:** Remove webhook transport from signal inference. Archive each prediction with durable PENDING delivery, finish the inference batch, then deliver one saved result through the guarded queue. Preserve persistence timing while delivery/total stay unknown until delivery processing.

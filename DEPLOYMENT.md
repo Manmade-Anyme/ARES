@@ -29,7 +29,7 @@ A lightweight, optimized Python 3.10-slim image. It installs the dependencies fr
 The Fly configuration file. 
 *   It explicitly avoids `[http_service]` blocks.
 *   It configures the VM size (`shared-cpu-1x`, 1GB memory) necessary for Pandas/NumPy operations inside the fetchers.
-*   The primary region is set to `bom` (Mumbai) to ensure minimal latency to the NSE servers.
+*   The primary region is set to `sin` (Singapore) to ensure minimal latency to the NSE servers.
 
 ---
 
