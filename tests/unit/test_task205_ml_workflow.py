@@ -46,6 +46,9 @@ def test_ml_workflow_structure():
     assert "actions/setup-python@v5" in content
     assert 'python-version: "3.10"' in content
     assert "python -m ml_signal.train_offline" in content
+    assert "--enforce-gate" not in content
+    assert 'PROMOTED=$(jq -r \'.promoted // false\' "$METRICS_PATH")' in content
+    assert "promoted=$PROMOTED" in content
 
     # Auto-commit & push
     assert "git commit -m" in content

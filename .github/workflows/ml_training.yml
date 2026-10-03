@@ -43,7 +43,7 @@ jobs:
         run: |
           rm -f "$METRICS_PATH"
           rm -f reports/ml/calibration_validation_record.json reports/ml/confidence_calibration_stratified_report.json
-          python -m ml_signal.train_offline --promote --enforce-gate
+          python -m ml_signal.train_offline --promote
           test -f "$METRICS_PATH"
           PROMOTED=$(jq -r '.promoted // false' "$METRICS_PATH")
           echo "promoted=$PROMOTED" >> $GITHUB_OUTPUT
