@@ -6,6 +6,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 - **Fix Fly Region Deprecation**: Updated primary_region in fly.toml and DEPLOYMENT.md from deprecated Mumbai (bom) to Singapore (sin) to resolve CI pipeline failure.
 
+- **Deployment test stall (MANM-219)**: Make the Jev worker general-exception regression independent of market hours, isolate its delivery thread, and bound the mocked polling loop. The cancelled test job had skipped Fly deployment even after the Singapore configuration fix; confirm a successful `main` deploy after merging this repair.
+
 
 - **TASK-210 independent delivery scheduling:** Drain the durable Discord queue on a dedicated thread with its own Supabase client inside the existing Jev worker. Continue fresh snapshot polling/inference during slow new or retried webhook requests; preserve database ownership, expiry, retry, and latency rules.
 
