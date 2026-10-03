@@ -12,3 +12,60 @@ jobs:
       - run: flyctl machine list -a ares-xzy-gq
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Inspect Jev startup (read only)
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          fly_read() {
+            if flyctl "$@" 2>/tmp/fly-diagnostic-error; then
+              return 0
+            else
+              status=$?
+              echo "::error::Fly read operation failed; error payload withheld" >&2
+              return "$status"
+            fi
+          }
+          fly_read secrets list -a ares-xzy-gq --json | jq '[.[] | {name, status}]'
+          machines="$(fly_read machine list -a ares-xzy-gq --json)"
+          jev_ids="$(printf '%s' "$machines" | jq -r '.[] | select(.config.metadata.fly_process_group == "jev") | .id')"
+          if [ -z "$jev_ids" ]; then
+            echo "::error::No Jev Machines found"
+            exit 1
+          fi
+          for machine_id in $jev_ids; do
+            printf '%s' "$machines" | jq --arg id "$machine_id" '.[] | select(.id == $id) | {
+              id, state, region,
+              process_group: .config.metadata.fly_process_group,
+              restart: .config.restart,
+              events: [.events[]? | {
+                type, status, source, timestamp,
+                exit_code: .request.exit_event.exit_code,
+                oom_killed: .request.exit_event.oom_killed
+              }]
+            }'
+            # Status has no JSON flag. Its event table contains exit/OOM data;
+            # exclude the preceding VM/config section from Actions output.
+            fly_read machine status "$machine_id" -a ares-xzy-gq | sed -n '/Event Logs/,$p'
+            # Keep raw logs out of Actions output: runtime exception payloads
+            # may contain application secrets not masked by the Actions token.
+            timeout 30s flyctl logs -a ares-xzy-gq --instance "$machine_id" --no-tail 2>&1 |
+              python -c '
+          import sys
+          logs = sys.stdin.read()
+          signatures = {
+              "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set": "Missing Supabase URL or service-role key",
+              "ModuleNotFoundError": "Missing Python startup dependency",
+              "ImportError": "Python startup import failure",
+              "Failed to bootstrap consumer state": "Consumer state bootstrap failed",
+              "llm_consumer_state": "Consumer state table referenced in logs; inspect its migration/access",
+              "APIError": "Database/API startup error",
+              "Out of memory": "Out-of-memory startup error",
+              "Starting Jev consumer": "Jev startup entered",
+              "Loaded existing consumer state": "Persisted consumer state loaded",
+              "Bootstrapped consumer state": "New consumer state initialized",
+              "Consumer live_from=": "Consumer polling loop initialized",
+          }
+          found = [message for signature, message in signatures.items() if signature in logs]
+          print("Startup signatures: " + ("; ".join(found) if found else "none recognized; inspect Fly monitoring logs"))
+          '
+          done
