@@ -679,3 +679,67 @@ def test_run_catches_general_exception(mock_sleep, mock_poll, mock_bootstrap, mo
     from unittest.mock import ANY
     mock_logger.error.assert_any_call("Consumer loop error: %s", ANY)
 
+
+# ---------------------------------------------------------------------------
+# Extra explicit coverage fixes for CI
+# ---------------------------------------------------------------------------
+
+@patch('system_one.consumer._create_supabase_client')
+@patch('system_one.consumer._recover_pending_alerts')
+def test_delivery_loop_caches_supabase_client_explicit_true(mock_recover, mock_create):
+    from system_one.consumer import _delivery_loop
+    from unittest.mock import MagicMock
+    with patch('system_one.consumer._is_trading_session', return_value=True):
+        stop_mock = MagicMock()
+        stop_mock.is_set.side_effect = [False, False, True]
+        with patch('system_one.consumer.POLL_INTERVAL', 0.001):
+            _delivery_loop(stop_mock)
+        mock_create.assert_called_once()
+        assert mock_recover.call_count == 2
+
+@patch('system_one.consumer._create_supabase_client')
+@patch('system_one.consumer._recover_pending_alerts')
+def test_delivery_loop_caches_supabase_client_explicit_false(mock_recover, mock_create):
+    from system_one.consumer import _delivery_loop
+    from unittest.mock import MagicMock
+    with patch('system_one.consumer._is_trading_session', return_value=False):
+        stop_mock = MagicMock()
+        stop_mock.is_set.side_effect = [False, True]
+        with patch('system_one.consumer.POLL_INTERVAL', 0.001):
+            _delivery_loop(stop_mock)
+        mock_create.assert_not_called()
+        mock_recover.assert_not_called()
+
+def test_delivery_loop_exception():
+    from system_one.consumer import _delivery_loop
+    from unittest.mock import MagicMock
+    with patch('system_one.consumer._is_trading_session', return_value=True):
+        with patch('system_one.consumer.logger') as mock_logger:
+            stop_mock = MagicMock()
+            stop_mock.is_set.side_effect = [False, True]
+            with patch('system_one.consumer._recover_pending_alerts', side_effect=ValueError("delivery err")):
+                with patch('system_one.consumer.POLL_INTERVAL', 0.001):
+                    _delivery_loop(stop_mock)
+            from unittest.mock import ANY; mock_logger.error.assert_called_with("Delivery loop error: %s", ANY)
+
+@patch('system_one.consumer._create_supabase_client')
+@patch('system_one.consumer._bootstrap_consumer_state')
+@patch('system_one.consumer.time.sleep')
+def test_run_catches_general_exception_explicit(mock_sleep, mock_bootstrap, mock_create):
+    from system_one.consumer import run
+    mock_bootstrap.return_value = {"live_from": "2026-01-01T00:00:00Z", "max_signal_age_seconds": 3600}
+    with patch('system_one.consumer._is_trading_session', return_value=True):
+        with patch('system_one.consumer._poll_eligible_signals', side_effect=[ValueError("main err"), KeyboardInterrupt()]):
+            with patch('system_one.consumer.logger') as mock_logger:
+                run()
+                from unittest.mock import ANY; mock_logger.error.assert_any_call("Consumer loop error: %s", ANY)
+
+@patch('system_one.consumer._create_supabase_client')
+@patch('system_one.consumer._bootstrap_consumer_state')
+def test_run_non_trading_session(mock_bootstrap, mock_create):
+    from system_one.consumer import run
+    mock_bootstrap.return_value = {"live_from": "2026-01-01T00:00:00Z", "max_signal_age_seconds": 3600}
+    with patch('system_one.consumer._is_trading_session', return_value=False):
+        # We need time.sleep to raise KeyboardInterrupt to exit the loop
+        with patch('system_one.consumer.time.sleep', side_effect=[None, KeyboardInterrupt()]):
+            run()
