@@ -46,6 +46,74 @@ Two things to carry into that discussion:
 > trading frameworks. Items below are scoped and prioritised; no code changes
 > until each is individually discussed and approved.
 
+### Review ML Promotion Validation Policy and Thresholds
+
+- [ ] **Evaluate whether to retain, modify, or replace the ML promotion criteria.**
+  Added 2026-10-04. Status: deferred research; no threshold or production behavior
+  changes are authorized by this TODO.
+
+**Why this is needed:** Weekly training already reads accumulated eligible
+history, including data from weeks whose model was rejected. Promotion controls
+whether a candidate replaces the production model; it does not discard the
+collected data. Review whether the current criteria suit ARES's available
+completed-trade sample size and intended probability/confidence scoring, rather
+than automatically deploying every weekly candidate or lowering thresholds just
+to make a run pass.
+
+**Evidence to reproduce:** The [scheduled run on 3 October](https://github.com/Manmade-Anyme/ARES/actions/runs/37096485499)
+and [manual run on 4 October](https://github.com/Manmade-Anyme/ARES/actions/runs/37190778761)
+both rejected candidate `v11` with the following results:
+
+| Criterion | Current requirement | Candidate result |
+|---|---|---|
+| Evaluable walk-forward folds | At least 4 | 3 |
+| Mean AUC | At least 0.55 | 0.4996 |
+| Lower 95% AUC confidence bound | Greater than 0.50 | 0.4141 |
+| Brier score | At most 0.23 | 0.2469 |
+
+The gate also requires purged walk-forward validation, zero degenerate folds,
+minimum fold AUC of 0.40, and passing leakage guards. These are deployment
+policy choices to assess using evidence, not a promise that more data will
+automatically improve the model.
+
+**Future investigation and deliverable:**
+
+- Explain why only 3 of the requested 5 folds were evaluable. Inspect eligible
+  completed-trade counts, class balance, timestamp exclusions, deduplication,
+  purging/embargo, and the minimum training-sample requirement before changing
+  fold-count policy.
+- Compare the candidate, the existing production model, and simple baselines on
+  the same chronological periods not used to fit the evaluated models. For
+  historical replay, verify artifact training cutoffs or refit each approach
+  using only information available before each window; avoid testing a
+  production artifact on periods it already trained on. Assess whether fixed AUC,
+  confidence-bound, and Brier cutoffs remain appropriate, or whether a
+  comparison against the existing model and base-rate predictor would provide
+  a better promotion policy.
+- Measure probability accuracy, calibration, uncertainty, and results across
+  time periods/setup types. Separate insufficient validation evidence from
+  evidence that predictions are poor. Preserve data-integrity and leakage
+  protections while evaluating alternatives.
+- Document the evidence and a recommendation for each criterion: retain,
+  change with justified values, or replace with an explicitly defined rule.
+  Any implementation should update the ADR, tests, workflow/reporting contract,
+  and this TODO through a separately approved development task.
+
+**Reporting context to preserve:** The scheduled run generated SHAP PNGs and
+metrics, then `--enforce-gate` raised `ModelPromotionError`; Discord's
+`if: success()` step was skipped. [Commit 4287f7b7](https://github.com/Manmade-Anyme/ARES/commit/4287f7b7d0626aa894e1d98069ccd879056c374f)
+removed that flag before the manual run completed training and posted Discord
+diagnostics. Current policy treats an
+expected promotion rejection as completed training so diagnostics can be
+posted, while `promoted=false` still prevents model commit/deployment. Any future
+policy change must retain clear reporting of training completion, promotion
+acceptance/rejection and reasons, and deployment status.
+
+**Acceptance criteria:** A future reviewer can reproduce the evaluation,
+understand each proposed threshold/rule and its trade-offs, and distinguish
+routine model rejection from a genuine training/reporting failure. No production
+model or validation behavior changes as part of recording this backlog item.
+
 ### 🔬 Regime Filter for Signal Context
 
 - [ ] **Add market regime detection at signal generation time.**
