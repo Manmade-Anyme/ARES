@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-210 Jev timestamp compatibility:** Parse PostgreSQL invocation timestamps with the existing `python-dateutil` ISO parser. Python 3.10 rejected variable fractional precision before inference, leaving some signals without Jev predictions or Discord follow-ups. Preserve database freshness and monotonic dispatch guards; add regression coverage for the observed failures.
+
 - **TASK-210 single-machine Jev lifecycle:** Run Jev inside the scheduled 1 GB Fly `app` Machine via `scripts/run_app_with_jev.sh`, removing the independent `jev` process group and always-on restart policy. The existing weekday cron now starts and stops both ARES and Jev together.
 
 - **Fix Fly Region Deprecation**: Updated primary_region in fly.toml and DEPLOYMENT.md from deprecated Mumbai (bom) to Singapore (sin) to resolve CI pipeline failure.
