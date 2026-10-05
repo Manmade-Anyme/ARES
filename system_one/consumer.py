@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
+from dateutil.parser import isoparse
 from threading import Event, Thread
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -359,10 +360,12 @@ def process_signal(
 
     # Use a duration from two database timestamps, then subtract the whole RPC
     # round trip conservatively. Worker clock skew must not extend eligibility.
+    # PostgreSQL trims fractional zeros; Python 3.10 fromisoformat rejects
+    # valid one-, two-, four- and five-digit fractions. Preserve them with isoparse.
     try:
         dispatch_window = (
-            datetime.fromisoformat(invocation["invocation_dispatch_deadline_at"].replace("Z", "+00:00"))
-            - datetime.fromisoformat(invocation_started.replace("Z", "+00:00"))
+            isoparse(invocation["invocation_dispatch_deadline_at"])
+            - isoparse(invocation_started)
         ).total_seconds()
         dispatch_deadline = gate_start + dispatch_window
         if not math.isfinite(dispatch_window) or time.monotonic() >= dispatch_deadline:

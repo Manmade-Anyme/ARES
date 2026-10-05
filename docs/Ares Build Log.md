@@ -2,6 +2,29 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-10-05 · Jev timestamp compatibility (TASK-210)
+
+Signals #6123 (Trend Continuation, 14:08:50 IST) and #0264 (Exhaustion,
+13:57:44 IST) had no Jev prediction or follow-up. Both jobs recorded UNKNOWN,
+alert NONE, and an invalid ISO timestamp error before inference. PostgreSQL
+returned four- and five-digit fractional seconds that Python 3.10.22's
+`datetime.fromisoformat` rejected.
+
+Use the already installed `dateutil.parser.isoparse` for both invocation
+window timestamps. Database ownership, freshness and conservative monotonic
+budget checks remain unchanged; no dependency or retry was added.
+
+The public-path regression was executed in a separate Python 3.10.22 process
+with mocked database and SDK transports: baseline 19 failing subcases, fixed
+zero failures/errors across three methods and 35 subcases. Local Jev validation:
+232 tests plus 35 subcases passed; 100% statement and branch coverage. Full-suite
+validation is recorded in the accompanying QA report.
+
+Status: prepared on `feature/TASK-210-jev-timestamp-compat`; production awaits
+human merge and CI deployment. No running-worker code changes, restarts, database
+mutations or Discord posts occurred during diagnosis. Expired UNKNOWN jobs
+remain unreplayed; the deployed fix applies to fresh eligible signals.
+
 ## 2026-10-04 · Single Fly Machine lifecycle for Jev (TASK-210)
 
 Changed the Fly runtime shape from two process groups (`app` plus always-on
