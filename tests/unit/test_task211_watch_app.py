@@ -410,6 +410,74 @@ async def test_confirmed_signal_waits_for_consume_persistence_before_discord():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("delivered", [True, False])
+async def test_signal_delivery_returns_only_after_final_watch_write(delivered):
+    import asyncio
+    from threading import Event
+    from main import _deliver_signal_alert
+    from models import SetupType
+    terminal_started = Event(); release_terminal = Event()
+    action = "RESOLVE" if delivered else "CANCEL"
+
+    class DelayedFinalClient(FakeClient):
+        terminal_persisted = False
+
+        def rpc(self, name, params):
+            result = super().rpc(name, params)
+            if name == "transition_oi_watch" and params["p_action"] == action:
+                def execute():
+                    terminal_started.set()
+                    if not release_terminal.wait(3):
+                        raise TimeoutError("test write was not released")
+                    self.terminal_persisted = True
+                    return SimpleNamespace(data=[])
+                return SimpleNamespace(execute=execute)
+            return result
+
+    client = DelayedFinalClient()
+    outbox = OIWatchOutbox(client_factory=lambda: client)
+    assert await outbox.start()
+    entry = ready()
+    observation = entry.latest_watch_observation
+    entry.acknowledge_watch_outbox(observation.event_id)
+    decision = entry.update(bias(minutes=2), candle(2, high=24088), [])
+    entry.acknowledge(decision, "EMITTED")
+    signal = SimpleNamespace(setup_type=SetupType.OI_WALL_REJECTION, oi_wall_context={"wall_key": "CE:24100"})
+    with patch("main.send_discord", new_callable=AsyncMock, return_value=delivered):
+        task = asyncio.create_task(_deliver_signal_alert(signal, 24075, True, entry, candle(2), outbox=outbox))
+        try:
+            assert await asyncio.to_thread(terminal_started.wait, 2)
+            assert not task.done(), "helper returned while final watch outcome was still unpersisted"
+            release_terminal.set()
+            await task
+            assert client.terminal_persisted
+        finally:
+            release_terminal.set()
+            await task
+            await outbox.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final_fence", [False, RuntimeError("database unavailable")])
+async def test_final_watch_write_failure_preserves_accepted_signal_and_logs(final_fence, caplog):
+    from main import _deliver_signal_alert
+    from models import SetupType
+    entry = ready()
+    observation = entry.latest_watch_observation
+    entry.acknowledge_watch_outbox(observation.event_id)
+    decision = entry.update(bias(minutes=2), candle(2, high=24088), [])
+    entry.acknowledge(decision, "EMITTED")
+    outbox = MagicMock()
+    outbox.flush = AsyncMock(side_effect=[True, final_fence])
+    outbox.wait_for_delivery = AsyncMock(return_value=True)
+    signal = SimpleNamespace(setup_type=SetupType.OI_WALL_REJECTION, oi_wall_context={"wall_key": "CE:24100"})
+    with patch("main.send_discord", new_callable=AsyncMock, return_value=True) as send:
+        await _deliver_signal_alert(signal, 24075, True, entry, candle(2), outbox=outbox)
+        send.assert_awaited_once_with(signal, 24075)
+    assert "final lifecycle persistence failed" in caplog.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("fence_result", [False, RuntimeError("database unavailable")])
 async def test_failed_consume_fence_logs_degraded_ordering_and_preserves_confirmed_alert(fence_result, caplog):
     from main import _deliver_signal_alert
@@ -428,7 +496,8 @@ async def test_failed_consume_fence_logs_degraded_ordering_and_preserves_confirm
     with patch("main.send_discord", new_callable=AsyncMock, return_value=True) as send:
         await _deliver_signal_alert(signal, 24075, True, entry, candle(2), outbox=outbox)
         send.assert_awaited_once_with(signal, 24075)
-    outbox.flush.assert_awaited_once_with(5.0)
+    assert outbox.flush.await_count == 2
+    assert all(call.args == (5.0,) for call in outbox.flush.await_args_list)
     assert "ordering degraded" in caplog.text
     assert [call.args[1] for call in outbox.submit_transition.call_args_list] == ["CONSUME", "RESOLVE"]
 

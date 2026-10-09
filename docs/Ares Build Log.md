@@ -44,6 +44,13 @@ that consumer exit could leave the running application's durable watches without
 a delivery worker. The existing launcher monitor now replaces an exited consumer
 using unchanged run metadata; application shutdown cleans up the replacement.
 
+Another review found that final RESOLVE/CANCEL could remain queued after the signal
+delivery helper returned. That helper now fences the existing watch's final write
+for up to five seconds after acknowledging delivery. Failure logs degraded
+lifecycle persistence while preserving the signal outcome; no watch adds no wait.
+This narrows the restart window but cannot make Discord acceptance and database
+persistence atomic against hard crashes or database failure.
+
 Validation and rollout status are recorded in the TASK-211 debug/QA reports.
 Production activation requires the reviewed migration and deployment after PR
 review; no test messages or migration were sent to the live services.

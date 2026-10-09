@@ -196,8 +196,18 @@ async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle, *
         context = signal.oi_wall_context or {}
         wall_key = context.get("wall_key")
         if wall_key:
+            episode_id = entry_filter.watch_episode_id
             entry_filter.acknowledge_signal_alert(wall_key, delivered, candle, reason)
             await dispatch_oi_wall_watch_alerts(entry_filter, spot, outbox=outbox)
+            if outbox is not None and episode_id is not None:
+                # Do not return with a healthy writer still holding the final
+                # outcome. This waits only for persistence, never Jev inference.
+                try:
+                    final_persisted = await outbox.flush(5.0)
+                except Exception:
+                    final_persisted = False
+                if not final_persisted:
+                    logger.warning("OI watch final lifecycle persistence failed; restart recovery may lack the signal delivery outcome")
 
 
 async def run():
