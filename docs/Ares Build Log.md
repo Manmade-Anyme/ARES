@@ -24,6 +24,14 @@ already fetched; previously partial sampled bars never become finalized solely
 through elapsed time. The notification path uses bounded persistence/transport
 fences before confirmed signals and closes any subsequently accepted late watch.
 
+PR review identified a startup race: watch workers could poll prior-run watches
+before application recovery. The launcher now supplies one runtime producer UUID
+to both processes, and each watch loop completes idempotent restart recovery
+before polling. Consumer-only restart preserves current watches. Missing identity
+or recovery failure leaves confirmed-trade Jev running. Without valid shared
+identity, the application retains direct watch alerts with an unavailable
+assessment. No new `.env` tuning or database migration is required for this correction.
+
 Validation and rollout status are recorded in the TASK-211 debug/QA reports.
 Production activation requires the reviewed migration and deployment after PR
 review; no test messages or migration were sent to the live services.

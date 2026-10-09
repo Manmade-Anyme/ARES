@@ -8,10 +8,11 @@ from copy import deepcopy
 from datetime import timezone
 import logging
 import json
+import os
 import time
 from queue import Empty, Queue
 from threading import Event, Thread
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from config import settings
 from oi_watch_context import build_watch_context, CONTEXT_VERSION
@@ -23,7 +24,7 @@ class OIWatchOutbox:
     """Own one database client and serialize registration before lifecycle updates."""
 
     def __init__(self, *, client_factory=None):
-        self.producer_run_id = str(uuid4())
+        self.producer_run_id = os.environ.get("ARES_WATCH_RUN_ID") or str(uuid4())
         self._factory = client_factory
         self._queue = Queue()
         self._ready = Event()
@@ -162,6 +163,13 @@ class OIWatchOutbox:
 async def initialize_oi_watch_outbox():
     """Return the durable owner, or enable the original unavailable fallback."""
     if not settings.oi_watch_jev_enabled:
+        return None
+    try:
+        UUID(os.environ.get("ARES_WATCH_RUN_ID", ""))
+    except ValueError:
+        # Without coordinated workers, retain direct watch delivery rather than
+        # queue observations that no process is authorized to consume.
+        logger.warning("OI watch outbox unavailable: shared launcher run identity unavailable")
         return None
     outbox = OIWatchOutbox()
     return outbox if await outbox.start() else None

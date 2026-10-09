@@ -9,6 +9,14 @@ import httpx
 from system_one import watch_consumer as worker
 
 
+RUN_ID = "bf7b7c18-c9f3-4f11-9d73-dde0619975e1"
+
+
+@pytest.fixture(autouse=True)
+def launcher_run(monkeypatch):
+    monkeypatch.setenv("ARES_WATCH_RUN_ID", RUN_ID)
+
+
 class FakeDB:
     """In-memory RPC boundary; production clients are never constructed."""
     def __init__(self, rows=None):
@@ -161,6 +169,129 @@ def test_disabled_worker_starts_no_threads(monkeypatch):
     assert worker.start_watch_workers(Event(),lambda:pytest.fail("client"))==[]
 
 
+@pytest.mark.parametrize("run_id", [None, "invalid"])
+def test_uncoordinated_consumer_cannot_send_prior_run_watches(monkeypatch, run_id):
+    if run_id is None:
+        monkeypatch.delenv("ARES_WATCH_RUN_ID")
+    else:
+        monkeypatch.setenv("ARES_WATCH_RUN_ID", run_id)
+    assert worker.start_watch_workers(Event(), lambda: pytest.fail("uncoordinated DB access")) == []
+
+
+def test_restart_recovery_preserves_current_run_and_suppresses_prior_run(monkeypatch):
+    stop = Event(); barrier = Barrier(2); lock = Lock(); processed = []
+
+    class RestartDB(FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.active = [{**watch(), "event_id": "prior", "producer_run_id": "prior-run"},
+                           {**watch(), "event_id": "current", "producer_run_id": RUN_ID}]
+
+        def rpc(self, name, params=None):
+            if name == "restart_oi_watches":
+                self.active = [r for r in self.active if r["producer_run_id"] == params["p_producer_run_id"]]
+                return SimpleNamespace(execute=lambda: SimpleNamespace(data=[]))
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data=deepcopy(self.active)))
+
+    def factory():
+        db = RestartDB()
+        barrier.wait(timeout=3)
+        return db
+
+    def process(db, row):
+        with lock:
+            processed.append(row["event_id"])
+            if len(processed) == 2:
+                stop.set()
+
+    monkeypatch.setattr(worker, "process_watch_inference", process)
+    monkeypatch.setattr(worker, "deliver_watch", process)
+    threads = worker.start_watch_workers(stop, factory)
+    for thread in threads:
+        thread.join(timeout=3)
+    stop.set()
+    assert processed == ["current", "current"]
+
+
+def test_recovery_failure_never_polls_or_dispatches(monkeypatch):
+    stop = Event()
+    db = FakeDB({"restart_oi_watches": RuntimeError("recovery unavailable")})
+    monkeypatch.setattr(stop, "wait", lambda delay: stop.set())
+    monkeypatch.setattr(worker, "process_watch_inference", lambda *args: pytest.fail("inference"))
+    monkeypatch.setattr(worker, "deliver_watch", lambda *args: pytest.fail("delivery"))
+    threads = worker.start_watch_workers(stop, lambda: db)
+    for thread in threads:
+        thread.join(timeout=3)
+    assert db.calls and all(name == "restart_oi_watches" for name, _ in db.calls)
+
+
+def test_recovery_retry_resumes_both_watch_paths_only_after_success(monkeypatch):
+    stop = Event(); barrier = Barrier(2); lock = Lock(); processed = []
+
+    class RetryDB(FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+            self.recovered = False
+
+        def rpc(self, name, params=None):
+            def execute():
+                if name == "restart_oi_watches":
+                    self.attempts += 1
+                    if self.attempts == 1:
+                        raise RuntimeError("temporary recovery failure")
+                    self.recovered = True
+                    return SimpleNamespace(data=[])
+                assert self.recovered, "poll before successful recovery"
+                barrier.wait(timeout=3)
+                return SimpleNamespace(data=[watch()])
+            return SimpleNamespace(execute=execute)
+
+    def process(db, row):
+        with lock:
+            processed.append(current_thread().name)
+            if len(processed) == 2:
+                stop.set()
+
+    real_wait = stop.wait
+    monkeypatch.setattr(stop, "wait", lambda delay: False if delay == 30 else real_wait(delay))
+    monkeypatch.setattr(worker, "process_watch_inference", process)
+    monkeypatch.setattr(worker, "deliver_watch", process)
+    threads = worker.start_watch_workers(stop, RetryDB)
+    for thread in threads:
+        thread.join(timeout=3)
+    stop.set()
+    assert set(processed) == {"jev-watch-inference", "jev-watch-delivery"}
+
+
+def test_current_run_watch_arriving_after_recovery_is_delivered(monkeypatch):
+    stop = Event(); delivered = []
+
+    class ArrivingDB(FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.delivery_polls = 0
+
+        def rpc(self, name, params=None):
+            if name == "poll_oi_watch_delivery":
+                self.delivery_polls += 1
+                rows = [watch(event_id="new-current-watch")] if self.delivery_polls > 1 else []
+            else:
+                rows = []
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data=rows))
+
+    def deliver(db, row):
+        delivered.append(row["event_id"])
+        stop.set()
+
+    monkeypatch.setattr(worker, "deliver_watch", deliver)
+    threads = worker.start_watch_workers(stop, ArrivingDB)
+    for thread in threads:
+        thread.join(timeout=3)
+    stop.set()
+    assert delivered == ["new-current-watch"]
+
+
 def test_unacknowledged_claim_never_starts_http(monkeypatch,formatter):
     http=FakeHTTP(); monkeypatch.setattr(worker.httpx,"Client",lambda **kwargs:http)
     db=FakeDB({"begin_oi_watch_delivery":RuntimeError("DB")})
@@ -197,7 +328,9 @@ def test_missing_migration_fails_soft_and_backs_off(monkeypatch):
     db=FakeDB({"poll_oi_watch_inference":RuntimeError("missing RPC"),"poll_oi_watch_delivery":RuntimeError("missing RPC")})
     threads=worker.start_watch_workers(stop,lambda:db)
     for thread in threads: thread.join(timeout=3)
-    assert delays==[30]
+    # Both independent workers may reach the failure before either stops them.
+    assert delays and set(delays) == {30}
+    assert all(not thread.is_alive() for thread in threads)
 
 
 def test_stop_after_poll_does_not_dispatch(monkeypatch):

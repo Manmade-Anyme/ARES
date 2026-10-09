@@ -135,6 +135,19 @@ try {
   eq((await row(restart.event_id)).lifecycle,'CANCELED','new producer cancels prior unresolved watches');
   eq((await row(restart.event_id)).cancellation_payload,cancel,'restart stores immutable cancellation template');
 
+  const oldFresh=await enqueue(), currentRun=randomUUID();
+  // Covers the app reaching readiness before the consumer, and a consumer-only
+  // restart. Repeated same-run recovery must preserve current actionable rows.
+  const currentFresh=await enqueue(0,currentRun);
+  await q('SELECT restart_oi_watches($1)',[currentRun]);
+  eq((await row(oldFresh.event_id)).lifecycle,'CANCELED','fresh prior-run watch canceled before workers poll');
+  eq((await claim(oldFresh.event_id)).length,0,'prior-run watch cannot reach inference');
+  eq((await begin(oldFresh.event_id)).length,0,'prior-run watch cannot reach webhook');
+  eq((await row(currentFresh.event_id)).lifecycle,'ACTIVE','late consumer recovery preserves current app watch');
+  await q('SELECT restart_oi_watches($1)',[currentRun]);
+  eq((await row(currentFresh.event_id)).lifecycle,'ACTIVE','same-run consumer restart preserves current app watch');
+  eq((await claim(currentFresh.event_id)).length,1,'current-run inference remains available after recovery');
+
   await db.exec(`CREATE OR REPLACE FUNCTION oi_watch_in_session(p_now timestamptz) RETURNS boolean
     LANGUAGE sql IMMUTABLE SECURITY INVOKER SET search_path=public,pg_temp AS $$ SELECT false $$;`);
   await polls();
