@@ -2,6 +2,59 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-10-09 · Jev in the first OI-wall retest-ready observation (TASK-211)
+
+Implemented the requested one-field assessment in the existing watch message:
+probability of finishing beyond a configurable directional closing threshold,
+current trend outlook, grounded supporting facts and a frozen assessment time.
+Confirmed-trade T1/SL/T2 Jev inference remains unchanged. Watch forecasts use
+separate typed questions and service-role-only persistence, with no synthetic
+trade records or changes to entry, stops, targets or sizing.
+
+Pulled current main into an isolated feature worktree before continuing,
+including the existing timestamp compatibility and scheduled single-Machine
+Jev launcher. Original workspace changes remain untouched. Four new settings
+live in `OI_WATCH_JEV_CONFIG` in `config_profiles.py`, shared by app and worker;
+environment variables contain credentials only, per the user's correction.
+
+Review corrected snapshot-error fallback, stale completed-history handling,
+actual filter interaction/excursion capture, availability timestamps, and
+in-flight supersession. Refreshed historical OHLC uses the same Dhan response
+already fetched; previously partial sampled bars never become finalized solely
+through elapsed time. The notification path uses bounded persistence/transport
+fences before confirmed signals and closes any subsequently accepted late watch.
+
+PR review identified a startup race: watch workers could poll prior-run watches
+before application recovery. The launcher supplies one runtime producer UUID
+to both processes, and each watch loop completes recovery before polling.
+Consumer-only restart preserves current watches. Missing metadata or recovery
+failure leaves confirmed-trade Jev running; the application retains direct watch
+alerts with an unavailable assessment when shared metadata is invalid.
+
+A second review found that late writes from an old run could arrive after cleanup.
+The launcher now also freezes a UTC start time. The pending migration adds locked
+active-producer state: recovery advances only for a newer run, while enqueue,
+inference and base-delivery claims require current ownership. Prior-run cancellation
+and archival remain available. No new `.env` tuning or production database writes
+were introduced; these corrections update the same pending feature migration.
+
+Database fencing passed [CI run 37914870172](https://github.com/Manmade-Anyme/ARES/actions/runs/37914870172),
+including 11 native PostgreSQL concurrency checks. A further review identified
+that consumer exit could leave the running application's durable watches without
+a delivery worker. The existing launcher monitor now replaces an exited consumer
+using unchanged run metadata; application shutdown cleans up the replacement.
+
+Another review found that final RESOLVE/CANCEL could remain queued after the signal
+delivery helper returned. That helper now fences the existing watch's final write
+for up to five seconds after acknowledging delivery. Failure logs degraded
+lifecycle persistence while preserving the signal outcome; no watch adds no wait.
+This narrows the restart window but cannot make Discord acceptance and database
+persistence atomic against hard crashes or database failure.
+
+Validation and rollout status are recorded in the TASK-211 debug/QA reports.
+Production activation requires the reviewed migration and deployment after PR
+review; no test messages or migration were sent to the live services.
+
 ## 2026-10-05 · Jev timestamp compatibility (TASK-210)
 
 Signals #6123 (Trend Continuation, 14:08:50 IST) and #0264 (Exhaustion,

@@ -177,6 +177,23 @@ class OIWallBias:
 
 
 @dataclass(frozen=True)
+class OIWallWatchObservation:
+    """First-ready snapshot identity, retained across retries for one episode."""
+    bias: OIWallBias
+    timestamp: datetime
+    spot: float
+    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass(frozen=True)
+class OIWallWatchLifecycle:
+    """Terminal update for the original watch UUID, independent of delivery."""
+    event_id: str
+    action: str
+    cancellation: Optional["OIWallWatchCancellation"] = None
+
+
+@dataclass(frozen=True)
 class OIWallWatchCancellation:
     """Immutable expiry notice for a previously delivered watch."""
     bias: OIWallBias

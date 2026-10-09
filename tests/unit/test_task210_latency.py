@@ -293,6 +293,7 @@ class SessionClock(datetime):
 @pytest.fixture
 def live_loop(flow, monkeypatch):
     import supabase
+    from system_one import watch_consumer
     monkeypatch.setenv('SUPABASE_URL', 'http://db.invalid')
     monkeypatch.setenv('SUPABASE_SERVICE_ROLE_KEY', 'fake-backend-key')
     monkeypatch.setattr(consumer, 'create_client', MagicMock(return_value=flow.db))
@@ -303,9 +304,26 @@ def live_loop(flow, monkeypatch):
     # blocked-webhook regression below uses a real delivery thread instead.
     monkeypatch.setattr(consumer, 'Thread', MagicMock())
     monkeypatch.setattr(threading, 'Thread', consumer.Thread)
+    # These regressions isolate confirmed-trade Jev. Watch loops have their
+    # own clients/session recovery and separate TASK-211 boundary tests.
+    monkeypatch.setattr(watch_consumer, 'start_watch_workers', MagicMock(return_value=[]))
     SessionClock.hour = 10
     SessionClock.day = 2
     return flow
+
+
+def test_consumer_starts_and_stops_independent_watch_workers(live_loop, monkeypatch):
+    from system_one import watch_consumer
+    threads = [MagicMock(), MagicMock()]
+    start = MagicMock(return_value=threads)
+    monkeypatch.setattr(watch_consumer, 'start_watch_workers', start)
+    SessionClock.hour = 16
+    consumer.run()
+    stop, factory = start.call_args.args
+    assert stop.is_set()
+    assert factory is consumer._create_supabase_client
+    for thread in threads:
+        thread.join.assert_called_once_with(timeout=1)
 
 
 def test_worker_before_open_sleeps_then_honors_interrupt(live_loop):

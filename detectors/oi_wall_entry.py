@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from dataclasses import replace
 from typing import Optional, List, Dict, Any, Set, Tuple
-from models import OHLCVCandle, ResistanceLevel, Direction, OIWallBias, OIWallTelemetry, OIWallEntryDecision, OIWallWatchCancellation
+from models import OHLCVCandle, ResistanceLevel, Direction, OIWallBias, OIWallTelemetry, OIWallEntryDecision, OIWallWatchCancellation, OIWallWatchObservation, OIWallWatchLifecycle
 from config import settings
 
 
@@ -46,6 +47,8 @@ class OIWallEntryFilter:
         self._delivered_watch: Optional[Tuple[OIWallBias, datetime]] = None
         self._pending_cancellations: List[OIWallWatchCancellation] = []
         self._last_candle: Optional[OHLCVCandle] = None
+        self._watch_observation: Optional[OIWallWatchObservation] = None
+        self._pending_watch_lifecycle: List[OIWallWatchLifecycle] = []
 
     def acknowledge_watchlist(self, wall_key: str) -> None:
         """Mark a watchlist heads-up delivered only after the webhook succeeds."""
@@ -54,6 +57,45 @@ class OIWallEntryFilter:
                 self._delivered_watch = (self._latest_bias, self.retest_ready_timestamp)
             self._watchlist_emitted_keys.add(wall_key)
             self.latest_watchlist_event = None
+
+    @property
+    def latest_watch_observation(self) -> Optional[OIWallWatchObservation]:
+        return self._watch_observation if self.latest_watchlist_event is not None else None
+
+    @property
+    def watch_episode_id(self) -> Optional[str]:
+        """Retain episode identity through CONSUME until final alert resolution."""
+        return self._watch_observation.event_id if self._watch_observation is not None else None
+
+    @property
+    def pending_watch_lifecycle(self) -> Tuple[OIWallWatchLifecycle, ...]:
+        return tuple(self._pending_watch_lifecycle)
+
+    def acknowledge_watch_lifecycle(self, event: OIWallWatchLifecycle) -> None:
+        self._pending_watch_lifecycle = [item for item in self._pending_watch_lifecycle if item is not event]
+
+    def acknowledge_watch_outbox(self, event_id: str) -> None:
+        """Acknowledge queue ownership, without claiming webhook delivery."""
+        if self._watch_observation is not None and self._watch_observation.event_id == event_id:
+            self._watchlist_emitted_keys.add(self._watch_observation.bias.wall_key)
+            self.latest_watchlist_event = None
+
+    def _terminal_watch(self, action: str, reason: str = "", candle=None) -> None:
+        observation = self._watch_observation
+        if observation is None:
+            return
+        cancellation = None
+        if action in ("CANCEL", "RESOLVE") and candle is not None:
+            cancellation = OIWallWatchCancellation(
+                bias=observation.bias, watch_timestamp=observation.timestamp,
+                timestamp=datetime.now(timezone.utc), spot=candle.close, reason=reason,
+                event_id=observation.event_id,
+            )
+        self._pending_watch_lifecycle.append(OIWallWatchLifecycle(observation.event_id, action, cancellation))
+        if action in ("CANCEL", "RESOLVE"):
+            if action == "CANCEL":
+                self._watchlist_emitted_keys.discard(observation.bias.wall_key)
+            self._watch_observation = None
 
     @property
     def pending_watchlist_cancellations(self) -> Tuple[OIWallWatchCancellation, ...]:
@@ -65,6 +107,7 @@ class OIWallEntryFilter:
         ]
 
     def _cancel_delivered_watch(self, reason: str, candle: OHLCVCandle) -> None:
+        self._terminal_watch("CANCEL", reason, candle)
         if self._delivered_watch is None:
             return
         bias, watch_timestamp = self._delivered_watch
@@ -79,6 +122,12 @@ class OIWallEntryFilter:
         self, wall_key: str, delivered: bool, candle: OHLCVCandle, reason: str,
     ) -> None:
         """Resolve the watch only after final signal persistence/delivery is known."""
+        if self._watch_observation is not None and self._watch_observation.bias.wall_key == wall_key:
+            self._terminal_watch(
+                "RESOLVE" if delivered else "CANCEL",
+                "Watch superseded by confirmed signal" if delivered else reason,
+                candle,
+            )
         if self._delivered_watch is None or self._delivered_watch[0].wall_key != wall_key:
             return
         if delivered:
@@ -105,6 +154,7 @@ class OIWallEntryFilter:
         self.retest_ready_timestamp = None
         self.rejection_reason = None
         self.latest_watchlist_event = None
+        self._watch_observation = None
         self.state = "NO_WALL"
 
     def _build_telemetry(
@@ -335,8 +385,19 @@ class OIWallEntryFilter:
                     )
 
         # Retry a failed heads-up on later evaluations while this wall is still ready.
-        if self.state == "RETEST_READY" and bias.wall_key not in self._watchlist_emitted_keys:
-            self.latest_watchlist_event = bias
+        if self.state == "RETEST_READY":
+            if self._watch_observation is None:
+                self._watch_observation = OIWallWatchObservation(
+                    bias=replace(
+                        bias,
+                        initial_interaction_timestamp=self.initial_interaction_timestamp,
+                        initial_interaction_price=self.initial_interaction_price,
+                        favourable_excursion_pts=self.favourable_excursion_pts,
+                    ),
+                    timestamp=datetime.now(timezone.utc), spot=candle.close,
+                )
+            if bias.wall_key not in self._watchlist_emitted_keys:
+                self.latest_watchlist_event = bias
 
         # Still waiting / tracking
         telemetry = self._build_telemetry(bias, entry_status="WAITING", filter_state=self.state, candle=candle)
@@ -360,6 +421,7 @@ class OIWallEntryFilter:
         candle_vwap = decision.telemetry.vwap if decision.telemetry else None
 
         if outcome == "EMITTED":
+            self._terminal_watch("CONSUME")
             # Engine emission consumes the setup; Discord delivery is confirmed later.
             self.state = "CONSUMED"
             if decision.wall_key:
