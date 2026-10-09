@@ -21,6 +21,8 @@ try {
     CREATE OR REPLACE FUNCTION oi_watch_session_end(p_now timestamptz) RETURNS timestamptz
     LANGUAGE sql IMMUTABLE SECURITY INVOKER SET search_path=public,pg_temp AS $$ SELECT p_now+interval '1 hour' $$;`);
   const producer = randomUUID();
+  const initialStart='2026-10-09T03:00:00Z', recoveryStart='2026-10-09T03:01:00Z', currentStart='2026-10-09T03:02:00Z';
+  await q('SELECT restart_oi_watches($1,$2)',[producer,initialStart]);
   const base = {embeds:[{title:'original',fields:[{name:'Time',value:'09:28:33'}],footer:{text:'original'}}]};
   const cancel = {embeds:[{title:'canceled',fields:[{name:'Cancelled at',value:'__WORKER_TIME__'}]}]};
   async function enqueue(age=0, run=producer, id=randomUUID(), state={spot:22489.75}) {
@@ -131,22 +133,50 @@ try {
   const invocationCrash=await enqueue(); await claim(invocationCrash.event_id);
   eq((await claim(invocationCrash.event_id)).length,0,'inference crash cannot replay SDK invocation');
   const restart=await enqueue(9), restartToken=randomUUID(); await begin(restart.event_id,restartToken); await finish(restart.event_id,restartToken,'SENT');
-  await q('SELECT restart_oi_watches($1)',[randomUUID()]);
+  const oldFresh=await enqueue(), recoveryRun=randomUUID();
+  await q('SELECT restart_oi_watches($1,$2)',[recoveryRun,recoveryStart]);
   eq((await row(restart.event_id)).lifecycle,'CANCELED','new producer cancels prior unresolved watches');
   eq((await row(restart.event_id)).cancellation_payload,cancel,'restart stores immutable cancellation template');
 
-  const oldFresh=await enqueue(), currentRun=randomUUID();
+  const currentRun=randomUUID();
   // Covers the app reaching readiness before the consumer, and a consumer-only
   // restart. Repeated same-run recovery must preserve current actionable rows.
+  await q('SELECT restart_oi_watches($1,$2)',[currentRun,currentStart]);
   const currentFresh=await enqueue(0,currentRun);
-  await q('SELECT restart_oi_watches($1)',[currentRun]);
+  await q('SELECT restart_oi_watches($1,$2)',[currentRun,currentStart]);
   eq((await row(oldFresh.event_id)).lifecycle,'CANCELED','fresh prior-run watch canceled before workers poll');
   eq((await claim(oldFresh.event_id)).length,0,'prior-run watch cannot reach inference');
   eq((await begin(oldFresh.event_id)).length,0,'prior-run watch cannot reach webhook');
   eq((await row(currentFresh.event_id)).lifecycle,'ACTIVE','late consumer recovery preserves current app watch');
-  await q('SELECT restart_oi_watches($1)',[currentRun]);
+  await q('SELECT restart_oi_watches($1,$2)',[currentRun,currentStart]);
   eq((await row(currentFresh.event_id)).lifecycle,'ACTIVE','same-run consumer restart preserves current app watch');
   eq((await claim(currentFresh.event_id)).length,1,'current-run inference remains available after recovery');
+  eq(await enqueue(0,producer),undefined,'delayed superseded producer cannot register a new actionable watch');
+  await assert.rejects(q('SELECT restart_oi_watches($1,$2)',[producer,initialStart]),/superseded/); checks++;
+  await assert.rejects(q('SELECT restart_oi_watches($1,$2)',[randomUUID(),initialStart]),/superseded/); checks++;
+  await assert.rejects(q('SELECT restart_oi_watches($1,$2)',[randomUUID(),currentStart]),/superseded/); checks++;
+  await assert.rejects(q('SELECT restart_oi_watches($1,$2)',[currentRun,recoveryStart]),/immutable/); checks++;
+  await assert.rejects(q('SELECT restart_oi_watches($1,$2)',[null,currentStart]),/Invalid watch producer/); checks++;
+  await assert.rejects(q('SELECT restart_oi_watches($1,$2)',[randomUUID(),'infinity']),/Invalid watch producer/); checks++;
+  eq((await row(currentFresh.event_id)).lifecycle,'ACTIVE','old or mutated recovery cannot cancel current watch');
+  eq((await q('SELECT producer_run_id FROM oi_watch_producer_state')).rows[0].producer_run_id,currentRun,'old recovery cannot reclaim producer ownership');
+  // Archival retries from old runs retain original terminal snapshots.
+  eq((await enqueue(0,producer,oldFresh.event_id)).lifecycle,'CANCELED','retired-run duplicate preserves its original canceled row');
+  eq((await q("SELECT to_regprocedure('restart_oi_watches(uuid)') AS old")).rows[0].old,null,'unfenced old recovery overload removed');
+  eq((await q("SELECT has_table_privilege('anon','oi_watch_producer_state','SELECT') AS allowed")).rows[0].allowed,false,'anon cannot read producer fence');
+  // Even an inconsistent legacy/direct row cannot bypass the active-run fence.
+  await q("UPDATE oi_watch_predictions SET lifecycle='ACTIVE',delivery_status='PENDING',prediction_status='PENDING' WHERE event_id=$1",[oldFresh.event_id]);
+  eq((await claim(oldFresh.event_id)).length,0,'active-looking retired row cannot acquire inference');
+  const inferencePoll=(await q('SELECT * FROM poll_oi_watch_inference()')).rows;
+  eq(inferencePoll.some(x=>x.event_id===oldFresh.event_id),false,'inference poll filters retired producer');
+  await q("UPDATE oi_watch_predictions SET prediction_status='FAILED' WHERE event_id=$1",[oldFresh.event_id]);
+  eq((await begin(oldFresh.event_id)).length,0,'active-looking retired row cannot acquire base delivery');
+  eq((await polls()).some(x=>x.event_id===oldFresh.event_id&&!x.is_cancellation),false,'base delivery poll filters retired producer');
+  await q("UPDATE oi_watch_predictions SET lifecycle='CANCELED',delivery_status='SKIPPED' WHERE event_id=$1",[oldFresh.event_id]);
+  await db.exec('SET ROLE service_role');
+  await q('SELECT restart_oi_watches($1,$2)',[currentRun,currentStart]);
+  eq((await enqueue(0,currentRun)).lifecycle,'ACTIVE','backend role can recover and enqueue under RLS');
+  await db.exec('RESET ROLE');
 
   await db.exec(`CREATE OR REPLACE FUNCTION oi_watch_in_session(p_now timestamptz) RETURNS boolean
     LANGUAGE sql IMMUTABLE SECURITY INVOKER SET search_path=public,pg_temp AS $$ SELECT false $$;`);

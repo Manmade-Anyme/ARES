@@ -25,8 +25,10 @@ stop_children() {
 trap stop_children INT TERM
 
 # Runtime identity shared by both children; a fresh launcher replaces prior runs.
-ARES_WATCH_RUN_ID=$(python -c 'from uuid import uuid4; print(uuid4())') || exit $?
-export ARES_WATCH_RUN_ID
+watch_run=$(python -c 'from uuid import uuid4; from datetime import datetime, timezone; print(str(uuid4()) + " " + datetime.now(timezone.utc).isoformat())') || exit $?
+ARES_WATCH_RUN_ID="${watch_run%% *}"
+ARES_WATCH_RUN_STARTED_AT="${watch_run#* }"
+export ARES_WATCH_RUN_ID ARES_WATCH_RUN_STARTED_AT
 
 echo "[runner] Starting Jev consumer alongside ARES app..."
 python -m system_one.consumer &

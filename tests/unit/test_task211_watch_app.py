@@ -42,6 +42,7 @@ def ready():
 @pytest.fixture(autouse=True)
 def settings_for_watch(monkeypatch):
     monkeypatch.setenv("ARES_WATCH_RUN_ID", "bf7b7c18-c9f3-4f11-9d73-dde0619975e1")
+    monkeypatch.setenv("ARES_WATCH_RUN_STARTED_AT", "2026-10-09T03:45:00+00:00")
     monkeypatch.setattr(settings, "oi_wall_enable_watchlist_alert", True)
     monkeypatch.setattr(settings, "oi_watch_jev_enabled", True)
     monkeypatch.setattr(settings, "discord_webhook_url", "https://discord.invalid/webhook")
@@ -50,7 +51,9 @@ def settings_for_watch(monkeypatch):
 def test_outbox_uses_launchers_shared_producer_identity(monkeypatch):
     run_id = "bf7b7c18-c9f3-4f11-9d73-dde0619975e1"
     monkeypatch.setenv("ARES_WATCH_RUN_ID", run_id)
-    assert OIWatchOutbox().producer_run_id == run_id
+    outbox = OIWatchOutbox()
+    assert outbox.producer_run_id == run_id
+    assert outbox.producer_started_at == "2026-10-09T03:45:00+00:00"
 
 
 def test_standalone_outbox_creates_its_own_producer_identity(monkeypatch):
@@ -76,6 +79,18 @@ async def test_coordinated_app_retains_durable_watch_path():
     outbox = MagicMock(start=AsyncMock(return_value=True))
     with patch("oi_watch_outbox.OIWatchOutbox", return_value=outbox):
         assert await initialize_oi_watch_outbox() is outbox
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started_at", [None, "invalid", "2026-10-09T03:45:00"])
+async def test_invalid_run_epoch_keeps_direct_watch_fallback(monkeypatch, started_at):
+    if started_at is None:
+        monkeypatch.delenv("ARES_WATCH_RUN_STARTED_AT")
+    else:
+        monkeypatch.setenv("ARES_WATCH_RUN_STARTED_AT", started_at)
+    with patch("oi_watch_outbox.OIWatchOutbox") as factory:
+        assert await initialize_oi_watch_outbox() is None
+        factory.assert_not_called()
 
 
 def test_first_ready_snapshot_and_uuid_survive_retries_and_suppression():

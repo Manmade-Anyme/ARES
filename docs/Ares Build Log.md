@@ -25,12 +25,18 @@ through elapsed time. The notification path uses bounded persistence/transport
 fences before confirmed signals and closes any subsequently accepted late watch.
 
 PR review identified a startup race: watch workers could poll prior-run watches
-before application recovery. The launcher now supplies one runtime producer UUID
-to both processes, and each watch loop completes idempotent restart recovery
-before polling. Consumer-only restart preserves current watches. Missing identity
-or recovery failure leaves confirmed-trade Jev running. Without valid shared
-identity, the application retains direct watch alerts with an unavailable
-assessment. No new `.env` tuning or database migration is required for this correction.
+before application recovery. The launcher supplies one runtime producer UUID
+to both processes, and each watch loop completes recovery before polling.
+Consumer-only restart preserves current watches. Missing metadata or recovery
+failure leaves confirmed-trade Jev running; the application retains direct watch
+alerts with an unavailable assessment when shared metadata is invalid.
+
+A second review found that late writes from an old run could arrive after cleanup.
+The launcher now also freezes a UTC start time. The pending migration adds locked
+active-producer state: recovery advances only for a newer run, while enqueue,
+inference and base-delivery claims require current ownership. Prior-run cancellation
+and archival remain available. No new `.env` tuning or production database writes
+were introduced; these corrections update the same pending feature migration.
 
 Validation and rollout status are recorded in the TASK-211 debug/QA reports.
 Production activation requires the reviewed migration and deployment after PR

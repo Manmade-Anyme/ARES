@@ -15,6 +15,7 @@ RUN_ID = "bf7b7c18-c9f3-4f11-9d73-dde0619975e1"
 @pytest.fixture(autouse=True)
 def launcher_run(monkeypatch):
     monkeypatch.setenv("ARES_WATCH_RUN_ID", RUN_ID)
+    monkeypatch.setenv("ARES_WATCH_RUN_STARTED_AT", "2026-10-09T03:45:00+00:00")
 
 
 class FakeDB:
@@ -175,6 +176,15 @@ def test_uncoordinated_consumer_cannot_send_prior_run_watches(monkeypatch, run_i
         monkeypatch.delenv("ARES_WATCH_RUN_ID")
     else:
         monkeypatch.setenv("ARES_WATCH_RUN_ID", run_id)
+    assert worker.start_watch_workers(Event(), lambda: pytest.fail("uncoordinated DB access")) == []
+
+
+@pytest.mark.parametrize("started_at", [None, "invalid", "2026-10-09T03:45:00"])
+def test_missing_or_invalid_run_epoch_disables_only_watch_workers(monkeypatch, started_at):
+    if started_at is None:
+        monkeypatch.delenv("ARES_WATCH_RUN_STARTED_AT")
+    else:
+        monkeypatch.setenv("ARES_WATCH_RUN_STARTED_AT", started_at)
     assert worker.start_watch_workers(Event(), lambda: pytest.fail("uncoordinated DB access")) == []
 
 

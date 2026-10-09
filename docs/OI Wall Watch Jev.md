@@ -14,7 +14,9 @@ The model sees only the frozen first-ready observation: wall metrics, actual fil
 
 The application captures an immutable watch UUID and snapshot, then queues persistence using a background writer with its own client. The independent Jev subprocess handles watch inference and delivery on separate loops. The trading loop does not wait for these operations. Original payload and raw results are persisted in `oi_watch_predictions`, outside confirmed-signal tables.
 
-The shared launcher generates an ephemeral `ARES_WATCH_RUN_ID` UUID before starting either process. Both use that producer identity. Each watch loop must successfully complete restart recovery before its first poll, so unresolved prior-run watches cannot be inferred or delivered while application startup is still running. Recovery is idempotent for the shared run: restarting only the consumer preserves the current application's watches. Recovery failures retry only the affected watch loop; confirmed-trade Jev continues. Without a valid shared UUID, the standalone application retains direct watch alerts with an unavailable assessment, and the standalone consumer skips only watch workers. This avoids queueing watches without a coordinated delivery worker. Use the shared launcher for this feature; the identity is generated at runtime, not configured in `.env`.
+The shared launcher generates an ephemeral `ARES_WATCH_RUN_ID` UUID and UTC `ARES_WATCH_RUN_STARTED_AT` together before starting either process. Both use this fixed run metadata. Each watch loop must successfully complete restart recovery before its first poll, so unresolved prior-run watches cannot be inferred or delivered while application startup is still running. Recovery is idempotent for the same run and start time: restarting only the consumer preserves the current application's watches. Recovery failures retry only the affected watch loop; confirmed-trade Jev continues. Without valid shared metadata, the standalone application retains direct watch alerts with an unavailable assessment, and the standalone consumer skips only watch workers. This avoids queueing watches without a coordinated delivery worker. Use the shared launcher for this feature; the metadata is generated at runtime, not configured in `.env`.
+
+A second review correction fences late writes from prior runs. Database recovery locks the active-producer state and advances it only for a later launcher start time; an older recovery cannot supersede the current run. Enqueue, inference claims and new base-message delivery claims check the active producer while holding the same state lock, preventing a delayed old write from escaping restart cleanup. Polls select current-run watches. Cancellation and archival remain available for previous runs, preserving accepted and UNKNOWN transport outcomes. Run ordering trusts the launcher's UTC clock, as existing observation freshness already does.
 
 Before posting a confirmed OI-wall signal, the application fences queued watch lifecycle changes for up to five seconds and waits up to six seconds for already-in-flight watch transport to settle. It never waits for Jev inference. If a fence fails, the confirmed signal still proceeds and ordering is logged as degraded. A subsequently confirmed late watch receives a closure using the existing cancellation format, with reason “Watch superseded by confirmed signal”; it is not left as a fresh actionable observation. Network delivery with an unconfirmed UNKNOWN outcome remains unconfirmed and is never blindly replayed.
 
@@ -24,7 +26,7 @@ Ambiguous webhook outcomes are marked UNKNOWN rather than blindly replayed. Expl
 
 ## Rollout
 
-1. Apply reviewed `migrations/2026-10-08-task211-oi-watch-jev.sql` to the intended project before enabling the new watch path. It creates service-role-only RLS storage and lifecycle RPCs; existing confirmed-signal tables are unchanged.
+1. Apply reviewed `migrations/2026-10-08-task211-oi-watch-jev.sql` to the intended project before enabling the new watch path. It creates service-role-only RLS watch storage, active-producer state and lifecycle RPCs; existing confirmed-signal tables are unchanged.
 2. Provision `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TYPESAFE_API_KEY` and `DISCORD_WEBHOOK_URL` on the backend. Keep keys outside source code and client applications.
 3. Edit `OI_WATCH_JEV_CONFIG` in `config_profiles.py`. Both processes use this shared file configuration; `.env` contains credentials only:
 
@@ -38,7 +40,7 @@ Ambiguous webhook outcomes are marked UNKNOWN rather than blindly replayed. Expl
    ```
 
 4. Deploy through the existing main-branch workflow. Latest main starts the application and independent Jev subprocess through `scripts/run_app_with_jev.sh` on the scheduled app Machine. No new Fly process group, Machine or scheduler is required.
-5. Verify outbox readiness and watch-loop recovery logs. A missing migration/service-role setup must not stop existing trading or confirmed-signal inference; the application retains its direct watch fallback. Do not launch an independent watch consumer with a different producer identity.
+5. Verify outbox readiness and watch-loop recovery logs. A missing migration/service-role setup must not stop existing trading or confirmed-signal inference; the application retains its direct watch fallback. Do not launch an independent watch consumer with a different producer identity or start time.
 
 The percentages are experimental model estimates until prospectively calibrated on distinct trading days. The retained seven-watch audit motivated this feature but cannot validate probability accuracy. Historical and future actual outcomes must remain outside inference inputs.
 

@@ -1,20 +1,21 @@
 # QA report — TASK-211
 
-Date: 2026-10-09. Verdict: PASS for local implementation; production rollout pending.
+Date: 2026-10-09. Verdict: PASS for local implementation and independent review; native concurrent CI verification and production rollout pending.
 
 | Check | Result |
 |---|---|
-| Full regression suite | 1243 passed, 45 subtests passed |
-| Confirmed-signal + watch worker suite | 387 passed, 35 subtests passed |
-| Worker line coverage | 100%: 888/888 statements |
-| Worker branch coverage | 100%: 264/264 branches |
-| Isolated PostgreSQL watch lifecycle | 60 checks passed |
+| Full regression suite | 1249 passed, 45 subtests passed |
+| Confirmed-signal + watch worker suite | 393 passed, 35 subtests passed |
+| Worker line coverage | 100%: 891/891 statements |
+| Worker branch coverage | 100%: 266/266 branches |
+| Isolated PostgreSQL watch lifecycle | 77 single-connection PGlite checks passed |
+| Native concurrent PostgreSQL generation checks | Harness/workflow reviewed; execution pending CI (no local Docker/PostgreSQL) |
 | Python 3.10 syntax parsing | 12 changed/new modules passed |
 | Workflow YAML / diff whitespace | Valid / clean |
 | Runtime dependency additions | None |
 | New config environment overrides | Removed and regression-tested |
-| Shared launcher identity | Real shell execution verifies equal fresh child UUIDs and no child fork on UUID-generation failure |
-| Review-fix application guard | Independent 43-test application run passed; modified guard lines and branches fully covered |
+| Shared launcher identity | Real shell execution verifies equal fresh child UUID/start-time metadata and no child fork on generation failure |
+| Review-fix application guard | Independent 46-test application run passed; modified guard lines and branches fully covered |
 
 Commands:
 
@@ -33,6 +34,10 @@ Behavior verified: exactly one added field in the first watch, unchanged origina
 
 PR review identified a reproducible startup race: watch workers could infer or send a prior-run watch before application startup canceled it. The regression failed before correction (7 failed, 64 passed), including dispatch of the prior watch. The launcher now supplies one ephemeral UUID to both processes, and each watch loop completes recovery before polling. Tests verify prior-run suppression, current-run preservation with late or restarted consumers, recovery failure followed by successful retry, and delivery of new current-run observations after recovery. An uncoordinated application retains direct watch delivery with an unavailable assessment; an uncoordinated consumer skips only watch workers. Existing confirmed-trade Jev is unchanged.
 
-Independent QA and final code review passed for the correction: production edits are limited to launcher, outbox and watch consumer. The existing parallel-worker backoff test was corrected to allow both workers to reach the same 30-second backoff; it still asserts the backoff and shutdown outcome. Worker coverage above is not a claim of whole-application coverage: a separate application-test coverage run measured the existing outbox at 90.78%, with all modified initializer lines and branches covered. No unrelated uncovered code was changed.
+The second review comment also reproduced: a delayed old-producer enqueue after restart cleanup still created an ACTIVE watch. The pending migration now stores the active UUID and immutable launcher start time in a service-role-only singleton. Recovery advances only to a newer start, rejects delayed older recovery including its first call, and remains idempotent for the current metadata. Enqueue and base-action claims take the shared state lock before watch locks; recovery takes the exclusive state lock first. Tests verify new retired-run observations cannot be inserted and retired-run rows cannot be polled or claimed for new inference/base delivery, even for an ACTIVE-looking legacy row. Previous-run cancellation and archival remain available, and the unfenced old recovery signature is removed. Existing confirmed-signal schema and prediction behavior remain unchanged.
 
-Recommendation: ready for PR review. Apply `migrations/2026-10-08-task211-oi-watch-jev.sql` before feature deployment and verify worker/outbox readiness after deployment. `.env` retains credentials; change the new knobs only in `config_profiles.py`.
+Independent QA and final code review passed for the corrections: runtime edits are limited to launcher, outbox, watch consumer and their pending watch migration, with CI verification added. The existing parallel-worker backoff test was corrected to allow both workers to reach the same 30-second backoff; it still asserts the backoff and shutdown outcome. Worker coverage above is not a claim of whole-application coverage: a separate application-test coverage run measured the existing outbox at approximately 91%, with all modified initializer lines and branches covered. No unrelated uncovered code was changed.
+
+`tests/integration/task211_watch_generation.py` uses separate native PostgreSQL sessions to hold real generation locks while an enqueue/takeover or inference/base-delivery claim overlaps. CI provisions a disposable PostgreSQL 17.6 container and passes only its container ID; the harness cannot consume application database credentials. Independent review checked SQL lock order and Docker/psql process handling. These concurrent checks have not executed locally and must pass CI before merge; the 77 PGlite checks do not establish multi-session lock execution.
+
+Recommendation: ready for PR review, subject to native concurrent CI checks. Apply `migrations/2026-10-08-task211-oi-watch-jev.sql` before feature deployment and verify worker/outbox readiness after deployment. `.env` retains credentials; change the new knobs only in `config_profiles.py`.

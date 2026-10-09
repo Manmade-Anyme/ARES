@@ -177,7 +177,8 @@ def deliver_watch(client: Any, row: dict, *, webhook_url: str | None = None) -> 
         return "NONE"
 
 
-def _watch_loop(stop: Event, client_factory: Callable[[], Any], *, inference: bool, producer_run_id: str) -> None:
+def _watch_loop(stop: Event, client_factory: Callable[[], Any], *, inference: bool,
+                producer_run_id: str, producer_started_at: str) -> None:
     client = None
     recovered = False
     poll = "poll_oi_watch_inference" if inference else "poll_oi_watch_delivery"
@@ -189,7 +190,8 @@ def _watch_loop(stop: Event, client_factory: Callable[[], Any], *, inference: bo
             if not recovered:
                 # The app may still be bootstrapping. Cancel prior runs before
                 # polling; the shared UUID preserves any already-current watches.
-                _rows(client, "restart_oi_watches", {"p_producer_run_id": producer_run_id})
+                _rows(client, "restart_oi_watches", {"p_producer_run_id": producer_run_id,
+                    "p_producer_started_at": producer_started_at})
                 recovered = True
                 logger.info("Watch %s startup recovery completed", "inference" if inference else "delivery")
             rows = _rows(client, poll)
@@ -215,13 +217,17 @@ def start_watch_workers(stop: Event, client_factory: Callable[[], Any]) -> list[
         return []
     try:
         producer_run_id = str(uuid.UUID(os.environ.get("ARES_WATCH_RUN_ID", "")))
+        producer_started_at = os.environ.get("ARES_WATCH_RUN_STARTED_AT", "")
+        if datetime.fromisoformat(producer_started_at).utcoffset() is None:
+            raise ValueError("producer start time requires timezone")
     except ValueError:
         logger.warning("Watch workers disabled: shared launcher run identity unavailable")
         return []
     threads = []
     for inference in (True, False):
         thread = Thread(target=_watch_loop, args=(stop, client_factory),
-                        kwargs={"inference": inference, "producer_run_id": producer_run_id},
+                        kwargs={"inference": inference, "producer_run_id": producer_run_id,
+                                "producer_started_at": producer_started_at},
                         name="jev-watch-inference" if inference else "jev-watch-delivery", daemon=True)
         thread.start()
         threads.append(thread)

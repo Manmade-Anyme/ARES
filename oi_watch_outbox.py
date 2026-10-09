@@ -5,7 +5,7 @@ register is retried with the same UUID; it never triggers a second delivery path
 """
 import asyncio
 from copy import deepcopy
-from datetime import timezone
+from datetime import datetime, timezone
 import logging
 import json
 import os
@@ -25,6 +25,7 @@ class OIWatchOutbox:
 
     def __init__(self, *, client_factory=None):
         self.producer_run_id = os.environ.get("ARES_WATCH_RUN_ID") or str(uuid4())
+        self.producer_started_at = os.environ.get("ARES_WATCH_RUN_STARTED_AT") or datetime.now(timezone.utc).isoformat()
         self._factory = client_factory
         self._queue = Queue()
         self._ready = Event()
@@ -134,7 +135,8 @@ class OIWatchOutbox:
             if self._stop.is_set():
                 self._ready.set()
                 return
-            client.rpc("restart_oi_watches", {"p_producer_run_id": self.producer_run_id}).execute()
+            client.rpc("restart_oi_watches", {"p_producer_run_id": self.producer_run_id,
+                "p_producer_started_at": self.producer_started_at}).execute()
         except Exception as exc:
             self._error = exc
             self._ready.set()
@@ -166,6 +168,9 @@ async def initialize_oi_watch_outbox():
         return None
     try:
         UUID(os.environ.get("ARES_WATCH_RUN_ID", ""))
+        started_at = datetime.fromisoformat(os.environ.get("ARES_WATCH_RUN_STARTED_AT", ""))
+        if started_at.utcoffset() is None:
+            raise ValueError("producer start time requires timezone")
     except ValueError:
         # Without coordinated workers, retain direct watch delivery rather than
         # queue observations that no process is authorized to consume.

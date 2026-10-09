@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime
 from uuid import UUID
 
 
@@ -15,7 +16,7 @@ def test_launcher_shares_a_fresh_identity_with_both_children(tmp_path):
     helper.write_text('''import json, os, pathlib, sys, time
 kind = "consumer" if sys.argv[1] == "-m" else "app"
 root = pathlib.Path(os.environ["WATCH_TEST_DIR"])
-(root / (kind + ".json")).write_text(json.dumps(os.environ.get("ARES_WATCH_RUN_ID")))
+(root / (kind + ".json")).write_text(json.dumps([os.environ.get("ARES_WATCH_RUN_ID"), os.environ.get("ARES_WATCH_RUN_STARTED_AT")]))
 deadline = time.monotonic() + 3
 while not (root / ("app.json" if kind == "consumer" else "consumer.json")).exists():
     if time.monotonic() >= deadline:
@@ -33,12 +34,14 @@ exec "$WATCH_TEST_PYTHON" "$WATCH_TEST_DIR/child.py" "$@"
     inherited = "00000000-0000-0000-0000-000000000001"
     env = {**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
            "WATCH_TEST_DIR": str(tmp_path), "WATCH_TEST_PYTHON": sys.executable,
-           "ARES_WATCH_RUN_ID": inherited}
+           "ARES_WATCH_RUN_ID": inherited, "ARES_WATCH_RUN_STARTED_AT": "2000-01-01T00:00:00+00:00"}
     subprocess.run(["sh", str(RUNNER)], env=env, check=True, capture_output=True, timeout=10)
     app = json.loads((tmp_path / "app.json").read_text())
     consumer = json.loads((tmp_path / "consumer.json").read_text())
-    assert app == consumer and app != inherited
-    assert str(UUID(app)) == app
+    assert app == consumer and app[0] != inherited
+    assert str(UUID(app[0])) == app[0]
+    assert datetime.fromisoformat(app[1]).utcoffset().total_seconds() == 0
+    assert app[1] != env["ARES_WATCH_RUN_STARTED_AT"]
 
 
 def test_launcher_does_not_fork_if_identity_generation_fails(tmp_path):

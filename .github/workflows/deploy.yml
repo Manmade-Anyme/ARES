@@ -14,6 +14,15 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      watch_postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_DB: task211_watch_test
+          POSTGRES_PASSWORD: isolated-test-only
+        options: >-
+          --health-cmd "pg_isready -U postgres -d task211_watch_test"
+          --health-interval 5s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +63,9 @@ jobs:
           # Isolated test engine only; never connects to the live Supabase project.
           npm install --prefix "$RUNNER_TEMP/task211-sql" --ignore-scripts --no-audit --no-fund @electric-sql/pglite@0.5.8
           PGLITE_MODULE_URL="file://$RUNNER_TEMP/task211-sql/node_modules/@electric-sql/pglite/dist/index.js" node tests/integration/task211_watch_lifecycle.mjs
+
+      - name: Verify overlapping watch generations
+        run: python tests/integration/task211_watch_generation.py --container "${{ job.services.watch_postgres.id }}"
 
   deploy:
     needs: test
