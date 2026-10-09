@@ -56,3 +56,44 @@ touch "$WATCH_TEST_DIR/child-started"
     result = subprocess.run(["sh", str(RUNNER)], env=env, capture_output=True, timeout=10)
     assert result.returncode == 7
     assert not (tmp_path / "child-started").exists()
+
+
+def test_launcher_restarts_failed_consumer_with_the_same_generation(tmp_path):
+    helper = tmp_path / "child.py"
+    helper.write_text('''import json, os, pathlib, sys, time
+root = pathlib.Path(os.environ["WATCH_TEST_DIR"])
+metadata = [os.environ["ARES_WATCH_RUN_ID"], os.environ["ARES_WATCH_RUN_STARTED_AT"]]
+if sys.argv[1] == "-m":
+    prior = root / "first-consumer.json"
+    if not prior.exists():
+        prior.write_text(json.dumps(metadata))
+        sys.exit(9)
+    (root / "replacement-consumer.json").write_text(json.dumps(metadata))
+    # Keep this replacement alive so the runner must stop it when the app exits.
+    while True:
+        time.sleep(.01)
+else:
+    (root / "app.json").write_text(json.dumps(metadata))
+    deadline = time.monotonic() + 5
+    while not (root / "replacement-consumer.json").exists():
+        if time.monotonic() >= deadline:
+            sys.exit(13)
+        time.sleep(.01)
+    (root / "app-finished").touch()
+''')
+    python = tmp_path / "python"
+    python.write_text('''#!/bin/sh
+if [ "$1" = "-c" ]; then
+    exec "$WATCH_TEST_PYTHON" "$@"
+fi
+exec "$WATCH_TEST_PYTHON" "$WATCH_TEST_DIR/child.py" "$@"
+''')
+    python.chmod(0o755)
+    env = {**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+           "WATCH_TEST_DIR": str(tmp_path), "WATCH_TEST_PYTHON": sys.executable}
+    result = subprocess.run(["sh", str(RUNNER)], env=env, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stdout.decode()
+    app = json.loads((tmp_path / "app.json").read_text())
+    assert json.loads((tmp_path / "first-consumer.json").read_text()) == app
+    assert json.loads((tmp_path / "replacement-consumer.json").read_text()) == app
+    assert (tmp_path / "app-finished").exists()

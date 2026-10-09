@@ -38,6 +38,12 @@ inference and base-delivery claims require current ownership. Prior-run cancella
 and archival remain available. No new `.env` tuning or production database writes
 were introduced; these corrections update the same pending feature migration.
 
+Database fencing passed [CI run 37914870172](https://github.com/Manmade-Anyme/ARES/actions/runs/37914870172),
+including 11 native PostgreSQL concurrency checks. A further review identified
+that consumer exit could leave the running application's durable watches without
+a delivery worker. The existing launcher monitor now replaces an exited consumer
+using unchanged run metadata; application shutdown cleans up the replacement.
+
 Validation and rollout status are recorded in the TASK-211 debug/QA reports.
 Production activation requires the reviewed migration and deployment after PR
 review; no test messages or migration were sent to the live services.

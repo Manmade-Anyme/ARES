@@ -1,21 +1,22 @@
 # QA report — TASK-211
 
-Date: 2026-10-09. Verdict: PASS for local implementation and independent review; native concurrent CI verification and production rollout pending.
+Date: 2026-10-09. Verdict: PASS for local implementation and independent review. Native concurrent CI passed for d72e545; final supervision revision CI and production rollout pending.
 
 | Check | Result |
 |---|---|
-| Full regression suite | 1249 passed, 45 subtests passed |
-| Confirmed-signal + watch worker suite | 393 passed, 35 subtests passed |
+| Full regression suite | 1250 passed, 45 subtests passed |
+| Confirmed-signal + watch worker suite | 394 passed, 35 subtests passed |
 | Worker line coverage | 100%: 891/891 statements |
 | Worker branch coverage | 100%: 266/266 branches |
 | Isolated PostgreSQL watch lifecycle | 77 single-connection PGlite checks passed |
-| Native concurrent PostgreSQL generation checks | Harness/workflow reviewed; execution pending CI (no local Docker/PostgreSQL) |
+| Native concurrent PostgreSQL generation checks | 11 passed in CI for d72e545; final supervision revision CI pending |
 | Python 3.10 syntax parsing | 12 changed/new modules passed |
 | Workflow YAML / diff whitespace | Valid / clean |
 | Runtime dependency additions | None |
 | New config environment overrides | Removed and regression-tested |
 | Shared launcher identity | Real shell execution verifies equal fresh child UUID/start-time metadata and no child fork on generation failure |
 | Review-fix application guard | Independent 46-test application run passed; modified guard lines and branches fully covered |
+| Consumer supervision | 6 focused shell/lifecycle tests passed; failed consumer is replaced with the same metadata and stopped on app exit |
 
 Commands:
 
@@ -40,4 +41,8 @@ Independent QA and final code review passed for the corrections: runtime edits a
 
 `tests/integration/task211_watch_generation.py` uses separate native PostgreSQL sessions to hold real generation locks while an enqueue/takeover or inference/base-delivery claim overlaps. CI provisions a disposable PostgreSQL 17.6 container and passes only its container ID; the harness cannot consume application database credentials. Independent review checked SQL lock order and Docker/psql process handling. These concurrent checks have not executed locally and must pass CI before merge; the 77 PGlite checks do not establish multi-session lock execution.
 
-Recommendation: ready for PR review, subject to native concurrent CI checks. Apply `migrations/2026-10-08-task211-oi-watch-jev.sql` before feature deployment and verify worker/outbox readiness after deployment. `.env` retains credentials; change the new knobs only in `config_profiles.py`.
+Native verification subsequently passed in [CI run 37914870172](https://github.com/Manmade-Anyme/ARES/actions/runs/37914870172) for d72e545: 77 lifecycle checks and 11 overlapping PostgreSQL checks. The final supervision correction changes no SQL; its complete CI rerun remains pending push.
+
+A third valid review comment identified permanent watch-delivery loss if the consumer process exited while ARES continued. The actual shell regression failed before correction (1 failed, 2 passed): the first consumer exited with status 9 and the waiting application exited with status 13 because no replacement arrived. The launcher now reaps and restarts the consumer on its existing two-second monitor loop, reusing the same UUID/start time and checking ARES is still alive before spawning. The application is not restarted. The replacement stays alive in the regression until the launcher kills it on application exit, verifying shutdown of the latest child. This correction touches only launcher behavior and its test/docs, with no application, outbox, model or SQL changes. Independent review passed.
+
+Recommendation: ready for PR review, subject to final supervision revision CI. Apply `migrations/2026-10-08-task211-oi-watch-jev.sql` before feature deployment and verify worker/outbox readiness after deployment. `.env` retains credentials; change the new knobs only in `config_profiles.py`.

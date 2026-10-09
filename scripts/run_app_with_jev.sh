@@ -42,8 +42,13 @@ while kill -0 "$main_pid" 2>/dev/null; do
   if [ -n "$jev_pid" ] && ! kill -0 "$jev_pid" 2>/dev/null; then
     wait "$jev_pid"
     status=$?
-    echo "[runner] Jev consumer exited with status $status; ARES app continues."
+    echo "[runner] Jev consumer exited with status $status."
     jev_pid=""
+    if kill -0 "$main_pid" 2>/dev/null; then
+      echo "[runner] Restarting Jev consumer; ARES app continues."
+      python -m system_one.consumer &
+      jev_pid=$!
+    fi
   fi
   sleep 2
 done
