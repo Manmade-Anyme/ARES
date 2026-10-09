@@ -1,7 +1,6 @@
 import math
 import json
-from typing import Any, Dict, Optional, Tuple
-from datetime import datetime
+from typing import Any, Dict, Optional
 
 
 def _safe_float(val: Any) -> Optional[float]:

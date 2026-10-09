@@ -13,13 +13,12 @@ from __future__ import annotations
 import logging
 import math
 import os
-import sys
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from dateutil.parser import isoparse
 from threading import Event, Thread
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from supabase import create_client, Client as SupabaseClient
 from typesafe_sdk import TypeSafeError, TypeSafeAPIError, TypeSafeAPIConnectionError

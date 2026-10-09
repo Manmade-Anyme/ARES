@@ -24,7 +24,6 @@ from typesafe_sdk import (
     Score,
     TypeSafeClient,
 )
-from typesafe_sdk import TypeSafeError, TypeSafeAPIError, TypeSafeAPITimeoutError
 
 from . import QUESTION_VERSION
 
