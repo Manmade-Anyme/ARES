@@ -500,6 +500,8 @@ def run() -> None:
     delivery_thread = Thread(target=_delivery_loop, args=(delivery_stop,),
                              name="jev-delivery", daemon=True)
     delivery_thread.start()
+    from .watch_consumer import start_watch_workers
+    watch_threads = start_watch_workers(delivery_stop, _create_supabase_client)
     try:
         while True:
             try:
@@ -532,6 +534,8 @@ def run() -> None:
         # Do not wait for a webhook timeout at shutdown. Any interrupted SENDING
         # attempt follows the existing durable UNKNOWN/no-replay recovery rule.
         delivery_thread.join(timeout=1)
+        for thread in watch_threads:
+            thread.join(timeout=1)
 
 
 if __name__ == "__main__":

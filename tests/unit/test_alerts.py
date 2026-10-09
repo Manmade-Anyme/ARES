@@ -308,6 +308,8 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
     async def test_send_watchlist_alert_success(self, mock_client_class, mock_settings):
         mock_settings.oi_wall_enable_watchlist_alert = True
         mock_settings.discord_webhook_url = "http://mock-webhook"
+        mock_settings.oi_watch_jev_enabled = True
+        mock_settings.oi_watch_jev_minimum_move_points = 25.0
         mock_client = AsyncMock()
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
@@ -343,6 +345,8 @@ class TestAlerts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🛡️ Wall Barrier", field_names)
         self.assertIn("⏱️ Persistence", field_names)
         self.assertIn("💡 Trader Guidance", field_names)
+        self.assertEqual(field_names.count("🧠 JEV Prediction"), 1)
+        self.assertIn("24050.00: unavailable", embed["fields"][-1]["value"])
 
         mock_client.post.side_effect = Exception("Webhook unavailable")
         self.assertFalse(await send_watchlist_alert(bias, spot=24075.0))

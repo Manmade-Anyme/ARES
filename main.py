@@ -18,6 +18,7 @@ from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
 from ml_signal.predictor import SignalPredictor
 from options_math import process_options_calculation
+from oi_watch_outbox import initialize_oi_watch_outbox
 
 logger = logging.getLogger("ares.main")
 
@@ -162,11 +163,30 @@ async def _record_ml_snapshot(ml_collector, signal, **snapshot_fields):
     except Exception as e:
         print(f"[-] _record_ml_snapshot failed: {e}")
 
-async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle):
+async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle, *, outbox=None):
     """Confirm final Discord delivery before resolving a delivered OI watch."""
     delivered = False
     reason = "Signal persistence failed; trade entry was aborted"
     if persisted:
+        episode_id = entry_filter.watch_episode_id if signal.setup_type.value == "OI_WALL_REJECTION" else None
+        if outbox is not None and episode_id is not None:
+            # Persist CONSUME before publishing the confirmed alert. This waits
+            # only for application writes, never Jev inference or delivery.
+            await dispatch_oi_wall_watch_alerts(entry_filter, spot, outbox=outbox)
+            # ponytail: five-second fence ceiling keeps trade alerts available
+            # during database failures; ordering is degraded if writes remain.
+            try:
+                fenced = await outbox.flush(5.0)
+            except Exception:
+                fenced = False
+            if not fenced:
+                logger.warning("OI watch terminal persistence fence failed; confirmed alert ordering degraded")
+            try:
+                settled = await outbox.wait_for_delivery(episode_id, timeout=6.0)
+            except Exception:
+                settled = False
+            if not settled:
+                logger.warning("OI watch delivery ordering barrier failed; confirmed alert ordering degraded")
         reason = "Final signal Discord delivery failed; a trade may already be tracked"
         try:
             delivered = await send_discord(signal, spot)
@@ -177,7 +197,7 @@ async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle):
         wall_key = context.get("wall_key")
         if wall_key:
             entry_filter.acknowledge_signal_alert(wall_key, delivered, candle, reason)
-            await dispatch_oi_wall_watch_alerts(entry_filter, spot)
+            await dispatch_oi_wall_watch_alerts(entry_filter, spot, outbox=outbox)
 
 
 async def run():
@@ -223,12 +243,14 @@ async def run():
         print(f"{Y}[!] PredictionLogger: inactive ({pl_err}){RESET}")
         prediction_logger = None
 
-    # Make this dynamic via Yahoo Finance Oracle 
+    # Make this dynamic via Yahoo Finance Oracle
+    previous_day_verified = True
     try:
         pdh, pdl = await price_fetcher.fetch_previous_day_ohlc()
     except Exception as e:
         print(f"{Y}[-] WARNING: Dynamic PDH/PDL fetch failed ({e}). Using last known safe defaults.{RESET}")
         pdh, pdl = 24100.0, 23900.0
+        previous_day_verified = False
         
     level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
     
@@ -264,6 +286,8 @@ async def run():
         predictor_model_name=predictor_name,
     )
 
+    watch_outbox = await initialize_oi_watch_outbox()
+    last_watch_candle = None
     prev_iv = None
     last_vwap_reset_date = None
     waiting_printed = False
@@ -273,250 +297,271 @@ async def run():
     weekly_report_sent = False
     monthly_report_sent = False
 
-    while True:
-        now = datetime.now()
-        current_time = now.time()
+    try:
+        while True:
+            now = datetime.now()
+            current_time = now.time()
         
-        # Reset VWAP at 09:15 once per day
-        if current_time >= time(9, 15) and now.date() != last_vwap_reset_date:
-            price_fetcher.reset_vwap()
-            last_vwap_reset_date = now.date()
-            print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
+            # Reset VWAP at 09:15 once per day
+            if current_time >= time(9, 15) and now.date() != last_vwap_reset_date:
+                price_fetcher.reset_vwap()
+                last_vwap_reset_date = now.date()
+                print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
             
-        # Session gate: only run between 09:15 and 15:30
-        # Post the performance digest once, in the final live minute (15:29–15:30).
-        # The upper bound keeps an after-hours restart from re-posting: the *_sent
-        # flags are in-memory and reset on reboot, but a boot at any other time
-        # can't satisfy the window. Each flag flips only on successful delivery so
-        # a failed webhook stays eligible for retry on the next poll in the window.
-        # ponytail: trades closing in this last minute are excluded, and a skipped
-        # 60s poll tick can rarely miss the window — accepted for a summary digest;
-        # persist a per-period marker if either ever matters.
-        if time(15, 29) <= current_time < time(15, 30):
-            if now.weekday() == 4 and not weekly_report_sent:  # Friday
-                weekly_report_sent = await send_performance_report(storage.supabase, now, "weekly")
-            if is_last_trading_day_of_month(now.date()) and not monthly_report_sent:
-                monthly_report_sent = await send_performance_report(storage.supabase, now, "monthly")
+            # Session gate: only run between 09:15 and 15:30
+            # Post the performance digest once, in the final live minute (15:29–15:30).
+            # The upper bound keeps an after-hours restart from re-posting: the *_sent
+            # flags are in-memory and reset on reboot, but a boot at any other time
+            # can't satisfy the window. Each flag flips only on successful delivery so
+            # a failed webhook stays eligible for retry on the next poll in the window.
+            # ponytail: trades closing in this last minute are excluded, and a skipped
+            # 60s poll tick can rarely miss the window — accepted for a summary digest;
+            # persist a per-period marker if either ever matters.
+            if time(15, 29) <= current_time < time(15, 30):
+                if now.weekday() == 4 and not weekly_report_sent:  # Friday
+                    weekly_report_sent = await send_performance_report(storage.supabase, now, "weekly")
+                if is_last_trading_day_of_month(now.date()) and not monthly_report_sent:
+                    monthly_report_sent = await send_performance_report(storage.supabase, now, "monthly")
 
-        if current_time >= time(15, 30):
-            print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
-            tick_feed.stop()
-            break
+            if current_time >= time(15, 30):
+                print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
+                tick_feed.stop()
+                break
             
-        if current_time < time(9, 15):
-            if not waiting_printed:
-                print(f"{Y}[{now.strftime('%H:%M:%S')}] ⏸️ Pre-market (09:15 start). Sleeping...{RESET}")
-                waiting_printed = True
-            await asyncio.sleep(30)
-            continue
+            if current_time < time(9, 15):
+                if not waiting_printed:
+                    print(f"{Y}[{now.strftime('%H:%M:%S')}] ⏸️ Pre-market (09:15 start). Sleeping...{RESET}")
+                    waiting_printed = True
+                await asyncio.sleep(30)
+                continue
             
-        if waiting_printed:
-            print(f"{G}[{now.strftime('%H:%M:%S')}] ▶️ Session Active. Starting market monitoring...{RESET}")
-            waiting_printed = False
+            if waiting_printed:
+                print(f"{G}[{now.strftime('%H:%M:%S')}] ▶️ Session Active. Starting market monitoring...{RESET}")
+                waiting_printed = False
             
-        try:
-            # Fetch latest price candle
-            candle = await price_fetcher.fetch_latest_candle()
-            spot = candle.close
-            
-            # Fetch option chain dynamically
-            expiry_date = await oi_fetcher.get_nearest_expiry()
-            atm, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry_date)
-            
-            # Build and update dynamic levels
-            levels = level_fetcher.build_levels(
-                spot_price=spot,
-                full_chain=full_chain,
-                oi_wall_threshold=settings.oi_wall_min_oi
-            )
-            
-            # Compute IV change percentage safely (TASK-154 missing data resilience)
-            current_iv = atm.ce.iv if (atm and atm.ce) else None
-            iv_change_pct, prev_iv = compute_iv_change_pct(current_iv, prev_iv)
-            
-            # Run the engine
-            signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
-
-            # Close expired watches before publishing fresh watches, retrying failures.
-            await dispatch_oi_wall_watch_alerts(engine.oi_wall_filter, spot)
-
-            # Terminal UI: Track Warmup State
-            buffer_len = len(engine.candle_buffer)
-            if buffer_len == settings.candle_buffer_size and not buffers_full_printed:
-                print(f"{G}{B}[{now.strftime('%H:%M:%S')}] ✅ BUFFERS FULL: ARES is now actively scoring all setups.{RESET}", flush=True)
-                buffers_full_printed = True
-                
-            # Heartbeat logging every 15 minutes
-            if last_heartbeat_time is None or (now - last_heartbeat_time).total_seconds() >= 900:
-                ml_stats = ml_collector.stats
-                print(f"{C}[{now.strftime('%H:%M:%S')}] 💓 HEARTBEAT: Spot={spot:.2f} | Buffers={buffer_len}/{settings.candle_buffer_size} | ML Snapshots={ml_stats['total_snapshots']} (Signals: {ml_stats['signals_recorded']}){RESET}", flush=True)
-                last_heartbeat_time = now
-            
-            # Process signal
-            if signal:
-                if ml_predictor:
-                    try:
-                        candle_dict = MLCollector._candle_to_dict(candle)
-                        atm_ce_dict = MLCollector._option_row_to_dict(atm.ce)
-                        atm_pe_dict = MLCollector._option_row_to_dict(atm.pe)
-                        oi_totals = ml_collector._compute_totals_from_chain(full_chain)
-                        level_prices = MLCollector._levels_to_prices(levels)
-                        
-                        ml_pred = ml_predictor.predict_from_raw(
-                            candle=candle_dict,
-                            volume_history=list(ml_collector.volume_history),
-                            iv_history=list(ml_collector.iv_history),
-                            atm_ce=atm_ce_dict,
-                            atm_pe=atm_pe_dict,
-                            total_ce_oi=oi_totals["total_ce_oi"],
-                            total_pe_oi=oi_totals["total_pe_oi"],
-                            all_ce_oi=oi_totals["all_ce_oi"],
-                            all_pe_oi=oi_totals["all_pe_oi"],
-                            levels=level_prices,
-                            timestamp=now,
-                            spot=spot,
-                            pdh=pdh,
-                            pdl=pdl,
-                            dte=days_to_expiry(expiry_date),
-                            is_expiry=is_expiry
-                        )
-                        _attach_ml_prediction_to_signal(signal, ml_pred)
-                    except Exception as pred_err:
-                        print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ ML Prediction failed: {pred_err}{RESET}")
-
-                # Run options calculations (sizing, optimal strike selection)
-                try:
-                    await process_options_calculation(signal, full_chain, price_fetcher.dhan)
-                except Exception as sizing_err:
-                    print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
-
-                format_signal_console(signal, spot)
-                trade_executed = False
-                try:
-                    if await storage.log_signal(signal, spot):
-                        trade_executed = True
-                    else:
-                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Engine: Failed to log signal, aborting trade entry.{RESET}")
-                except Exception as db_err:
-                    print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
-
-                if trade_executed:
-                    try:
-                        trade_id, binding_status = await position_manager.add_trade(signal, spot, atm=atm)
-                        signal.trade_id = trade_id
-                        signal.trade_binding_status = binding_status
-                    except Exception as pm_err:
-                        signal.trade_id = None
-                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
-
-                # Log ML prediction asynchronously if model scored this signal (ADR-153)
-                # Invariant: Persists on every inference event even if storage.log_signal fails or trade is aborted.
-                ml_pred = getattr(signal, "ml_prediction", None)
-                if prediction_logger and ml_predictor and ml_pred:
-                    try:
-                        prediction_logger.log_prediction(
-                            probability=ml_pred["probability"],
-                            confidence_tier=ml_pred["confidence_tier"],
-                            model_version=ml_pred["model_version"],
-                            spot=spot,
-                            feature_snapshot=ml_pred.get("features", {}),
-                            signal_id=getattr(signal, "id", None),
-                            trade_id=getattr(signal, "trade_id", None) or None,
-                            source="event_triggered",
-                            timestamp=now,
-                        )
-                    except Exception as log_err:
-                        logger.warning("Non-blocking prediction dispatch error: %s", log_err)
-                        print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Non-blocking prediction dispatch error: {log_err}{RESET}")
-
-                await _deliver_signal_alert(
-                    signal, spot, trade_executed, engine.oi_wall_filter, candle,
-                )
-
-            # ML Data Collection: log a feature snapshot every cycle, signal or not.
-            #
-            # Deliberately AFTER the `if signal:` block: storage.log_signal sets
-            # signal.db_id, and db_id is the key ml_collection rows are joined to
-            # trade_analytics by. Snapshotting before that (as this did) captured
-            # db_id=None on every row, which is why the label columns were never
-            # writable. Nothing in that block mutates candle/atm/full_chain/levels
-            # — only the signal's own sizing fields — so the features are identical.
-            await _record_ml_snapshot(
-                ml_collector,
-                signal,
-                candle=candle,
-                atm=atm,
-                full_chain=full_chain,
-                levels=levels,
-                spot=spot,
-                pdh=pdh,
-                pdl=pdl,
-                is_expiry=is_expiry,
-                dte=days_to_expiry(expiry_date),
-                timestamp=now,
-                oi_wall_context=engine.latest_oi_wall_context,
-                trade_id=getattr(signal, "trade_id", None) if signal else None,
-                trade_binding_status=(
-                    getattr(signal, "trade_binding_status", "UNRESOLVED")
-                    if signal else "NOT_APPLICABLE"
-                ),
-            )
-
-            # Update active trades with new spot price. Candle high/low enable
-            # intrabar SL/target detection (TASK-172, audit item 11).
             try:
-                trade_events = await position_manager.update_trades(
-                    spot, candle_high=candle.high, candle_low=candle.low, candle_timestamp=candle.timestamp
+                # Fetch latest price candle
+                candle = await price_fetcher.fetch_latest_candle()
+                spot = candle.close
+            
+                # Fetch option chain dynamically
+                expiry_date = await oi_fetcher.get_nearest_expiry()
+                atm, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry_date)
+            
+                # Build and update dynamic levels
+                levels = level_fetcher.build_levels(
+                    spot_price=spot,
+                    full_chain=full_chain,
+                    oi_wall_threshold=settings.oi_wall_min_oi
                 )
-                # A stop-out frees the engine cooldown so the next setup can be
-                # taken immediately instead of waiting out the timer.
-                if any(ev_type == "SL_HIT" for _, ev_type in trade_events):
-                    engine.clear_cooldown()
-                    print(f"{Y}[{now.strftime('%H:%M:%S')}] 🔓 Cooldown cleared after stop-out — re-entry unlocked.{RESET}")
-            except Exception as pm_update_err:
-                print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager update_trades failed: {pm_update_err}{RESET}")
             
-            # Clear error tracking on successful cycle
-            if last_error_msg is not None:
-                print(f"{G}[{now.strftime('%H:%M:%S')}] ✅ Connection Recovered: Market data fetch successful.{RESET}")
-                last_error_msg = None
-                
-        except Exception as e:
-            error_str = str(e).lower()
-            current_error = str(e)
+                # Compute IV change percentage safely (TASK-154 missing data resilience)
+                current_iv = atm.ce.iv if (atm and atm.ce) else None
+                iv_change_pct, prev_iv = compute_iv_change_pct(current_iv, prev_iv)
             
-            if "401" in error_str or "auth" in error_str:
-                print(f"{R}[{now.strftime('%H:%M:%S')}] ❌ ERROR: Dhan API Authentication failed.{RESET}")
-                print(f"   {W}Details: {e}{RESET}")
-                print(f"   {W}Action : Reloading credentials from Supabase...{RESET}")
+                # Run the engine
+                signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
+
+                # Close expired watches before publishing fresh watches, retrying failures.
+                last_watch_candle = candle
+                await dispatch_oi_wall_watch_alerts(
+                    engine.oi_wall_filter, spot, outbox=watch_outbox,
+                    candles=price_fetcher.watch_candles, full_chain=full_chain,
+                    levels=levels if previous_day_verified else [
+                        level for level in levels if level.price not in (pdh, pdl)
+                    ],
+                    pdh=pdh if previous_day_verified else None,
+                    pdl=pdl if previous_day_verified else None,
+                    expiry_date=expiry_date,
+                )
+
+                # Terminal UI: Track Warmup State
+                buffer_len = len(engine.candle_buffer)
+                if buffer_len == settings.candle_buffer_size and not buffers_full_printed:
+                    print(f"{G}{B}[{now.strftime('%H:%M:%S')}] ✅ BUFFERS FULL: ARES is now actively scoring all setups.{RESET}", flush=True)
+                    buffers_full_printed = True
                 
+                # Heartbeat logging every 15 minutes
+                if last_heartbeat_time is None or (now - last_heartbeat_time).total_seconds() >= 900:
+                    ml_stats = ml_collector.stats
+                    print(f"{C}[{now.strftime('%H:%M:%S')}] 💓 HEARTBEAT: Spot={spot:.2f} | Buffers={buffer_len}/{settings.candle_buffer_size} | ML Snapshots={ml_stats['total_snapshots']} (Signals: {ml_stats['signals_recorded']}){RESET}", flush=True)
+                    last_heartbeat_time = now
+            
+                # Process signal
+                if signal:
+                    if ml_predictor:
+                        try:
+                            candle_dict = MLCollector._candle_to_dict(candle)
+                            atm_ce_dict = MLCollector._option_row_to_dict(atm.ce)
+                            atm_pe_dict = MLCollector._option_row_to_dict(atm.pe)
+                            oi_totals = ml_collector._compute_totals_from_chain(full_chain)
+                            level_prices = MLCollector._levels_to_prices(levels)
+                        
+                            ml_pred = ml_predictor.predict_from_raw(
+                                candle=candle_dict,
+                                volume_history=list(ml_collector.volume_history),
+                                iv_history=list(ml_collector.iv_history),
+                                atm_ce=atm_ce_dict,
+                                atm_pe=atm_pe_dict,
+                                total_ce_oi=oi_totals["total_ce_oi"],
+                                total_pe_oi=oi_totals["total_pe_oi"],
+                                all_ce_oi=oi_totals["all_ce_oi"],
+                                all_pe_oi=oi_totals["all_pe_oi"],
+                                levels=level_prices,
+                                timestamp=now,
+                                spot=spot,
+                                pdh=pdh,
+                                pdl=pdl,
+                                dte=days_to_expiry(expiry_date),
+                                is_expiry=is_expiry
+                            )
+                            _attach_ml_prediction_to_signal(signal, ml_pred)
+                        except Exception as pred_err:
+                            print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ ML Prediction failed: {pred_err}{RESET}")
+
+                    # Run options calculations (sizing, optimal strike selection)
+                    try:
+                        await process_options_calculation(signal, full_chain, price_fetcher.dhan)
+                    except Exception as sizing_err:
+                        print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
+
+                    format_signal_console(signal, spot)
+                    trade_executed = False
+                    try:
+                        if await storage.log_signal(signal, spot):
+                            trade_executed = True
+                        else:
+                            print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Engine: Failed to log signal, aborting trade entry.{RESET}")
+                    except Exception as db_err:
+                        print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
+
+                    if trade_executed:
+                        try:
+                            trade_id, binding_status = await position_manager.add_trade(signal, spot, atm=atm)
+                            signal.trade_id = trade_id
+                            signal.trade_binding_status = binding_status
+                        except Exception as pm_err:
+                            signal.trade_id = None
+                            print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
+
+                    # Log ML prediction asynchronously if model scored this signal (ADR-153)
+                    # Invariant: Persists on every inference event even if storage.log_signal fails or trade is aborted.
+                    ml_pred = getattr(signal, "ml_prediction", None)
+                    if prediction_logger and ml_predictor and ml_pred:
+                        try:
+                            prediction_logger.log_prediction(
+                                probability=ml_pred["probability"],
+                                confidence_tier=ml_pred["confidence_tier"],
+                                model_version=ml_pred["model_version"],
+                                spot=spot,
+                                feature_snapshot=ml_pred.get("features", {}),
+                                signal_id=getattr(signal, "id", None),
+                                trade_id=getattr(signal, "trade_id", None) or None,
+                                source="event_triggered",
+                                timestamp=now,
+                            )
+                        except Exception as log_err:
+                            logger.warning("Non-blocking prediction dispatch error: %s", log_err)
+                            print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Non-blocking prediction dispatch error: {log_err}{RESET}")
+
+                    await _deliver_signal_alert(
+                        signal, spot, trade_executed, engine.oi_wall_filter, candle,
+                        outbox=watch_outbox,
+                    )
+
+                # ML Data Collection: log a feature snapshot every cycle, signal or not.
+                #
+                # Deliberately AFTER the `if signal:` block: storage.log_signal sets
+                # signal.db_id, and db_id is the key ml_collection rows are joined to
+                # trade_analytics by. Snapshotting before that (as this did) captured
+                # db_id=None on every row, which is why the label columns were never
+                # writable. Nothing in that block mutates candle/atm/full_chain/levels
+                # — only the signal's own sizing fields — so the features are identical.
+                await _record_ml_snapshot(
+                    ml_collector,
+                    signal,
+                    candle=candle,
+                    atm=atm,
+                    full_chain=full_chain,
+                    levels=levels,
+                    spot=spot,
+                    pdh=pdh,
+                    pdl=pdl,
+                    is_expiry=is_expiry,
+                    dte=days_to_expiry(expiry_date),
+                    timestamp=now,
+                    oi_wall_context=engine.latest_oi_wall_context,
+                    trade_id=getattr(signal, "trade_id", None) if signal else None,
+                    trade_binding_status=(
+                        getattr(signal, "trade_binding_status", "UNRESOLVED")
+                        if signal else "NOT_APPLICABLE"
+                    ),
+                )
+
+                # Update active trades with new spot price. Candle high/low enable
+                # intrabar SL/target detection (TASK-172, audit item 11).
                 try:
-                    load_dhan_credentials_from_supabase()
-                    from dhanhq import DhanContext, dhanhq
-                    context = DhanContext(settings.dhan_client_id, settings.dhan_access_token)
-                    price_fetcher.dhan = dhanhq(context)
-                    oi_fetcher.dhan = dhanhq(context)
-                    # Restart the WS feed too — it authenticated with the now-stale token.
-                    tick_feed.stop()
-                    tick_feed.start()
-                    print(f"{G}   [+] Credentials reloaded successfully.{RESET}")
-                except Exception as reload_err:
-                    print(f"{R}   [!] Supabase credentials reload failed: {reload_err}{RESET}")
-                
-                print(f"   {Y}Retrying in 60s...\n{RESET}")
-                
-                if last_error_msg != current_error:
-                    await send_error_alert(f"Dhan API Authentication failed: {e}")
-                    last_error_msg = current_error
-                    
-                await asyncio.sleep(60)
-            else:
-                print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Warning: Fetch cycle error - {e}{RESET}")
-                if last_error_msg != current_error:
-                    await send_error_alert(f"Fetch cycle error - {e}")
-                    last_error_msg = current_error
+                    trade_events = await position_manager.update_trades(
+                        spot, candle_high=candle.high, candle_low=candle.low, candle_timestamp=candle.timestamp
+                    )
+                    # A stop-out frees the engine cooldown so the next setup can be
+                    # taken immediately instead of waiting out the timer.
+                    if any(ev_type == "SL_HIT" for _, ev_type in trade_events):
+                        engine.clear_cooldown()
+                        print(f"{Y}[{now.strftime('%H:%M:%S')}] 🔓 Cooldown cleared after stop-out — re-entry unlocked.{RESET}")
+                except Exception as pm_update_err:
+                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager update_trades failed: {pm_update_err}{RESET}")
             
-        await _sleep_with_tick_exits(settings.poll_interval_seconds, tick_feed, position_manager, engine)
+                # Clear error tracking on successful cycle
+                if last_error_msg is not None:
+                    print(f"{G}[{now.strftime('%H:%M:%S')}] ✅ Connection Recovered: Market data fetch successful.{RESET}")
+                    last_error_msg = None
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                current_error = str(e)
+            
+                if "401" in error_str or "auth" in error_str:
+                    print(f"{R}[{now.strftime('%H:%M:%S')}] ❌ ERROR: Dhan API Authentication failed.{RESET}")
+                    print(f"   {W}Details: {e}{RESET}")
+                    print(f"   {W}Action : Reloading credentials from Supabase...{RESET}")
+                
+                    try:
+                        load_dhan_credentials_from_supabase()
+                        from dhanhq import DhanContext, dhanhq
+                        context = DhanContext(settings.dhan_client_id, settings.dhan_access_token)
+                        price_fetcher.dhan = dhanhq(context)
+                        oi_fetcher.dhan = dhanhq(context)
+                        # Restart the WS feed too — it authenticated with the now-stale token.
+                        tick_feed.stop()
+                        tick_feed.start()
+                        print(f"{G}   [+] Credentials reloaded successfully.{RESET}")
+                    except Exception as reload_err:
+                        print(f"{R}   [!] Supabase credentials reload failed: {reload_err}{RESET}")
+                
+                    print(f"   {Y}Retrying in 60s...\n{RESET}")
+                
+                    if last_error_msg != current_error:
+                        await send_error_alert(f"Dhan API Authentication failed: {e}")
+                        last_error_msg = current_error
+                    
+                    await asyncio.sleep(60)
+                else:
+                    print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Warning: Fetch cycle error - {e}{RESET}")
+                    if last_error_msg != current_error:
+                        await send_error_alert(f"Fetch cycle error - {e}")
+                        last_error_msg = current_error
+            
+            await _sleep_with_tick_exits(settings.poll_interval_seconds, tick_feed, position_manager, engine)
+    finally:
+        if last_watch_candle is not None:
+            engine.oi_wall_filter.reset_session(last_watch_candle)
+            await dispatch_oi_wall_watch_alerts(
+                engine.oi_wall_filter, last_watch_candle.close, outbox=watch_outbox,
+            )
+        if watch_outbox is not None:
+            await watch_outbox.close()
+        tick_feed.stop()
 
 if __name__ == "__main__":
     try:

@@ -42,8 +42,18 @@ jobs:
           # tests/ only — scratch/ is gitignored so it won't be in a CI
           # checkout, but scoping also keeps stray root-level test_*.py out.
           python -m pytest tests/ -q
-          # TASK-210: enforce both line and branch coverage on the independent worker.
-          python -m pytest tests/unit/test_task210*.py -q --cov=system_one --cov-branch --cov-report=term-missing --cov-fail-under=100
+          # TASK-210/211: include both confirmed-signal and ready-watch worker tests.
+          python -m pytest tests/unit/test_task210*.py tests/unit/test_task211*.py -q --cov=system_one --cov-branch --cov-report=term-missing --cov-fail-under=100
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify ready-watch PostgreSQL lifecycle
+        run: |
+          # Isolated test engine only; never connects to the live Supabase project.
+          npm install --prefix "$RUNNER_TEMP/task211-sql" --ignore-scripts --no-audit --no-fund @electric-sql/pglite@0.5.8
+          PGLITE_MODULE_URL="file://$RUNNER_TEMP/task211-sql/node_modules/@electric-sql/pglite/dist/index.js" node tests/integration/task211_watch_lifecycle.mjs
 
   deploy:
     needs: test

@@ -1,11 +1,12 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
 from dhanhq import dhanhq
 
 from models import OHLCVCandle
 from config import settings
+from oi_watch_context import build_watch_candles
 
 
 class PriceFetcher:
@@ -33,6 +34,7 @@ class PriceFetcher:
             )
         self.cumulative_tp_vol: float = 0.0
         self.cumulative_vol: int = 0
+        self.watch_candles: list = []
 
     def reset_vwap(self) -> None:
         """
@@ -149,6 +151,13 @@ class PriceFetcher:
         if not data.get(time_key):
             raise ValueError("No intraday candle data points returned by Dhan API.")
             
+        # Reuse this response for watch evidence. Unlike historical engine
+        # snapshots, refetched rows can prove a completed bar's final values.
+        try:
+            self.watch_candles = build_watch_candles(data, datetime.now(timezone.utc))
+        except Exception:
+            self.watch_candles = []
+
         # Extract the last candle from the arrays
         ts_val = data[time_key][-1]
         

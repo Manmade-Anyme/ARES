@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from config_profiles import TuningConfig, NON_EXPIRY_CONFIG
+from config_profiles import TuningConfig, NON_EXPIRY_CONFIG, OI_WATCH_JEV_CONFIG
 
 
 class Secrets(BaseSettings):
@@ -27,9 +27,10 @@ class Settings:
     """
     Unified access point for all ARES configuration.
 
-    Combines two sources:
+    Combines three sources:
       - Secrets  → loaded from .env / environment variables
       - TuningConfig → loaded from config_profiles.py (expiry or non-expiry)
+      - OI_WATCH_JEV_CONFIG → shared ready-watch settings in config_profiles.py
 
     All existing code can keep using `settings.xxx` unchanged.
     """
@@ -46,11 +47,13 @@ class Settings:
 
     def __getattr__(self, name: str):
         # Called only when normal attribute lookup fails (i.e., not _secrets/_tuning).
-        # Delegate to secrets first, then tuning config.
+        # Delegate to credentials, shared watch configuration, then day tuning.
         try:
             return getattr(self._secrets, name)
         except AttributeError:
             pass
+        if hasattr(OI_WATCH_JEV_CONFIG, name):
+            return getattr(OI_WATCH_JEV_CONFIG, name)
         try:
             return getattr(self._tuning, name)
         except AttributeError:

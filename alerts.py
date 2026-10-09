@@ -184,16 +184,12 @@ def format_watchlist_alert(bias: OIWallBias, spot: float) -> str:
     )
 
 
-async def send_watchlist_alert(bias: OIWallBias, spot: float) -> bool:
-    """
-    Sends an informational heads-up alert to Discord when a qualifying OI wall
-    reaches RETEST_READY. Gated by settings.oi_wall_enable_watchlist_alert.
-    """
-    if not settings.oi_wall_enable_watchlist_alert or not settings.discord_webhook_url:
-        return False
-
+def build_watchlist_payload(bias: OIWallBias, spot: float, observed_at=None) -> dict:
+    """Freeze the original ready-watch embed without changing its fields."""
     ist = timezone(timedelta(hours=5, minutes=30))
-    now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
+    timestamp = observed_at or datetime.now(ist)
+    timestamp = timestamp.replace(tzinfo=ist) if timestamp.tzinfo is None else timestamp.astimezone(ist)
+    now_ist = timestamp.strftime("%d-%b-%Y %H:%M:%S")
 
     wall_oi_lakhs = bias.wall_oi / 100000.0
     direction_desc = bias.direction.value
@@ -218,6 +214,27 @@ async def send_watchlist_alert(bias: OIWallBias, spot: float) -> bool:
         ]
     }
 
+    return payload
+
+
+async def send_watchlist_alert(bias: OIWallBias, spot: float) -> bool:
+    """Direct fallback: deliver the same watch with an unavailable Jev field."""
+    if not settings.oi_wall_enable_watchlist_alert or not settings.discord_webhook_url:
+        return False
+    payload = build_watchlist_payload(bias, spot)
+    if settings.oi_watch_jev_enabled:
+        minimum = settings.oi_watch_jev_minimum_move_points
+        threshold = spot - minimum if bias.direction.value == "BEARISH" else spot + minimum
+        comparison = "below" if bias.direction.value == "BEARISH" else "above"
+        payload["embeds"][0]["fields"].append({
+            "name": "🧠 JEV Prediction",
+            "value": f"Chance of closing {comparison} {threshold:.2f}: unavailable\n"
+                     f"{minimum:g}+ points beyond watch price.\n"
+                     "Outlook: Unavailable\nSupporting evidence: Assessment unavailable\n"
+                     f"Assessment time: {payload['embeds'][0]['fields'][0]['value']}\n"
+                     "Experimental model estimate.",
+            "inline": False,
+        })
     async with httpx.AsyncClient(timeout=5.0) as client:
         try:
             response = await client.post(settings.discord_webhook_url, json=payload)
@@ -227,10 +244,8 @@ async def send_watchlist_alert(bias: OIWallBias, spot: float) -> bool:
             print(f"[-] Alerts: Failed to send watchlist alert: {e}")
             return False
 
-async def send_watchlist_cancellation(event: OIWallWatchCancellation) -> bool:
-    """Close a delivered watch even if new watch alerts have since been disabled."""
-    if not settings.discord_webhook_url:
-        return False
+def build_cancellation_payload(event: OIWallWatchCancellation) -> dict:
+    """Freeze the existing watch cancellation format for either delivery path."""
     ist = timezone(timedelta(hours=5, minutes=30))
 
     def event_time(value):
@@ -255,6 +270,14 @@ async def send_watchlist_cancellation(event: OIWallWatchCancellation) -> bool:
         ],
         "footer": {"text": f"ARES • Watch cancellation • {event.event_id}"},
     }]}
+    return payload
+
+
+async def send_watchlist_cancellation(event: OIWallWatchCancellation) -> bool:
+    """Close a delivered watch even if new watch alerts have since been disabled."""
+    if not settings.discord_webhook_url:
+        return False
+    payload = build_cancellation_payload(event)
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(settings.discord_webhook_url, json=payload)
@@ -265,9 +288,32 @@ async def send_watchlist_cancellation(event: OIWallWatchCancellation) -> bool:
         return False
 
 
-async def dispatch_oi_wall_watch_alerts(entry_filter, spot: float) -> None:
+async def dispatch_oi_wall_watch_alerts(entry_filter, spot: float, *, outbox=None, **market) -> None:
     """Deliver cancellations before fresh watches; acknowledge only accepted posts."""
     try:
+        if outbox is not None:
+            for event in entry_filter.pending_watch_lifecycle:
+                payload = build_cancellation_payload(event.cancellation) if event.cancellation else None
+                outbox.submit_transition(event.event_id, event.action, payload)
+                entry_filter.acknowledge_watch_lifecycle(event)
+            observation = entry_filter.latest_watch_observation
+            if observation is not None and settings.oi_wall_enable_watchlist_alert and settings.discord_webhook_url:
+                payload = build_watchlist_payload(observation.bias, observation.spot, observation.timestamp)
+                restart = OIWallWatchCancellation(
+                    bias=observation.bias, watch_timestamp=observation.timestamp,
+                    timestamp=observation.timestamp, spot=observation.spot,
+                    reason="Trading process restarted", event_id=observation.event_id,
+                )
+                restart_payload = build_cancellation_payload(restart)
+                for field in restart_payload["embeds"][0]["fields"]:
+                    if field["name"] == "Cancelled at":
+                        field["value"] = "__WORKER_TIME__"
+                outbox.submit_watch(observation, payload, restart_payload, **market)
+                entry_filter.acknowledge_watch_outbox(observation.event_id)
+            return
+        # No durable owner: retain the legacy retry/cancellation behavior.
+        for event in entry_filter.pending_watch_lifecycle:
+            entry_filter.acknowledge_watch_lifecycle(event)
         for event in entry_filter.pending_watchlist_cancellations:
             if not await send_watchlist_cancellation(event):
                 return

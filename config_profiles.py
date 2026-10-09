@@ -7,6 +7,35 @@ Secrets (API keys, webhooks) are NOT here — they live in .env only.
 """
 
 from dataclasses import dataclass, field
+from math import isfinite
+
+
+@dataclass(frozen=True)
+class OIWatchJevConfig:
+    """Shared ready-watch forecast tuning for the app and Jev subprocess.
+
+    These values belong to configuration, independently of expiry-day trading
+    profiles. Credentials remain in .env. Both processes read this same file.
+    """
+    oi_watch_jev_enabled: bool = True
+    oi_watch_jev_minimum_move_points: float = 25.0
+    oi_watch_jev_wait_seconds: float = 8.0
+    oi_watch_jev_max_age_seconds: float = 60.0
+
+    def __post_init__(self):
+        if not isinstance(self.oi_watch_jev_enabled, bool):
+            raise ValueError("OI-watch Jev enabled must be boolean")
+        for name in ("oi_watch_jev_minimum_move_points", "oi_watch_jev_wait_seconds",
+                     "oi_watch_jev_max_age_seconds"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if self.oi_watch_jev_max_age_seconds > 60:
+            raise ValueError("OI-watch Jev freshness cannot exceed 60 seconds")
+
+
+# Edit ready-watch prediction settings here; no environment overrides.
+OI_WATCH_JEV_CONFIG = OIWatchJevConfig()
 
 
 @dataclass(frozen=True)

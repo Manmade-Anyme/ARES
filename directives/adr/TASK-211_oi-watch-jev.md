@@ -1,0 +1,46 @@
+# ADR — TASK-211: independent inference, one durable watch embed
+
+Date: 2026-10-08. Decision: implement the proposal authorized in conversation. Design owner: primary Codex agent; code delegated under Global Development Pipeline.
+
+## Decision
+
+Reuse the deployed Jev process and SDK. Add a watch-specific outbox table, shared pure snapshot builder, and separate watch inference/delivery loops with their own clients. The application only freezes observation data and queues lifecycle persistence on a background writer. Its existing watch dispatcher routes these events to the outbox when configured/available; the original direct path remains an unavailable-assessment fallback when outbox startup fails or the feature is disabled.
+
+The worker delivers the application's immutable base payload plus exactly one added field. Inference and delivery are separately claimed in PostgreSQL. Delivery occurs upon result availability, inference failure or the 8-second waiting deadline. A 60-second freshness limit suppresses stale watches. Terminal updates suppress unsent watches; accepted in-flight sends may require a subsequent cancellation. Resolve/consume states prevent an obsolete watch from appearing after a confirmed signal. No synthetic ares_signals row and no reuse of signal probabilities.
+
+## Boundaries and contracts
+
+- `oi_watch_context.py`: pure `build_watch_context(bias, spot, observed_at, *, candles, full_chain, levels, pdh, pdl, expiry_date, minimum_move_points=25.0)` -> JSON-safe dict; no SDK, storage, alerts, main or ML imports. `build_watch_candles(data, sampled_at)` exposes finalized history from the existing provider response. A previously partial sample never becomes finalized solely through elapsed time. Filter future/mismatched-session candles and availability timestamps; summarize available windows. Schema/version constants.
+- `system_one/watch_prediction.py`: `build_watch_questions()`, `invoke_watch_jev(state, *, timeout=5.0, dispatch_deadline=None)` -> JSON-safe prediction dict with `close_probability`, `outlook`, `outlook_distribution`, `scores`, `raw_response`, `model_name`, `context_version`, `question_version`, `latency_ms`; `format_watch_prediction(state, prediction=None)` -> one Discord field value. Missing evidence yields no false numeric confidence; validate typed finite outputs. No application imports except pure context contract.
+- `models.py`, `detectors/oi_wall_entry.py`: immutable watch episode (UUID, bias, first-ready timestamp, spot), retained through retries and suppression; pending terminal lifecycle events distinguish CANCEL, CONSUME, RESOLVE. Terminal cancellation payload belongs to original episode, even after replacement. Legacy delivered-watch behavior preserved.
+- `alerts.py`: extract pure base watch/cancellation payload builders, preserving values; direct watch sender appends unavailable field when appropriate. Optional outbox dispatcher argument submits immutable snapshots and lifecycle events without blocking inference.
+- `oi_watch_outbox.py`: application background writer with its own service-role client and ordered retry queue. Capture first-ready inputs synchronously before queueing. Startup cancels unresolved prior producer runs. No SDK imports. Register failures never trigger duplicate alternate sends after a possibly accepted register. Context-preparation failure registers the same base payload with an explicit unavailable context. `wait_for_delivery(event_id, timeout=6)` queues a bounded status-read barrier on the client's owning thread.
+- `fetchers/price_fetcher.py`: expose current response's sampled/finalized history for watches without another Dhan call or altering existing latest-candle/VWAP/trading output.
+- `config_profiles.py`: shared validated `OI_WATCH_JEV_CONFIG` singleton, independent of expiry profiles; enablement, minimum move, waiting deadline and freshness live here. Per the user's 2026-10-09 correction, none of these new settings is read from environment variables. `config.py` exposes the shared values through existing settings access; the worker reads this pure configuration directly. `.env.example` contains backend credentials only.
+- `main.py`: initialize/close writer, pass current known market inputs and refreshed provider history into watch dispatch; before a confirmed OI signal, fence queued CONSUME writes for up to five seconds and settle already-in-flight transport for up to six seconds. Never wait for Jev inference. On exhausted database/transport fence, deliver the confirmed signal and record degraded ordering. Flush on session reset/exit. No watch SDK calls.
+- `migrations/2026-10-08-task211-oi-watch-jev.sql`: service-role-only RLS outbox and RPCs below. No existing signal-table/schema changes.
+- `system_one/watch_consumer.py`: new watch inference/delivery loops, frozen payload composition, timestamped claims and confirmations. Existing worker starts/stops these independently; existing signal consumer functions/questions untouched.
+
+## Database API
+
+Table `oi_watch_predictions`: event_id UUID primary key; producer_run_id UUID; observed_at; created_at; prediction_deadline; expires_at; input_state JSONB; base_payload JSONB; restart_cancellation_payload JSONB; lifecycle ACTIVE/CONSUMED/RESOLVED/CANCELED; prediction_status PENDING/INVOKING/COMPLETED/FAILED; invocation_token UUID; prediction JSONB; error; delivery_status PENDING/SENDING/SENT/UNKNOWN/SKIPPED; delivery_token UUID; delivery_payload JSONB; delivery_started_at; delivered_at; cancellation_payload JSONB; cancellation_status PENDING/SENDING/SENT/UNKNOWN; cancellation_token UUID; cancellation_started_at; next_attempt_at and cancellation_next_attempt_at. Deadline/freshness governed by DB clock.
+
+RPCs (named parameters for Python):
+
+- `enqueue_oi_watch(p_event_id, p_producer_run_id, p_observed_at, p_input_state, p_base_payload, p_restart_cancellation_payload, p_wait_seconds=8, p_max_age_seconds=60)` -> setof row, insert-on-conflict-do-nothing without replacing snapshot.
+- `transition_oi_watch(p_event_id, p_action, p_cancellation_payload=NULL)` -> setof row; actions CANCEL/CONSUME/RESOLVE. CANCEL sets cancellation payload; CONSUME suppresses new watch delivery while awaiting signal result; RESOLVE closes a normally delivered watch. A RESOLVE during SENDING/UNKNOWN retains a supersession closure payload in case a late accepted watch needs correction. Later CANCEL after CONSUME is allowed. RESOLVE prevents any new watch send.
+- `restart_oi_watches(p_producer_run_id)` -> cancel unresolved other-run watches; use restart template, with worker stamping cancellation time. SENDING is not blindly replayed.
+- `poll_oi_watch_inference()` -> fresh ACTIVE/PENDING rows before prediction_deadline, limit10.
+- `claim_oi_watch_inference(p_event_id,p_invocation_token)` -> atomic fresh ACTIVE/PENDING -> INVOKING; returns row with DB `remaining_seconds`.
+- `complete_oi_watch_inference(p_event_id,p_invocation_token,p_prediction=NULL,p_error=NULL)` -> store one matching result (COMPLETED or FAILED), including late result for audit; no alert replay.
+- `poll_oi_watch_delivery()` -> eligible watch rows or eligible cancellation rows, JSON result includes `is_cancellation` bool; recover stale SENDING to UNKNOWN (10 seconds), suppress expired/session-closed pending watches. Include pending rows after result/error/deadline; cancellation only if base delivery SENT. Do not omit cancellation recovery outside session.
+- `begin_oi_watch_delivery(p_event_id,p_delivery_token,p_payload,p_is_cancellation=false)` -> lock/recheck freshness, lifecycle, deadline, backoff and status; returns row only on claim.
+- `finish_oi_watch_delivery(p_event_id,p_delivery_token,p_status,p_is_cancellation=false,p_retry_after_seconds=0)` -> SENT/UNKNOWN/RETRY; RETRY only explicit known rejection, uses existing payload/token guard and freshness. A matching-token known acceptance can reconcile recovered UNKNOWN without another POST. Acceptance after in-flight supersession queues the closure through the existing cancellation format.
+
+## Alternatives
+
+Inline SDK awaiting watch delivery blocks trading and crosses existing process boundary. Immediate send then edit omits prediction in the first message. Neither meets the discussed requirements as well as the existing independent worker plus a durable watch outbox. No additional market-data service or generic event framework introduced.
+
+## Verification and rollout
+
+Unit tests for pure context/questions/format, immutable base embed, direct unavailable path and filter lifecycle. Isolated SQL execution verifies atomic duplicate claims, deadlines, cancellation-before/after send, terminal races, restart, privilege isolation and UNKNOWN recovery. Worker tests use dummy clients/HTTP only. Regression tests include TASK-210 and wall cancellation/state-machine tests. Include migration/worker readiness checklist and configurable watch feature flag; do not send test Discord alerts or deploy without a concrete verified result.

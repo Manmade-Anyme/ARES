@@ -2,6 +2,32 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-10-09 · Jev in the first OI-wall retest-ready observation (TASK-211)
+
+Implemented the requested one-field assessment in the existing watch message:
+probability of finishing beyond a configurable directional closing threshold,
+current trend outlook, grounded supporting facts and a frozen assessment time.
+Confirmed-trade T1/SL/T2 Jev inference remains unchanged. Watch forecasts use
+separate typed questions and service-role-only persistence, with no synthetic
+trade records or changes to entry, stops, targets or sizing.
+
+Pulled current main into an isolated feature worktree before continuing,
+including the existing timestamp compatibility and scheduled single-Machine
+Jev launcher. Original workspace changes remain untouched. Four new settings
+live in `OI_WATCH_JEV_CONFIG` in `config_profiles.py`, shared by app and worker;
+environment variables contain credentials only, per the user's correction.
+
+Review corrected snapshot-error fallback, stale completed-history handling,
+actual filter interaction/excursion capture, availability timestamps, and
+in-flight supersession. Refreshed historical OHLC uses the same Dhan response
+already fetched; previously partial sampled bars never become finalized solely
+through elapsed time. The notification path uses bounded persistence/transport
+fences before confirmed signals and closes any subsequently accepted late watch.
+
+Validation and rollout status are recorded in the TASK-211 debug/QA reports.
+Production activation requires the reviewed migration and deployment after PR
+review; no test messages or migration were sent to the live services.
+
 ## 2026-10-05 · Jev timestamp compatibility (TASK-210)
 
 Signals #6123 (Trend Continuation, 14:08:50 IST) and #0264 (Exhaustion,
