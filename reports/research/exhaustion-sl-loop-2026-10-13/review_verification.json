@@ -1,0 +1,8 @@
+{
+  "reviewed_at_utc": "2026-10-13T05:15:39.495623+00:00",
+  "primary_score_and_exit_bar_checks": 660,
+  "all_match": true,
+  "independent_baseline_entry_join_checked": 165,
+  "selection_quantiles_and_input_hashes_match": true,
+  "remaining_review_fixes": "sensitivity outcome/risk labels, EOD unfinished counts, bootstrap calendar, frozen selection prose, entry-minute caveat"
+}

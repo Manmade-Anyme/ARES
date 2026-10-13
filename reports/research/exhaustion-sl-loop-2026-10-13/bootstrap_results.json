@@ -1,0 +1,305 @@
+{
+  "sl_22": [
+    {
+      "block": "all",
+      "trades_count": 165,
+      "sessions_count": 59,
+      "observed_delta": 65.0,
+      "bootstrap_mean": 64.97,
+      "ci_95_low": 42.98,
+      "ci_95_high": 90.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "development",
+      "trades_count": 82,
+      "sessions_count": 31,
+      "observed_delta": 30.0,
+      "bootstrap_mean": 30.15,
+      "ci_95_low": 13.0,
+      "ci_95_high": 48.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "historical_validation",
+      "trades_count": 83,
+      "sessions_count": 28,
+      "observed_delta": 35.0,
+      "bootstrap_mean": 34.96,
+      "ci_95_low": 20.0,
+      "ci_95_high": 52.02,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "bullish",
+      "trades_count": 92,
+      "sessions_count": 59,
+      "observed_delta": 26.0,
+      "bootstrap_mean": 25.99,
+      "ci_95_low": 13.0,
+      "ci_95_high": 41.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "bearish",
+      "trades_count": 73,
+      "sessions_count": 59,
+      "observed_delta": 39.0,
+      "bootstrap_mean": 38.92,
+      "ci_95_low": 21.0,
+      "ci_95_high": 59.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-07",
+      "trades_count": 28,
+      "sessions_count": 10,
+      "observed_delta": 5.0,
+      "bootstrap_mean": 5.07,
+      "ci_95_low": 0.0,
+      "ci_95_high": 15.0,
+      "fraction_bootstrap_delta_nonpositive": 0.36,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-08",
+      "trades_count": 54,
+      "sessions_count": 21,
+      "observed_delta": 25.0,
+      "bootstrap_mean": 24.99,
+      "ci_95_low": 12.0,
+      "ci_95_high": 40.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-09",
+      "trades_count": 67,
+      "sessions_count": 21,
+      "observed_delta": 33.0,
+      "bootstrap_mean": 33.04,
+      "ci_95_low": 19.0,
+      "ci_95_high": 48.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-10",
+      "trades_count": 16,
+      "sessions_count": 7,
+      "observed_delta": 2.0,
+      "bootstrap_mean": 2.0,
+      "ci_95_low": 0.0,
+      "ci_95_high": 6.0,
+      "fraction_bootstrap_delta_nonpositive": 0.351,
+      "unresolved_pairs_excluded": 0
+    }
+  ],
+  "sl_29": [
+    {
+      "block": "all",
+      "trades_count": 165,
+      "sessions_count": 59,
+      "observed_delta": 92.0,
+      "bootstrap_mean": 92.17,
+      "ci_95_low": 66.0,
+      "ci_95_high": 120.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "development",
+      "trades_count": 82,
+      "sessions_count": 31,
+      "observed_delta": 42.0,
+      "bootstrap_mean": 42.22,
+      "ci_95_low": 24.0,
+      "ci_95_high": 62.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "historical_validation",
+      "trades_count": 83,
+      "sessions_count": 28,
+      "observed_delta": 50.0,
+      "bootstrap_mean": 50.19,
+      "ci_95_low": 32.0,
+      "ci_95_high": 69.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "bullish",
+      "trades_count": 92,
+      "sessions_count": 59,
+      "observed_delta": 44.0,
+      "bootstrap_mean": 44.12,
+      "ci_95_low": 26.0,
+      "ci_95_high": 65.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "bearish",
+      "trades_count": 73,
+      "sessions_count": 59,
+      "observed_delta": 48.0,
+      "bootstrap_mean": 48.16,
+      "ci_95_low": 29.0,
+      "ci_95_high": 69.02,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-07",
+      "trades_count": 28,
+      "sessions_count": 10,
+      "observed_delta": 8.0,
+      "bootstrap_mean": 7.78,
+      "ci_95_low": 0.0,
+      "ci_95_high": 19.0,
+      "fraction_bootstrap_delta_nonpositive": 0.112,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-08",
+      "trades_count": 54,
+      "sessions_count": 21,
+      "observed_delta": 34.0,
+      "bootstrap_mean": 34.0,
+      "ci_95_low": 19.0,
+      "ci_95_high": 50.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-09",
+      "trades_count": 67,
+      "sessions_count": 21,
+      "observed_delta": 48.0,
+      "bootstrap_mean": 48.14,
+      "ci_95_low": 32.0,
+      "ci_95_high": 65.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-10",
+      "trades_count": 16,
+      "sessions_count": 7,
+      "observed_delta": 2.0,
+      "bootstrap_mean": 1.95,
+      "ci_95_low": 0.0,
+      "ci_95_high": 6.0,
+      "fraction_bootstrap_delta_nonpositive": 0.35,
+      "unresolved_pairs_excluded": 0
+    }
+  ],
+  "sl_30": [
+    {
+      "block": "all",
+      "trades_count": 165,
+      "sessions_count": 59,
+      "observed_delta": 101.0,
+      "bootstrap_mean": 101.09,
+      "ci_95_low": 74.0,
+      "ci_95_high": 129.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "development",
+      "trades_count": 82,
+      "sessions_count": 31,
+      "observed_delta": 49.0,
+      "bootstrap_mean": 49.56,
+      "ci_95_low": 30.0,
+      "ci_95_high": 71.02,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "historical_validation",
+      "trades_count": 83,
+      "sessions_count": 28,
+      "observed_delta": 52.0,
+      "bootstrap_mean": 52.22,
+      "ci_95_low": 34.0,
+      "ci_95_high": 73.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "bullish",
+      "trades_count": 92,
+      "sessions_count": 59,
+      "observed_delta": 46.0,
+      "bootstrap_mean": 45.86,
+      "ci_95_low": 27.0,
+      "ci_95_high": 68.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "bearish",
+      "trades_count": 73,
+      "sessions_count": 59,
+      "observed_delta": 55.0,
+      "bootstrap_mean": 54.75,
+      "ci_95_low": 35.0,
+      "ci_95_high": 77.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-07",
+      "trades_count": 28,
+      "sessions_count": 10,
+      "observed_delta": 11.0,
+      "bootstrap_mean": 11.08,
+      "ci_95_low": 0.0,
+      "ci_95_high": 23.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0275,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-08",
+      "trades_count": 54,
+      "sessions_count": 21,
+      "observed_delta": 38.0,
+      "bootstrap_mean": 38.08,
+      "ci_95_low": 22.0,
+      "ci_95_high": 56.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-09",
+      "trades_count": 67,
+      "sessions_count": 21,
+      "observed_delta": 50.0,
+      "bootstrap_mean": 50.08,
+      "ci_95_low": 34.0,
+      "ci_95_high": 66.0,
+      "fraction_bootstrap_delta_nonpositive": 0.0,
+      "unresolved_pairs_excluded": 0
+    },
+    {
+      "block": "month_2026-10",
+      "trades_count": 16,
+      "sessions_count": 7,
+      "observed_delta": 2.0,
+      "bootstrap_mean": 1.98,
+      "ci_95_low": 0.0,
+      "ci_95_high": 6.0,
+      "fraction_bootstrap_delta_nonpositive": 0.331,
+      "unresolved_pairs_excluded": 0
+    }
+  ]
+}
