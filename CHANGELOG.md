@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Research — Exhaustion Stop-Loss Audit Review Corrections**: Audit follow-up corrections across `reports/research/exhaustion-sl-loop-2026-10-13/`. Separated `t1_be`, `t1_pending`, `pending_before_t1`, and `total_unfinished` in ledger summaries; recomputed sensitivity stop-loss exposures with outcome switching and marked EOD as censored; added `exit_bar_start` and conservative `exit_known_at` (+1 min) with MAE/MFE labeled as full-exit-bar upper bounds; updated paired bootstrap across all 59 session dates with descriptive fraction of nonpositive deltas and block-specific unresolved counts; corrected selection derivation prose; added `cohort.csv` with Signal 475 match caveat; fixed synthetic test bar open levels; added 6 regression tests; updated figures and research report with neutral language.
+
 - **Jev code cleanup:** Remove seven unused imports from the consumer, context builder and predictor. Preserve runtime exception handling, prediction behavior and trading configuration.
 
 - **TASK-211 final watch lifecycle persistence:** Wait up to five seconds for an existing watch's RESOLVE/CANCEL write after final signal delivery is acknowledged, reducing misleading abandonment cancellation after restart. Preserve the signal delivery outcome on database failure and log degraded persistence; no additional fence without a watch. Discord and database updates remain non-atomic against hard crashes.

@@ -1,0 +1,95 @@
+{
+  "project": "exhaustion-sl-loop-2026-10-13",
+  "status": "ALL_ROUNDS_COMPLETED",
+  "current_phase": "READY_FOR_TESTS_AND_REPORT",
+  "updated_utc": "2026-10-13T05:29:08.115475+00:00",
+  "phases": {
+    "data_capture": {
+      "status": "COMPLETED",
+      "bars_captured": 22152,
+      "complete_sessions": 59,
+      "sha256": "b571e27f149eece75039dea108a744a37702f51c7c944990040bdcd267bbcdfc",
+      "oct12_available": true
+    },
+    "protocol_and_selection": {
+      "status": "COMPLETED",
+      "protocol_file": "PROTOCOL.md",
+      "selection_file": "selection.json",
+      "cohort_size": 165,
+      "development_trades": 82,
+      "historical_validation_trades": 83,
+      "qualifying_recoveries": 8,
+      "selected_widths": [
+        22,
+        29,
+        30
+      ]
+    },
+    "round_1": {
+      "status": "COMPLETED",
+      "sl_distance": 22,
+      "summary": {
+        "sl_distance": 22,
+        "total_score": 18.0,
+        "score_delta_vs_baseline": 65.0,
+        "t1_be_count": 50,
+        "t2_count": 27,
+        "sl_count": 87,
+        "rescued_trades": 28,
+        "persisting_sl_trades": 87,
+        "worsened_trades": 0,
+        "total_sl_risk_exposure": 1914.0,
+        "risk_exposure_increase_pct": 59.5,
+        "failing_min_rr_count": 129,
+        "failing_min_rr_pct": 78.18
+      }
+    },
+    "round_2": {
+      "status": "COMPLETED",
+      "sl_distance": 29,
+      "summary": {
+        "sl_distance": 29,
+        "total_score": 45.0,
+        "score_delta_vs_baseline": 92.0,
+        "t1_be_count": 56,
+        "t2_count": 32,
+        "sl_count": 76,
+        "rescued_trades": 39,
+        "persisting_sl_trades": 76,
+        "worsened_trades": 0,
+        "total_sl_risk_exposure": 2204.0,
+        "risk_exposure_increase_pct": 83.67,
+        "failing_min_rr_count": 165,
+        "failing_min_rr_pct": 100.0
+      }
+    },
+    "round_3": {
+      "status": "COMPLETED",
+      "sl_distance": 30,
+      "summary": {
+        "sl_distance": 30,
+        "total_score": 54.0,
+        "score_delta_vs_baseline": 101.0,
+        "t1_be_count": 59,
+        "t2_count": 33,
+        "sl_count": 72,
+        "rescued_trades": 43,
+        "persisting_sl_trades": 72,
+        "worsened_trades": 0,
+        "total_sl_risk_exposure": 2160.0,
+        "risk_exposure_increase_pct": 80.0,
+        "failing_min_rr_count": 165,
+        "failing_min_rr_pct": 100.0
+      }
+    },
+    "reporting_and_artifacts": {
+      "status": "IN_PROGRESS",
+      "report_file": "REPORT.md",
+      "figures": [
+        "score_vs_risk.png",
+        "trade_rescue_case.png",
+        "persistent_loss_case.png"
+      ]
+    }
+  }
+}

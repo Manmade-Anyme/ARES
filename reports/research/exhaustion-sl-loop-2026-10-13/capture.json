@@ -1,0 +1,11 @@
+{
+  "captured_utc": "2026-10-13T05:06:42.367925+00:00",
+  "security_id": "13",
+  "exchange_segment": "IDX_I",
+  "instrument_type": "INDEX",
+  "interval_minutes": 1,
+  "requested_from": "2026-07-20 00:00:00",
+  "requested_to": "2026-10-13 00:00:00",
+  "rows_received": 22152,
+  "sha256": "b571e27f149eece75039dea108a744a37702f51c7c944990040bdcd267bbcdfc"
+}

@@ -1,0 +1,9 @@
+variant,direction,trades,t1_be,t1_pending,pending_before_t1,total_unfinished,t2,sl,pending,total_score,score_per_trade,win_rate_pct,total_sl_risk_exposure,exposure_per_trade,failing_min_rr_count,failing_min_rr_pct,ambiguous_bars_count
+baseline,BULLISH,92,17,0,0,0,9,66,0,-31.0,-0.337,28.26,694.0,7.54,0,0.0,1
+baseline,BEARISH,73,14,1,0,1,9,49,1,-16.0,-0.2192,32.88,506.0,6.93,0,0.0,0
+sl_22,BULLISH,92,24,0,0,0,13,55,0,-5.0,-0.0543,40.22,1210.0,13.15,67,72.83,4
+sl_22,BEARISH,73,26,1,0,1,14,32,1,23.0,0.3151,56.16,704.0,9.64,62,84.93,2
+sl_29,BULLISH,92,27,0,0,0,17,48,0,13.0,0.1413,47.83,1392.0,15.13,92,100.0,4
+sl_29,BEARISH,73,29,1,0,1,15,28,1,32.0,0.4384,61.64,812.0,11.12,73,100.0,4
+sl_30,BULLISH,92,28,0,0,0,17,47,0,15.0,0.163,48.91,1410.0,15.33,92,100.0,4
+sl_30,BEARISH,73,31,1,0,1,16,25,1,39.0,0.5342,65.75,750.0,10.27,73,100.0,4

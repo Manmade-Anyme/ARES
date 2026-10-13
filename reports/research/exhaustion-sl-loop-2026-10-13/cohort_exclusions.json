@@ -1,0 +1,16 @@
+{
+  "total_signals": 166,
+  "total_active_trades": 165,
+  "total_analytics": 165,
+  "matched_trades_count": 165,
+  "excluded_signals_count": 1,
+  "excluded_records": [
+    {
+      "signal_id": 505,
+      "signal_uuid": "6768cb50-9f33-4dc1-aea1-cc19fabafbb2",
+      "timestamp": "2026-09-24T13:22:00+05:30",
+      "direction": "BEARISH",
+      "reason": "no_active_trade_match"
+    }
+  ]
+}

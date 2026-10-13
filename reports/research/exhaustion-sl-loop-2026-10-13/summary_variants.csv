@@ -1,0 +1,5 @@
+variant,trades,t1_be,t1_pending,pending_before_t1,total_unfinished,t2,sl,pending,total_score,score_per_trade,win_rate_pct,total_sl_risk_exposure,exposure_per_trade,failing_min_rr_count,failing_min_rr_pct,ambiguous_bars_count
+baseline,165,31,1,0,1,18,115,1,-47.0,-0.2848,30.3,1200.0,7.27,0,0.0,1
+sl_22,165,50,1,0,1,27,87,1,18.0,0.1091,47.27,1914.0,11.6,129,78.18,6
+sl_29,165,56,1,0,1,32,76,1,45.0,0.2727,53.94,2204.0,13.36,165,100.0,8
+sl_30,165,59,1,0,1,33,72,1,54.0,0.3273,56.36,2160.0,13.09,165,100.0,8

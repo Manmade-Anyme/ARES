@@ -1,0 +1,29 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.6, pytest-9.0.3, pluggy-1.6.0 -- /Users/manmadeanyme/.pyenv/versions/3.14.6/bin/python3
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /Users/manmadeanyme/Documents/Work/ARES
+plugins: mock-3.15.1, cov-7.1.0, asyncio-1.4.0, hypothesis-6.156.1, httpx-0.36.2, respx-0.23.1, anyio-4.13.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 18 items
+
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_scorer_bullish_bearish_sl_distance PASSED [  5%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_original_10_vs_12_stop_distance PASSED [ 11%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_recorded_target_distances PASSED [ 16%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_known_open_before_extremes PASSED [ 22%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_t1_be_plus_one_and_t2_plus_two PASSED [ 27%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_pending_trade_before_t1 PASSED [ 33%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_sourcebar_accept_times_alignment PASSED [ 38%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_no_overnight_entry PASSED [ 44%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_train_only_selection_no_leakage PASSED [ 50%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_exact_three_distinct_widths PASSED [ 55%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_ledger_arithmetic_consistency PASSED [ 61%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_scorer_matches_frozen_old_scorer PASSED [ 66%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_summarize_ledger_separates_pending_and_t1_be PASSED [ 72%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_sensitivities_switch_outcome_and_recompute_sl_exposure PASSED [ 77%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_exit_bar_start_and_exit_known_at PASSED [ 83%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_cohort_csv_and_signal_475_match PASSED [ 88%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_selection_overwrite_refusal_and_hash_verification PASSED [ 94%]
+reports/research/exhaustion-sl-loop-2026-10-13/test_sl_experiments.py::test_paired_bootstrap_59_session_dates_and_nonpositive_fraction PASSED [100%]
+
+============================== 18 passed in 1.38s ==============================
