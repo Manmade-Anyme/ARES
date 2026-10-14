@@ -4,9 +4,7 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
-- **TASK-212 — Exhaustion 30-point stop:** Set exhaustion SL to 30 points in both profiles while retaining T1 18 and current T2 resolution. Configure a setup-specific minimum reward/risk of 0.60; other setups retain the global minimum. Reuse the existing configuration table and engine gate, with focused regression tests.
-
-- **TASK-212 target audit:** Compare T1 18/24/30 at SL30 on 165 historical entries, including structural-T2 uncertainty and intraday sensitivities. Retain T1 18; higher targets delayed breakeven protection and reduced the specified score. Findings added to the same PR; no additional application code.
+- **TASK-212 revert:** Revert commit f2cb646 (PR #130). Restore exhaustion reversal stop loss to 10 points and remove setup-specific minimum reward/risk override, returning engine R:R gate to global threshold only.
 
 - **Jev code cleanup:** Remove seven unused imports from the consumer, context builder and predictor. Preserve runtime exception handling, prediction behavior and trading configuration.
 
