@@ -4,7 +4,7 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
-- **OIWatchJevConfig type check:** Use explicit type check in `OIWatchJevConfig.__post_init__` for `oi_watch_jev_enabled` to resolve Pylance `reportUnnecessaryIsInstance` diagnostic while preserving strict runtime boolean validation.
+- **Config profiles typing:** Use explicit type check in `OIWatchJevConfig.__post_init__` for `oi_watch_jev_enabled` and specify type arguments `dict[str, SetupLevels]` on `per_type_levels` to resolve Pylance diagnostics while preserving runtime validation.
 
 - **TASK-212 revert:** Revert commit f2cb646 (PR #130). Restore exhaustion reversal stop loss to 10 points and remove setup-specific minimum reward/risk override, returning engine R:R gate to global threshold only.
 

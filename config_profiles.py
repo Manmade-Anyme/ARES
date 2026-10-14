@@ -198,7 +198,7 @@ class TuningConfig:
     # Per-setup-type SL / T1 / T2 (TASK-185). Applied centrally in the engine,
     # keyed by SetupType.value. See SetupLevels above. Same table in both
     # profiles for now; expiry may diverge after a month of live re-tuning.
-    per_type_levels: dict = field(
+    per_type_levels: dict[str, SetupLevels] = field(
         default_factory=lambda: dict(_PER_TYPE_LEVELS_DEFAULT)
     )
 
