@@ -16,6 +16,8 @@ Both expiry and non-expiry profiles use this configuration. For entry 24,000: bu
 
 Historical fixed-entry replay supported testing this width: 165 recorded entries scored −47 under original stops and +54 at 30, preserving recorded targets, including older 24-point T1 trades. Scores are SL −1, T1 +1, T2 +2 total, not cash P&L. Wider stopped trades allow more adverse movement; candle-order and feed limitations remain. This configuration change does not introduce new monitoring or scoring code.
 
+The [October 14 target audit](../reports/research/TASK-212_exhaustion-target-audit-2026-10-14.md) retains T1=18: with SL30, T1=18/24/30 scored +54/+39/+29 under the documented recorded-T2 approximation. The structurally reliable 121-entry comparison and intraday sensitivities also favor18. Higher T1 delays the move to breakeven and increases full stop-outs. No additional application changes were needed.
+
 Rollback: restore the exhaustion table entry to `SetupLevels(10.0, 18.0, 40.0)`; omitting the override restores the global 1.0 threshold.
 
 Validation: run `python3 -m pytest tests/unit/test_config_profiles.py tests/unit/test_per_type_levels.py tests/unit/test_engine_efficiency_gates.py -q`. On local environments where an installed `tests` package shadows this repository, add `--import-mode=importlib`.
