@@ -40,7 +40,7 @@ class TestTuningConfig:
         assert EXPIRY_CONFIG.signal_cooldown_minutes == 20
         assert EXPIRY_CONFIG.breakout_confirmation_candles == 2
         assert EXPIRY_CONFIG.oi_wall_min_oi == 10_000_000
-        assert EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 10.0
+        assert EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 30.0
         assert EXPIRY_CONFIG.level_scan_range == 300.0
 
     def test_non_expiry_profile_values(self):
@@ -48,13 +48,19 @@ class TestTuningConfig:
         assert NON_EXPIRY_CONFIG.signal_cooldown_minutes == 15
         assert NON_EXPIRY_CONFIG.breakout_confirmation_candles == 3
         assert NON_EXPIRY_CONFIG.oi_wall_min_oi == 4_000_000
-        assert NON_EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 10.0
+        assert NON_EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 30.0
         assert NON_EXPIRY_CONFIG.level_scan_range == 500.0
 
     def test_oi_wall_watchlist_alert_enabled_in_both_profiles(self):
         assert TuningConfig().oi_wall_enable_watchlist_alert is True
         assert NON_EXPIRY_CONFIG.oi_wall_enable_watchlist_alert is True
         assert EXPIRY_CONFIG.oi_wall_enable_watchlist_alert is True
+
+    def test_only_exhaustion_overrides_global_rr_minimum(self):
+        for profile in (NON_EXPIRY_CONFIG, EXPIRY_CONFIG):
+            assert profile.min_rr_ratio == 1.0
+            for setup, levels in profile.per_type_levels.items():
+                assert levels.min_rr_ratio == (0.60 if setup == "EXHAUSTION_REVERSAL" else None)
 
 
 # ─── Settings Facade Tests ──────────────────────────────────────────────────
