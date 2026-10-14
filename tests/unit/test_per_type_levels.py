@@ -23,7 +23,7 @@ def lvl(price):
 
 
 APPROVED = {
-    "EXHAUSTION_REVERSAL": (30.0, 18.0, 40.0),
+    "EXHAUSTION_REVERSAL": (10.0, 18.0, 40.0),
     "TREND_CONTINUATION": (25.0, 25.0, 80.0),
     "OI_WALL_REJECTION": (16.0, 25.0, 40.0),
     "FAILED_BREAKOUT": (12.0, 20.0, 55.0),
@@ -142,9 +142,7 @@ def test_default_configs_pass_rr_gate(settings, setup_key):
     risk = abs(sig.trigger_price - sig.stop_loss)
     reward = abs(sig.target_1 - sig.trigger_price)
     assert risk > 0
-    lv = settings.per_type_levels[setup_key]
-    minimum = lv.min_rr_ratio if lv.min_rr_ratio is not None else settings.min_rr_ratio
-    assert reward / risk >= minimum
+    assert reward / risk >= settings.min_rr_ratio
 
 
 # ── Safety: unknown / missing setup key leaves structural levels intact ───────

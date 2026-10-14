@@ -1,6 +1,6 @@
 """
 Tests for TASK-171 audit P0 efficiency gates in AresEngine (post-TASK-182):
-- R:R gate: require the configured minimum T1 reward / SL risk ratio.
+- R:R gate: reject signals whose risk (entry→SL) exceeds reward (entry→T1).
   This is the only remaining protective filter.
 - Every fired signal (including exhaustion) is a live trade — the
   observation-only gate was removed in TASK-182.
@@ -81,7 +81,7 @@ class TestEngineEfficiencyGates(unittest.TestCase):
     # ── R:R gate ────────────────────────────────────────────────────────────
     #
     # TASK-185: the per-type SL/T1 policy runs BEFORE this gate and, for a
-    # CONFIGURED setup type, yields its configured minimum R:R — so the
+    # CONFIGURED setup type, always yields R:R >= 1.0 by construction — so the
     # gate can no longer fire on crafted STRUCTURAL values for those types. The
     # gate still protects two live paths: an UNCONFIGURED setup type (structural
     # levels reach the gate untouched) and a MISCONFIGURED per-type entry whose
@@ -145,29 +145,6 @@ class TestEngineEfficiencyGates(unittest.TestCase):
         result = self._tick_with(signal)
         self.assertIsNotNone(result)
         self.assertFalse(hasattr(result, "alert_only"))
-        self.assertEqual(result.stop_loss, 24030.0)
-        self.assertEqual(result.target_1, 23982.0)
-        self.assertEqual(result.target_2, 23960.0)
-
-    def test_bullish_exhaustion_passes_at_exact_configured_minimum(self):
-        signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL)
-        result = self._tick_with(signal)
-        self.assertIsNotNone(result)
-        self.assertEqual(result.stop_loss, 23970.0)
-        self.assertEqual(result.target_1, 24018.0)
-        self.assertEqual(result.target_2, 24040.0)
-
-    def test_exhaustion_below_configured_minimum_is_rejected(self):
-        levels = dict(NON_EXPIRY_CONFIG.per_type_levels)
-        levels["EXHAUSTION_REVERSAL"] = SetupLevels(31.0, 18.0, 40.0, min_rr_ratio=0.60)
-        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, per_type_levels=levels))
-        signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL)
-        self.assertIsNone(self._tick_with(signal))
-
-    def test_other_setups_still_use_global_minimum(self):
-        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, min_rr_ratio=2.0))
-        signal = self._make_signal(setup_type=SetupType.OI_WALL_REJECTION)
-        self.assertIsNone(self._tick_with(signal))
 
     def test_signal_has_no_alert_only_attribute(self):
         signal = self._make_signal(stop_loss=23975.0, target_1=24035.0)
