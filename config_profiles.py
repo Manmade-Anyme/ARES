@@ -23,7 +23,7 @@ class OIWatchJevConfig:
     oi_watch_jev_max_age_seconds: float = 60.0
 
     def __post_init__(self):
-        if not isinstance(self.oi_watch_jev_enabled, bool):
+        if type(self.oi_watch_jev_enabled) is not bool:
             raise ValueError("OI-watch Jev enabled must be boolean")
         for name in ("oi_watch_jev_minimum_move_points", "oi_watch_jev_wait_seconds",
                      "oi_watch_jev_max_age_seconds"):
