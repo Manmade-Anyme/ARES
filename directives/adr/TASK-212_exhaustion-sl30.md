@@ -8,3 +8,8 @@ Add optional `min_rr_ratio` to the existing immutable `SetupLevels` value. `None
 This keeps the stop, targets and required threshold together in the existing configuration table. Both startup profiles inherit the same table. Detection, target resolution, position management and scoring retain their current behavior. No standalone trial runner or additional configuration framework is introduced.
 
 Files: config_profiles.py, engine.py, the three existing config/level/gate test files, and accompanying documentation. Acceptance tests exercise the real engine tick for bullish/bearish 30-point stops, the exact 18/30 boundary and a rejected 18/31 setup; other setups and unconfigured entries continue through the existing global gate. Existing open positions keep their stored stop values; new emitted signals use the new values after normal deployment.
+
+
+## 2026-10-14 — User-directed SL-only amendment
+
+This supersedes the per-setup override decision above. Remove `SetupLevels.min_rr_ratio` and its engine handling; retain `SetupLevels(30.0, 18.0, 40.0)`. Keep the original global minimum 1.0. The user explicitly requested a new PR with only the SL application change after being informed that exhaustion candidates will fail the global gate (18/30 = 0.60). No bypass, target change or new application code. Verify both profiles/directions and unchanged other-setup behavior. Historical fixed-entry research remains archived and is not a simulation of this gate's trade emissions.

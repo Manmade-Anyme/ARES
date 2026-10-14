@@ -56,12 +56,6 @@ class TestTuningConfig:
         assert NON_EXPIRY_CONFIG.oi_wall_enable_watchlist_alert is True
         assert EXPIRY_CONFIG.oi_wall_enable_watchlist_alert is True
 
-    def test_only_exhaustion_overrides_global_rr_minimum(self):
-        for profile in (NON_EXPIRY_CONFIG, EXPIRY_CONFIG):
-            assert profile.min_rr_ratio == 1.0
-            for setup, levels in profile.per_type_levels.items():
-                assert levels.min_rr_ratio == (0.60 if setup == "EXHAUSTION_REVERSAL" else None)
-
 
 # ─── Settings Facade Tests ──────────────────────────────────────────────────
 

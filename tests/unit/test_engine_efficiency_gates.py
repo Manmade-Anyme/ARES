@@ -1,8 +1,8 @@
 """
 Tests for TASK-171 audit P0 efficiency gates in AresEngine (post-TASK-182):
-- R:R gate: require the configured minimum T1 reward / SL risk ratio.
+- R:R gate: reject signals whose risk (entry→SL) exceeds reward (entry→T1).
   This is the only remaining protective filter.
-- Every fired signal (including exhaustion) is a live trade — the
+- Every signal that passes the R:R gate is a live trade — the
   observation-only gate was removed in TASK-182.
 - clear_cooldown(): allows immediate re-entry after a stop-out.
 """
@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 from datetime import datetime, timedelta
 
 from config import settings
-from config_profiles import NON_EXPIRY_CONFIG, SetupLevels
+from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG, SetupLevels
 from engine import AresEngine
 from models import ATMStrikes, AresSignal, SetupType, Direction
 
@@ -80,10 +80,10 @@ class TestEngineEfficiencyGates(unittest.TestCase):
 
     # ── R:R gate ────────────────────────────────────────────────────────────
     #
-    # TASK-185: the per-type SL/T1 policy runs BEFORE this gate and, for a
-    # CONFIGURED setup type, yields its configured minimum R:R — so the
-    # gate can no longer fire on crafted STRUCTURAL values for those types. The
-    # gate still protects two live paths: an UNCONFIGURED setup type (structural
+    # TASK-185 / TASK-212: the per-type SL/T1 policy runs BEFORE this gate.
+    # Exhaustion default geometry (SL 30 / T1 18 -> R:R 0.60) is rejected by the
+    # global 1.0 R:R gate. Other configured setup types yield R:R >= 1.0 by construction.
+    # The gate still protects two live paths: an UNCONFIGURED setup type (structural
     # levels reach the gate untouched) and a MISCONFIGURED per-type entry whose
     # own reward < risk. The structural-rejection cases below therefore run with
     # per_type_levels emptied (the unconfigured-type path); a dedicated test
@@ -134,35 +134,49 @@ class TestEngineEfficiencyGates(unittest.TestCase):
         result = self._tick_with(signal)
         self.assertIsNone(result)
 
-    # ── Every fired signal is a live trade (TASK-182) ───────────────────────
+    # ── Exhaustion rejected under global 1.0 R:R gate (TASK-212 sl-only) ────
 
-    def test_exhaustion_signal_is_tradeable(self):
-        """The observation-only gate is gone — an exhaustion signal that
-        clears the R:R gate is a live trade, with no alert_only concept."""
+    def test_bullish_exhaustion_rejected_by_global_rr_gate_retains_sl30_geometry(self):
+        signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL,
+                                   direction=Direction.BULLISH)
+        result = self._tick_with(signal)
+        self.assertIsNone(result)
+        self.assertEqual(signal.stop_loss, 23970.0)
+        self.assertEqual(signal.target_1, 24018.0)
+        self.assertEqual(signal.target_2, 24040.0)
+
+    def test_bearish_exhaustion_rejected_by_global_rr_gate_retains_sl30_geometry(self):
         signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL,
                                    direction=Direction.BEARISH,
                                    stop_loss=24020.0, target_1=23965.0)
         result = self._tick_with(signal)
-        self.assertIsNotNone(result)
-        self.assertFalse(hasattr(result, "alert_only"))
-        self.assertEqual(result.stop_loss, 24030.0)
-        self.assertEqual(result.target_1, 23982.0)
-        self.assertEqual(result.target_2, 23960.0)
+        self.assertIsNone(result)
+        self.assertEqual(signal.stop_loss, 24030.0)
+        self.assertEqual(signal.target_1, 23982.0)
+        self.assertEqual(signal.target_2, 23960.0)
 
-    def test_bullish_exhaustion_passes_at_exact_configured_minimum(self):
-        signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL)
+    def test_exhaustion_rejected_under_both_profiles(self):
+        for profile_name, profile in (("non_expiry", NON_EXPIRY_CONFIG),
+                                      ("expiry", EXPIRY_CONFIG)):
+            for direction in (Direction.BULLISH, Direction.BEARISH):
+                with self.subTest(profile=profile_name, direction=direction):
+                    settings.apply_profile(profile)
+                    self.engine = AresEngine()
+                    self.assertEqual(settings.min_rr_ratio, 1.0)
+                    signal = self._make_signal(
+                        setup_type=SetupType.EXHAUSTION_REVERSAL,
+                        direction=direction,
+                    )
+                    result = self._tick_with(signal)
+                    sign = 1 if direction == Direction.BULLISH else -1
+                    self.assertEqual(signal.stop_loss, signal.trigger_price - sign * 30.0)
+                    self.assertEqual(signal.target_1, signal.trigger_price + sign * 18.0)
+                    self.assertIsNone(result)
+
+    def test_other_configured_setups_pass_global_rr_gate(self):
+        signal = self._make_signal(setup_type=SetupType.OI_WALL_REJECTION)
         result = self._tick_with(signal)
         self.assertIsNotNone(result)
-        self.assertEqual(result.stop_loss, 23970.0)
-        self.assertEqual(result.target_1, 24018.0)
-        self.assertEqual(result.target_2, 24040.0)
-
-    def test_exhaustion_below_configured_minimum_is_rejected(self):
-        levels = dict(NON_EXPIRY_CONFIG.per_type_levels)
-        levels["EXHAUSTION_REVERSAL"] = SetupLevels(31.0, 18.0, 40.0, min_rr_ratio=0.60)
-        settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, per_type_levels=levels))
-        signal = self._make_signal(setup_type=SetupType.EXHAUSTION_REVERSAL)
-        self.assertIsNone(self._tick_with(signal))
 
     def test_other_setups_still_use_global_minimum(self):
         settings.apply_profile(dataclasses.replace(NON_EXPIRY_CONFIG, min_rr_ratio=2.0))

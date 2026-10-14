@@ -54,7 +54,6 @@ class SetupLevels:
     stop_pts: float
     target_1_pts: float
     target_2_fallback_pts: float
-    min_rr_ratio: float | None = None  # None uses the global R:R minimum.
 
 
 # Strategy A Optimized Geometry (TASK-204 multi-detector audit across 129 recorded trades).
@@ -67,7 +66,7 @@ class SetupLevels:
 #   "FAILED_BREAKOUT":     SetupLevels(15.0, 30.0, 55.0),
 #                          SL   T1   T2fb
 _PER_TYPE_LEVELS_DEFAULT = {
-    "EXHAUSTION_REVERSAL": SetupLevels(30.0, 18.0, 40.0, min_rr_ratio=0.60),
+    "EXHAUSTION_REVERSAL": SetupLevels(30.0, 18.0, 40.0),
     "TREND_CONTINUATION":  SetupLevels(25.0, 25.0, 80.0),
     "OI_WALL_REJECTION":   SetupLevels(16.0, 25.0, 40.0),
     "FAILED_BREAKOUT":     SetupLevels(12.0, 20.0, 55.0),

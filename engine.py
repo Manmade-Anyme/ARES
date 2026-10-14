@@ -290,17 +290,13 @@ class AresEngine:
             apply_per_type_levels(signal, settings, levels)
 
         if signal:
-            # Risk:Reward Gate (per-setup minimum, otherwise global default)
+            # Risk:Reward Gate (reject setups whose risk to SL exceeds reward to T1)
             risk = abs(signal.trigger_price - signal.stop_loss)
             reward = abs(signal.target_1 - signal.trigger_price)
-            setup_levels = settings.per_type_levels.get(signal.setup_type.value)
-            min_rr = (setup_levels.min_rr_ratio
-                      if setup_levels and setup_levels.min_rr_ratio is not None
-                      else settings.min_rr_ratio)
             # Degenerate SL placement (zero/negative risk) is always rejected
-            if risk <= 0 or (reward / risk) < min_rr:
+            if risk <= 0 or (reward / risk) < settings.min_rr_ratio:
                 rr = (reward / risk) if risk > 0 else 0.0
-                print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: R:R {rr:.2f} below minimum {min_rr:.2f} (risk {risk:.1f} pts vs reward {reward:.1f} pts).")
+                print(f"[-] AresEngine: Suppressing {signal.setup_type.value} ({signal.direction.value}) signal. Reason: R:R {rr:.2f} below minimum {settings.min_rr_ratio:.2f} (risk {risk:.1f} pts vs reward {reward:.1f} pts).")
                 if signal.setup_type == SetupType.OI_WALL_REJECTION and oi_wall_decision.status == "QUALIFIED":
                     ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "REJECTED_BY_RR")
                     self._release_terminal_oi_wall(ack)

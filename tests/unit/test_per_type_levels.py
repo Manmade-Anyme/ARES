@@ -129,9 +129,9 @@ def test_bearish_t2_fallback_when_no_level_beyond_t1(settings):
     assert sig.target_2 == pytest.approx(entry - 40.0)
 
 
-# ── R:R gate: every default config passes (nothing suppressed) ────────────────
+# ── R:R gate: non-exhaustion setups pass; exhaustion rejected by global 1.0 ───
 
-@pytest.mark.parametrize("setup_key", list(APPROVED))
+@pytest.mark.parametrize("setup_key", [k for k in APPROVED if k != "EXHAUSTION_REVERSAL"])
 def test_default_configs_pass_rr_gate(settings, setup_key):
     entry = 25000.0
     sig = make_signal(
@@ -142,9 +142,20 @@ def test_default_configs_pass_rr_gate(settings, setup_key):
     risk = abs(sig.trigger_price - sig.stop_loss)
     reward = abs(sig.target_1 - sig.trigger_price)
     assert risk > 0
-    lv = settings.per_type_levels[setup_key]
-    minimum = lv.min_rr_ratio if lv.min_rr_ratio is not None else settings.min_rr_ratio
-    assert reward / risk >= minimum
+    assert reward / risk >= settings.min_rr_ratio
+
+
+def test_exhaustion_default_config_rejected_by_global_rr_gate(settings):
+    entry = 25000.0
+    sig = make_signal(
+        SetupType.EXHAUSTION_REVERSAL, Direction.BULLISH, entry,
+        stop_loss=entry - 3.0, target_1=entry + 500.0, target_2=entry + 900.0,
+    )
+    apply_per_type_levels(sig, settings)
+    risk = abs(sig.trigger_price - sig.stop_loss)
+    reward = abs(sig.target_1 - sig.trigger_price)
+    assert risk > 0
+    assert reward / risk < settings.min_rr_ratio
 
 
 # ── Safety: unknown / missing setup key leaves structural levels intact ───────
