@@ -294,8 +294,42 @@ Refactor existing linear functions into a pure, comprehensive calculation suite:
 - Persist `market_context.options_sizing` containing `greeks` (`delta`, `gamma`, `theta`, `vega`), `entry_limit`, `option_sl`, `option_target`, `capital`, and `rejection_reason`.
 - Enforce non-negative lot guard in `reports._option_rupees()` to prevent sign inversion on legacy dirty rows.
 
-### 5.6 `alerts.py`
-- Update `format_signal` Discord embed to present Greeks ($\Delta, \Gamma, \Theta, \mathcal{V}$), entry limit, bracket SL/TP, and validated lot allocation.
+### 5.6 `alerts.py` (Discord Alert Specification)
+
+Overhaul signal dispatch and trade lifecycle alerts to provide full transparency on Greeks, bracket limit orders, and option performance:
+
+#### 1. Signal Detection Alert (`format_signal` & `send_discord`)
+Add dedicated Greeks, bracket execution, and dual-layer stop fields to the Discord Embed:
+- **Order Execution Type**:
+  - `⚡ Order Type`: `LIMIT (Upfront Bracket)`
+  - `🎯 Entry Limit`: `₹ {option_premium:.2f}` (Calculated via 2nd-order Taylor expansion, rounded to 0.05 tick)
+- **Greeks Breakdown Field**:
+  - `📊 Option Greeks`: `Δ {delta:+.3f} | Γ {gamma:.4f} | Θ {theta:.1f}/day | IV {iv:.1f}%`
+- **Dual Target Breakdown**:
+  - `🎯 Target 1`: `₹ {target_1:.2f}` (50% position book | Spot: `{t1_spot:.1f}`)
+  - `🎯 Target 2`: `₹ {target_2:.2f}` (Runner position | Spot: `{t2_spot:.1f}`)
+- **Dual-Layer Stop Loss Field**:
+  - `🛑 Stop Loss`:
+    - `• Layer 1 (Synthetic Invalidation)`: `Spot {signal.stop_loss:.2f}` (Real-time spot trigger)
+    - `• Layer 2 (Broker Emergency Floor)`: `₹ {option_sl:.2f}` (Upfront broker hard stop)
+- **Capital & Sizing Breakdown**:
+  - `📐 Sizing`: `{suggested_lots} Lots ({suggested_lots * lot_size} qty) | Risk: ₹{risk_amt:.0f} ({risk_pct:.1f}% of ₹{capital:.0f})`
+
+#### 2. Trade Lifecycle Update Alert (`send_trade_update`)
+Enrich active position transition alerts with option premium realization:
+- **`T1_HIT` Update**:
+  - `⚡ Action`: `Target 1 Hit! 50% Position Booked`
+  - `💰 Option Exit`: `₹ {t1_option_price:.2f} (+₹ {pnl_per_lot:.2f} / lot)`
+  - `🛡️ SL Status`: `Trailed to Break-Even (Spot {entry_price:.2f} / Option ₹{entry_premium:.2f})`
+- **`STOPPED_OUT_AT_BE` Update**:
+  - `⚡ Action`: `Runner Stopped Out at Cost (Break-Even)`
+  - `💰 Realized Trade PnL`: `+₹ {net_trade_pnl:.2f} (Protected from T1)`
+- **`SL_HIT` Update**:
+  - `⚡ Action`: `Stop Loss Triggered`
+  - `🛑 Exit Price`: `₹ {exit_premium:.2f} (-₹ {loss_per_lot:.2f} / lot)`
+- **`T2_HIT` Update**:
+  - `⚡ Action`: `Target 2 Hit! Full Runner Profit Realized`
+  - `💰 Option Exit`: `₹ {t2_option_price:.2f} (+₹ {runner_pnl:.2f} / lot)`
 
 ---
 
