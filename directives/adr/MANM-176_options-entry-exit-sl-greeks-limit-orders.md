@@ -195,15 +195,20 @@ Per trader mandate, static SL multiples (1.5x–2.0x) are replaced with the **5-
   - `hhv_period`: `10` (Highest High Value / Lowest Low Value window = 10 bars = 50 minutes)
   - `multiplier`: `2.5`
 - **Calculation**:
-  $$\text{ATR}_5 = \frac{1}{5} \sum_{i=0}^4 \text{TrueRange}_{t-i}$$
-  $$\text{HHV}_{10} = \max(\text{High}_t, \dots, \text{High}_{t-9})$$
-  $$\text{LLV}_{10} = \min(\text{Low}_t, \dots, \text{Low}_{t-9})$$
-  - **For Long (Bullish / CE)**:
-    $$\text{ATR\_TS}_{\text{spot}} = \text{HHV}_{10} - \left( 2.5 \times \text{ATR}_5 \right)$$
-    Trailed dynamically: $\text{SL}_t = \max(\text{SL}_{t-1}, \text{ATR\_TS}_{\text{spot}})$
-  - **For Short (Bearish / PE)**:
-    $$\text{ATR\_TS}_{\text{spot}} = \text{LLV}_{10} + \left( 2.5 \times \text{ATR}_5 \right)$$
-    Trailed dynamically: $\text{SL}_t = \min(\text{SL}_{t-1}, \text{ATR\_TS}_{\text{spot}})$
+  1. **True Range ($\text{TR}_t$)**:
+     $$\text{TR}_t = \max\Big( H_t - L_t,\quad |H_t - C_{t-1}|,\quad |L_t - C_{t-1}| \Big)$$
+  2. **Wilder's Smoothing (RMA, $N=5$)**:
+     $$\text{ATR}_5 = \frac{(\text{ATR}_{t-1} \times 4) + \text{TR}_t}{5}$$
+     *(Initial seed over first 5 bars is simple average $\frac{1}{5}\sum_{i=0}^4 \text{TR}_{t-i}$).*
+  3. **Structural Channel Window ($M=10$)**:
+     $$\text{HHV}_{10} = \max(\text{High}_t, \dots, \text{High}_{t-9}), \quad \text{LLV}_{10} = \min(\text{Low}_t, \dots, \text{Low}_{t-9})$$
+  4. **Dynamic Bands**:
+     - **For Long (Bullish / CE)**:
+       $$\text{ATR\_TS}_{\text{spot}} = \text{HHV}_{10} - \left( 2.5 \times \text{ATR}_5 \right)$$
+       Trailed dynamically: $\text{SL}_t = \max(\text{SL}_{t-1}, \text{ATR\_TS}_{\text{spot}})$
+     - **For Short (Bearish / PE)**:
+       $$\text{ATR\_TS}_{\text{spot}} = \text{LLV}_{10} + \left( 2.5 \times \text{ATR}_5 \right)$$
+       Trailed dynamically: $\text{SL}_t = \min(\text{SL}_{t-1}, \text{ATR\_TS}_{\text{spot}})$
 
 - **Integration into Dual-Layer Model**:
   - **Layer 1 (Synthetic Invalidation)**: Uses $\text{ATR\_TS}_{\text{spot}}$ as the dynamic invalidation level. When Spot touches $\text{ATR\_TS}_{\text{spot}}$, ARES sends an immediate market order to exit.
