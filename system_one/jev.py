@@ -32,6 +32,11 @@ logger = logging.getLogger("system_one.jev")
 # ---------------------------------------------------------------------------
 # Configuration from environment
 # ---------------------------------------------------------------------------
+# Per ADR-258: typesafe-sdk upgraded to >=0.7.5,<0.8.0.
+# DEFAULT_MODEL is retained as "jev-1.13.0" (the stable target of the jev-latest
+# alias per TypeSafe docs) to protect calibrated probability distributions
+# and risk sizing against calibration drift. jev-1.14.0 is available via
+# jev-preview and can be evaluated dynamically by setting TYPESAFE_MODEL.
 DEFAULT_MODEL = os.environ.get("TYPESAFE_MODEL", "jev-1.13.0")
 DEFAULT_TIMEOUT = float(os.environ.get("TYPESAFE_TIMEOUT", "5.0"))
 

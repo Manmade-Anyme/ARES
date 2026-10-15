@@ -28,7 +28,7 @@ tzdata
 shap>=0.47.0,<0.50.0
 matplotlib>=3.7.0,<4.0.0
 
-# System One: Jev forward predictor (TASK-210). Used only by the jev process
+# System One: Jev forward predictor (TASK-210, TASK-258). Used only by the jev process
 # group (system_one/consumer.py), not by the main trading loop. The SDK is
 # lightweight and does not pull GPU dependencies.
-typesafe-sdk
+typesafe-sdk>=0.7.5,<0.8.0
