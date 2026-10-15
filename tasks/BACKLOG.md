@@ -1,6 +1,12 @@
 # Backlog
 
 ## High Priority
+- **MANM-258**: Update Jev (`typesafe-sdk`) to latest version (0.7.5).
+  - [x] Create intent document / directive for MANM-258 (PM) - directives/TASK-258_update-jev-to-latest-version.md
+  - [x] Draft ADR-258 for Jev SDK bump and model compatibility assessment (Architect) - directives/adr/TASK-258_update-jev-to-latest-version.md
+  - [ ] Upgrade typesafe-sdk in requirements.txt & verify client code (Code Generator)
+  - [ ] QA verification and regression suite run (QA)
+
 - **MANM-155**: Refactor ML training: separate self-labeled vs realized outcomes and implement walk-forward validation.
   - [x] Create intent document for MANM-155 (PM) - directives/TASK-155_ml-training-refactor.md
   - [x] Draft ADR-155 for decoupled ML pipelines & walk-forward CV (Architect) - directives/adr/TASK-155_ml-training-refactor.md
