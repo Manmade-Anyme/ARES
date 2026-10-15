@@ -217,27 +217,47 @@ Per trader mandate, static SL multiples (1.5x–2.0x) are replaced with the **5-
      - Option entry SL is calculated from this initial spot stop using 2nd-order Taylor expansion: $\Delta P = \Delta \cdot \Delta S + \frac{1}{2} \Gamma (\Delta S)^2$.
   2. **Phase 2: High-Water Mark (HWM) Ratchet Trailing (In-Trade & Runners)**:
      - As the trade matures and reaches $T_1$ (+18 pts Spot), 50% lots are closed and stop moves to Break-Even (Cost).
-     - Dynamic trailing formula for active stop:
-       $$\text{Active SL}_t = \max\Big(\text{SL}_{t-1},\ \text{Cost},\ \text{ATR\_TS}_t\Big) \quad \text{(for Long / CE)}$$
-       $$\text{Active SL}_t = \min\Big(\text{SL}_{t-1},\ \text{Cost},\ \text{ATR\_TS}_t\Big) \quad \text{(for Short / PE)}$$
-     - **The "Never Go Down" Invariant**: Once the trailing stop ratchets up, it can **never decrease**, even if ATR contracts during market pauses/pullbacks. If ATR drops from 105 to 103, the stop remains locked at 105.
-     - **Break-Even Floor Guarantee**: If ATR is below entry price upon $T_1$ hit (e.g. entry = 100, ATR = 89), ATR is ignored and the stop remains locked at 100. A trade that crosses $T_1$ can **never end in a loss**.
-     - **Concrete Lifecycle Walkthrough**:
-       - *Entry*: Buy 2 lots @ ₹100.00 | Initial SL = ₹86.10 (Max risk = ₹13.90/share).
-       - *$T_1$ Hit (+18 pts Spot)*: Sell 1 lot @ ~₹109.40 (+₹9.40 banked). Stop on runner shifts to ₹100.00 (Cost).
-       - *Runner Advance*: Price pushes toward $T_2$ (₹132). ATR climbs to 105 $\implies$ SL = 105. ATR dips to 103 $\implies$ SL stays 105. ATR rallies to 112 $\implies$ SL = 112.
-       - *Exit*: Price pulls back to 112 $\implies$ runner exits @ ₹112 (+₹12 banked). Total net trade P&L = +₹21.40/share.
+     - **Domain Definition**: In Layer 1 synthetic execution, `Cost` is strictly defined as `entry_price` (the underlying NIFTY Spot entry level, e.g. 24,000 pts). The option-level prices in walkthroughs represent the corresponding instantaneous derivative valuations.
+     - **Directional Ratchet Invariants**:
+       - *Bullish (CE)*: Monotonically non-decreasing ($\max$). The spot stop moves only upward and never decreases:
+         $$\text{Active Spot SL}_t = \max\Big(\text{Spot SL}_{t-1},\ \text{Spot Entry},\ \text{ATR\_TS}_{\text{spot}}\Big)$$
+       - *Bearish (PE)*: Monotonically non-increasing ($\min$). The spot stop moves only downward as price falls and never increases:
+         $$\text{Active Spot SL}_t = \min\Big(\text{Spot SL}_{t-1},\ \text{Spot Entry},\ \text{ATR\_TS}_{\text{spot}}\Big)$$
+     - **The "Never Surrender Ground" Invariant**: Once the trailing stop ratchets in the trade direction, it can never back-track, even if ATR contracts during market pauses/pullbacks. If ATR drops from 105 to 103 on CE, the stop remains locked at 105.
+     - **Break-Even Floor Guarantee**: If ATR is beyond the entry point upon $T_1$ hit, ATR is ignored and the stop remains locked at Spot Entry. A trade that crosses $T_1$ can **never end in a loss**.
+     - **Concrete Lifecycle Walkthrough (Spot & Option Mapping)**:
+       - *Entry*: Spot 24,000. Buy 2 lots @ ₹100.00 | Initial Spot SL = 23,990 (-10 pts) | Option SL = ₹86.10 (Max risk = ₹13.90/share).
+       - *$T_1$ Hit (+18 pts Spot)*: Spot 24,018. Sell 1 lot @ ~₹109.40 (+₹9.40 banked). Stop on runner shifts to Spot 24,000 (Cost).
+       - *Runner Advance*: Spot pushes toward $T_2$ (24,040). Spot ATR TS climbs to 24,008 (Option ~105) $\implies$ SL = 24,008. Spot ATR TS dips to 24,005 $\implies$ SL stays 24,008. Spot ATR TS rallies to 24,020 (Option ~112) $\implies$ SL = 24,020.
+       - *Exit*: Spot pulls back to 24,020 $\implies$ runner exits @ ~₹112 (+₹12 banked). Total net trade P&L = +₹21.40/share.
 
 - **Dual-Layer Execution**:
   - **Layer 1 (Synthetic Invalidation on Spot Chart)**: The 5-minute ATR TS runs strictly on **NIFTY Spot 5m candles**. Position Manager monitors real-time NIFTY Spot ticks against $\text{Active Spot SL}_t$. When Spot touches the trailing level, ARES dispatches an immediate market order to close the option contract. This completely eliminates Greek drift, avoids theta-decay slope distortion, avoids option illiquidity wicks, and requires zero dynamic Greek recalculation.
   - **Layer 2 (Emergency Broker Floor)**: Upfront broker stop placed at entry based on the initial fixed setup SL translated via Delta/Gamma. Upgraded to Break-Even/trailed premium when $T_1$ is achieved.
 
 > [!NOTE]
-> **Scope Boundary & Staging (2026-10-15)**: Per trader directive, the dynamic 5-minute ATR Trailing Stop (replacing post-$T_1$ fixed targets and static trailing) is formally logged in `TODO.md` for a dedicated subsequent issue. For the active scope of **MANM-176**, the system retains the existing post-$T_1$ break-even trailing behavior and focuses exclusively on:
+> **Scope Boundary & Staging (2026-10-15)**: Per trader directive, the dynamic 5-minute ATR Trailing Stop (replacing post-$T_1$ fixed targets and static trailing) is formally logged in `TODO.md` as non-normative roadmap for a dedicated subsequent issue. For the active scope of **MANM-176**, the system retains the existing post-$T_1$ break-even trailing behavior and focuses exclusively on:
 > 1. Option Greeks calculation ($\Delta, \Gamma, \Theta, \text{IV}$) via `OIWatcherContext`.
 > 2. ATM strike selection ($||\Delta| - 0.50| \to \min$).
 > 3. 2nd-order Taylor expansion for precise entry, targets, and stop premiums.
 > 4. Upfront limit orders and dual-layer bracket contracts.
+
+### 4.4 Trade Outcome Resolution & Multi-Class Scoring Contract (TASK-198 Alignment)
+Per trader mandate and TASK-198 conventions, every trade resolution must preserve the verified outcome scoring taxonomy:
+1. **Initial Stop Loss (`SL_HIT` / `STOPPED_OUT`)**:
+   - *Trigger*: Spot hits initial structural stop loss before reaching $T_1$.
+   - *Business Score*: `-1` (Full Loss on Trade).
+   - *ML / Storage Label*: `0` in non-negative categorical label space (`trade_analytics.score`), with negative magnitude recorded in `pnl_points`.
+2. **First Target Reached & Break-Even / Trailing Stop (`T1_HIT` / `STOPPED_OUT_AT_BE`)**:
+   - *Trigger*: Spot hits $T_1$ (+18 pts), 50% position booked into profit, runner trails and exits at Break-Even (Cost) or trailing stop.
+   - *Business Score*: `+1` (Banked partial profit, protected runner).
+   - *ML / Storage Label*: `1` in `trade_analytics.score` and `ml_collection.trade_score`.
+3. **Second Target Reached (`T2_HIT`)**:
+   - *Trigger*: Spot hits $T_2$ (+40 pts) full target.
+   - *Business Score*: `+2` (Double Win / Multi-target winner).
+   - *ML / Storage Label*: `2` in `trade_analytics.score` and `ml_collection.trade_score`.
+
+This scoring contract preserves 100% telemetry continuity across `PositionManager`, `storage.py`, `trade_analytics`, `ml_collection`, and daily performance audit reconciliations.
 
 ---
 
@@ -256,14 +276,16 @@ class OptionGreeks:
 
 @dataclass
 class OptionOrderBracket:
+    security_id: str             # Resolved Dhan instrument token (e.g. "40710")
+    expiry_date: str             # Current-week expiry string (e.g. "2026-10-15")
     strike: int
     option_type: Literal["CE", "PE"]
-    entry_limit: float
+    entry_limit: float           # Executable limit price (0.05 tick rounded)
     synthetic_spot_sl: float     # Layer 1: NIFTY spot invalidation trigger
     catastrophic_opt_sl: float   # Layer 2: Emergency broker hard stop
     target_1: float              # Gamma-adjusted TP1 limit
     target_2: Optional[float]    # Gamma-adjusted TP2 limit
-    lots: int
+    lots: int                    # Final executed lots (capped by max_lots_cap & affordability)
     greeks: OptionGreeks
     is_valid: bool
     rejection_reason: Optional[str] = None
@@ -276,31 +298,37 @@ class AresSignal:
     options_sizing_status: str = "PENDING"  # "VALID", "NO_AVAILABLE_CAPITAL", "INVALID_DATA"
 ```
 
-### 5.2 `fetchers/oi_fetcher.py`
-- Update `fetch_chain()` to extract `delta`, `gamma`, `theta`, `vega`, and `iv` for all strikes across the full option chain table, rather than only populating them on the ATM row.
-- Carry `ce_gamma`, `pe_gamma`, `ce_theta`, `pe_theta`, `ce_vega`, `pe_vega` into each row of `full_chain`.
+### 5.2 `config_profiles.py`
+Add configuration fields to `TuningConfig` for sizing and execution guards:
+- `options_max_lots_cap: int = 10`: Maximum allowed lot allocation per trade.
+- `options_slippage_buffer_pts: float = 0.50`: Tolerable slippage buffer when computing entry limit from ask.
 
-### 5.3 `options_math.py`
+### 5.3 `fetchers/oi_fetcher.py`
+- Update `fetch_chain()` to extract `security_id` (instrument token), `expiry_date`, `delta`, `gamma`, `theta`, `vega`, and `iv` for all strikes across the full option chain table, rather than only populating them on the ATM row.
+- Carry `security_id`, `expiry_date`, `ce_gamma`, `pe_gamma`, `ce_theta`, `pe_theta`, `ce_vega`, `pe_vega` into each row of `full_chain`.
+
+### 5.4 `options_math.py`
 Refactor existing linear functions into a pure, comprehensive calculation suite:
 - `calculate_risk_amount(capital: float, risk_pct: float) -> float`: Clamps negative capital to 0.0.
-- `find_optimal_strike(direction: str, full_chain: list) -> Tuple[Optional[int], Optional[str], Optional[float], Optional[OptionGreeks]]`: Filters $|\Delta| \ge 0.45$, sorts by $||\Delta| - 0.50|$ ascending.
-- `calculate_greek_premium_translation(spot_delta: float, delta: float, gamma: float) -> float`: Implements the 2nd-order Taylor projection.
+- `find_optimal_strike(direction: str, full_chain: list) -> Tuple[Optional[int], Optional[str], Optional[float], Optional[OptionGreeks], Optional[str]]`: Filters $|\Delta| \ge 0.45$, sorts by $||\Delta| - 0.50|$ ascending; returns strike, option_type, ltp, greeks, and security_id.
+- `calculate_greek_premium_translation(spot_delta: float, delta: float, gamma: float) -> float`: Implements the unified 2nd-order Taylor projection.
 - `round_to_tick(price: float, tick_size: float = 0.05) -> float`: Exchange tick rounding.
 - `validate_capital(capital: Optional[float]) -> Tuple[float, bool]`: Returns validated non-negative balance and validity flag.
 - `calculate_lots(risk_amt: float, sl_points: float, lot_size: int) -> int`: Returns $\ge 0$ integer, returns 0 if inputs $\le 0$.
 - `calculate_affordable_lots(capital: float, premium: float, lot_size: int) -> int`: Returns $\ge 0$ integer.
-- `build_option_bracket(signal: AresSignal, full_chain: list, capital: float, config: TuningConfig) -> OptionOrderBracket`: Pure constructor for executable bracket.
+- `build_option_bracket(signal: AresSignal, full_chain: list, capital: float, config: TuningConfig) -> OptionOrderBracket`: Pure constructor for executable bracket, applying `config.options_max_lots_cap` and `config.options_slippage_buffer_pts`.
 - `process_options_calculation(...)`: Orchestrates strike selection, Greek calculation, bracket construction, and signal attachment without fabricating sentinel quotes.
 
-### 5.4 `execution/order_manager.py`
+### 5.5 `execution/order_manager.py` & `main.py` Wiring
 - Implement `OrderManager` to handle Dhan limit order dispatch and contingent OCO bracket management.
 - Pure order state machine supporting simulated execution and live Dhan API integration.
+- **`main.py` Call Site Wiring**: Wire `OrderManager` into the signal dispatch loop (`main.py:432-450`). When an actionable signal is generated, `OrderManager.dispatch_bracket(signal.bracket)` is executed. Successful broker submission gates `PositionManager.add_trade()` to ensure phantom trades are never registered.
 
-### 5.5 `storage.py` and `reports.py`
-- Persist `market_context.options_sizing` containing `greeks` (`delta`, `gamma`, `theta`, `vega`), `entry_limit`, `option_sl`, `option_target`, `capital`, and `rejection_reason`.
+### 5.6 `storage.py` and `reports.py`
+- Persist `market_context.options_sizing` containing `greeks` (`delta`, `gamma`, `theta`, `vega`), `security_id`, `entry_limit`, `option_sl`, `option_target`, `capital`, and `rejection_reason`.
 - Enforce non-negative lot guard in `reports._option_rupees()` to prevent sign inversion on legacy dirty rows.
 
-### 5.6 `alerts.py` (Discord Alert Specification)
+### 5.7 `alerts.py` (Discord Alert Specification)
 
 Overhaul signal dispatch and trade lifecycle alerts to provide full transparency on Greeks, bracket limit orders, and option performance:
 
@@ -308,7 +336,7 @@ Overhaul signal dispatch and trade lifecycle alerts to provide full transparency
 Add dedicated Greeks, bracket execution, and dual-layer stop fields to the Discord Embed:
 - **Order Execution Type**:
   - `⚡ Order Type`: `LIMIT (Upfront Bracket)`
-  - `🎯 Entry Limit`: `₹ {option_premium:.2f}` (Calculated via 2nd-order Taylor expansion, rounded to 0.05 tick)
+  - `🎯 Entry Limit`: `₹ {bracket.entry_limit:.2f}` (Dispatched limit order; separately display `LTP: ₹ {signal.option_premium:.2f}`)
 - **Greeks Breakdown Field**:
   - `📊 Option Greeks`: `Δ {delta:+.3f} | Γ {gamma:.4f} | Θ {theta:.1f}/day | IV {iv:.1f}%`
 - **Dual Target Breakdown**:
@@ -319,7 +347,8 @@ Add dedicated Greeks, bracket execution, and dual-layer stop fields to the Disco
     - `• Layer 1 (Synthetic Invalidation)`: `Spot {signal.stop_loss:.2f}` (Real-time spot trigger)
     - `• Layer 2 (Broker Emergency Floor)`: `₹ {option_sl:.2f}` (Upfront broker hard stop)
 - **Capital & Sizing Breakdown**:
-  - `📐 Sizing`: `{suggested_lots} Lots ({suggested_lots * lot_size} qty) | Risk: ₹{risk_amt:.0f} ({risk_pct:.1f}% of ₹{capital:.0f})`
+  - `📐 Sizing`: `{bracket.lots} Lots ({bracket.lots * lot_size} qty)` (Final executed lots, capped by max cap)
+  - `💰 Risk Budget`: `₹{risk_amt:.0f} ({risk_pct:.1f}% of ₹{capital:.0f} | Uncapped Suggestion: {signal.suggested_lots} lots)`
 
 #### 2. Trade Lifecycle Update Alert (`send_trade_update`)
 Enrich active position transition alerts with option premium realization:
