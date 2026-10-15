@@ -187,6 +187,30 @@ Strictly maintain the [[TASK-108 Remove Automatic Time-Stop]] invariant. Do not 
 The recent 165-trade audit demonstrated that widening index stop distances (e.g., from 10/12 pts to 22-30 pts) mechanically rescues trades, but causes **78% to 100% of trades to fail the engine's `min_rr_ratio = 1.0` production gate** because $T_1$ remains at 18–24 pts.
 - **Architectural Guard**: Stop loss geometry in `config_profiles.py` must never be widened in isolation without a matching expansion of $T_1$. For MANM-176, the option calculator strictly accepts whatever structural/per-type spot levels the engine provides and computes accurate option derivatives without overriding engine geometry.
 
+### 4.3 Volatility-Adaptive Stop Loss Engine: 5-Minute ATR TS (Atr 5, HHV 10, Mult 2.5)
+Per trader mandate, static SL multiples (1.5x–2.0x) are replaced with the **5-minute ATR Trailing Stop (ATR TS)**:
+- **Inputs**:
+  - Timeframe: `5m` candles
+  - `atr_period`: `5`
+  - `hhv_period`: `10` (Highest High Value / Lowest Low Value window = 10 bars = 50 minutes)
+  - `multiplier`: `2.5`
+- **Calculation**:
+  $$\text{ATR}_5 = \frac{1}{5} \sum_{i=0}^4 \text{TrueRange}_{t-i}$$
+  $$\text{HHV}_{10} = \max(\text{High}_t, \dots, \text{High}_{t-9})$$
+  $$\text{LLV}_{10} = \min(\text{Low}_t, \dots, \text{Low}_{t-9})$$
+  - **For Long (Bullish / CE)**:
+    $$\text{ATR\_TS}_{\text{spot}} = \text{HHV}_{10} - \left( 2.5 \times \text{ATR}_5 \right)$$
+    Trailed dynamically: $\text{SL}_t = \max(\text{SL}_{t-1}, \text{ATR\_TS}_{\text{spot}})$
+  - **For Short (Bearish / PE)**:
+    $$\text{ATR\_TS}_{\text{spot}} = \text{LLV}_{10} + \left( 2.5 \times \text{ATR}_5 \right)$$
+    Trailed dynamically: $\text{SL}_t = \min(\text{SL}_{t-1}, \text{ATR\_TS}_{\text{spot}})$
+
+- **Integration into Dual-Layer Model**:
+  - **Layer 1 (Synthetic Invalidation)**: Uses $\text{ATR\_TS}_{\text{spot}}$ as the dynamic invalidation level. When Spot touches $\text{ATR\_TS}_{\text{spot}}$, ARES sends an immediate market order to exit.
+  - **Layer 2 (Emergency Broker Floor)**: Translates the 5m ATR stop distance to option premium at entry:
+    $$\text{Broker\_SL} = \max\left(0.05,\ P_{\text{entry}} - \left(|\text{Entry}_{\text{spot}} - \text{ATR\_TS}_{\text{spot}}| \times |\Delta|\right)\right)$$
+  - **Advantage**: Automatically expands stop distance during high volatility (e.g. market open) and contracts during low volatility (lunch chop), preventing false shakeouts while anchoring strictly to the 10-period (50-minute) market structure.
+
 ---
 
 ## 5. Component Boundaries and File Assignments
