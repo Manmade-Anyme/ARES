@@ -226,6 +226,13 @@ Per trader mandate, static SL multiples (1.5x–2.0x) are replaced with the **5-
   - **Layer 1 (Synthetic Invalidation)**: Uses $\text{Active Spot SL}_t$ as the dynamic invalidation level. When Spot touches $\text{Active Spot SL}_t$, ARES sends an immediate market order to exit the option contract.
   - **Layer 2 (Emergency Broker Floor)**: Upfront broker stop placed at entry based on the initial fixed setup SL translated via Delta/Gamma. Upgraded to Break-Even/trailed premium when $T_1$ is achieved.
 
+> [!NOTE]
+> **Scope Boundary & Staging (2026-10-15)**: Per trader directive, the dynamic 5-minute ATR Trailing Stop (replacing post-$T_1$ fixed targets and static trailing) is formally logged in `TODO.md` for a dedicated subsequent issue. For the active scope of **MANM-176**, the system retains the existing post-$T_1$ break-even trailing behavior and focuses exclusively on:
+> 1. Option Greeks calculation ($\Delta, \Gamma, \Theta, \text{IV}$) via `OIWatcherContext`.
+> 2. ATM strike selection ($||\Delta| - 0.50| \to \min$).
+> 3. 2nd-order Taylor expansion for precise entry, targets, and stop premiums.
+> 4. Upfront limit orders and dual-layer bracket contracts.
+
 ---
 
 ## 5. Component Boundaries and File Assignments
