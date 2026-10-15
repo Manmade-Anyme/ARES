@@ -223,7 +223,7 @@ Per trader mandate, static SL multiples (1.5x–2.0x) are replaced with the **5-
      - Once $\text{ATR\_TS}_t$ climbs beyond Break-Even, it takes over trailing the runner, locking in profits without getting shaken out by minor intraday noise.
 
 - **Dual-Layer Execution**:
-  - **Layer 1 (Synthetic Invalidation)**: Uses $\text{Active Spot SL}_t$ as the dynamic invalidation level. When Spot touches $\text{Active Spot SL}_t$, ARES sends an immediate market order to exit the option contract.
+  - **Layer 1 (Synthetic Invalidation on Spot Chart)**: The 5-minute ATR TS runs strictly on **NIFTY Spot 5m candles**. Position Manager monitors real-time NIFTY Spot ticks against $\text{Active Spot SL}_t$. When Spot touches the trailing level, ARES dispatches an immediate market order to close the option contract. This completely eliminates Greek drift, avoids theta-decay slope distortion, avoids option illiquidity wicks, and requires zero dynamic Greek recalculation.
   - **Layer 2 (Emergency Broker Floor)**: Upfront broker stop placed at entry based on the initial fixed setup SL translated via Delta/Gamma. Upgraded to Break-Even/trailed premium when $T_1$ is achieved.
 
 > [!NOTE]
