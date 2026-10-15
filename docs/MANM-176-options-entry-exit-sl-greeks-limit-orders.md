@@ -215,12 +215,18 @@ Per trader mandate, static SL multiples (1.5x–2.0x) are replaced with the **5-
      - At entry, setup-specific structural stop (e.g. `EXHAUSTION_REVERSAL = 10.0 pts`) governs trade invalidation and position sizing.
      - Preserves the required $1:1.8+$ Risk-to-Reward ratio and passes the `min_rr_ratio = 1.0` production filter.
      - Option entry SL is calculated from this initial spot stop using 2nd-order Taylor expansion: $\Delta P = \Delta \cdot \Delta S + \frac{1}{2} \Gamma (\Delta S)^2$.
-  2. **Phase 2: Monotonic Ratchet Trailing (In-Trade & Runners)**:
-     - As the trade matures and reaches $T_1$ (+18 pts), 50% lots are closed and stop moves to Break-Even.
-     - Dynamic trailing formula for active spot stop:
-       $$\text{Active Spot SL}_t = \max\Big(\text{Initial Setup SL},\ \text{Break-Even},\ \text{ATR\_TS}_t\Big) \quad \text{(for Long / CE)}$$
-       $$\text{Active Spot SL}_t = \min\Big(\text{Initial Setup SL},\ \text{Break-Even},\ \text{ATR\_TS}_t\Big) \quad \text{(for Short / PE)}$$
-     - Once $\text{ATR\_TS}_t$ climbs beyond Break-Even, it takes over trailing the runner, locking in profits without getting shaken out by minor intraday noise.
+  2. **Phase 2: High-Water Mark (HWM) Ratchet Trailing (In-Trade & Runners)**:
+     - As the trade matures and reaches $T_1$ (+18 pts Spot), 50% lots are closed and stop moves to Break-Even (Cost).
+     - Dynamic trailing formula for active stop:
+       $$\text{Active SL}_t = \max\Big(\text{SL}_{t-1},\ \text{Cost},\ \text{ATR\_TS}_t\Big) \quad \text{(for Long / CE)}$$
+       $$\text{Active SL}_t = \min\Big(\text{SL}_{t-1},\ \text{Cost},\ \text{ATR\_TS}_t\Big) \quad \text{(for Short / PE)}$$
+     - **The "Never Go Down" Invariant**: Once the trailing stop ratchets up, it can **never decrease**, even if ATR contracts during market pauses/pullbacks. If ATR drops from 105 to 103, the stop remains locked at 105.
+     - **Break-Even Floor Guarantee**: If ATR is below entry price upon $T_1$ hit (e.g. entry = 100, ATR = 89), ATR is ignored and the stop remains locked at 100. A trade that crosses $T_1$ can **never end in a loss**.
+     - **Concrete Lifecycle Walkthrough**:
+       - *Entry*: Buy 2 lots @ ₹100.00 | Initial SL = ₹86.10 (Max risk = ₹13.90/share).
+       - *$T_1$ Hit (+18 pts Spot)*: Sell 1 lot @ ~₹109.40 (+₹9.40 banked). Stop on runner shifts to ₹100.00 (Cost).
+       - *Runner Advance*: Price pushes toward $T_2$ (₹132). ATR climbs to 105 $\implies$ SL = 105. ATR dips to 103 $\implies$ SL stays 105. ATR rallies to 112 $\implies$ SL = 112.
+       - *Exit*: Price pulls back to 112 $\implies$ runner exits @ ₹112 (+₹12 banked). Total net trade P&L = +₹21.40/share.
 
 - **Dual-Layer Execution**:
   - **Layer 1 (Synthetic Invalidation on Spot Chart)**: The 5-minute ATR TS runs strictly on **NIFTY Spot 5m candles**. Position Manager monitors real-time NIFTY Spot ticks against $\text{Active Spot SL}_t$. When Spot touches the trailing level, ARES dispatches an immediate market order to close the option contract. This completely eliminates Greek drift, avoids theta-decay slope distortion, avoids option illiquidity wicks, and requires zero dynamic Greek recalculation.

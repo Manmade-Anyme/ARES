@@ -51,8 +51,9 @@ Two things to carry into that discussion:
        - ATR Period: `5` (Wilder's RMA)
        - HHV / LLV Period: `10` bars (50 minutes)
        - Multiplier: `2.5`
-       - Long SL: $\max(\text{Previous SL},\ \text{HHV}_{10} - 2.5 \times \text{ATR}_5)$
-       - Short SL: $\min(\text{Previous SL},\ \text{LLV}_{10} + 2.5 \times \text{ATR}_5)$
+       - Long SL: $\max(\text{Previous SL},\ \text{Cost},\ \text{HHV}_{10} - 2.5 \times \text{ATR}_5)$
+       - Short SL: $\min(\text{Previous SL},\ \text{Cost},\ \text{LLV}_{10} + 2.5 \times \text{ATR}_5)$
+       - **The "Never Go Down" Invariant**: Trailing stop operates as a strict High-Water Mark (HWM) ratchet. If ATR contracts or dips (e.g. from 105 to 103), the active stop remains locked at 105. It only moves in increasing order and never decreases.
     4. **Execution Domain (Spot Chart Trigger)**: The ATR TS indicator runs strictly on **NIFTY Spot 5m candles**. When Spot crosses the ATR TS line, ARES executes a market exit on the open option contract. This eliminates Greek drift, avoids theta-decay distortions, avoids erratic option wicks, and requires zero dynamic Greek recalculation.
     5. **Benefit**: Allows runners to ride large multi-session / intraday trends without arbitrary fixed ceilings, while protecting accumulated profits during structural reversals.
 
