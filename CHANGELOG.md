@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-258 TypeSafe SDK 0.7.5 Upgrade & Jev Model Compatibility:** Upgraded `typesafe-sdk` dependency constraint in `requirements.txt` to `>=0.7.5,<0.8.0` (ADR-258). Retained `DEFAULT_MODEL = "jev-1.13.0"` in `system_one/jev.py` to protect calibrated probability thresholds and risk sizing against drift while supporting dynamic override via `TYPESAFE_MODEL`. Added unit and semver boundary tests verifying 0.7.5 compatibility with zero regressions across 404 tests.
+
 - **Config profiles typing:** Use explicit type check in `OIWatchJevConfig.__post_init__` for `oi_watch_jev_enabled` and specify type arguments `dict[str, SetupLevels]` on `per_type_levels` to resolve Pylance diagnostics while preserving runtime validation.
 
 - **TASK-212 revert:** Revert commit f2cb646 (PR #130). Restore exhaustion reversal stop loss to 10 points and remove setup-specific minimum reward/risk override, returning engine R:R gate to global threshold only.

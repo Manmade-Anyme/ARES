@@ -2,7 +2,7 @@
 
 - **Task ID:** TASK-258 (MANM-258)
 - **Date:** 2026-10-15
-- **Status:** Proposed (Awaiting Human Approval)
+- **Status:** Accepted & Implemented (Human Approved 2026-10-15)
 - **Author:** Software Architect Agent (`d2d4e328-096d-4658-8d90-44aa7b51ed05`)
 - **Directive:** `directives/TASK-258_update-jev-to-latest-version.md`
 
@@ -113,7 +113,7 @@ flowchart LR
 - [x] ADR-258 drafted and indexed in `directives/adr/INDEX.md` by Software Architect.
 - [x] Pre-commit documentation synchronized to repo docs and Obsidian vault.
 - [x] Single PR opened for MANM-258 awaiting human approval.
-- [ ] Human approves ADR-258.
-- [ ] Code Generator updates `requirements.txt` to `typesafe-sdk>=0.7.5,<0.8.0` and documents `system_one/jev.py`.
-- [ ] Full test suite (`pytest tests/unit/test_task210_*.py tests/unit/test_task211_*.py`) executes with 100% pass rate under the upgraded dependency.
+- [x] Human approves ADR-258.
+- [x] Code Generator updates `requirements.txt` to `typesafe-sdk>=0.7.5,<0.8.0` and documents `system_one/jev.py`.
+- [x] Full test suite (`pytest tests/unit/test_task210_*.py tests/unit/test_task211_*.py`) executes with 100% pass rate under the upgraded dependency.
 - [ ] QA Agent validates test coverage and signs off.
