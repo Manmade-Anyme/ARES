@@ -210,11 +210,21 @@ Per trader mandate, static SL multiples (1.5x–2.0x) are replaced with the **5-
        $$\text{ATR\_TS}_{\text{spot}} = \text{LLV}_{10} + \left( 2.5 \times \text{ATR}_5 \right)$$
        Trailed dynamically: $\text{SL}_t = \min(\text{SL}_{t-1}, \text{ATR\_TS}_{\text{spot}})$
 
-- **Integration into Dual-Layer Model**:
-  - **Layer 1 (Synthetic Invalidation)**: Uses $\text{ATR\_TS}_{\text{spot}}$ as the dynamic invalidation level. When Spot touches $\text{ATR\_TS}_{\text{spot}}$, ARES sends an immediate market order to exit.
-  - **Layer 2 (Emergency Broker Floor)**: Translates the 5m ATR stop distance to option premium at entry:
-    $$\text{Broker\_SL} = \max\left(0.05,\ P_{\text{entry}} - \left(|\text{Entry}_{\text{spot}} - \text{ATR\_TS}_{\text{spot}}| \times |\Delta|\right)\right)$$
-  - **Advantage**: Automatically expands stop distance during high volatility (e.g. market open) and contracts during low volatility (lunch chop), preventing false shakeouts while anchoring strictly to the 10-period (50-minute) market structure.
+- **Two-Phase Lifecycle Model (Fixed Setup SL + ATR TS Ratchet)**:
+  1. **Phase 1: Entry & Invalidation Gate (Fixed Setup SL)**:
+     - At entry, setup-specific structural stop (e.g. `EXHAUSTION_REVERSAL = 10.0 pts`) governs trade invalidation and position sizing.
+     - Preserves the required $1:1.8+$ Risk-to-Reward ratio and passes the `min_rr_ratio = 1.0` production filter.
+     - Option entry SL is calculated from this initial spot stop using 2nd-order Taylor expansion: $\Delta P = \Delta \cdot \Delta S + \frac{1}{2} \Gamma (\Delta S)^2$.
+  2. **Phase 2: Monotonic Ratchet Trailing (In-Trade & Runners)**:
+     - As the trade matures and reaches $T_1$ (+18 pts), 50% lots are closed and stop moves to Break-Even.
+     - Dynamic trailing formula for active spot stop:
+       $$\text{Active Spot SL}_t = \max\Big(\text{Initial Setup SL},\ \text{Break-Even},\ \text{ATR\_TS}_t\Big) \quad \text{(for Long / CE)}$$
+       $$\text{Active Spot SL}_t = \min\Big(\text{Initial Setup SL},\ \text{Break-Even},\ \text{ATR\_TS}_t\Big) \quad \text{(for Short / PE)}$$
+     - Once $\text{ATR\_TS}_t$ climbs beyond Break-Even, it takes over trailing the runner, locking in profits without getting shaken out by minor intraday noise.
+
+- **Dual-Layer Execution**:
+  - **Layer 1 (Synthetic Invalidation)**: Uses $\text{Active Spot SL}_t$ as the dynamic invalidation level. When Spot touches $\text{Active Spot SL}_t$, ARES sends an immediate market order to exit the option contract.
+  - **Layer 2 (Emergency Broker Floor)**: Upfront broker stop placed at entry based on the initial fixed setup SL translated via Delta/Gamma. Upgraded to Break-Even/trailed premium when $T_1$ is achieved.
 
 ---
 
