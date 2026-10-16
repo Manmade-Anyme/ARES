@@ -17,7 +17,9 @@ from alerts import send_discord, send_startup_alert, send_error_alert, dispatch_
 from reports import send_performance_report, is_last_trading_day_of_month
 from ml_signal.collector import MLCollector
 from ml_signal.predictor import SignalPredictor
-from options_math import process_options_calculation
+from options_math import process_options_calculation, option_sizing_summary
+from execution.order_manager import OrderManager
+from execution.signal_dispatch import SignalDispatcher
 from oi_watch_outbox import initialize_oi_watch_outbox
 
 logger = logging.getLogger("ares.main")
@@ -62,8 +64,7 @@ def format_signal_console(signal, spot):
     print(f"   {W}Targets: T1={G}{signal.target_1:.2f}{W} | T2={G}{signal.target_2:.2f}{RESET}")
     print(f"   {W}Confidence: {B}{signal.confidence}{RESET}")
     if getattr(signal, "suggested_lots", None) is not None:
-        print(f"   {W}Suggested Lots : {G}{signal.suggested_lots}{RESET} ({W}Capital: ₹{signal.capital:,.2f}{RESET} | {W}Risk: {signal.risk_pct:.1f}%{RESET})")
-        print(f"   {W}Option SL      : {R}₹{signal.option_sl:.2f}{RESET} | {W}Option Target: {G}₹{signal.option_target:.2f}{RESET} ({W}Premium: ₹{signal.option_premium:.2f}{RESET} | {W}Delta: {signal.option_delta:+.4f}{RESET})")
+        print(f"   {W}{option_sizing_summary(signal)}{RESET}")
     print(f"   {W}Reasons:{RESET}")
     for r in signal.reasons:
         print(f"     {W}• {r}{RESET}")
@@ -117,7 +118,7 @@ async def _persist_ml_snapshot_before_exit_checks(collector, **snapshot):
         print(f"MLCollector: signal-bound snapshot persistence failed: {exc}")
         return False
 
-async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine):
+async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine, dispatcher=None):
     """
     Sleeps for `total_seconds` (the REST poll interval), but when the
     WebSocket TickFeed is active, wakes every `tick_exit_check_interval_seconds`
@@ -138,6 +139,11 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
         elapsed += step
 
         price = tick_feed.get_latest_price()
+        if price is not None and dispatcher is not None:
+            try:
+                await dispatcher.on_spot(price)
+            except Exception as e:
+                print(f"[-] Pending order spot update failed: {e}")
         if price is not None and position_manager.active_trades:
             try:
                 events = await position_manager.update_trades(price)
@@ -238,6 +244,8 @@ async def run():
     level_fetcher = LevelFetcher()
     storage = Storage()
     position_manager = PositionManager()
+    # Explicit paper execution: no broker account is activated by deployment.
+    order_dispatcher = SignalDispatcher(OrderManager(), position_manager)
     ml_collector = MLCollector(settings.supabase_url, settings.supabase_key)
     tick_feed = TickFeed()
     
@@ -357,6 +365,7 @@ async def run():
                 # Fetch option chain dynamically
                 expiry_date = await oi_fetcher.get_nearest_expiry()
                 atm, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry_date)
+                await order_dispatcher.on_snapshot(full_chain, spot)
             
                 # Build and update dynamic levels
                 levels = level_fetcher.build_levels(
@@ -433,6 +442,13 @@ async def run():
                     try:
                         await process_options_calculation(signal, full_chain, price_fetcher.dhan)
                     except Exception as sizing_err:
+                        signal.bracket = None
+                        signal.options_sizing_status = "INVALID_DATA"
+                        signal.suggested_lots = 0
+                        signal.market_context["options_sizing"] = {
+                            "status": "INVALID_DATA", "final_lots": 0,
+                            "rejection_reason": "CALCULATION_FAILED",
+                        }
                         print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
 
                     format_signal_console(signal, spot)
@@ -447,12 +463,12 @@ async def run():
 
                     if trade_executed:
                         try:
-                            trade_id, binding_status = await position_manager.add_trade(signal, spot, atm=atm)
-                            signal.trade_id = trade_id
-                            signal.trade_binding_status = binding_status
+                            await order_dispatcher.dispatch(signal, spot, full_chain, atm=atm)
                         except Exception as pm_err:
-                            signal.trade_id = None
-                            print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager add_trade failed: {pm_err}{RESET}")
+                            # Registration may have succeeded before telemetry sync
+                            # failed. Preserve that binding so the next poll retries
+                            # only persistence, not order/trade creation.
+                            print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Paper order registration or telemetry sync failed: {pm_err}{RESET}")
 
                     # Log ML prediction asynchronously if model scored this signal (ADR-153)
                     # Invariant: Persists on every inference event even if storage.log_signal fails or trade is aborted.
@@ -562,7 +578,7 @@ async def run():
                         await send_error_alert(f"Fetch cycle error - {e}")
                         last_error_msg = current_error
             
-            await _sleep_with_tick_exits(settings.poll_interval_seconds, tick_feed, position_manager, engine)
+            await _sleep_with_tick_exits(settings.poll_interval_seconds, tick_feed, position_manager, engine, order_dispatcher)
     finally:
         if last_watch_candle is not None:
             engine.oi_wall_filter.reset_session(last_watch_candle)

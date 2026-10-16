@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 from supabase import create_client, Client
 
+from options_math import option_sizing_context, option_sizing_summary
 from models import AresSignal
 from config import settings
 
@@ -84,12 +85,7 @@ class Storage:
         def _insert():
             reasons = list(signal.reasons)
             if getattr(signal, "suggested_lots", None) is not None:
-                reasons.append(
-                    f"Option Sizing: {signal.suggested_lots} lots suggested | "
-                    f"Capital: ₹{signal.capital:,.2f} | Risk: {signal.risk_pct:.1f}% | "
-                    f"Option SL: ₹{signal.option_sl:.2f} | Option Target: ₹{signal.option_target:.2f} | "
-                    f"Premium: ₹{signal.option_premium:.2f} | Delta: {signal.option_delta:+.4f}"
-                )
+                reasons.append(option_sizing_summary(signal))
             data = {
                 "setup_type": signal.setup_type.value,
                 "direction": signal.direction.value,
@@ -193,12 +189,7 @@ class AnalyticsLogger:
 
         db_reasons = list(signal.reasons)
         if getattr(signal, "suggested_lots", None) is not None:
-            db_reasons.append(
-                f"Option Sizing: {signal.suggested_lots} lots suggested | "
-                f"Capital: ₹{signal.capital:,.2f} | Risk: {signal.risk_pct:.1f}% | "
-                f"Option SL: ₹{signal.option_sl:.2f} | Option Target: ₹{signal.option_target:.2f} | "
-                f"Premium: ₹{signal.option_premium:.2f} | Delta: {signal.option_delta:+.4f}"
-            )
+            db_reasons.append(option_sizing_summary(signal))
 
         market_context = {
             "reasons": db_reasons,
@@ -211,13 +202,8 @@ class AnalyticsLogger:
         # Add Option Sizing calculations if populated
         if getattr(signal, "suggested_lots", None) is not None:
             market_context["options_sizing"] = {
-                "suggested_lots": signal.suggested_lots,
-                "option_sl": signal.option_sl,
-                "option_target": signal.option_target,
-                "capital": signal.capital,
-                "delta": signal.option_delta,
-                "premium": signal.option_premium,
-                "risk_pct": signal.risk_pct
+                **option_sizing_context(signal),
+                **market_context.get("options_sizing", {}),
             }
 
         # Add OI Wall Telemetry Context (TASK-073)

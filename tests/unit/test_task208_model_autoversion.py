@@ -140,6 +140,8 @@ async def test_discord_startup_and_signal_alert_version_display():
     signal.option_type = "CE"
     signal.reasons = ["RSI Divergence"]
     signal.suggested_lots = None
+    signal.bracket = None
+    signal.options_sizing_status = "PENDING"
     signal.ml_prediction = {"probability": 0.85, "model_version": "v2"}
 
     with patch.object(alerts.settings, "discord_webhook_url", "http://discord.invalid"), \

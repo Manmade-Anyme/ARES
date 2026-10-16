@@ -41,6 +41,46 @@ class Direction(Enum):
     BEARISH = "BEARISH"
 
 
+@dataclass(frozen=True)
+class OptionGreeks:
+    delta: float
+    gamma: float
+    theta: float
+    vega: float
+    iv: float
+
+
+@dataclass(frozen=True)
+class OptionOrderBracket:
+    security_id: str
+    expiry_date: str
+    strike: int
+    option_type: str
+    entry_limit: float
+    synthetic_spot_sl: float
+    catastrophic_opt_sl: float
+    target_1: float
+    target_2: Optional[float]
+    lots: int
+    greeks: Optional[OptionGreeks]
+    is_valid: bool
+    rejection_reason: Optional[str] = None
+    lot_size: int = 65
+    signal_id: str = ""
+    spot_entry: float = 0.0
+    spot_target_1: float = 0.0
+    spot_target_2: float = 0.0
+    risk_loss_pts: float = 0.0
+    uncapped_suggested_lots: int = 0
+    affordable_lots: int = 0
+    capital: float = 0.0
+    reference_premium: Optional[float] = None
+    projected_target_1: Optional[float] = None
+    expected_move_straddle: Optional[float] = None
+    expected_move_iv: Optional[float] = None
+    iv_feed_warning: Optional[str] = None
+
+
 @dataclass
 class OHLCVCandle:
     """
@@ -149,6 +189,8 @@ class AresSignal:
     risk_pct: Optional[float] = None
     oi_wall_context: Optional[Dict[str, Any]] = None
     market_context: Dict[str, Any] = field(default_factory=dict)
+    bracket: Optional[OptionOrderBracket] = None
+    options_sizing_status: str = "PENDING"
 
 
 @dataclass(frozen=True)

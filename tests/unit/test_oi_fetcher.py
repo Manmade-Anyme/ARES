@@ -6,6 +6,54 @@ from fetchers.oi_fetcher import OIFetcher
 class TestOIFetcherRemediation(unittest.IsolatedAsyncioTestCase):
 
     @patch("fetchers.oi_fetcher.dhanhq")
+    async def test_all_strikes_keep_contract_greeks_and_executable_quotes(self, mock_dhanhq):
+        side = {
+            "security_id": 42528, "last_price": 134, "top_ask_price": 134.5,
+            "top_bid_price": 133.55, "implied_volatility": 12.5,
+            "greeks": {"delta": .5, "gamma": .0013, "theta": -15, "vega": 12},
+        }
+        mock_dhanhq.return_value.option_chain.return_value = {
+            "status": "success", "data": {"last_price": 24002, "oc": {
+                "24000": {"ce": side, "pe": {**side, "security_id": 42529}},
+                "24050": {"ce": side, "pe": {}},
+            }},
+        }
+        _, rows = await OIFetcher().fetch_chain(24000, "2026-10-20")
+        for row in rows:
+            self.assertEqual(row["ce_security_id"], "42528")
+            self.assertEqual(row["expiry_date"], "2026-10-20")
+            self.assertEqual(row["underlying_spot"], 24002)
+            self.assertEqual(row["ce_gamma"], .0013)
+            self.assertEqual(row["ce_theta"], -15)
+            self.assertEqual(row["ce_vega"], 12)
+            self.assertEqual(row["ce_ask"], 134.5)
+            self.assertEqual(row["ce_bid"], 133.55)
+        self.assertEqual(rows[0]["pe_security_id"], "42529")
+        for key in ("pe_security_id", "pe_gamma", "pe_theta", "pe_vega", "pe_bid", "pe_ask"):
+            self.assertIsNone(rows[1][key])
+
+    @patch("fetchers.oi_fetcher.dhanhq")
+    async def test_null_side_and_nonfinite_strike_do_not_discard_valid_quotes(self, mock_dhanhq):
+        mock_dhanhq.return_value.option_chain.return_value = {
+            "status": "success", "data": {"oc": {
+                "nan": {},
+                "inf": {},
+                "24000": {"ce": {"security_id": 42528, "last_price": 100}, "pe": None},
+            }},
+        }
+        _, rows = await OIFetcher().fetch_chain(24000, "2026-10-20")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ce_ltp"], 100)
+        self.assertIsNone(rows[0]["pe_security_id"])
+        self.assertIsNone(rows[0]["pe_gamma"])
+
+    def test_nonfinite_market_values_are_missing(self):
+        from fetchers.oi_fetcher import _parse_float, _parse_int
+        for value in (float("nan"), float("inf"), "-inf", True):
+            self.assertIsNone(_parse_float(value))
+            self.assertIsNone(_parse_int(value))
+
+    @patch("fetchers.oi_fetcher.dhanhq")
     async def test_fetch_chain_iv_parsing(self, mock_dhanhq):
         # Setup mock client
         mock_client = MagicMock()

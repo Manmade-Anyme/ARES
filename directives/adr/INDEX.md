@@ -25,4 +25,6 @@
 | MANM-158 | 2026-09-30 | OI Wall Retest Diagnosis and Validation | Implemented; out-of-sample validation pending |
 | MANM-219 | 2026-10-03 | Fly.io Primary Region Migration to sin (Singapore) | Implemented via PR #124 |
 | TASK-211 | 2026-10-08 | Jev in the first OI-wall ready-watch Discord embed | Implemented; local QA passed; PR review pending |
+| MANM-176 | 2026-10-15 | Improve Options Entry, Exit, and SL Calculations using Greeks and Limit Orders | Proposed |
 | TASK-258 | 2026-10-15 | TypeSafe SDK 0.7.5 Upgrade & Jev Model Compatibility Assessment | Proposed |
+

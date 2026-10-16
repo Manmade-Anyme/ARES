@@ -4,6 +4,12 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **MANM-176 carried-trade context (PR #136):** Restore persisted option sizing and paper execution context from `trade_analytics` when loading active trades after restart. Persisted analytics context takes precedence while unrelated active-row keys survive; legacy rows and analytics read failures retain existing carry monitoring. This restores lifecycle reporting context without resuming paper order simulation or enabling live execution.
+
+- **MANM-176 review fixes (PR #136):** Use the matched option quote's validated underlying spot for paper fills and post-T1 break-even. Persist protected fills that exit immediately, including their realized paper loss, and retry registration and canonical ML linkage until confirmed. Terminal persistence retries no longer block pending-entry deduplication. Historical spot outcome scoring stays separate; live activation remains blocked.
+
+- **MANM-176 Greeks-based option brackets (PR #136):** Preserve contract quotes and full Greeks across the option chain; select near-ATM contracts and build validated Delta/Gamma limits with theta feasibility and nonnegative capped sizing. Retain rejection diagnostics and distinguish final allocation from the uncapped suggestion. Add observed-quote paper order management and a tested Dhan transport/reconciliation adapter; new live dispatch is blocked before submission by explicit user decision. Alerts and reports label option P&L as estimates and preserve stored lot size. Existing spot outcome labels and post-T1 break-even behavior remain; ATR trailing is deferred. Enforced 100% strict line and branch coverage across options_math, execution.order_manager, and execution.signal_dispatch modules.
+
 - **TASK-258 TypeSafe SDK 0.7.5 Upgrade & Jev Model Compatibility:** Upgraded `typesafe-sdk` dependency constraint in `requirements.txt` to `>=0.7.5,<0.8.0` (ADR-258). Retained `DEFAULT_MODEL = "jev-1.13.0"` in `system_one/jev.py` to protect calibrated probability thresholds and risk sizing against drift while supporting dynamic override via `TYPESAFE_MODEL`. Added unit and semver boundary tests verifying 0.7.5 compatibility with zero regressions across 404 tests.
 
 - **Config profiles typing:** Use explicit type check in `OIWatchJevConfig.__post_init__` for `oi_watch_jev_enabled` and specify type arguments `dict[str, SetupLevels]` on `per_type_levels` to resolve Pylance diagnostics while preserving runtime validation.

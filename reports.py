@@ -13,6 +13,7 @@ Triggered in-process from main.py's session-end branch:
 """
 
 import httpx
+import math
 from datetime import datetime, timezone, timedelta, date
 from typing import Any
 
@@ -131,30 +132,44 @@ def _option_rupees(trade: dict) -> float:
     sizing = (trade.get("market_context") or {}).get("options_sizing")
     if not sizing:
         return 0.0
-    delta = sizing.get("delta")
-    lots = sizing.get("suggested_lots")
-    if delta is None or not lots:
+    delta = sizing.get("option_delta", sizing.get("delta"))
+    lots = sizing.get("final_lots", sizing.get("suggested_lots"))
+    if isinstance(lots, bool):
         return 0.0
-    pnl_points = float(trade["pnl_points"])
-    lot_size = int(settings.nifty_lot_size)
-    return pnl_points * abs(float(delta)) * lot_size * int(lots)
+    try:
+        delta, lots = float(delta), float(lots)
+        pnl_points = float(trade["pnl_points"])
+        lot_size = float(sizing.get("lot_size", settings.nifty_lot_size))
+    except (TypeError, ValueError, OverflowError, KeyError):
+        return 0.0
+    if (not all(math.isfinite(value) for value in (delta, lots, pnl_points, lot_size))
+            or lots <= 0 or not lots.is_integer() or lot_size <= 0 or not lot_size.is_integer()):
+        return 0.0
+    result = pnl_points * abs(delta) * lot_size * int(lots)
+    return result if math.isfinite(result) else 0.0
 
 
 def _option_1_lot_rupees(trade: dict) -> float:
-    """Exact option premium P&L for 1 lot: (target - entry)*lot for wins, (sl - entry)*lot for losses."""
+    """Estimated bracket P&L for one lot; these levels are not confirmed fills."""
     sizing = (trade.get("market_context") or {}).get("options_sizing")
     if not sizing:
         return 0.0
     
-    option_entry = sizing.get("premium")
+    option_entry = sizing.get("entry_limit", sizing.get("premium"))
     option_sl = sizing.get("option_sl")
-    option_target = sizing.get("option_target")
+    option_target = sizing.get("target_1", sizing.get("option_target"))
     
     if option_entry is None or option_sl is None or option_target is None:
         return 0.0
         
-    pnl_points = float(trade.get("pnl_points", 0.0))
-    lot_size = int(settings.nifty_lot_size)
+    try:
+        pnl_points = float(trade.get("pnl_points", 0.0))
+        lot_size = float(sizing.get("lot_size", settings.nifty_lot_size))
+        option_entry, option_sl, option_target = map(float, (option_entry, option_sl, option_target))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not all(math.isfinite(value) for value in (pnl_points, lot_size, option_entry, option_sl, option_target)) or lot_size <= 0:
+        return 0.0
     
     if pnl_points > 0:
         return (float(option_target) - float(option_entry)) * lot_size
@@ -217,7 +232,7 @@ def build_report_embed(period_label: str, date_range: str, metrics: dict) -> dic
         f"📊 **Net Spot Points:** {net:+.1f}   "
         f"🕒 **Avg/Trade:** {o['avg_points']:+.1f}\n"
         f"💰 **Est. Spot movement P&L:** {_fmt_rupees(o['option_rupees'])}\n"
-        f"💰 **Exact 1-Lot P&L:** {_fmt_rupees(o['option_1_lot_rupees'])}\n"
+        f"💰 **Est. Bracket 1-Lot P&L:** {_fmt_rupees(o['option_1_lot_rupees'])}\n"
         f"🟢 **Best:** {o['best']:+.1f}   🔴 **Worst:** {o['worst']:+.1f}"
     )
     fields = [{"name": "📋 Overall", "value": summary, "inline": False}]

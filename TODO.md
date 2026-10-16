@@ -38,6 +38,27 @@ Two things to carry into that discussion:
   carries are **+1,011.7 pts of a +655.5 total**, so everything held intraday is
   net negative and the carries are where the entire edge sits.
 
+### 📈 Dynamic Post-T1 Trailing Stop: 5-Minute ATR TS (Atr 5, HHV 10, Mult 2.5)
+**Owner: Software Architect / Project Manager.** Scoped from MANM-176 discussion (2026-10-15). Deferred for separate implementation.
+
+- [ ] **Replace post-T1 fixed target / static trailing with dynamic 5-minute ATR Trailing Stop.**
+  - **Context**: Currently, once T1 is hit, the position manager moves SL to cost/Break-Even and waits for a static T2 or BE exit.
+  - **Planned Architecture**:
+    1. **At Entry**: Maintain fixed structural setup SL (e.g. 10 pts for `EXHAUSTION_REVERSAL`) to preserve R:R ($1:1.8$) and satisfy the `min_rr_ratio = 1.0` gate.
+    2. **At T1**: Book 50% partial profits and move SL to cost (Break-Even).
+    3. **Post-T1 Runner Trailing**: Replace static T2 and fixed trailing with 5-minute ATR TS:
+       - Timeframe: `5m`
+       - ATR Period: `5` (Wilder's RMA)
+       - HHV / LLV Period: `10` bars (50 minutes)
+       - Multiplier: `2.5`
+       - Long SL: $\max(\text{Previous SL},\ \text{Cost},\ \text{HHV}_{10} - 2.5 \times \text{ATR}_5)$
+       - Short SL: $\min(\text{Previous SL},\ \text{Cost},\ \text{LLV}_{10} + 2.5 \times \text{ATR}_5)$
+       - **The Directional Ratchet Invariant**:
+         - *Bullish (CE)*: Monotonically non-decreasing ($\max$). Stop moves only upward and never decreases. If ATR dips, stop stays locked at highest level.
+         - *Bearish (PE)*: Monotonically non-increasing ($\min$). Stop moves only downward and never increases. If ATR rises, stop stays locked at lowest level.
+    4. **Execution Domain (Spot Chart Trigger)**: The ATR TS indicator runs strictly on **NIFTY Spot 5m candles**. When Spot crosses the ATR TS line, ARES executes a market exit on the open option contract. This eliminates Greek drift, avoids theta-decay distortions, avoids erratic option wicks, and requires zero dynamic Greek recalculation.
+    5. **Benefit**: Allows runners to ride large multi-session / intraday trends without arbitrary fixed ceilings, while protecting accumulated profits during structural reversals.
+
 ---
 
 ## ML Pipeline Improvements
