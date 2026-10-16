@@ -157,3 +157,43 @@ async def test_failed_telemetry_sync_preserves_successful_trade_binding():
     assert signal.trade_id == "trade-1"
     await dispatcher.on_snapshot(chain(),24001)
     assert len(positions.entries) == 1
+
+
+def test_broker_rejection_on_init(tmp_path):
+    broker = object()
+    manager = OrderManager(broker=broker, allow_live=True, journal_path=tmp_path / "orders.json")
+    with pytest.raises(ValueError, match="The application dispatcher currently supports paper execution only"):
+        SignalDispatcher(manager, Positions())
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_trade_skipped():
+    positions = Positions()
+    positions.find_duplicate_trade = lambda signal, spot: True
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+    signal = candidate()
+    assert not await dispatcher.dispatch(signal, 24000, chain())
+    assert signal.trade_binding_status == "DUPLICATE_SKIPPED"
+
+
+@pytest.mark.asyncio
+async def test_on_spot_exception_resilience():
+    positions = Positions()
+    manager = OrderManager()
+    dispatcher = SignalDispatcher(manager, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(101))
+    def failing_on_spot(*args, **kwargs):
+        raise RuntimeError("Simulated spot processing failure")
+    manager.on_spot = failing_on_spot
+    await dispatcher.on_spot(24005)
+
+
+@pytest.mark.asyncio
+async def test_publish_skips_unmatched_active_trade():
+    positions = Positions()
+    positions.active_trades.append({"id": "other-trade", "signal_uuid": "some-other-uuid"})
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain())
+    assert "execution" not in positions.active_trades[0].get("market_context", {})

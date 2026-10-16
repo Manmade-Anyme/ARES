@@ -1,4 +1,5 @@
 """Observable MANM-176 pricing, sizing and provider-boundary regressions."""
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -7,10 +8,11 @@ import pytest
 from config_profiles import TuningConfig
 from models import AresSignal, Direction, OptionGreeks, SetupType
 from options_math import (
-    build_option_bracket, calculate_affordable_lots, calculate_greek_premium_translation,
-    calculate_lots, calculate_risk_amount, fetch_dhan_capital, find_optimal_strike,
-    option_sizing_context, option_sizing_summary, process_options_calculation, project_option_premium,
-    round_to_tick, validate_capital,
+    _expected_move_diagnostics, build_option_bracket, calculate_affordable_lots,
+    calculate_greek_premium_translation, calculate_lots, calculate_points,
+    calculate_risk_amount, fetch_dhan_capital, find_optimal_strike,
+    option_sizing_context, option_sizing_summary, process_options_calculation,
+    project_option_premium, round_to_tick, translate_to_premium, validate_capital,
 )
 
 
@@ -316,3 +318,89 @@ def test_entry_tick_rounding_never_exceeds_slippage_ceiling():
     result = build_option_bracket(make_signal(),[make_row(ce_ask=101,ce_bid=100)],100000,config)
     assert result.is_valid
     assert result.entry_limit == 100.5
+
+
+def test_calculate_points():
+    assert calculate_points(100.0, 95.0) == 5.0
+    assert calculate_points(95.0, 100.0) == 5.0
+
+
+def test_translate_to_premium():
+    assert translate_to_premium(10.0, 0.5) == 5.0
+    assert translate_to_premium(10.0, -0.5) == 5.0
+
+
+@pytest.mark.parametrize("spot_delta,delta,gamma", [
+    (float("nan"), 0.5, 0.002),
+    (10.0, float("inf"), 0.002),
+    (10.0, 0.5, -0.001),
+])
+def test_calculate_greek_premium_translation_invalid(spot_delta, delta, gamma):
+    with pytest.raises(ValueError, match="requires finite inputs and nonnegative gamma"):
+        calculate_greek_premium_translation(spot_delta, delta, gamma)
+
+
+@pytest.mark.parametrize("price,tick_size", [
+    (float("nan"), 0.05),
+    (100.0, float("nan")),
+    (100.0, 0.0),
+    (100.0, -0.05),
+])
+def test_round_to_tick_invalid(price, tick_size):
+    with pytest.raises(ValueError, match="Price and positive tick size must be finite"):
+        round_to_tick(price, tick_size)
+
+
+@pytest.mark.asyncio
+async def test_fetch_dhan_capital_data_not_dict():
+    client = MagicMock()
+    client.get_fund_limits.return_value = {"status": "success", "data": "invalid_not_a_dict"}
+    assert await fetch_dhan_capital(client) is None
+
+
+@pytest.mark.parametrize("direction,chain_arg", [
+    ("SIDEWAYS", [make_row()]),
+    ("BULLISH", "not_a_list"),
+])
+def test_find_optimal_strike_invalid_direction_or_chain(direction, chain_arg):
+    assert find_optimal_strike(direction, chain_arg) == (None, None, None, None, None)
+
+
+def test_expected_move_diagnostics_edge_cases():
+    signal = make_signal()
+    # 1. full_chain not a list (line 173)
+    assert _expected_move_diagnostics(signal, "not_a_list") == {}
+
+    # 2. No matching expiry rows with strike > 0 (line 184)
+    row_no_strike = {"strike": 0, "expiry_date": "2026-10-15"}
+    assert _expected_move_diagnostics(signal, [row_no_strike]) == {}
+
+    # 3. underlying_spot non-finite or <= 0 (line 188)
+    row_bad_spot = make_row(underlying_spot=-100)
+    assert _expected_move_diagnostics(signal, [row_bad_spot]) == {}
+
+    # 4. Non-finite iv_move (line 196)
+    row_huge = make_row(underlying_spot=1e300, ce_iv=1e300)
+    diag = _expected_move_diagnostics(signal, [row_huge])
+    assert diag.get("expected_move_iv") is None
+
+
+def test_build_option_bracket_invalid_levels_and_geometry():
+    # line 226: non-finite or non-positive levels
+    sig_bad_sl = make_signal()
+    sig_bad_sl.stop_loss = -10
+    bracket_bad = build_option_bracket(sig_bad_sl, [make_row()], 100000, TuningConfig())
+    assert bracket_bad.rejection_reason == "INVALID_DATA"
+
+    # line 231: misordered geometry
+    sig_bad_geo = make_signal()
+    sig_bad_geo.stop_loss = 24005
+    bracket_geo = build_option_bracket(sig_bad_geo, [make_row()], 100000, TuningConfig())
+    assert bracket_geo.rejection_reason == "INVALID_BRACKET_ORDERING"
+
+
+def test_option_sizing_summary_invalid_bracket():
+    signal = make_signal()
+    signal.bracket = replace(build_option_bracket(signal, [make_row()], 100000, TuningConfig()),
+                             is_valid=False, rejection_reason="INSUFFICIENT_OPTION_RR")
+    assert option_sizing_summary(signal) == "Option sizing unavailable: INSUFFICIENT_OPTION_RR"

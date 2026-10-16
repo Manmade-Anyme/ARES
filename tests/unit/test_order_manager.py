@@ -2,6 +2,7 @@
 from dataclasses import asdict, replace
 import hashlib
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -305,3 +306,205 @@ def test_crossed_book_never_creates_a_paper_entry():
     record = manager.dispatch_bracket(bracket())
     manager.observe_quote(record.correlation_id,99,spot=24001,bid=101)
     assert not record.ready_to_register
+
+
+def test_dhan_adapter_submit_error_status():
+    sdk = MagicMock()
+    sdk.place_super_order.return_value = {"status": "error", "remarks": "Margin insufficient"}
+    adapter = DhanSuperOrderAdapter(sdk)
+    with pytest.raises(RuntimeError, match="Super-order submission not confirmed"):
+        adapter.submit(bracket(), 65, 110, "tag-1")
+
+
+def test_dhan_adapter_submit_missing_order_id():
+    sdk = MagicMock()
+    sdk.place_super_order.return_value = {"status": "success", "data": {}}
+    adapter = DhanSuperOrderAdapter(sdk)
+    with pytest.raises(RuntimeError, match="Super-order ID not confirmed"):
+        adapter.submit(bracket(), 65, 110, "tag-1")
+
+
+def test_journal_load_with_none_greeks(tmp_path):
+    b = bracket()
+    b = replace(b, greeks=None)
+    key = "test-no-greeks"
+    rec = OrderRecord(key, b, mode="PAPER")
+    path = tmp_path / "orders.json"
+    path.write_text(json.dumps([asdict(rec)]))
+    mgr = OrderManager(journal_path=path)
+    assert key in mgr.records
+    assert mgr.records[key].bracket.greeks is None
+
+
+def test_journal_mode_mismatch(tmp_path):
+    rec = OrderRecord("corr-1", bracket(), mode="LIVE")
+    path = tmp_path / "orders.json"
+    path.write_text(json.dumps([asdict(rec)]))
+    with pytest.raises(ValueError, match="Journal execution mode does not match manager"):
+        OrderManager(journal_path=path)
+
+
+def test_journal_load_live_terminal_record_not_reconciled(tmp_path):
+    rec = OrderRecord("corr-closed", bracket(), mode="LIVE", status="CLOSED")
+    path = tmp_path / "orders.json"
+    path.write_text(json.dumps([asdict(rec)]))
+    adapter = DhanSuperOrderAdapter(FakeDhan())
+    mgr = OrderManager(broker=adapter, journal_path=path, allow_live=True)
+    assert mgr.records["corr-closed"].status == "CLOSED"
+
+
+def test_atomic_save_cleanup_on_exception(tmp_path, monkeypatch):
+    path = tmp_path / "orders.json"
+    mgr = OrderManager(journal_path=path)
+    def failing_dump(*args, **kwargs):
+        raise OSError("Disk full")
+    monkeypatch.setattr(json, "dump", failing_dump)
+    with pytest.raises(OSError, match="Disk full"):
+        mgr.dispatch_bracket(bracket())
+    assert list(tmp_path.glob(".orders-*")) == []
+
+
+@pytest.mark.parametrize("invalid_expiry", ["not-a-date", None])
+def test_bracket_malformed_expiry_date(invalid_expiry):
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket(expiry_date=invalid_expiry))
+    assert rec.status == "REJECTED"
+
+
+@pytest.mark.parametrize("terminal_status", ["CANCELLED", "REJECTED", "CLOSED"])
+def test_confirm_fill_terminal_order_rejected(terminal_status):
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket())
+    rec.status = terminal_status
+    with pytest.raises(ValueError, match="Cannot fill terminal order"):
+        manager._confirm_fill(rec.correlation_id, 65, 99.0, True)
+
+
+def test_observe_quote_cancels_expired_submitted_order():
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket())
+    rec.bracket = replace(rec.bracket, expiry_date="2020-01-01")
+    manager.observe_quote(rec.correlation_id, 100.0)
+    assert rec.status == "CANCELLED"
+
+
+def test_paper_exit_zero_quantity_early_return():
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket())
+    manager._paper_exit(rec, 0, 100.0, "TEST")
+    assert rec.exit_reason == ""
+
+
+@pytest.mark.parametrize("bad_spot", [0, -10, float("nan")])
+def test_on_spot_non_positive_spot(bad_spot):
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket())
+    assert manager.on_spot(rec.correlation_id, bad_spot) is rec
+    assert rec.status == "SUBMITTED"
+
+
+@pytest.mark.parametrize("term_status", ["CANCELLED", "REJECTED", "CLOSED"])
+def test_on_spot_terminal_record(term_status):
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket())
+    rec.status = term_status
+    assert manager.on_spot(rec.correlation_id, 24000) is rec
+
+
+def test_on_spot_live_mode_handling():
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket())
+    rec.mode = "LIVE"
+    rec.filled_quantity = 130
+    rec.protection_confirmed = True
+    rec.status = "FILLED"
+    res1 = manager.on_spot(rec.correlation_id, 24005)
+    assert res1.status == "FILLED"
+    assert res1.protection_confirmed is True
+    res2 = manager.on_spot(rec.correlation_id, 23985)
+    assert res2.status == "RECONCILIATION_REQUIRED"
+    assert res2.protection_confirmed is False
+
+
+def test_on_spot_exit_pending_retry():
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket())
+    manager.observe_quote(rec.correlation_id, 100.0)
+    manager.on_spot(rec.correlation_id, 23985, option_bid=None)
+    assert rec.status == "EXIT_PENDING"
+    assert rec.pending_exit_quantity == 130
+    manager.on_spot(rec.correlation_id, 24005, option_bid=None)
+    assert rec.status == "EXIT_PENDING"
+    manager.on_spot(rec.correlation_id, 24005, option_bid=95.0)
+    assert rec.status == "CLOSED"
+    assert rec.exited_quantity == 130
+
+
+def test_on_spot_direct_t2_hit_on_large_candle():
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket(lots=2))
+    manager.observe_quote(rec.correlation_id, 100.0)
+    assert rec.filled_quantity == 130
+    manager.on_spot(rec.correlation_id, 24050, option_bid=125.0)
+    assert rec.status == "CLOSED"
+    assert rec.exited_quantity == 130
+    assert rec.exit_reason == "T2_HIT"
+
+
+def test_on_spot_t2_runner_exit():
+    manager = OrderManager()
+    rec = manager.dispatch_bracket(bracket(lots=2))
+    manager.observe_quote(rec.correlation_id, 100.0)
+    manager.on_spot(rec.correlation_id, 24020, option_bid=110.0)
+    assert rec.t1_hit is True
+    assert rec.exited_quantity == 65
+    assert rec.status == "FILLED"
+    manager.on_spot(rec.correlation_id, 24040, option_bid=120.0)
+    assert rec.status == "CLOSED"
+    assert rec.exited_quantity == 130
+    assert rec.exit_reason == "T2_HIT"
+
+
+def test_reconcile_without_broker():
+    manager = OrderManager()
+    assert manager.reconcile() is None
+
+
+def test_reconcile_skips_terminal_records(tmp_path):
+    sdk = FakeDhan()
+    manager, record = recovered_live_manager(tmp_path, sdk)
+    record.status = "CLOSED"
+    sdk.book = []
+    manager.reconcile()
+    assert record.status == "CLOSED"
+
+
+def test_reconcile_non_unique_or_missing_slice_match(tmp_path):
+    sdk = FakeDhan()
+    manager, record = recovered_live_manager(tmp_path, sdk)
+    sdk.book = []
+    manager.reconcile()
+    assert record.status == "RECONCILIATION_REQUIRED"
+    assert record.protection_confirmed is False
+
+
+def test_reconcile_corrupt_broker_fill_reporting(tmp_path):
+    sdk = FakeDhan()
+    manager, record = recovered_live_manager(tmp_path, sdk)
+    sdk.book = [{"orderId": "1", "correlationId": record.slices[0]["tag"],
+                 "orderStatus": "TRADED", "filledQty": 65, "averageTradedPrice": 105,
+                 "legDetails": [{"legName": "TARGET_LEG", "orderStatus": "PENDING", "remainingQuantity": 65},
+                                {"legName": "STOP_LOSS_LEG", "orderStatus": "PENDING", "remainingQuantity": 65}]}]
+    manager.reconcile()
+    assert record.status == "RECONCILIATION_REQUIRED"
+
+
+def test_reconcile_unfilled_order_status_restored_to_submitted(tmp_path):
+    sdk = FakeDhan()
+    manager, record = recovered_live_manager(tmp_path, sdk)
+    sdk.book = [{"orderId": "1", "correlationId": record.slices[0]["tag"],
+                 "orderStatus": "PENDING", "filledQty": 0, "averageTradedPrice": 0,
+                 "legDetails": [{"legName": "TARGET_LEG", "orderStatus": "PENDING", "remainingQuantity": 65},
+                                {"legName": "STOP_LOSS_LEG", "orderStatus": "PENDING", "remainingQuantity": 65}]}]
+    manager.reconcile()
+    assert record.status == "SUBMITTED"
