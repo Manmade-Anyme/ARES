@@ -1,6 +1,12 @@
 # Backlog
 
 ## High Priority
+- **MANM-264**: Create Trading Methodology documentation for Options Greeks & Dynamic ATR Trailing in Obsidian.
+  - [x] Create task directive / intent document for MANM-264 (PM) - directives/TASK-264_trading-methodology-options-greeks-atr.md
+  - [ ] Create Obsidian Trading Methodology notes for ARES Options & Greeks (Documentation Agent)
+  - [ ] Link notes with PR #136, ADR-176, CHANGELOG.md, and Obsidian Vault Index (Documentation Agent)
+  - [ ] Mirror documentation into repository `docs/` (Documentation Agent)
+
 - **MANM-258**: Update Jev (`typesafe-sdk`) to latest version (0.7.5).
   - [x] Create intent document / directive for MANM-258 (PM) - directives/TASK-258_update-jev-to-latest-version.md
   - [x] Draft ADR-258 for Jev SDK bump and model compatibility assessment (Architect) - directives/adr/TASK-258_update-jev-to-latest-version.md
