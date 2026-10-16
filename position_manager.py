@@ -90,24 +90,36 @@ class PositionManager:
                     "CLOSED", "T2_HIT", "SL_HIT", "STOPPED_OUT",
                     "STOPPED_OUT_AT_BE",
                 }
-                if any(
-                    record.get("state") not in ["CLOSED", "STOPPED_OUT"]
-                    for record in records
-                ):
+                active_ids = [
+                    record["id"] for record in records
+                    if record.get("id") is not None
+                    and record.get("state") not in ["CLOSED", "STOPPED_OUT"]
+                ]
+                if active_ids:
                     analytics_rows = self.supabase.table("trade_analytics").select(
-                        "id,result_state,exit_price,exit_timestamp,pnl_points"
-                    ).execute().data
-                    closed_by_id = {
+                        "id,result_state,exit_price,exit_timestamp,pnl_points,market_context"
+                    ).in_("id", active_ids).execute().data
+                    analytics_by_id = {
                         str(row["id"]): row
                         for row in analytics_rows
                         if row.get("id") is not None
-                        and row.get("result_state") in terminal_states
                     }
                     for record in records:
                         if record.get("state") in ["CLOSED", "STOPPED_OUT"]:
                             continue
-                        analytics_row = closed_by_id.get(str(record.get("id")))
+                        analytics_row = analytics_by_id.get(str(record.get("id")))
                         if analytics_row is None:
+                            continue
+                        # Entry RPCs store context only in analytics. Restore its
+                        # latest persisted paper telemetry for carried-trade alerts.
+                        context = analytics_row.get("market_context")
+                        if isinstance(context, dict):
+                            existing = record.get("market_context")
+                            record["market_context"] = {
+                                **(existing if isinstance(existing, dict) else {}),
+                                **context,
+                            }
+                        if analytics_row.get("result_state") not in terminal_states:
                             continue
                         final_state = analytics_row["result_state"]
                         update_data = {

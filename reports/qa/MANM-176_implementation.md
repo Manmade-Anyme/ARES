@@ -5,9 +5,9 @@ Status: PASS for approved paper-runtime scope. New live dispatch remains blocked
 
 ## Results
 
-- Full Python suite: `python -m pytest tests/ -q --import-mode=importlib` — **1,458 passed, 45 subtests passed**, 12 dependency warnings.
+- Full Python suite: `python -m pytest tests/ -q --import-mode=importlib` — **1,465 passed, 45 subtests passed**, 12 dependency warnings.
 - Independent review follow-up: **88 persistence/dispatch/order tests passed**; reviewer approved after the terminal-deduplication regression was fixed.
-- Focused calculation, execution, dispatch, persistence and alert/report coverage run: **211 passed**, **100% statement and branch coverage** for `options_math`, `execution.order_manager` and `execution.signal_dispatch` (562 statements, 224 branches; `--cov-fail-under=100`). Live operation is not certified.
+- Focused calculation, execution, dispatch, persistence and alert/report coverage run: **218 passed**, **100% statement and branch coverage** for `options_math`, `execution.order_manager` and `execution.signal_dispatch` (562 statements, 224 branches; `--cov-fail-under=100`). Live operation is not certified.
 - Required System One coverage command from CI: **398 passed, 35 subtests passed**, **100%** statement/branch coverage.
 - `git diff --check`, Python compilation and ADR/document mirror comparison passed.
 - Installed Dhan SDK `place_super_order` signature matches the tested transport payload. Tests use fake broker/database boundaries; no account orders or production data writes occurred.
@@ -29,3 +29,9 @@ The independent integration review findings and fixes are recorded in `reports/d
 The user explicitly chose **Keep live activation blocked**. The application runs paper execution. The Dhan transport is tested independently, while `OrderManager` rejects new live orders with `LIVE_RUNTIME_UNSUPPORTED` before submission. Complete live exit/cancel/partial-fill, overnight DAY-order protection, expiry settlement and deployment preflight remain for a reviewed follow-up design. ATR trailing is deferred. Current spot outcome scoring remains separate from option simulation and estimated option reports.
 
 Repository docs and CHANGELOG are included in PR #136. Obsidian production sync follows the pipeline's manual-merge gate.
+
+## Carried-trade restart follow-up
+
+Startup restores persisted analytics context by active trade ID, including current `options_sizing` and last saved paper execution telemetry. Six regression cases failed before the fix and passed afterward; an additional outage case confirms active monitoring still initializes. Both schema modes exercise entry, telemetry update, restart, lifecycle alert handoff and option estimate formatting. Legacy/malformed context, unrelated trades and terminal reconciliation are covered. The fake RPC now matches production by storing context only in analytics, and selected columns are projected at the test database boundary.
+
+Primary-agent implementation review and QA completed after sub-agents reached their usage limit; independent design review found no blocking issues. Full suite: 1,465 tests plus 45 subtests. Feature coverage: 218 tests, unchanged 100% statement and branch coverage for the three covered calculation/execution modules. Required System One gate: 398 tests plus 35 subtests, 100%. Restored execution context is historical telemetry; simulation and live execution are not resumed at startup.

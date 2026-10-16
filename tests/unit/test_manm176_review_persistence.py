@@ -1,12 +1,14 @@
 """Review regressions exercise real order dispatch against an isolated database boundary."""
+import asyncio
 from copy import deepcopy
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from config import settings
+from alerts import _option_lifecycle_estimate
 from execution.order_manager import OrderManager
 from execution.signal_dispatch import SignalDispatcher
 from models import AresSignal, Direction, OptionGreeks, OptionOrderBracket, SetupType
@@ -23,18 +25,25 @@ class MemoryDatabase:
     def rpc(self, name, payload):
         trade_id = payload["p_trade_id"]
         row = {"id": trade_id, "signal_uuid": payload["p_signal_uuid"],
-               "state": "OPEN", "market_context": deepcopy(payload["p_market_context"])}
+               "state": "OPEN"}
+        for field in ("setup_type", "direction", "entry_price", "stop_loss",
+                      "target_1", "target_2", "entry_timestamp"):
+            row[field] = payload[f"p_{field}"]
         for table in ("active_trades", "trade_analytics"):
             if not any(existing["id"] == trade_id for existing in self.rows[table]):
                 self.rows[table].append(deepcopy(row))
+                if table == "trade_analytics":
+                    self.rows[table][-1]["market_context"] = deepcopy(payload["p_market_context"])
         return SimpleNamespace(execute=lambda: SimpleNamespace(data=trade_id))
 
 
 class Query:
     def __init__(self, rows):
         self.rows, self.filters, self.values = rows, [], None
+        self.fields = "*"
 
     def select(self, fields):
+        self.fields = fields
         return self
 
     def eq(self, field, value):
@@ -46,6 +55,10 @@ class Query:
         self.filters.append(lambda row: row.get(field) is None)
         return self
 
+    def in_(self, field, values):
+        self.filters.append(lambda row: row.get(field) in values)
+        return self
+
     def update(self, values):
         self.values = values
         return self
@@ -55,6 +68,9 @@ class Query:
         if self.values is not None:
             for row in selected:
                 row.update(deepcopy(self.values))
+        if self.fields != "*":
+            selected = [{key: row[key] for key in self.fields.split(",") if key in row}
+                        for row in selected]
         return SimpleNamespace(data=deepcopy(selected))
 
 
@@ -119,3 +135,83 @@ async def test_sync_reports_pending_until_snapshot_is_durable():
         assert await positions.sync_execution(candidate,execution) is True
     saved = database.table("trade_analytics").select("*").eq("id","t1").execute().data[0]
     assert saved["market_context"]["audit"] == "keep"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["bridge", "greenfield"])
+async def test_carried_fill_rehydrates_latest_context_and_lifecycle_estimate(mode):
+    database = MemoryDatabase()
+    signal = make_signal()
+    signal.market_context = {
+        "options_sizing": {"entry_limit": 100, "target_1": 110, "target_2": 120,
+                           "lots": 2, "lot_size": 65},
+        "execution": {"mode": "PAPER", "status": "FILLED", "filled_quantity": 130},
+    }
+    with patch("position_manager.create_client", return_value=database), patch("position_manager.AnalyticsLogger"), patch.object(settings, "signal_schema_mode", mode):
+        original = PositionManager()
+        trade_id, _ = await original.add_trade(signal, 24000)
+        latest_execution = {**signal.market_context["execution"], "status": "PARTIALLY_FILLED",
+                            "exited_quantity": 65, "realized_pnl": 650}
+        await original.sync_execution(signal, latest_execution)
+        assert "market_context" not in database.rows["active_trades"][0]
+        restored = PositionManager()
+        context = restored.active_trades[0]["market_context"]
+        assert context["options_sizing"] == signal.market_context["options_sizing"]
+        assert context["execution"] == latest_execution
+        with patch("position_manager.send_trade_update", new_callable=AsyncMock) as alert:
+            await restored.update_trades(24020)
+        alert.assert_awaited_once()
+        trade, spot, event = alert.call_args.args
+        assert trade["id"] == trade_id
+        assert trade["market_context"] == context
+        estimate = _option_lifecycle_estimate(trade, spot, event)
+        assert "Estimated Option Exit" in estimate
+        assert "110.00" in estimate
+        await asyncio.gather(*restored._trade_writes.values())
+
+
+@pytest.mark.parametrize("legacy_context", [None, [], "invalid", {}])
+def test_startup_merges_matching_analytics_context_and_preserves_legacy(legacy_context):
+    database = MemoryDatabase()
+    database.rows["active_trades"] = [
+        {"id": "first", "state": "OPEN", "market_context": {
+            "active_only": "keep", "execution": {"status": "FILLED"}}},
+        {"id": "second", "state": "T1_HIT", "market_context": legacy_context},
+        {"id": "legacy", "state": "OPEN", "market_context": {"active_only": "legacy"}},
+        {"id": "unmatched", "state": "OPEN"},
+        {"id": "terminal", "state": "OPEN"},
+    ]
+    database.rows["trade_analytics"] = [
+        {"id": "first", "market_context": {"execution": {"status": "CLOSED"}}},
+        {"id": "second", "market_context": {"options_sizing": {"entry_limit": 200}}},
+        {"id": "legacy", "market_context": legacy_context},
+        {"id": "unrelated", "market_context": {"execution": {"status": "REJECTED"}}},
+        {"id": "terminal", "result_state": "T2_HIT", "exit_price": 24040,
+         "market_context": {"execution": {"status": "CLOSED"}}},
+    ]
+    with patch("position_manager.create_client", return_value=database), patch("position_manager.AnalyticsLogger"):
+        restored = PositionManager()
+    trades = {row["id"]: row for row in restored.active_trades}
+    assert set(trades) == {"first", "second", "legacy", "unmatched"}
+    assert trades["first"]["market_context"] == {
+        "active_only": "keep", "execution": {"status": "CLOSED"}}
+    assert trades["second"]["market_context"] == {"options_sizing": {"entry_limit": 200}}
+    assert trades["legacy"]["market_context"] == {"active_only": "legacy"}
+    assert "market_context" not in trades["unmatched"]
+    assert database.rows["active_trades"][-1]["state"] == "CLOSED"
+
+
+def test_analytics_outage_preserves_active_trade_monitoring():
+    database = MemoryDatabase()
+    database.rows["active_trades"] = [{"id": "carried", "state": "OPEN",
+                                      "entry_price": 24000}]
+    original_table = database.table
+    def table(name):
+        if name == "trade_analytics":
+            raise RuntimeError("analytics unavailable")
+        return original_table(name)
+    database.table = table
+    with patch("position_manager.create_client", return_value=database), patch("position_manager.AnalyticsLogger"):
+        restored = PositionManager()
+    assert restored.is_initialized
+    assert restored.active_trades == database.rows["active_trades"]
