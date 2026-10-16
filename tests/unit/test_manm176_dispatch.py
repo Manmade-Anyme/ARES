@@ -27,9 +27,9 @@ def candidate():
     return signal
 
 
-def chain(ask=100, security_id="123"):
+def chain(ask=100, security_id="123", spot=24000):
     return [{"strike":24000,"expiry_date":"2099-01-01","ce_security_id":security_id,
-             "ce_ask":ask,"ce_bid":ask-.05}]
+             "ce_ask":ask,"ce_bid":ask-.05,"underlying_spot":spot}]
 
 
 class Positions:
@@ -141,7 +141,7 @@ async def test_execution_transitions_sync_to_persistence_boundary():
     dispatcher = SignalDispatcher(OrderManager(), positions)
     signal = candidate()
     await dispatcher.dispatch(signal,24000,chain())
-    await dispatcher.on_snapshot(chain(110),24020)
+    await dispatcher.on_snapshot(chain(110, spot=24020),24020)
     assert synced[-1]["exited_quantity"] == 65
 
 @pytest.mark.asyncio
@@ -197,3 +197,93 @@ async def test_publish_skips_unmatched_active_trade():
     signal = candidate()
     await dispatcher.dispatch(signal, 24000, chain())
     assert "execution" not in positions.active_trades[0].get("market_context", {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option_type,direction,fill_spot,target_spot", [
+    ("CE", Direction.BULLISH, 24002, 24020),
+    ("PE", Direction.BEARISH, 23998, 23980),
+])
+async def test_quote_spot_sets_entry_and_post_target_break_even(option_type, direction, fill_spot, target_spot):
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    signal.direction = direction
+    signal.bracket = replace(
+        signal.bracket, option_type=option_type,
+        synthetic_spot_sl=23990 if option_type == "CE" else 24010,
+        spot_target_1=target_spot,
+        spot_target_2=24040 if option_type == "CE" else 23960,
+    )
+    side = option_type.lower()
+    row = {"strike":24000, "expiry_date":"2099-01-01", f"{side}_security_id":"123",
+           f"{side}_ask":100, f"{side}_bid":99.95, "underlying_spot":fill_spot}
+    assert await dispatcher.dispatch(signal, 24000, [row])
+    record = next(iter(orders.records.values()))
+    assert record.entry_spot == positions.entries[0][1] == fill_spot
+    assert signal.market_context["execution"]["spot_at_fill"] == fill_spot
+    row.update({"underlying_spot":target_spot, f"{side}_ask":110, f"{side}_bid":109.95})
+    await dispatcher.on_snapshot([row], 24000)
+    assert record.exited_quantity == 65
+    assert record.active_spot_sl == fill_spot
+    await dispatcher.on_spot(fill_spot)
+    assert record.exit_reason == "STOPPED_OUT_AT_BE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quote_spot", [None, True, "24000", 0, -1, float("nan"), float("inf")])
+async def test_invalid_quote_spot_cannot_fill_but_candle_still_invalidates(quote_spot):
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    quotes = chain(99, spot=quote_spot)
+    if quote_spot is None:
+        quotes[0].pop("underlying_spot")
+    assert not await dispatcher.dispatch(signal, 24000, quotes)
+    record = next(iter(orders.records.values()))
+    assert record.status == "SUBMITTED"
+    await dispatcher.on_snapshot(quotes, 23989)
+    assert record.status == "CANCELLED"
+    assert not positions.entries
+
+
+@pytest.mark.asyncio
+async def test_registration_retries_after_fill_has_closed_preserving_original_fill():
+    positions = Positions()
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+    original = positions.add_trade
+    async def fail(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+    positions.add_trade = fail
+    signal = candidate()
+    with pytest.raises(RuntimeError):
+        await dispatcher.dispatch(signal, 24000, chain(99, spot=24002))
+    filled_at = signal.market_context["execution"]["filled_at"]
+    await dispatcher.on_snapshot(chain(94, spot=24003), 24001)
+    assert signal.market_context["execution"]["status"] == "CLOSED"
+    positions.add_trade = original
+    await dispatcher.on_spot(24004)
+    assert len(positions.entries) == 1
+    assert positions.entries[0][1] == 24002
+    assert signal.market_context["execution"]["filled_at"] == filled_at
+    assert signal.market_context["execution"]["realized_pnl"] == pytest.approx(-656.5)
+    await dispatcher.on_snapshot(chain(), 24000)
+    assert len(positions.entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_closed_trade_waiting_for_ml_snapshot_does_not_block_new_signal():
+    positions = Positions()
+    async def waiting_for_snapshot(*args):
+        return False
+    positions.sync_execution = waiting_for_snapshot
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+    first, second = candidate(), candidate()
+    quotes = chain(99)
+    quotes[0]["ce_bid"] = 94
+    assert await dispatcher.dispatch(first, 24000, quotes)
+    assert first.market_context["execution"]["status"] == "CLOSED"
+    assert await dispatcher.dispatch(second, 24000, chain())
+    assert len(positions.entries) == 2

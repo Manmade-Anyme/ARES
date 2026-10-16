@@ -46,9 +46,9 @@ class OrderRecord:
 
     @property
     def ready_to_register(self):
-        """Only actual, protected, still-open fills can become positions."""
-        return (self.filled_quantity > self.exited_quantity and self.protection_confirmed
-                and self.status in {"FILLED", "PARTIALLY_FILLED"})
+        """Every observed protected fill needs an audit, including a completed loss."""
+        return (self.filled_quantity > 0 and self.protection_confirmed
+                and self.status in {"FILLED", "PARTIALLY_FILLED", "EXIT_PENDING", "CLOSED"})
 
 
 class DhanSuperOrderAdapter:

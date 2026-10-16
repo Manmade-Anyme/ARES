@@ -262,11 +262,12 @@ class PositionManager:
                     raise RuntimeError("Database insertion failed for atomic trade entry after 3 attempts")
                 await asyncio.sleep(1)
 
-    async def sync_execution(self, signal: AresSignal, execution: dict):
+    async def sync_execution(self, signal: AresSignal, execution: dict) -> bool:
         """Persist paper fill telemetry and bind a snapshot after a delayed entry.
 
         The signal UUID guard prevents a delayed fill from labeling an unrelated
-        ML row. Empty updates (snapshot not written yet) are retried next poll.
+        ML row. Return False until that snapshot exists and is linked, so even
+        a terminal paper fill remains retryable after main writes the snapshot.
         """
         trade_id = signal.trade_id
         snapshot = dict(execution)
@@ -304,6 +305,7 @@ class PositionManager:
                         self._execution_ml_bound.add(trade_id)
 
         await asyncio.get_running_loop().run_in_executor(None, persist)
+        return trade_id in self._execution_ml_bound
 
     async def update_trades(
         self,

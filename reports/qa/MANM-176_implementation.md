@@ -5,9 +5,9 @@ Status: PASS for approved paper-runtime scope. New live dispatch remains blocked
 
 ## Results
 
-- Full Python suite: `python -m pytest tests/ -q --import-mode=importlib` — **1,396 passed, 45 subtests passed**, 12 dependency warnings.
-- Final main/dispatch/persistence/order regression run, including telemetry-failure binding preservation: **59 passed**.
-- Focused calculation, execution, dispatch, persistence and alert/report coverage run: **150 passed**, combined statement/branch coverage **89%** (options math 92%, order manager 86%, dispatcher 93%). This is not 100% coverage; remaining branches include recovery/error paths. Live operation is not certified.
+- Full Python suite: `python -m pytest tests/ -q --import-mode=importlib` — **1,458 passed, 45 subtests passed**, 12 dependency warnings.
+- Independent review follow-up: **88 persistence/dispatch/order tests passed**; reviewer approved after the terminal-deduplication regression was fixed.
+- Focused calculation, execution, dispatch, persistence and alert/report coverage run: **211 passed**, **100% statement and branch coverage** for `options_math`, `execution.order_manager` and `execution.signal_dispatch` (562 statements, 224 branches; `--cov-fail-under=100`). Live operation is not certified.
 - Required System One coverage command from CI: **398 passed, 35 subtests passed**, **100%** statement/branch coverage.
 - `git diff --check`, Python compilation and ADR/document mirror comparison passed.
 - Installed Dhan SDK `place_super_order` signature matches the tested transport payload. Tests use fake broker/database boundaries; no account orders or production data writes occurred.
@@ -19,6 +19,8 @@ The local Python 3.14 environment contains another installed `tests` package. De
 ## Reviewed behavior
 
 Capital and quote rejection, signed CE/PE Greeks, ATM-distance ranking, expiry-close validation, tick ordering and capped nonnegative sizing; full-chain broker identities/quotes; paper LIMIT fills, pending invalidation, whole-lot T1/T2 booking, observed-bid exits; final-lot reporting and safe legacy data; delayed-fill timestamp/ML binding; pending dedupe; isolated persistence retries and live dispatch rejection.
+
+Review follow-up regressions verify synchronized CE/PE fill spots and break-even levels, invalid quote spot rejection, first-quote stop-loss persistence, registration retries after closure, delayed canonical ML binding in both schema modes, and terminal retry records excluded from pending deduplication. The initial persistence regressions and terminal-deduplication regression failed before their fixes.
 
 The independent integration review findings and fixes are recorded in `reports/debug/MANM-176_integration-review.md`. The math review is recorded in `reports/qa/MANM-176_math.md`.
 
