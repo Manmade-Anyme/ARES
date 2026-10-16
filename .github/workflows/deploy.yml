@@ -96,14 +96,16 @@ jobs:
             if [ "$status" -eq 0 ]; then
               exit 0
             fi
-            if ! printf '%s\n' "$output" | grep -Fq 'error rendering push status stream'; then
+            # Catch transient Fly registry timeouts, 502 Bad Gateway release failures,
+            # stream rendering drops, and connection resets.
+            if ! printf '%s\n' "$output" | grep -Eiq 'error rendering push status stream|bad gateway|failed to create release|registry\.fly\.io|status 50[0-9]|connection reset|deadline exceeded|timed? ?out|broken pipe|EOF'; then
               exit "$status"
             fi
             if [ "$attempt" -eq 3 ]; then
               exit "$status"
             fi
 
-            echo "::warning::Fly registry timed out; retrying deploy ($attempt/3)"
+            echo "::warning::Fly registry or deployment transient failure; retrying deploy ($attempt/3)"
             sleep "$((attempt * 15))"
           done
         env:

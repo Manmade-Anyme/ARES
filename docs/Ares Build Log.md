@@ -2,6 +2,65 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-10-17 00:50 · CI Deploy Pipeline Transient Gateway Failure Fix (TASK-63030447fb93)
+
+Fixed GitHub Actions deploy workflow failure triggered after merging PR #136 (`428a9d5f074515b760757295880a73880c451a1d`).
+Fly.io deployment failed with `Error: failed to create release (status 502): Bad gateway for registry: registry.fly.io`.
+
+**Decisions**
+- Expanded the transient retry filter in `.github/workflows/deploy.yml` from matching only `error rendering push status stream` to a regex matching transient HTTP 5xx responses, Fly registry timeouts, release creation gateway errors, stream drops, and connection resets (`error rendering push status stream|bad gateway|failed to create release|registry\.fly\.io|status 50[0-9]|connection reset|deadline exceeded|timed? ?out|broken pipe|EOF`).
+- Non-transient deployment and image build failures continue to fail immediately without redundant retries.
+- Re-ran the failed deployment job (`117148457067` / run `38952574786`) on `main`, verifying that Fly service recovered and the production deployment completed successfully.
+
+---
+
+## 2026-10-16 23:45 · PR #136 Greeks-Based Option Brackets & Paper Execution (MANM-176)
+
+PR [#136](https://github.com/Manmade-Anyme/ARES/pull/136) merged into `main` as `428a9d5f074515b760757295880a73880c451a1d` by Shantanu Dubey.
+Upgraded the options calculation engine, contract selection, execution bracket model, and position recovery layer to eliminate linear delta distortion, OTM strike bias, negative account lot inversion, and false stop-outs from option wicks. Established the formal [[Trading Methodology/ARES Options & Greeks Methodology/ARES Options Methodology Index|ARES Options & Greeks Methodology]] suite in the Obsidian vault.
+
+**Decisions (ADR-176)**
+- **Expiry Selection**: Retained Current Week Expiry based on live Dhan API liquidity audit (21.2M vs 5.1M open interest, tight 0.05 bid-ask spread, +66.7% higher Gamma). Neutralized theta decay structurally via underlying synthetic stops.
+- **ATM Strike Selection**: Replaced ascending delta sort (OTM 0.45 trap) with ATM bias selection: $|\Delta| \ge 0.45$, minimizing $||\Delta| - 0.50|$. Guarantees maximum liquidity and intrinsic stability.
+- **2nd-Order Taylor Expansion**: Replaced linear delta projection with non-linear derivative pricing: $\Delta P = \Delta \cdot \Delta S + \frac{1}{2}\Gamma(\Delta S)^2$, capturing +9.4% to +15% gamma acceleration on winning trades.
+- **Conservative Risk Loss Floor**: Enforced $\text{RiskLossPts} = \max(P_0 - P(S_{SL}),\ |\Delta| \cdot |S_0 - S_{SL}|)$ to prevent over-sizing based on theoretical curvature.
+- **Dual-Layer Stop-Loss Architecture**:
+  - *Layer 1 (Synthetic Spot Stop)*: Engine monitors NIFTY Spot ticks in real time and exits strictly when spot touches `signal.stop_loss`. Zero false shakeouts from intraday theta decay or IV compression.
+  - *Layer 2 (Catastrophic Broker Hard Stop)*: Emergency exchange OCO stop placed upfront at wide buffer ($1.5\times - 2.0\times$).
+- **No Time Stops**: Preserved [[Projects/Ares/TASK-108 Remove Automatic Time-Stop|TASK-108]] invariant.
+- **Capital & Sizing Invariants**: Enforced non-negative capital verification ($C > 0$) and clamped lot allocations, eliminating historical negative lot allocation (`-1 lot`) on debit balances.
+- **Exchange Tick Rounding & Monotonic Ordering**: Snapped all levels to ₹0.05 NSE option ticks with guaranteed ordering $0.05 \le \text{SL} < \text{Entry} < T1 < T2$.
+- **Carried Trade Context**: Restored persisted option sizing and execution context from `trade_analytics` when loading active trades on restart.
+- **Dynamic Trailing Roadmap**: Documented the 5-minute Dynamic ATR Trailing Stop with High-Water Mark (HWM) Ratchet Invariant in `TODO.md` and [[Trading Methodology/ARES Options & Greeks Methodology/Dynamic ATR Trailing Stop & High-Water Mark Invariant|Dynamic ATR Trailing Stop Methodology]] as non-normative roadmap for subsequent implementation.
+
+**Verification**
+- Full test suite: 1,465 passed + 45 subtests (`python -m pytest tests/ -q --import-mode=importlib`).
+- Focused execution modules: 218 passed, **100% strict statement and branch coverage** across `options_math.py`, `execution/order_manager.py`, and `execution/signal_dispatch.py`.
+- System One coverage gate: 398 passed + 35 subtests, 100% statement and branch coverage.
+- Python compilation, ADR/docs mirror verification, and Dhan SDK signature checks passed cleanly.
+
+[[ADR-176_options-entry-exit-sl-greeks-limit-orders]] [[Trading Methodology/ARES Options & Greeks Methodology/ARES Options Methodology Index|ARES Options Methodology Index]] [[Trading Methodology/ARES Options & Greeks Methodology/Options Greeks Calculation & Bracket Execution|Options Greeks Calculation & Bracket Execution]] [[Trading Methodology/ARES Options & Greeks Methodology/Dynamic ATR Trailing Stop & High-Water Mark Invariant|Dynamic ATR Trailing Stop]] [[MANM-176-log]]
+
+---
+
+## 2026-10-15 11:52 · TASK-258 TypeSafe SDK 0.7.5 Upgrade & Jev Model Compatibility Assessment
+
+PR [#137](https://github.com/Manmade-Anyme/ARES/pull/137) merged into `main` as `57292778b6fd24076116932384c228c1fc2fc0ad` by Shantanu Dubey.
+Upgraded the `typesafe-sdk` client dependency to `>=0.7.5,<0.8.0` and performed runtime and architectural compatibility evaluation for Jev models.
+
+**Decisions (ADR-258)**
+- Constrained `typesafe-sdk>=0.7.5,<0.8.0` in `requirements.txt` to capture connection pooling optimizations (v0.7.3), non-finite numeric serialization fixes (v0.7.4), and `zstd` payload compression (v0.7.5).
+- Retained `DEFAULT_MODEL = os.environ.get("TYPESAFE_MODEL", "jev-1.13.0")` in `system_one/jev.py` to prevent calibration drift across production probability thresholds (`t1_hit_prob`, `t2_hit_prob`, `sl_hit_prob`) while allowing dynamic runtime model evaluation via environment variable.
+
+**Verification**
+- 404 tests passed cleanly with 100% statement and branch coverage on `system_one`.
+- All TypeSafe client primitive types (`Choice`, `Score`, `Noul`, `RetryPolicy`, `TypeSafeClient`) verified backward compatible.
+- Mainline test suite completed in 2m26s and production deployment succeeded in 2m58s in GitHub Actions deploy workflow (run `38691980732`).
+
+[[ADR-258_update-jev-to-latest-version]] [[Jev Forward Predictions]] [[Configuration]]
+
+---
+
 ## 2026-10-09 · Jev in the first OI-wall retest-ready observation (TASK-211)
 
 Implemented the requested one-field assessment in the existing watch message:
