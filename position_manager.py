@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
+from options_math import option_sizing_context, option_sizing_summary
 from models import AresSignal, ATMStrikes
 from config import settings
 from alerts import send_trade_update
@@ -26,6 +27,8 @@ class PositionManager:
         self.analytics = AnalyticsLogger()
         self.active_trades: List[Dict[str, Any]] = []
         self._trade_writes: Dict[str, asyncio.Task] = {}
+        self._execution_snapshots = {}
+        self._execution_ml_bound = set()
         self.is_initialized = False
         self._initialize_db()
 
@@ -138,24 +141,30 @@ class PositionManager:
             self.is_initialized = False
             print(f"Failed to initialize PositionManager DB: {e}")
 
-    async def add_trade(self, signal: AresSignal, spot: float, atm: ATMStrikes = None) -> tuple[str, str]:
-        """
-        Formats an AresSignal, pushes it to Supabase as OPEN using atomic RPC,
-        and stores it in memory. Returns (trade_id, binding_status).
-        """
+    def find_duplicate_trade(self, signal: AresSignal, spot: float):
+        """Check before order dispatch as well as before the atomic trade insert."""
         for existing in self.active_trades:
             if existing.get("state") in ["CLOSED", "STOPPED_OUT"]:
                 continue
             if (existing.get("setup_type") == signal.setup_type.value
                     and existing.get("direction") == signal.direction.value
                     and abs(float(existing.get("entry_price", 0.0)) - float(spot)) <= settings.trade_dedupe_tolerance_pts):
-                print(f"[-] PositionManager: Duplicate {signal.setup_type.value} ({signal.direction.value}) trade at {spot:.2f} skipped — already tracking {existing['id']}.")
-                return "", "DUPLICATE_SKIPPED" 
+                return existing
+        return None
 
-        trade_id = str(uuid.uuid4())
+    async def add_trade(self, signal: AresSignal, spot: float, atm: ATMStrikes = None) -> tuple[str, str]:
+        """
+        Formats an AresSignal, pushes it to Supabase as OPEN using atomic RPC,
+        and stores it in memory. Returns (trade_id, binding_status).
+        """
+        if self.find_duplicate_trade(signal, spot):
+            return "", "DUPLICATE_SKIPPED"
+
+        trade_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ares:paper:{signal.id}")) if signal.market_context.get("execution") else str(uuid.uuid4())
         
         # Prepare RPC payload
-        entry_timestamp = __import__("storage").to_utc_iso(signal.timestamp)
+        entry_timestamp = (signal.market_context.get("execution", {}).get("filled_at")
+                           or __import__("storage").to_utc_iso(signal.timestamp))
         trade_data = {
             "id": trade_id,
             "entry_timestamp": entry_timestamp,
@@ -175,12 +184,7 @@ class PositionManager:
         # Market context for analytics
         db_reasons = list(signal.reasons)
         if getattr(signal, "suggested_lots", None) is not None:
-            db_reasons.append(
-                f"Option Sizing: {signal.suggested_lots} lots suggested | "
-                f"Capital: ₹{signal.capital:,.2f} | Risk: {signal.risk_pct:.1f}% | "
-                f"Option SL: ₹{signal.option_sl:.2f} | Option Target: ₹{signal.option_target:.2f} | "
-                f"Premium: ₹{signal.option_premium:.2f} | Delta: {signal.option_delta:+.4f}"
-            )
+            db_reasons.append(option_sizing_summary(signal))
         market_context = {
             "reasons": db_reasons,
             "spot_at_signal": float(signal.trigger_price),
@@ -190,16 +194,13 @@ class PositionManager:
         market_context.update(getattr(signal, "market_context", {}) or {})
         if getattr(signal, "suggested_lots", None) is not None:
             market_context["options_sizing"] = {
-                "suggested_lots": signal.suggested_lots,
-                "option_sl": signal.option_sl,
-                "option_target": signal.option_target,
-                "capital": signal.capital,
-                "delta": signal.option_delta,
-                "premium": signal.option_premium,
-                "risk_pct": signal.risk_pct
+                **option_sizing_context(signal),
+                **market_context.get("options_sizing", {}),
             }
         if getattr(signal, "oi_wall_context", None) is not None:
             market_context["oi_wall"] = signal.oi_wall_context
+
+        trade_data["market_context"] = market_context
 
         oi_data = {}
         if atm is not None:
@@ -261,6 +262,49 @@ class PositionManager:
                     raise RuntimeError("Database insertion failed for atomic trade entry after 3 attempts")
                 await asyncio.sleep(1)
 
+    async def sync_execution(self, signal: AresSignal, execution: dict):
+        """Persist paper fill telemetry and bind a snapshot after a delayed entry.
+
+        The signal UUID guard prevents a delayed fill from labeling an unrelated
+        ML row. Empty updates (snapshot not written yet) are retried next poll.
+        """
+        trade_id = signal.trade_id
+        snapshot = dict(execution)
+        mode = settings.signal_schema_mode
+        if mode not in {"bridge", "greenfield"}:
+            raise ValueError(f"Unsupported signal schema mode: {mode}")
+        signal_column = "signal_uuid" if mode == "bridge" else "signal_id"
+
+        def persist():
+            if self._execution_snapshots.get(trade_id) != snapshot:
+                response = self.supabase.table("trade_analytics").select(
+                    "market_context"
+                ).eq("id", trade_id).execute()
+                if not response.data:
+                    raise RuntimeError("Paper trade analytics row is unavailable")
+                context = dict(response.data[0].get("market_context") or {})
+                context["execution"] = snapshot
+                updated = self.supabase.table("trade_analytics").update(
+                    {"market_context": context}
+                ).eq("id", trade_id).execute()
+                if not updated.data:
+                    raise RuntimeError("Paper execution update was not persisted")
+                self._execution_snapshots[trade_id] = snapshot
+            if trade_id not in self._execution_ml_bound:
+                updated = self.supabase.table("ml_collection").update({
+                    "trade_id": trade_id, "trade_binding_status": "BOUND",
+                }).eq(signal_column, str(signal.id)).is_("trade_id", "null").execute()
+                if updated.data:
+                    self._execution_ml_bound.add(trade_id)
+                else:
+                    existing = self.supabase.table("ml_collection").select("trade_id").eq(
+                        signal_column, str(signal.id)
+                    ).eq("trade_id", trade_id).execute()
+                    if existing.data:
+                        self._execution_ml_bound.add(trade_id)
+
+        await asyncio.get_running_loop().run_in_executor(None, persist)
+
     async def update_trades(
         self,
         spot_price: float,
@@ -321,23 +365,32 @@ class PositionManager:
             event_price = spot_price
             direction = trade["direction"]
 
+            trade_high, trade_low = high, low
+            execution = (trade.get("market_context") or {}).get("execution")
+            if execution and candle_timestamp is not None and trade.get("entry_timestamp"):
+                candle_ts = __import__("storage").to_utc_iso(candle_timestamp)
+                if datetime.fromisoformat(candle_ts) <= datetime.fromisoformat(trade["entry_timestamp"]):
+                    # A limit filled after this candle opened; its earlier wicks
+                    # cannot close the newly filled paper position retroactively.
+                    trade_high = trade_low = spot_price
+
             # Evaluate trailing stop logic
             if direction == "BULLISH":
                 # Check if T2 hit
-                if high >= trade["target_2"]:
+                if trade_high >= trade["target_2"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     update_type = "T2_HIT"
                     event_price = trade["target_2"]
                 # Check if T1 hit and we haven't trailed yet
-                elif trade["state"] == "OPEN" and high >= trade["target_1"]:
+                elif trade["state"] == "OPEN" and trade_high >= trade["target_1"]:
                     trade["state"] = "T1_HIT"
                     trade["stop_loss"] = trade["entry_price"]
                     state_changed = True
                     update_type = "T1_HIT"
                     event_price = trade["target_1"]
                 # Check SL (optimistic when the candle spans both)
-                elif low <= trade["stop_loss"]:
+                elif trade_low <= trade["stop_loss"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     event_price = trade["stop_loss"]
@@ -347,20 +400,20 @@ class PositionManager:
                         update_type = "SL_HIT"
             elif direction == "BEARISH":
                 # Check if T2 hit
-                if low <= trade["target_2"]:
+                if trade_low <= trade["target_2"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     update_type = "T2_HIT"
                     event_price = trade["target_2"]
                 # Check if T1 hit and we haven't trailed yet
-                elif trade["state"] == "OPEN" and low <= trade["target_1"]:
+                elif trade["state"] == "OPEN" and trade_low <= trade["target_1"]:
                     trade["state"] = "T1_HIT"
                     trade["stop_loss"] = trade["entry_price"]
                     state_changed = True
                     update_type = "T1_HIT"
                     event_price = trade["target_1"]
                 # Check SL (optimistic when the candle spans both)
-                elif high >= trade["stop_loss"]:
+                elif trade_high >= trade["stop_loss"]:
                     trade["state"] = "CLOSED"
                     state_changed = True
                     event_price = trade["stop_loss"]

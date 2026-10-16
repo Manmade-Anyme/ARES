@@ -211,6 +211,9 @@ class TuningConfig:
     risk_per_trade_pct: float = 4.0
     nifty_lot_size: int = 65
     default_capital: float = 100000.0
+    options_max_lots_cap: int = 10
+    options_slippage_buffer_pts: float = 0.50
+    options_holding_horizon_minutes: float = 15.0
 
     # Position manager — a new signal matching an open trade's setup/direction
     # with entry within this many points is treated as a duplicate (TASK-172

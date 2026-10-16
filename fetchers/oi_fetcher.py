@@ -1,4 +1,5 @@
 import asyncio
+import math
 from typing import Dict, List, Tuple, Any, Optional
 
 from dhanhq import dhanhq
@@ -8,20 +9,21 @@ from config import settings
 
 
 def _parse_float(val: Any) -> Optional[float]:
-    if val is None:
+    if val is None or isinstance(val, bool):
         return None
     try:
-        return float(val)
-    except (ValueError, TypeError):
+        number = float(val)
+        return number if math.isfinite(number) else None
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
 def _parse_int(val: Any) -> Optional[int]:
-    if val is None:
+    if val is None or isinstance(val, bool):
         return None
     try:
         return int(val)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
@@ -206,12 +208,20 @@ class OIFetcher:
             raise ValueError(f"Invalid option chain response: 'data' is not a dictionary. Raw data: {resp_data}")
 
         if "oc" in resp_data:
+            chain_snapshot = resp_data
             oc = resp_data["oc"]
         elif "data" in resp_data and isinstance(resp_data["data"], dict) and "oc" in resp_data["data"]:
-            oc = resp_data["data"]["oc"]
+            chain_snapshot = resp_data["data"]
+            oc = chain_snapshot["oc"]
         else:
             raise ValueError(f"Invalid option chain response structure: {resp_data.keys()}")
         
+        # Prefer the underlying quote captured with the option chain. Older
+        # provider responses omit it; retain the caller's spot reference then.
+        snapshot_spot = _parse_float(chain_snapshot.get("last_price"))
+        if snapshot_spot is None or snapshot_spot <= 0:
+            snapshot_spot = spot_price
+
         # Calculate ATM strike using the configured strike interval
         atm_strike = round(spot_price / settings.strike_interval) * settings.strike_interval
         
@@ -225,11 +235,12 @@ class OIFetcher:
             try:
                 strike_val = float(strike_key)
                 strike = int(strike_val)
-            except ValueError:
+            except (ValueError, TypeError, OverflowError):
                 continue
-                
-            ce_data = data.get("ce", {})
-            pe_data = data.get("pe", {})
+            if not isinstance(data, dict):
+                continue
+            ce_data = data.get("ce") if isinstance(data.get("ce"), dict) else {}
+            pe_data = data.get("pe") if isinstance(data.get("pe"), dict) else {}
             
             # ---------------------------
             # CE Processing
@@ -295,18 +306,32 @@ class OIFetcher:
             # Append to full chain list
             full_chain.append({
                 "strike": strike,
+                "expiry_date": expiry,
+                "underlying_spot": snapshot_spot,
+                "ce_security_id": str(ce_data["security_id"]) if ce_data.get("security_id") is not None else None,
+                "pe_security_id": str(pe_data["security_id"]) if pe_data.get("security_id") is not None else None,
+                "ce_ask": _parse_float(ce_data.get("top_ask_price")),
+                "ce_bid": _parse_float(ce_data.get("top_bid_price")),
+                "pe_ask": _parse_float(pe_data.get("top_ask_price")),
+                "pe_bid": _parse_float(pe_data.get("top_bid_price")),
                 "ce_oi": ce_oi,
                 "ce_oi_prev": ce_oi_prev,
                 "ce_oi_change_pct": ce_oi_change_pct,
                 "ce_ltp": ce_ltp,
                 "ce_iv": ce_iv,
                 "ce_delta": ce_delta,
+                "ce_gamma": ce_gamma,
+                "ce_theta": ce_theta,
+                "ce_vega": ce_vega,
                 "pe_oi": pe_oi,
                 "pe_oi_prev": pe_oi_prev,
                 "pe_oi_change_pct": pe_oi_change_pct,
                 "pe_ltp": pe_ltp,
                 "pe_iv": pe_iv,
-                "pe_delta": pe_delta
+                "pe_delta": pe_delta,
+                "pe_gamma": pe_gamma,
+                "pe_theta": pe_theta,
+                "pe_vega": pe_vega,
             })
             
             # Build ATM rows if this is the target strike

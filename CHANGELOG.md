@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **MANM-176 Greeks-based option brackets (PR #136):** Preserve contract quotes and full Greeks across the option chain; select near-ATM contracts and build validated Delta/Gamma limits with theta feasibility and nonnegative capped sizing. Retain rejection diagnostics and distinguish final allocation from the uncapped suggestion. Add observed-quote paper order management and a tested Dhan transport/reconciliation adapter; new live dispatch is blocked before submission by explicit user decision. Alerts and reports label option P&L as estimates and preserve stored lot size. Existing spot outcome labels and post-T1 break-even behavior remain; ATR trailing is deferred.
+
 - **TASK-258 TypeSafe SDK 0.7.5 Upgrade & Jev Model Compatibility:** Upgraded `typesafe-sdk` dependency constraint in `requirements.txt` to `>=0.7.5,<0.8.0` (ADR-258). Retained `DEFAULT_MODEL = "jev-1.13.0"` in `system_one/jev.py` to protect calibrated probability thresholds and risk sizing against drift while supporting dynamic override via `TYPESAFE_MODEL`. Added unit and semver boundary tests verifying 0.7.5 compatibility with zero regressions across 404 tests.
 
 - **Config profiles typing:** Use explicit type check in `OIWatchJevConfig.__post_init__` for `oi_watch_jev_enabled` and specify type arguments `dict[str, SetupLevels]` on `per_type_levels` to resolve Pylance diagnostics while preserving runtime validation.

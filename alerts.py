@@ -1,7 +1,53 @@
 import httpx
+import math
 from datetime import datetime, timezone, timedelta
 from models import AresSignal, OIWallBias, OIWallWatchCancellation
 from config import settings, detector_names, SESSION_DISPLAY
+
+
+def _number(value, precision=".2f"):
+    """Render unavailable quote/sizing data without inventing a numeric value."""
+    if isinstance(value, bool):
+        return "unavailable"
+    try:
+        number = float(value)
+        return format(number, precision) if math.isfinite(number) else "unavailable"
+    except (TypeError, ValueError, OverflowError):
+        return "unavailable"
+
+
+def _option_bracket_fields(signal):
+    """Shared console/embed presentation for calculated brackets and rejections."""
+    bracket = getattr(signal, "bracket", None)
+    status = getattr(signal, "options_sizing_status", "PENDING")
+    if bracket is None and status == "PENDING":
+        return []
+    if bracket is None or not bracket.is_valid:
+        reason = getattr(bracket, "rejection_reason", None) or status
+        return [{"name": "📐 Option Sizing", "value": f"{status}: {reason}. No executable bracket.", "inline": False}]
+    greeks = bracket.greeks
+    lot_size = getattr(bracket, "lot_size", settings.nifty_lot_size)
+    context = (getattr(signal, "market_context", None) or {}).get("options_sizing", {})
+    uncapped = context.get("uncapped_suggested_lots", getattr(bracket, "uncapped_suggested_lots", None))
+    capital, risk_pct = signal.capital, signal.risk_pct
+    risk = None
+    if _number(capital) != "unavailable" and _number(risk_pct) != "unavailable":
+        risk = max(0, float(capital)) * max(0, float(risk_pct)) / 100
+    fields = [
+        {"name": "⚡ Order Type", "value": "LIMIT (Upfront Bracket) — PAPER simulation; live activation blocked", "inline": False},
+        {"name": "📄 Contract", "value": f"{bracket.security_id} | Expiry {bracket.expiry_date}", "inline": True},
+        {"name": "🎯 Entry Limit", "value": f"₹ {_number(bracket.entry_limit)} | LTP: ₹ {_number(signal.option_premium)}", "inline": True},
+        {"name": "📊 Option Greeks", "value": f"Δ {_number(greeks.delta, '+.3f')} | Γ {_number(greeks.gamma, '.4f')} | Θ {_number(greeks.theta, '.1f')}/day | Vega {_number(greeks.vega)} | IV {_number(greeks.iv, '.1f')}%", "inline": False},
+        {"name": "🎯 Target 1", "value": f"₹ {_number(bracket.target_1)} ({max(1, bracket.lots // 2)} lots planned | Spot: {_number(signal.target_1)})", "inline": True},
+        {"name": "🎯 Target 2", "value": f"₹ {_number(bracket.target_2)} (Runner | Spot: {_number(signal.target_2)})", "inline": True},
+        {"name": "🛑 Stop Loss", "value": f"Layer 1 (Synthetic Invalidation): Spot {_number(bracket.synthetic_spot_sl)}\nLayer 2 (Broker Emergency Floor): ₹ {_number(bracket.catastrophic_opt_sl)}", "inline": False},
+        {"name": "📐 Sizing", "value": f"{bracket.lots} Lots ({bracket.lots * lot_size} qty)", "inline": True},
+        {"name": "💰 Risk Budget", "value": f"₹{_number(risk, '.0f')} ({_number(risk_pct, '.1f')}% of ₹{_number(capital, '.0f')} | Uncapped Suggestion: {_number(uncapped, '.0f')} lots)", "inline": False},
+    ]
+    if getattr(bracket, "iv_feed_warning", None):
+        fields.append({"name": "⚠️ IV Diagnostic", "value": f"{bracket.iv_feed_warning} (diagnostic only)", "inline": False})
+    return fields
+
 
 
 def _format_wall_event_time(raw_timestamp):
@@ -31,14 +77,17 @@ def format_signal(signal: AresSignal, spot: float) -> str:
     now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
 
     sizing_str = ""
-    if getattr(signal, "suggested_lots", None) is not None:
+    bracket_fields = _option_bracket_fields(signal)
+    if bracket_fields:
+        sizing_str = "\n\n" + "\n".join(f"   {field['name']}: {field['value']}" for field in bracket_fields)
+    elif getattr(signal, "suggested_lots", None) is not None:
         sizing_str = f"""
 
-   📐 Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%) -
+   📐 Option Sizing Calculator (Risk: {_number(signal.risk_pct, '.1f')}%) -
    🔢 Lots   : **{signal.suggested_lots}** (Nifty Lot Size: {settings.nifty_lot_size})
-   ✅ Entry : **₹ {signal.option_premium:.2f}** (Delta: {signal.option_delta:+.4f})
-   🛑 SL  : **₹ {signal.option_sl:.2f}**
-   🎯 Target : **₹ {signal.option_target:.2f}**"""
+   ✅ Entry : **₹ {_number(signal.option_premium)}** (Delta: {_number(signal.option_delta, '+.4f')})
+   🛑 SL  : **₹ {_number(signal.option_sl)}**
+   🎯 Target : **₹ {_number(signal.option_target)}**"""
 
     ml_pred_str = ""
     if hasattr(signal, "ml_prediction") and signal.ml_prediction:
@@ -133,12 +182,15 @@ async def send_discord(signal: AresSignal, spot: float) -> bool:
             fields.append({"name": "🔁 Retest Confirmation", "value": retest_text, "inline": False})
 
     # Sizing fields
-    if getattr(signal, "suggested_lots", None) is not None:
-        fields.append({"name": f"📐 Option Sizing Calculator (Risk: {signal.risk_pct:.1f}%)", "value": "Calculations based on current capital", "inline": False})
+    bracket_fields = _option_bracket_fields(signal)
+    if bracket_fields:
+        fields.extend(bracket_fields)
+    elif getattr(signal, "suggested_lots", None) is not None:
+        fields.append({"name": f"📐 Option Sizing Calculator (Risk: {_number(signal.risk_pct, '.1f')}%)", "value": "Calculations based on current capital", "inline": False})
         fields.append({"name": "🔢 Lots", "value": f"**{signal.suggested_lots}** (Nifty Lot Size: {settings.nifty_lot_size})", "inline": True})
-        fields.append({"name": "✅ Option Entry", "value": f"**₹ {signal.option_premium:.2f}** (Delta: {signal.option_delta:+.4f})", "inline": True})
-        fields.append({"name": "🛑 Option SL", "value": f"**₹ {signal.option_sl:.2f}**", "inline": True})
-        fields.append({"name": "🎯 Option Target", "value": f"**₹ {signal.option_target:.2f}**", "inline": True})
+        fields.append({"name": "✅ Option Entry", "value": f"**₹ {_number(signal.option_premium)}** (Delta: {_number(signal.option_delta, '+.4f')})", "inline": True})
+        fields.append({"name": "🛑 Option SL", "value": f"**₹ {_number(signal.option_sl)}**", "inline": True})
+        fields.append({"name": "🎯 Option Target", "value": f"**₹ {_number(signal.option_target)}**", "inline": True})
 
     # ML Prediction
     if hasattr(signal, "ml_prediction") and signal.ml_prediction:
@@ -428,6 +480,48 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
     return f"Trade Closed ({update_type})."
 
 
+def _option_lifecycle_estimate(trade, spot, update_type):
+    """Project option lifecycle outcomes without mislabelling spot events as fills."""
+    sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
+    if not sizing:
+        return ""
+    entry = sizing.get("entry_limit", sizing.get("premium"))
+    lot_size = sizing.get("lot_size", settings.nifty_lot_size)
+    t1 = sizing.get("target_1", sizing.get("option_target"))
+    exit_price = None
+    if update_type == "T1_HIT":
+        exit_price = t1
+    elif update_type == "T2_HIT":
+        exit_price = sizing.get("target_2")
+    elif update_type == "STOPPED_OUT_AT_BE":
+        exit_price = entry
+    else:
+        greeks = sizing.get("greeks") or {}
+        delta, gamma = greeks.get("delta"), greeks.get("gamma")
+        values = (entry, delta, gamma, spot, trade.get("entry_price"))
+        if all(_number(value) != "unavailable" for value in values):
+            move = float(spot) - float(trade["entry_price"])
+            exit_price = float(entry) + float(delta) * move + .5 * float(gamma) * move * move
+            if exit_price <= 0:
+                exit_price = None
+    pnl_per_lot = None
+    if all(_number(value) != "unavailable" for value in (entry, exit_price, lot_size)) and float(lot_size) > 0:
+        pnl_per_lot = (float(exit_price) - float(entry)) * float(lot_size)
+    text = (
+        f"\n💰 **Estimated Option Exit**: ₹ {_number(exit_price)} "
+        f"(₹ {_number(pnl_per_lot, '+.2f')} / lot)\n"
+        "Option figures are model estimates, not confirmed fills."
+    )
+    if update_type == "T1_HIT":
+        text += f"\n🛡️ **SL Status**: Break-Even Spot {_number(trade['entry_price'])}; entry premium reference ₹ {_number(entry)}. 50% partial-booking model."
+    if update_type == "STOPPED_OUT_AT_BE":
+        lots = sizing.get("final_lots", sizing.get("lots", sizing.get("suggested_lots")))
+        if all(_number(value) != "unavailable" for value in (t1, entry, lots, lot_size)) and float(lots) > 0 and float(lot_size) > 0:
+            net = (float(t1) - float(entry)) * float(lot_size) * float(lots) * .5
+            text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (50% T1 booking model). Spot break-even does not guarantee option break-even."
+    return text
+
+
 async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     """
     Sends an alert when an active trade state changes using embeds (e.g., T1 Hit, Trailing Stop triggered, SL Hit).
@@ -454,6 +548,7 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
 🛑 **New SL**  : **{trade['stop_loss']:.2f}**
 ⭐ **Status**  : **{trade['state']}**
 """
+    description += _option_lifecycle_estimate(trade, spot, update_type)
 
     payload = {
         "embeds": [
