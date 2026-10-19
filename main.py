@@ -349,6 +349,7 @@ async def run():
 
     watch_outbox = await initialize_oi_watch_outbox()
     last_watch_candle = None
+    session_activity_date = None
     prev_iv = None
     last_vwap_reset_date = None
     waiting_printed = False
@@ -365,6 +366,8 @@ async def run():
             finalizing = False
             session_closed = False
             final_exit_checked = False
+            if time(9, 15) <= current_time < time(15, 30):
+                session_activity_date = now.date()
         
             # Reset VWAP at 09:15 once per day
             if current_time >= time(9, 15) and now.date() != last_vwap_reset_date:
@@ -392,9 +395,10 @@ async def run():
                 # Cold starts and stale provider rows must never replay old bars.
                 finalizing = (
                     current_time < time(15, 31)
-                    and last_watch_candle is not None
-                    and last_watch_candle.timestamp.date() == now.date()
-                    and last_watch_candle.timestamp.time() < time(15, 29)
+                    and session_activity_date == now.date()
+                    and (last_watch_candle is None
+                         or last_watch_candle.timestamp.date() != now.date()
+                         or last_watch_candle.timestamp.time() < time(15, 29))
                 )
                 if not finalizing:
                     print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
@@ -679,13 +683,13 @@ async def run():
                     except Exception as reload_err:
                         print(f"{R}   [!] Supabase credentials reload failed: {reload_err}{RESET}")
                 
-                    print(f"   {Y}Retrying in 60s...\n{RESET}")
-                
                     if last_error_msg != current_error:
                         await send_error_alert(f"Dhan API Authentication failed: {e}")
                         last_error_msg = current_error
                     
-                    await asyncio.sleep(60)
+                    if _session_now().time() < time(15, 30):
+                        print(f"   {Y}Retrying in 60s...\n{RESET}")
+                        await asyncio.sleep(60)
                 else:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Warning: Fetch cycle error - {e}{RESET}")
                     if last_error_msg != current_error:

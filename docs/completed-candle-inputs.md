@@ -34,12 +34,21 @@ chain outage does not prevent those spot risk checks. Fresh chain quotes update
 pending paper orders only while the session is still open.
 
 An already-running session gets one final candle-fetch attempt when the loop
-reaches 15:30 IST and is still before 15:31. It requires a previously processed
-current-day bar earlier than 15:29 and accepts only that day's completed 15:29
-bar. Cold starts, `None`, duplicates, stale bars and later attempts do not replay
-the session. The final fetch has a 10-second await limit; expiry lookup and chain
-fetch each have their own 10-second limit. This is not a single 10-second limit
-for the whole finalization path.
+reaches 15:30 IST and is still before 15:31. Eligibility follows current-day
+market-open polling activity, recorded before the poll's price, expiry or chain
+awaits; it does not require a successful earlier engine tick. This allows a first
+pre-close poll that fails or returns no completed candle while crossing the close
+to reach the final gate. The gate accepts only that day's completed 15:29 bar.
+A true after-hours cold start with no market-open poll, prior-day activity or an
+already processed 15:29 bar does not qualify. A missing, duplicate, stale or
+invalid final response ends the single attempt. The final fetch has a 10-second
+await limit; expiry lookup and chain fetch each have their own 10-second limit.
+This is not a single 10-second limit for the whole finalization path. This
+activity-based eligibility correction is the third review follow-up; focused
+and integrated tests pass and independent QA approved it, all offline.
+Authentication recovery retains credential reload and error alerts,
+but its 60-second retry backoff runs only when a fresh clock remains before
+15:30, so an authentication failure crossing the close can reach the same gate.
 
 The final bar's high/low protective exit checks run before optional chain I/O.
 When chain data is available, the final bar also reaches normal detector and ML
@@ -67,9 +76,10 @@ the initial repair's live evidence.
 
 ## Acknowledgment and final snapshot completion
 
-The second review follow-up implements the contract below. The final integrated
-suite passes and independent QA approved it; all verification is offline. The
-earlier passing suite for `e088829` predates this follow-up, which is not deployed.
+The second review follow-up in `2396302` implements the contract below. Its
+integrated suite passed and independent QA approved it; all verification was
+offline. These results predate the third review follow-up, whose final integrated
+suite also passes. Neither review follow-up is deployed.
 
 The main loop opts into deferred candle acknowledgment with
 `fetch_latest_candle(auto_ack=False)`. Direct callers retain the default

@@ -56,7 +56,7 @@ async def test_no_completed_bar_keeps_tick_exits_and_pending_orders_running(monk
 
     await main.run()
 
-    price.fetch_latest_candle.assert_awaited_once()
+    assert price.fetch_latest_candle.await_count == 2
     errors.assert_not_awaited()
     engine.tick.assert_not_called()
     oi.fetch_chain.assert_not_awaited()

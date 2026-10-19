@@ -535,3 +535,101 @@ async def test_chain_failure_crossing_close_drains_without_second_poll_sleep(loo
     main.asyncio.sleep.assert_awaited_once_with(60)
     ctx.positions.update_trades.assert_any_await(final.close, candle_high=final.high,
                                                candle_low=final.low, candle_timestamp=final.timestamp)
+
+
+@pytest.mark.parametrize("failure_at", ["expiry", "chain", "levels"])
+@pytest.mark.asyncio
+async def test_first_preclose_preparation_failure_still_drains_final_bar(loop, monkeypatch, failure_at):
+    first, final = candle(minute=28), candle(minute=29)
+    start, closed = datetime(2026, 10, 19, 15, 29, 59), datetime(2026, 10, 19, 15, 30, 2)
+    signal = AresSignal(SetupType.TREND_CONTINUATION, Direction.BULLISH, 24000,
+                        (23995, 24005), 23990, 24020, 24040, "MEDIUM", [],
+                        final.timestamp, 24000, "CE")
+    ctx = loop([first, final], [start, closed], [signal])
+    current = [start]
+    monkeypatch.setattr(main, "_session_now", lambda: current[0])
+    calls = []
+    snapshot_times = []
+
+    async def record_pending_snapshot(*args, **kwargs):
+        snapshot_times.append(current[0])
+
+    ctx.dispatcher.on_snapshot.side_effect = record_pending_snapshot
+
+    def prepare(value):
+        calls.append(True)
+        if len(calls) == 1:
+            current[0] = closed
+            raise RuntimeError(f"first {failure_at} request crossed close")
+        return value
+
+    if failure_at == "expiry":
+        async def expiry():
+            return prepare("2099-01-01")
+        ctx.oi.get_nearest_expiry.side_effect = expiry
+    elif failure_at == "chain":
+        async def chain(*args, **kwargs):
+            return prepare((None, []))
+        ctx.oi.fetch_chain.side_effect = chain
+    else:
+        main.LevelFetcher.return_value.build_levels.side_effect = lambda **kwargs: prepare([])
+
+    await main.run()
+    assert [call.args[0] for call in ctx.engine.tick.call_args_list] == [final]
+    assert ctx.price.fetch_latest_candle.await_count == 2
+    ctx.positions.update_trades.assert_awaited_once_with(final.close, candle_high=final.high,
+                                                        candle_low=final.low, candle_timestamp=final.timestamp)
+    assert ctx.collector.snapshot.call_args.kwargs["candle"] is final
+    assert ctx.collector.snapshot.call_args.kwargs["wait_for_completion"] is True
+    assert all(at < closed.replace(second=0) for at in snapshot_times)
+    assert signal.trade_binding_status == "SESSION_CLOSED"
+    ctx.sizing.assert_not_awaited()
+    ctx.dispatcher.dispatch.assert_not_awaited()
+    ctx.alerts.assert_not_awaited()
+    main.asyncio.sleep.assert_not_awaited()
+
+
+@pytest.mark.parametrize("unavailable", ["none", "error", "auth"])
+@pytest.mark.asyncio
+async def test_first_preclose_price_poll_without_data_still_drains_final_bar(loop, monkeypatch, unavailable):
+    final = candle(minute=29)
+    start, closed = datetime(2026, 10, 19, 15, 29, 59), datetime(2026, 10, 19, 15, 30, 2)
+    ctx = loop([None, final], [start, closed])
+    current = [start]
+    monkeypatch.setattr(main, "_session_now", lambda: current[0])
+    calls = []
+
+    async def price(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            current[0] = closed
+            if unavailable == "error":
+                raise RuntimeError("first price request crossed close")
+            if unavailable == "auth":
+                raise RuntimeError("401 authentication request crossed close")
+            return None
+        return final
+
+    ctx.price.fetch_latest_candle.side_effect = price
+    if unavailable == "auth":
+        monkeypatch.setattr("dhanhq.DhanContext", MagicMock())
+        monkeypatch.setattr("dhanhq.dhanhq", MagicMock())
+    await main.run()
+    assert calls == [True, True]
+    assert [call.args[0] for call in ctx.engine.tick.call_args_list] == [final]
+    ctx.positions.update_trades.assert_any_await(final.close, candle_high=final.high,
+                                               candle_low=final.low, candle_timestamp=final.timestamp)
+    assert ctx.collector.snapshot.call_args.kwargs["candle"] is final
+    assert ctx.collector.snapshot.call_args.kwargs["wait_for_completion"] is True
+    ctx.dispatcher.on_snapshot.assert_not_awaited()
+    ctx.dispatcher.dispatch.assert_not_awaited()
+    ctx.alerts.assert_not_awaited()
+    main.asyncio.sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prior_day_poll_activity_never_enables_today_final_drain(loop):
+    ctx = loop([None], [datetime(2026, 10, 19, 15, 29), datetime(2026, 10, 20, 15, 30)])
+    await main.run()
+    ctx.price.fetch_latest_candle.assert_awaited_once()
+    ctx.engine.tick.assert_not_called()

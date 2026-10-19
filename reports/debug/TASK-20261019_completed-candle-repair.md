@@ -94,9 +94,9 @@ Worker regression evidence, with overlapping counts kept separate:
 
 Deployment of these review fixes remains pending. The original three production polls above validate only commit `a1031b36c4db2813db3b23af40d77ffb5fa0c883`; the later full-suite and captured-data checks are offline verification.
 
-## PR #140 second review — verified offline
+## PR #140 second review — `2396302`, verified offline
 
-At **17:00:05 IST on 19 October** (`11:30:05 UTC`), a fresh automated review identified two additional valid failures. The remediation below is implemented, the final integrated suite passes and independent QA approved it. These checks supersede the earlier 1,537-test result for the current source. No deployment or new live-session verification is claimed.
+At **17:00:05 IST on 19 October** (`11:30:05 UTC`), a fresh automated review identified two additional valid failures. The remediation below was recorded in `2396302`, its integrated suite passed and independent QA approved it. These historical checks superseded the earlier 1,537-test result for that commit; they do not verify the third review change below. No deployment or new live-session verification is claimed.
 
 | Review finding | Implemented remediation |
 |---|---|
@@ -119,4 +119,22 @@ Focused red/green evidence, with overlapping runs kept separate:
 Additional implementation evidence: `/tmp/ares-pr140-new-review-findings.json`, `/tmp/ares-pr140-followup2-final.md` and `/tmp/ares-pr140-collector-barrier.md`. The final integration report supersedes the earlier implementation report's acknowledgment position. Both `e088829` and this follow-up were prepared after the close and remain undeployed.
 
 For a future rollout, use the normal full build after human merge, or include all four changed runtime files relative to the initial base: `main.py`, `fetchers/price_fetcher.py`, `oi_watch_context.py` and `ml_signal/collector.py`. Release 168's original three-file overlay does not contain the collector completion fix.
+
+## PR #140 third review — activity eligibility verified offline
+
+[P2: allow the final drain after the first pre-close poll fails](https://github.com/Manmade-Anyme/ARES/pull/140#discussion_r4317190680) identified a remaining gap in `2396302`. The close gate inferred an active session from `last_watch_candle`, which is set only after a successful engine tick. A first market-open poll could therefore cross the close during a price, expiry, chain or level failure, or a no-new-candle response, and then be misclassified as an after-hours cold start.
+
+The minimal correction separates **current-day market-open poll activity** from the last successfully processed candle. Activity is marked when an open-session poll begins, before external awaits. That activity date permits the same single final fetch within 15:30–15:31 even when no earlier engine tick succeeded. True after-hours starts without an open-session poll remain ineligible; prior-day activity and an already processed 15:29 bar do not permit another drain. Final-bar validation, bounded awaits, at-most-once engine handoff and analysis-only entry suppression remain unchanged.
+
+The authentication recovery branch retains credential reload and error alerts, but checks the fresh clock before its 60-second retry sleep. At or after the close it skips that backoff and reaches the final gate, so the first authentication failure cannot consume the grace window after already crossing 15:30.
+
+Offline regression and review evidence:
+
+- Before the activity marker correction: **5 failed, 1 passed** in the targeted worker reproduction; the passing control excluded prior-day-only activity. A further causal test reproduced the authentication backoff still sleeping after close, then passed with the fresh-clock guard.
+- Implementation-focused suite: **162 passed and 8 subtests passed in 1.61s**. Evidence: `/tmp/ares-pr140-session-activity-fix.md`.
+- Independent QA: **APPROVE**, with **11 causal cases passed**. The `2396302` baseline produced **7 expected failures and 4 passing controls**; the fixed source passes all 11. Recovery cases advance the clock inside the first failed/missing-data callback, then verify exactly one final 15:29 engine attempt, protective exits, snapshot handling, no post-close sleep or entries, and cleanup. Cold-start, prior-day-only and already-processed-final-bar controls stay excluded.
+- Independent focused suite: **145 passed and 8 subtests passed in 1.59s**. Evidence: `/tmp/ares-pr140-session-activity-qa.md`. These focused runs overlap and must not be summed.
+- Final integrated suite: `python3 -m pytest tests/ -q --import-mode=importlib --disable-warnings --tb=short` — **1,566 passed, 12 warnings; 45 subtests passed in 56.46s**. Evidence: `/tmp/ares-pr140-session-activity-full-suite.txt`. The focused results above overlap this full run and are not additional test counts.
+
+This final integrated result verifies the frozen activity/authentication correction offline; the preceding 1,559-test result and green CI remain historical evidence for `2396302`. No deployment or live-session result is claimed for the review follow-ups.
 
