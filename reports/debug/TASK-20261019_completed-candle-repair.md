@@ -50,4 +50,25 @@ Evidence: `/tmp/ares-live-shadow-before-deploy.log`. This demonstrates correct s
 
 ## Deployment and production verification
 
-Pending at this report's initial write. Record the deployed commit/image, Fly release and machine health, actual deployment time in IST, fresh completed-candle observations and any observed signals here after verification. Do not infer a signal from a healthy process or from the earlier detector-only replay.
+**Completed during market hours, 2026-10-19.** The user explicitly authorized the repair and selected unchanged Friday strategy rules.
+
+- Source commit: `a1031b36c4db2813db3b23af40d77ffb5fa0c883`; [PR #140](https://github.com/Manmade-Anyme/ARES/pull/140). Independent QA review approved the patch. GitHub PR CI passed before rollout.
+- Fly release **168**, existing machine `7812561a492198`, healthy and started. Machine update time **15:09:50 IST**; first successful app snapshot **15:10:06 IST**, before the 15:30 close. The machine ID and scheduled lifecycle configuration were preserved.
+- Image: `registry.fly.io/ares-xzy-gq:completed-candles-a1031b36c4db-pinned`; digest `sha256:11e0e1faf52ac512c338ee70e95ab41761428ad0c54a1ef578f7d4e883011fda`.
+- The image derives from the exact prior production image digest `sha256:30e2e5c619bf0793b9718fa378ac06287ac6408ce4b58dd1bc2c85db80a054f9` and overlays only the three reviewed runtime source files. This retains the existing dependency versions. Local build context bytes were compared with the published commit; SHA-256 checks of all three deployed files then matched that commit.
+- A deployed-code read-only Dhan check at **15:10:50 IST** selected the completed 15:09 bar (110.894 seconds old), calculated VWAP from **355 completed session bars beginning 09:15**, retained one forming watch bar, and returned `None` on an immediate duplicate poll.
+
+The running engine's persisted snapshots were independently matched against subsequent completed provider OHLCV and cumulative session VWAP:
+
+| Engine poll IST | Completed source bar IST | Volume | Session VWAP | VWAP error |
+|---|---|---:|---:|---:|
+| 15:10:06 | 15:09 | 1,573,756 | 22,986.809335496815 | 0 |
+| 15:11:06 | 15:10 | 1,946,743 | 22,985.861920402054 | 0 |
+| 15:12:07 | 15:11 | 1,556,693 | 22,985.169073554065 | 0 |
+
+These are three distinct completed bars, not repeated detector evaluations of a forming bar. Evidence is saved alongside this report in `TASK-20261019_live-validation.json`.
+
+No signal was generated in these first three post-restart polls; this validates live input processing, not a guarantee of a new market setup. Detector buffers and regime persistence still warm up after restart. The bullish MEDIUM exhaustion signal `6365` at **15:05 IST** occurred on the old image, before rollout, and is not credited to this repair.
+
+The emergency reviewed commit was deployed directly to meet the user's market-hours test requirement. The PR remains open for human merge under the repository's merge policy; merging it retains the deployed repair in `main` and invokes the normal CI pipeline.
+
