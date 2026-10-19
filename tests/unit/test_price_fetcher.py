@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from fetchers.price_fetcher import PriceFetcher
 from models import OHLCVCandle
 
@@ -19,6 +20,11 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
         mock_dhanhq_class.return_value = self.mock_dhan
         
         self.fetcher = PriceFetcher()
+        # Stable, completed current-session fixtures, independent of host clock.
+        self.clock_patch = patch("fetchers.price_fetcher.datetime", wraps=datetime)
+        clock = self.clock_patch.start()
+        clock.now.return_value = datetime(2026, 6, 29, 15, 29, tzinfo=ZoneInfo("Asia/Kolkata"))
+        self.addCleanup(self.clock_patch.stop)
 
     def test_reset_vwap(self):
         self.fetcher.cumulative_tp_vol = 100.0
@@ -29,7 +35,7 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
 
     @patch('fetchers.price_fetcher.settings')
     async def test_fetch_latest_candle_success_epoch_millis(self, mock_settings):
-        now_ts_ms = int(datetime.now().timestamp() * 1000)
+        now_ts_ms = int(datetime(2026, 6, 29, 15, 28, tzinfo=ZoneInfo("Asia/Kolkata")).timestamp() * 1000)
         self.mock_dhan.intraday_minute_data.return_value = {
             "status": "success",
             "data": {
@@ -54,7 +60,7 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
         self.mock_dhan.intraday_minute_data.return_value = {
             "status": "success",
             "data": {
-                "timestamp": ["2026-06-29 15:30:00"],
+                "timestamp": ["2026-06-29 15:28:00"],
                 "open": [24000.0],
                 "high": [24050.0],
                 "low": [23950.0],
@@ -63,7 +69,7 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
             }
         }
         candle = await self.fetcher.fetch_latest_candle()
-        self.assertEqual(candle.timestamp, datetime(2026, 6, 29, 15, 30, 0))
+        self.assertEqual(candle.timestamp, datetime(2026, 6, 29, 15, 28, 0))
 
     @patch('fetchers.price_fetcher.settings')
     async def test_fetch_latest_candle_fallback_dateutil_parser(self, mock_settings):
@@ -71,7 +77,7 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
         self.mock_dhan.intraday_minute_data.return_value = {
             "status": "success",
             "data": {
-                "timestamp": ["2026-06-29T15:30:00+05:30"],
+                "timestamp": ["2026-06-29T15:28:00+05:30"],
                 "open": [24000.0], "high": [24000.0], "low": [24000.0], "close": [24000.0], "volume": [10]
             }
         }
@@ -97,7 +103,7 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
         self.mock_dhan.intraday_minute_data.return_value = {
             "status": "success",
             "data": {
-                "timestamp": ["2026-06-29 15:30:00"],
+                "timestamp": ["2026-06-29 15:28:00"],
                 "open": [24000.0], "high": [24000.0], "low": [24000.0], "close": [24000.0], "volume": [0]
             }
         }
@@ -113,7 +119,7 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
             {
                 "status": "success",
                 "data": {
-                    "start_Time": [1719600000],
+                    "start_Time": [1782727080],
                     "open": [24000.0], "high": [24000.0], "low": [24000.0], "close": [24000.0], "volume": [10]
                 }
             }
@@ -219,7 +225,7 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
         self.mock_dhan.intraday_minute_data.return_value = {
             "status": "success",
             "data": {
-                "start_Time": [1719600000],
+                "start_Time": [1782727080],
                 "open": [24000.0]
             }
         }
@@ -228,6 +234,7 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
 
     @patch('fetchers.price_fetcher.settings')
     async def test_fetch_previous_day_ohlc_success_yesterday(self, mock_settings):
+        self.clock_patch.stop()
         yesterday_ts = int((datetime.now() - timedelta(days=1)).timestamp())
         self.mock_dhan.historical_daily_data.return_value = {
             "status": "success",
@@ -243,6 +250,7 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
 
     @patch('fetchers.price_fetcher.settings')
     async def test_fetch_previous_day_ohlc_success_today_fallback(self, mock_settings):
+        self.clock_patch.stop()
         today_ts = int(datetime.now().timestamp())
         yesterday_ts = int((datetime.now() - timedelta(days=1)).timestamp())
         self.mock_dhan.historical_daily_data.return_value = {

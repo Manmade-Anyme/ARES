@@ -1,12 +1,12 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
-from typing import Tuple
+from datetime import datetime, time, timedelta, timezone
+from typing import Optional, Tuple
 
 from dhanhq import dhanhq
 
 from models import OHLCVCandle
 from config import settings
-from oi_watch_context import build_watch_candles
+from oi_watch_context import IST, build_watch_candles, parse_candle_timestamp
 
 
 class PriceFetcher:
@@ -14,8 +14,7 @@ class PriceFetcher:
     PriceFetcher is responsible for fetching 1-minute intraday candles
     for the NIFTY 50 index using the DhanHQ API.
     
-    It maintains session accumulators for calculating the Volume Weighted Average Price (VWAP)
-    incrementally over the trading day.
+    It rebuilds session VWAP from completed provider bars on each response.
     """
 
     def __init__(self):
@@ -35,6 +34,8 @@ class PriceFetcher:
         self.cumulative_tp_vol: float = 0.0
         self.cumulative_vol: int = 0
         self.watch_candles: list = []
+        self._session_date = None
+        self._last_emitted_timestamp = None
 
     def reset_vwap(self) -> None:
         """
@@ -44,24 +45,21 @@ class PriceFetcher:
         """
         self.cumulative_tp_vol = 0.0
         self.cumulative_vol = 0
+        self._session_date = None
+        self._last_emitted_timestamp = None
 
-    async def fetch_latest_candle(self) -> OHLCVCandle:
+    async def fetch_latest_candle(self) -> Optional[OHLCVCandle]:
         """
-        Fetch the most recently completed 1-minute candle from Dhan API
-        and compute the incremental VWAP based on the accumulated session volume.
-        
-        VWAP accumulation logic:
-            - Typical Price = (High + Low + Close) / 3
-            - Increment cumulative volume by the candle's volume
-            - Increment cumulative (typical price * volume)
-            - VWAP = cumulative (typical price * volume) / cumulative volume
-            
-        @returns {OHLCVCandle} The most recently completed candle with VWAP populated.
-        @throws {ValueError} If the response data from Dhan is empty or malformed.
+        Return the latest newly completed current-session candle, or None.
+
+        VWAP uses all unique completed bars returned for the session, including
+        history before startup. Provider revisions replace previous values;
+        duplicate polls never advance the signal engine. Malformed API responses
+        retain the existing ValueError contract.
         """
         loop = asyncio.get_running_loop()
         
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(IST).strftime("%Y-%m-%d")
         
         max_retries = 3
         last_exception = None
@@ -151,60 +149,55 @@ class PriceFetcher:
         if not data.get(time_key):
             raise ValueError("No intraday candle data points returned by Dhan API.")
             
-        # Reuse this response for watch evidence. Unlike historical engine
-        # snapshots, refetched rows can prove a completed bar's final values.
-        try:
-            self.watch_candles = build_watch_candles(data, datetime.now(timezone.utc))
-        except Exception:
-            self.watch_candles = []
+        if any(not isinstance(data[key], (list, tuple)) for key in required_keys):
+            raise ValueError("Malformed response: intraday candle arrays must be lists or tuples.")
+        count = len(data[time_key])
+        if any(len(data[key]) != count for key in required_keys):
+            raise ValueError("Malformed response: intraday candle arrays must have equal lengths.")
 
-        # Extract the last candle from the arrays
-        ts_val = data[time_key][-1]
-        
-        try:
-            # Dhan start_Time could be an epoch integer or a string
-            if isinstance(ts_val, (int, float)):
-                # Dhan sometimes returns epoch with milliseconds or seconds
-                # standardizing to seconds if it looks like milliseconds
-                if ts_val > 1e11:
-                    ts_val /= 1000.0
-                timestamp = datetime.fromtimestamp(ts_val)
-            else:
-                # Basic string parsing fallback
+        # Use a single response sample time for both trading and watch evidence.
+        # The normalizer handles UTC epochs, exchange-local strings and revisions.
+        sampled_at = datetime.now(timezone.utc)
+        session_date = sampled_at.astimezone(IST).date()
+        if self._session_date != session_date:
+            self.reset_vwap()
+            self._session_date = session_date
+        self.watch_candles = build_watch_candles(data, sampled_at)
+        if not self.watch_candles:
+            # Distinguish valid but unavailable session bars from corrupt timestamps.
+            valid_timestamp = False
+            for value in data[time_key]:
                 try:
-                    timestamp = datetime.strptime(str(ts_val), "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    from dateutil import parser
-                    timestamp = parser.parse(str(ts_val))
-        except Exception as e:
-            raise ValueError(f"Could not parse timestamp from API: {ts_val}") from e
-            
-        open_price = float(data["open"][-1])
-        high_price = float(data["high"][-1])
-        low_price = float(data["low"][-1])
-        close_price = float(data["close"][-1])
-        volume = int(data["volume"][-1])
-        
-        # Compute incremental VWAP
-        typical_price = (high_price + low_price + close_price) / 3.0
-        
-        self.cumulative_tp_vol += typical_price * volume
-        self.cumulative_vol += volume
-        
-        if self.cumulative_vol > 0:
-            vwap = self.cumulative_tp_vol / self.cumulative_vol
-        else:
-            vwap = typical_price
-            
-        return OHLCVCandle(
-            timestamp=timestamp,
-            open=open_price,
-            high=high_price,
-            low=low_price,
-            close=close_price,
-            volume=volume,
-            vwap=vwap
+                    at = parse_candle_timestamp(value)
+                except (ValueError, TypeError, OverflowError, OSError):
+                    continue
+                valid_timestamp = True
+                if (at.date() == session_date and at <= sampled_at
+                        and time(9, 15) <= at.time() < time(15, 30)):
+                    raise ValueError("Malformed intraday OHLCV values for the current session.")
+            if not valid_timestamp:
+                raise ValueError("Could not parse any timestamp from intraday API response.")
+        completed = [row for row in self.watch_candles if row["complete"]]
+        if not completed:
+            return None
+
+        latest = completed[-1]
+        timestamp = datetime.fromisoformat(latest["timestamp"]).replace(tzinfo=None)
+        self.cumulative_tp_vol = sum(
+            (row["high"] + row["low"] + row["close"]) / 3.0 * row["volume"]
+            for row in completed
         )
+        self.cumulative_vol = sum(int(row["volume"]) for row in completed)
+        if self._last_emitted_timestamp is not None and timestamp <= self._last_emitted_timestamp:
+            return None
+        typical_price = (latest["high"] + latest["low"] + latest["close"]) / 3.0
+        vwap = self.cumulative_tp_vol / self.cumulative_vol if self.cumulative_vol else typical_price
+        candle = OHLCVCandle(
+            timestamp=timestamp, open=latest["open"], high=latest["high"],
+            low=latest["low"], close=latest["close"], volume=int(latest["volume"]), vwap=vwap,
+        )
+        self._last_emitted_timestamp = timestamp
+        return candle
 
     async def fetch_previous_day_ohlc(self) -> Tuple[float, float]:
         """

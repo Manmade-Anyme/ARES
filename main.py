@@ -360,6 +360,12 @@ async def run():
             try:
                 # Fetch latest price candle
                 candle = await price_fetcher.fetch_latest_candle()
+                if candle is None:
+                    await _sleep_with_tick_exits(
+                        settings.poll_interval_seconds, tick_feed, position_manager,
+                        engine, order_dispatcher,
+                    )
+                    continue
                 spot = candle.close
             
                 # Fetch option chain dynamically

@@ -38,6 +38,14 @@ def _timestamp(value):
     return (value.replace(tzinfo=IST) if value.tzinfo is None else value).astimezone(IST)
 
 
+def parse_candle_timestamp(value):
+    """Normalize a provider bar start to an exchange-local aware datetime."""
+    epoch = _number(value)
+    if epoch is not None:
+        return datetime.fromtimestamp(epoch / 1000 if epoch > 1e11 else epoch, timezone.utc).astimezone(IST)
+    return _timestamp(value)
+
+
 def build_watch_candles(data, sampled_at):
     """Convert the same fetched Dhan arrays into candles with sample provenance.
 
@@ -62,11 +70,7 @@ def build_watch_candles(data, sampled_at):
     for index in range(count):
         value = data[time_key][index]
         try:
-            epoch = _number(value)
-            if epoch is not None:
-                at = datetime.fromtimestamp(epoch/1000 if epoch > 1e11 else epoch, timezone.utc).astimezone(IST)
-            else:
-                at = _timestamp(value)
+            at = parse_candle_timestamp(value)
         except (ValueError, TypeError, OverflowError, OSError):
             continue
         if (at > sampled or at.date() != sampled.date()

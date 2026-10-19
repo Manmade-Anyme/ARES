@@ -625,7 +625,7 @@ async def test_fetcher_reuses_same_provider_response_and_refetches_completed_rev
         clock.now.side_effect = [first_sample, first_sample, second_sample, second_sample]
         current_first = await fetcher.fetch_latest_candle()
         old_rows = fetcher.watch_candles
-        assert current_first.close == 24010
+        assert current_first is None
         assert old_rows[0]["complete"] is False
         current_second = await fetcher.fetch_latest_candle()
     assert factory.return_value.intraday_minute_data.call_count == 2
@@ -634,11 +634,11 @@ async def test_fetcher_reuses_same_provider_response_and_refetches_completed_rev
     assert fetcher.watch_candles[0]["complete"] is True
     assert fetcher.watch_candles[0]["close"] == 24015
     assert fetcher.watch_candles[1]["complete"] is False
-    assert current_second.close == 24020
+    assert current_second.close == 24015
 
 
 @pytest.mark.asyncio
-async def test_watch_candle_preparation_failure_preserves_trading_candle():
+async def test_watch_candle_preparation_failure_does_not_emit_unverified_trading_candle():
     from fetchers.price_fetcher import PriceFetcher
     with patch("fetchers.price_fetcher.dhanhq") as factory:
         fetcher = PriceFetcher()
@@ -647,7 +647,7 @@ async def test_watch_candle_preparation_failure_preserves_trading_candle():
         "open": [24000], "high": [24020], "low": [23990], "close": [24010], "volume": [100]},
     }
     with patch("fetchers.price_fetcher.build_watch_candles", side_effect=ValueError("bad data")):
-        current = await fetcher.fetch_latest_candle()
+        with pytest.raises(ValueError, match="bad data"):
+            await fetcher.fetch_latest_candle()
     assert fetcher.watch_candles == []
-    assert current.close == 24010
     assert factory.return_value.intraday_minute_data.call_count == 1

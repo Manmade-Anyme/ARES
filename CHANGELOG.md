@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-20261019 completed-candle repair:** Feed detectors only newly completed current-session one-minute bars. Rebuild VWAP from unique completed provider history, including bars before startup, and preserve partial/final watch provenance. Duplicate and forming-only polls keep tick exit and order monitoring active without advancing strategy state. Friday strategy thresholds and execution rules remain unchanged.
+
 - **MANM-176 carried-trade context (PR #136):** Restore persisted option sizing and paper execution context from `trade_analytics` when loading active trades after restart. Persisted analytics context takes precedence while unrelated active-row keys survive; legacy rows and analytics read failures retain existing carry monitoring. This restores lifecycle reporting context without resuming paper order simulation or enabling live execution.
 
 - **MANM-176 review fixes (PR #136):** Use the matched option quote's validated underlying spot for paper fills and post-T1 break-even. Persist protected fills that exit immediately, including their realized paper loss, and retry registration and canonical ML linkage until confirmed. Terminal persistence retries no longer block pending-entry deduplication. Historical spot outcome scoring stays separate; live activation remains blocked.
