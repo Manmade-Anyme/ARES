@@ -1,12 +1,13 @@
 import asyncio
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from math import isfinite
 from typing import Optional, Tuple
 
 from dhanhq import dhanhq
 
 from models import OHLCVCandle
 from config import settings
-from oi_watch_context import IST, build_watch_candles, parse_candle_timestamp
+from oi_watch_context import IST, build_watch_candles
 
 
 class PriceFetcher:
@@ -47,6 +48,32 @@ class PriceFetcher:
         self.cumulative_vol = 0
         self._session_date = None
         self._last_emitted_timestamp = None
+
+    async def fetch_latest_spot(self) -> float:
+        """Fetch a fresh independent REST LTP; never substitute a candle price."""
+        securities = {settings.exchange_segment: [int(settings.security_id)]}
+        loop = asyncio.get_running_loop()
+        try:
+            response = await loop.run_in_executor(None, lambda: self.dhan.ticker_data(securities))
+        except Exception as exc:
+            raise ValueError("Dhan REST LTP request failed.") from exc
+        if not isinstance(response, dict) or response.get("status") != "success":
+            raise ValueError("Dhan REST LTP request returned a failed response.")
+        data = response.get("data")
+        if isinstance(data, dict) and "data" in data:
+            if data.get("status", "success") != "success":
+                raise ValueError("Dhan REST LTP payload returned a failed response.")
+            data = data["data"]
+        try:
+            value = data[settings.exchange_segment][str(settings.security_id)]["last_price"]
+            if isinstance(value, bool):
+                raise ValueError("Boolean REST LTP is invalid.")
+            spot = float(value)
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Dhan REST LTP response has no valid quote for the requested instrument.") from exc
+        if not isfinite(spot) or spot <= 0:
+            raise ValueError("Dhan REST LTP must be finite and positive.")
+        return spot
 
     async def fetch_latest_candle(self) -> Optional[OHLCVCandle]:
         """
@@ -159,24 +186,12 @@ class PriceFetcher:
         # The normalizer handles UTC epochs, exchange-local strings and revisions.
         sampled_at = datetime.now(timezone.utc)
         session_date = sampled_at.astimezone(IST).date()
+        # Validate all completed source rows before mutating session/dedup state.
+        watch_candles = build_watch_candles(data, sampled_at, strict_completed=True)
         if self._session_date != session_date:
             self.reset_vwap()
             self._session_date = session_date
-        self.watch_candles = build_watch_candles(data, sampled_at)
-        if not self.watch_candles:
-            # Distinguish valid but unavailable session bars from corrupt timestamps.
-            valid_timestamp = False
-            for value in data[time_key]:
-                try:
-                    at = parse_candle_timestamp(value)
-                except (ValueError, TypeError, OverflowError, OSError):
-                    continue
-                valid_timestamp = True
-                if (at.date() == session_date and at <= sampled_at
-                        and time(9, 15) <= at.time() < time(15, 30)):
-                    raise ValueError("Malformed intraday OHLCV values for the current session.")
-            if not valid_timestamp:
-                raise ValueError("Could not parse any timestamp from intraday API response.")
+        self.watch_candles = watch_candles
         completed = [row for row in self.watch_candles if row["complete"]]
         if not completed:
             return None

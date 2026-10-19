@@ -46,12 +46,15 @@ def parse_candle_timestamp(value):
     return _timestamp(value)
 
 
-def build_watch_candles(data, sampled_at):
+def build_watch_candles(data, sampled_at, *, strict_completed=False):
     """Convert the same fetched Dhan arrays into candles with sample provenance.
 
     Completion is evaluated when the response was sampled, never by aging a
     previously partial candle in a rolling buffer. No request is made here.
     Malformed arrays or sample times yield unavailable evidence (an empty list).
+    Trading callers set strict_completed to reject every malformed completed
+    session row before selecting or accumulating bars, including revisions.
+    Unknown timestamps also fail strict mode because their session is unknown.
     """
     try:
         sampled = _timestamp(sampled_at)
@@ -71,21 +74,24 @@ def build_watch_candles(data, sampled_at):
         value = data[time_key][index]
         try:
             at = parse_candle_timestamp(value)
-        except (ValueError, TypeError, OverflowError, OSError):
+        except (ValueError, TypeError, OverflowError, OSError) as exc:
+            if strict_completed:
+                raise ValueError("Could not parse timestamp from intraday API response.") from exc
             continue
         if (at > sampled or at.date() != sampled.date()
                 or not time(9, 15) <= at.time() < time(15, 30)):
             continue
+        complete = at + timedelta(minutes=1) <= sampled
         values = {key: _number(data[key][index]) for key in keys[1:]}
-        if any(values[key] is None or values[key] <= 0 for key in ("open", "high", "low", "close")):
-            continue
-        if values["volume"] is None or values["volume"] < 0:
-            continue
-        if (values["high"] < max(values["open"], values["close"], values["low"])
+        if (any(values[key] is None or values[key] <= 0 for key in ("open", "high", "low", "close"))
+                or values["volume"] is None or values["volume"] < 0
+                or values["high"] < max(values["open"], values["close"], values["low"])
                 or values["low"] > min(values["open"], values["close"])):
+            if strict_completed and complete:
+                raise ValueError("Malformed intraday OHLCV values for a completed current-session candle.")
             continue
         rows[at] = {"timestamp": at.isoformat(), "sampled_at": sampled.isoformat(),
-                    "complete": at + timedelta(minutes=1) <= sampled, **values}
+                    "complete": complete, **values}
     return [rows[at] for at in sorted(rows)]
 
 

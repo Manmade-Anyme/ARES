@@ -45,6 +45,7 @@ async def test_no_completed_bar_keeps_tick_exits_and_pending_orders_running(monk
         monkeypatch.setattr(main, name, MagicMock(return_value=instance))
     monkeypatch.setattr(main, "settings", settings)
     monkeypatch.setattr(main, "datetime", clock)
+    monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 10, 19, 10))
     monkeypatch.setattr(main, "load_dhan_credentials_from_supabase", MagicMock())
     monkeypatch.setattr(main, "is_expiry_day_from_api", AsyncMock(return_value=False))
     monkeypatch.setattr(main, "send_startup_alert", AsyncMock())

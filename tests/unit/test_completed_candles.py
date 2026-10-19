@@ -14,8 +14,8 @@ NOW = datetime(2026, 10, 19, 11, 34, 30, tzinfo=IST)
 def response(times, prices=None, volumes=None):
     prices = prices or [100 + i * 10 for i in range(len(times))]
     return {"status": "success", "data": {
-        "timestamp": times, "open": prices, "high": prices, "low": prices,
-        "close": prices, "volume": volumes if volumes is not None else [10] * len(times),
+        "timestamp": times, "open": list(prices), "high": list(prices), "low": list(prices),
+        "close": list(prices), "volume": volumes if volumes is not None else [10] * len(times),
     }}
 
 
@@ -127,3 +127,83 @@ async def test_invalid_current_session_ohlcv_is_reported_as_provider_error(field
         clock.now.return_value = NOW
         with pytest.raises(ValueError, match="OHLCV"):
             await subject.fetch_latest_candle()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("close", "bad-close"), ("close", float("nan")), ("open", True),
+    ("high", 90), ("low", 110), ("volume", -1), ("volume", float("inf")),
+])
+@pytest.mark.parametrize("bad_index", [0, 1])
+async def test_invalid_completed_row_with_other_valid_history_rejects_poll(field, value, bad_index):
+    subject = fetcher()
+    payload = response(["2026-10-19 09:15:00", "2026-10-19 11:33:00"], [100, 100])
+    payload["data"][field][bad_index] = value
+    subject.dhan.intraday_minute_data.return_value = payload
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = NOW
+        with pytest.raises(ValueError, match="OHLCV"):
+            await subject.fetch_latest_candle()
+
+
+@pytest.mark.asyncio
+async def test_invalid_completed_duplicate_revision_cannot_fall_back_to_valid_duplicate():
+    subject = fetcher()
+    payload = response(["2026-10-19 11:33:00", "2026-10-19 11:33:00"], [100, 100])
+    payload["data"]["close"][1] = "bad-close"
+    subject.dhan.intraday_minute_data.return_value = payload
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = NOW
+        with pytest.raises(ValueError, match="OHLCV"):
+            await subject.fetch_latest_candle()
+
+
+@pytest.mark.asyncio
+async def test_unknown_timestamp_mixed_with_valid_history_rejects_poll():
+    subject = fetcher()
+    subject.dhan.intraday_minute_data.return_value = response(
+        ["2026-10-19 09:15:00", "unknown-bar-identity"])
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = NOW
+        with pytest.raises(ValueError, match="timestamp"):
+            await subject.fetch_latest_candle()
+
+
+@pytest.mark.asyncio
+async def test_failed_new_session_response_preserves_previous_emission_and_vwap_state():
+    subject = fetcher()
+    first = response(["2026-10-19 11:33:00"], [100], [30])
+    invalid = response(["2026-10-20 09:15:00", "2026-10-20 11:33:00"], [110, 120])
+    invalid["data"]["close"][1] = "bad-close"
+    subject.dhan.intraday_minute_data.side_effect = [first, invalid]
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = NOW
+        await subject.fetch_latest_candle()
+        before = (subject._session_date, subject._last_emitted_timestamp,
+                  subject.cumulative_tp_vol, subject.cumulative_vol, subject.watch_candles)
+        clock.now.return_value = NOW + timedelta(days=1)
+        with pytest.raises(ValueError, match="OHLCV"):
+            await subject.fetch_latest_candle()
+    assert (subject._session_date, subject._last_emitted_timestamp,
+            subject.cumulative_tp_vol, subject.cumulative_vol, subject.watch_candles) == before
+
+
+@pytest.mark.asyncio
+async def test_invalid_forming_bar_does_not_reject_valid_completed_bar():
+    subject = fetcher()
+    payload = response(["2026-10-19 11:33:00", "2026-10-19 11:34:00"], [100, 110])
+    payload["data"]["close"][1] = "unfinished-value"
+    subject.dhan.intraday_minute_data.return_value = payload
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = NOW
+        assert (await subject.fetch_latest_candle()).close == 100
+
+
+@pytest.mark.asyncio
+async def test_watch_normalization_remains_forgiving_without_trading_strict_mode():
+    from oi_watch_context import build_watch_candles
+    payload = response(["2026-10-19 09:15:00", "2026-10-19 11:33:00"], [100, 100])
+    payload["data"]["close"][1] = "bad-close"
+    rows = build_watch_candles(payload["data"], NOW)
+    assert len(rows) == 1
+    assert rows[0]["timestamp"].startswith("2026-10-19T09:15:00")
