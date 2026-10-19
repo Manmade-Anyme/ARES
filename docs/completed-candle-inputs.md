@@ -61,6 +61,42 @@ monitoring and session-close safeguards. Detector buffers still require fresh
 bars after a restart; historical candles are not replayed into live signal state.
 
 Release 168 deployed the initial repair during the 19 October session. The review
-follow-up described here was prepared after the close and has offline regression
+follow-up through `e088829` was prepared after the close and has offline regression
 and captured-data verification only; its production rollout is not implied by
 the initial repair's live evidence.
+
+## Acknowledgment and final snapshot completion
+
+The second review follow-up implements the contract below. The final integrated
+suite passes and independent QA approved it; all verification is offline. The
+earlier passing suite for `e088829` predates this follow-up, which is not deployed.
+
+The main loop opts into deferred candle acknowledgment with
+`fetch_latest_candle(auto_ack=False)`. Direct callers retain the default
+`auto_ack=True`. In the main loop, prerequisite failures before engine handoff
+leave the selected bar unconsumed, allowing it to be returned again if it is still
+the latest completed bar. Acknowledgment occurs after option-chain and level
+preparation, immediately before engine invocation, so a tick that partially
+mutates detector state and raises cannot be replayed into that state. This
+preserves at-most-once engine processing rather than retrying after every
+downstream failure. Selection remains latest only: a newer completed bar may
+supersede an unconsumed older bar; there is no historical backlog replay.
+
+`acknowledge_candle()` accepts only an `OHLCVCandle` with a datetime timestamp.
+It normalizes aware timestamps to naive IST, requires the fetcher's initialized
+source session and regular trading window, and checks for that timestamp among
+the validated completed watch rows. Foreign, forming or fabricated timestamps
+cannot advance the watermark. Valid acknowledgments are monotonic and duplicate
+or earlier acknowledgments are idempotent.
+
+Final and crossed-close ML snapshots pass an explicit
+`wait_for_completion=True` through the main helper to the collector, including
+when no signal was generated. The caller awaits the actual executor-backed
+database insertion attempt before shutdown, rather than only scheduling another
+coroutine or background insert. The helper forwards the new keyword only when
+True, preserving the existing ordinary collector call shape as well as periodic
+nonsignal background behavior. Completion of an insert attempt is not a
+claim that an unavailable database accepted the row; insertion failure retains
+the helper's error-reporting path. A fresh clock check at the bottom of the loop
+also catches a request that crosses the close and raises, so the exception path
+does not sleep through the final-bar window.

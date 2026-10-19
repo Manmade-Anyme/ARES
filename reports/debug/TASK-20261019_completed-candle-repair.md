@@ -10,7 +10,7 @@ An exact rollback to Friday commit `5729277` would retain the candle defect. Com
 
 The prior fetcher selected the final API row without proving that its one-minute interval had closed. It also built VWAP from observations accumulated after startup, rather than completed history from the beginning of the trading session. The diagnosis replay reproduced zero candidates on recorded partial inputs and a qualifying bearish continuation candidate using completed inputs under unchanged strategy rules. That detector-only result does not establish a guaranteed live trade: historical full-chain data and complete detector priority state were unavailable.
 
-Runtime changes are limited to:
+The initial runtime repair touched three files:
 
 - `fetchers/price_fetcher.py`: select the latest newly completed candle from the current IST session; rebuild VWAP from unique completed provider bars from 09:15; return `None` when no newer completed candle is available. Timestamp revisions replace duplicate rows. Session rollover and reset clear emission state. Malformed provider arrays and unusable current-session OHLCV retain error handling.
 - `oi_watch_context.py`: share timestamp normalization between trading inputs and watch evidence, including epoch seconds/milliseconds, numeric strings and timezone offsets. Preserve partial/final watch provenance.
@@ -72,9 +72,9 @@ No signal was generated in these first three post-restart polls; this validates 
 
 The emergency reviewed commit was deployed directly to meet the user's market-hours test requirement. The PR remains open for human merge under the repository's merge policy; merging it retains the deployed repair in `main` and invokes the normal CI pipeline.
 
-## PR #140 review remediation — after-close follow-up
+## PR #140 first review remediation — `e088829`
 
-The following fixes were prepared after the 19 October close. They are **not deployed** and must not inherit the release 168 live-verification claim above. Friday's detector conditions, thresholds, confidence calibration and option calculation rules remain unchanged.
+The following fixes were prepared after the 19 October close and recorded in `e088829`. They are **not deployed** and must not inherit the release 168 live-verification claim above. Friday's detector conditions, thresholds, confidence calibration and option calculation rules remain unchanged. The tests in this section predate the second review findings below.
 
 | Review finding | Remediation |
 |---|---|
@@ -93,4 +93,30 @@ Worker regression evidence, with overlapping counts kept separate:
 - Final integrated suite: `python3 -m pytest tests/ -q --import-mode=importlib --disable-warnings --tb=short` — **1,537 passed, 12 warnings; 45 subtests passed in 57.36s**. Evidence: `/tmp/ares-pr140-final-full-suite.txt`. Independent QA approved the follow-up. These counts overlap the focused runs and must not be added to them.
 
 Deployment of these review fixes remains pending. The original three production polls above validate only commit `a1031b36c4db2813db3b23af40d77ffb5fa0c883`; the later full-suite and captured-data checks are offline verification.
+
+## PR #140 second review — verified offline
+
+At **17:00:05 IST on 19 October** (`11:30:05 UTC`), a fresh automated review identified two additional valid failures. The remediation below is implemented, the final integrated suite passes and independent QA approved it. These checks supersede the earlier 1,537-test result for the current source. No deployment or new live-session verification is claimed.
+
+| Review finding | Implemented remediation |
+|---|---|
+| [P1: deduplication precedes downstream processing](https://github.com/Manmade-Anyme/ARES/pull/140#discussion_r4313281360) | Main requests deferred acknowledgment so external prerequisite failures do not consume a still-latest completed bar. Acknowledgment occurs after chain and level preparation, immediately before the stateful engine call, preserving at-most-once processing even if the tick partially mutates state and raises. Direct fetcher callers retain automatic acknowledgment by default. A newer completed bar may intentionally supersede an older unconsumed bar; no backlog replay is introduced. |
+| [P2: final nonsignal ML work can be lost at shutdown](https://github.com/Manmade-Anyme/ARES/pull/140#discussion_r4313281368) | Main and its snapshot helper propagate `wait_for_completion=True` to the real collector for final and crossed-close snapshots, including nonsignal rows. The caller awaits the actual executor-backed insert attempt before shutdown. The helper forwards the new keyword only when True, preserving the ordinary collector call shape and background behavior; existing signal-bound upsert/retry behavior is unchanged. |
+
+The acknowledgment API accepts only a typed `OHLCVCandle` with a datetime timestamp, normalizes aware time to naive IST, requires an initialized matching source session and the regular 09:15–15:30 window, and checks that the timestamp exists in validated completed provider watch rows. Foreign, unfinished and fabricated acknowledgments cannot suppress a valid candle. Valid acknowledgments remain monotonic and idempotent. A fresh bottom-of-loop clock guard also handles a chain request that crosses the close and raises, advancing directly to finalization rather than sleeping through its permitted window.
+
+Focused red/green evidence, with overlapping runs kept separate:
+
+- Initial acknowledgment/helper/main-loop regressions: **6 failed, 72 passed** before implementation. The first implementation's acknowledgment after engine return was superseded during integration review; final source acknowledges immediately before the stateful call.
+- Actual `AresEngine` regression: missing ATM data appended the candle and then raised. Before the handoff correction, the same provider bar appended twice; the fixed path leaves one buffer row and suppresses the duplicate fetch. The combined acknowledgment-boundary red run was **4 failed, 8 passed**, also exposing invalid future-day, out-of-session and unfinished acknowledgments.
+- Collector completion contract: **2 failed, 1 passed** before implementation; real collector/threaded-insert barrier suite **47 passed and 8 subtests passed in 1.55s**. Controlled inserts prove the requested barrier waits, the ordinary default remains background, and insertion exceptions propagate to the caller's error handling.
+- Ordinary-call compatibility: an independent strict snapshot wrapper failed when the first helper revision forwarded `wait_for_completion=False`. A regression reproduced the failure; the corrected helper omits the new keyword unless True and the wrapper executes normally.
+- Final integration-focused suite: **155 passed and 8 subtests passed in 1.37s**, superseding the earlier 154-test run after the compatibility correction. Causal run-loop tests pin completion of the specific **15:29** snapshot before `tick_feed.stop()`; an earlier 15:28 completion cannot satisfy the assertion. Tests also cover same-bar pre-engine retries, no duplicate state mutation after an engine exception and the exceptional request-crossing-close path. This is a focused result, not the full-suite count.
+- Final integrated suite: `python3 -m pytest tests/ -q --import-mode=importlib --disable-warnings --tb=short` — **1,559 passed, 12 warnings; 45 subtests passed in 56.08s**. Evidence: `/tmp/ares-pr140-followup2-final-full-suite.txt`.
+- Independent QA: **APPROVE**, with **13 causal harness cases passed** and **137 focused tests plus 8 subtests passed in 1.32s**. Evidence: `/tmp/ares-pr140-followup2-qa.md`. Focused runs overlap the full suite; counts must not be summed.
+- Deferred-acknowledgment captured-data replay: the completed **15:29** bar at simulated **15:30:06** used **375 regular-session bars**, matching session VWAP **22,982.710338791112**. The same latest bar was returned repeatedly before acknowledgment and suppressed afterward. Evidence: `/tmp/ares-pr140-deferred-ack-captured-validation.json`. This is offline replay of corrected historical data fetched after the close, not proof of live final-bar availability.
+
+Additional implementation evidence: `/tmp/ares-pr140-new-review-findings.json`, `/tmp/ares-pr140-followup2-final.md` and `/tmp/ares-pr140-collector-barrier.md`. The final integration report supersedes the earlier implementation report's acknowledgment position. Both `e088829` and this follow-up were prepared after the close and remain undeployed.
+
+For a future rollout, use the normal full build after human merge, or include all four changed runtime files relative to the initial base: `main.py`, `fetchers/price_fetcher.py`, `oi_watch_context.py` and `ml_signal/collector.py`. Release 168's original three-file overlay does not contain the collector completion fix.
 

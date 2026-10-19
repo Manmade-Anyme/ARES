@@ -139,6 +139,7 @@ class MLCollector:
         oi_wall_context: Optional[Dict[str, Any]] = None,
         trade_id: Optional[str] = None,
         trade_binding_status: Optional[str] = None,
+        wait_for_completion: bool = False,
     ):
         trade_id = trade_id or None
         candle_dict = self._candle_to_dict(candle)
@@ -301,7 +302,11 @@ class MLCollector:
         requires_barrier = signal_generated
         if not requires_barrier:
             future = loop.run_in_executor(None, self._insert, record)
-            future.add_done_callback(self._report_background_insert_failure)
+            if wait_for_completion:
+                # The final ordinary snapshot must outlive neither its poll nor shutdown.
+                await future
+            else:
+                future.add_done_callback(self._report_background_insert_failure)
             return
 
         for attempt in range(3):

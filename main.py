@@ -192,21 +192,25 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
         await dispatcher.on_snapshot(full_chain, spot)
 
 
-async def _record_ml_snapshot(ml_collector, signal, **snapshot_fields):
+async def _record_ml_snapshot(ml_collector, signal, wait_for_completion: bool = False, **snapshot_fields):
     """Persist signal snapshots before exits can label them.
 
     Ordinary feature snapshots remain fire-and-forget so the polling loop does
-    not acquire a database round trip on every cycle.
+    not acquire a database round trip on every cycle. Final or close-of-session
+    snapshots await persistence to avoid cancellation during loop shutdown.
     """
     try:
+        if wait_for_completion:
+            snapshot_fields["wait_for_completion"] = True
         insert_coro = ml_collector.snapshot(signal=signal, **snapshot_fields)
         if insert_coro is not None:
-            if signal is not None:
+            if signal is not None or wait_for_completion:
                 await insert_coro
             else:
                 asyncio.ensure_future(insert_coro)
     except Exception as e:
         print(f"[-] _record_ml_snapshot failed: {e}")
+
 
 async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle, *, outbox=None):
     """Confirm final Discord delivery before resolving a delivered OI watch."""
@@ -410,7 +414,7 @@ async def run():
             try:
                 # Fetch latest price candle
                 if finalizing:
-                    candle = await asyncio.wait_for(price_fetcher.fetch_latest_candle(), timeout=10)
+                    candle = await asyncio.wait_for(price_fetcher.fetch_latest_candle(auto_ack=False), timeout=10)
                     if (candle is None or candle.timestamp.date() != now.date()
                             or candle.timestamp.time() != time(15, 29)):
                         break
@@ -426,7 +430,7 @@ async def run():
                     except Exception as exc:
                         logger.warning("Final candle exit check failed: %s", exc)
                 else:
-                    candle = await price_fetcher.fetch_latest_candle()
+                    candle = await price_fetcher.fetch_latest_candle(auto_ack=False)
                 if candle is None:
                     if not tick_feed.is_active:
                         await _monitor_rest_without_candle(
@@ -466,7 +470,9 @@ async def run():
                 current_iv = atm.ce.iv if (atm and atm.ce) else None
                 iv_change_pct, prev_iv = compute_iv_change_pct(current_iv, prev_iv)
             
-                # Run the engine
+                # Once prerequisites succeed, consume before the stateful engine:
+                # a detector exception can occur after its rolling buffers mutate.
+                price_fetcher.acknowledge_candle(candle)
                 signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
 
                 # Close expired watches before publishing fresh watches, retrying failures.
@@ -609,6 +615,7 @@ async def run():
                 await _record_ml_snapshot(
                     ml_collector,
                     signal,
+                    wait_for_completion=finalizing or _session_now().time() >= time(15, 30),
                     candle=candle,
                     atm=atm,
                     full_chain=full_chain,
@@ -687,7 +694,7 @@ async def run():
             
             if finalizing:
                 break
-            if session_closed:
+            if session_closed or _session_now().time() >= time(15, 30):
                 continue
             await _sleep_with_tick_exits(settings.poll_interval_seconds, tick_feed, position_manager, engine, order_dispatcher)
     finally:

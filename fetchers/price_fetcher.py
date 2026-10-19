@@ -1,5 +1,6 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
+from datetime import datetime as _real_datetime
 from math import isfinite
 from typing import Optional, Tuple
 
@@ -49,6 +50,22 @@ class PriceFetcher:
         self._session_date = None
         self._last_emitted_timestamp = None
 
+    def acknowledge_candle(self, candle: OHLCVCandle) -> None:
+        """Consume a validated completed source bar once, without regressing state."""
+        if not isinstance(candle, OHLCVCandle) or not isinstance(candle.timestamp, _real_datetime):
+            return
+        timestamp = candle.timestamp
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(IST).replace(tzinfo=None)
+        if (timestamp.date() != self._session_date
+                or not time(9, 15) <= timestamp.time() < time(15, 30)):
+            return
+        if not any(row["complete"] and _real_datetime.fromisoformat(row["timestamp"]).replace(tzinfo=None) == timestamp
+                   for row in self.watch_candles):
+            return
+        if self._last_emitted_timestamp is None or timestamp > self._last_emitted_timestamp:
+            self._last_emitted_timestamp = timestamp
+
     async def fetch_latest_spot(self) -> float:
         """Fetch a fresh independent REST LTP; never substitute a candle price."""
         securities = {settings.exchange_segment: [int(settings.security_id)]}
@@ -75,7 +92,7 @@ class PriceFetcher:
             raise ValueError("Dhan REST LTP must be finite and positive.")
         return spot
 
-    async def fetch_latest_candle(self) -> Optional[OHLCVCandle]:
+    async def fetch_latest_candle(self, auto_ack: bool = True) -> Optional[OHLCVCandle]:
         """
         Return the latest newly completed current-session candle, or None.
 
@@ -83,6 +100,10 @@ class PriceFetcher:
         history before startup. Provider revisions replace previous values;
         duplicate polls never advance the signal engine. Malformed API responses
         retain the existing ValueError contract.
+
+        When auto_ack=True (default), immediately advances the emitted timestamp
+        watermark. When auto_ack=False, timestamp advancement is deferred until
+        acknowledge_candle is explicitly invoked by the consumer.
         """
         loop = asyncio.get_running_loop()
         
@@ -211,7 +232,8 @@ class PriceFetcher:
             timestamp=timestamp, open=latest["open"], high=latest["high"],
             low=latest["low"], close=latest["close"], volume=int(latest["volume"]), vwap=vwap,
         )
-        self._last_emitted_timestamp = timestamp
+        if auto_ack:
+            self.acknowledge_candle(candle)
         return candle
 
     async def fetch_previous_day_ohlc(self) -> Tuple[float, float]:

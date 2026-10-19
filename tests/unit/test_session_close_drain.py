@@ -1,4 +1,6 @@
 """Exercise no-new-bar monitoring and final-bar draining through the run loop."""
+import asyncio
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -191,7 +193,7 @@ async def test_hanging_final_fetch_is_cancelled_and_cleanup_still_runs(loop, mon
     ctx = loop([candle()], [datetime(2026, 10, 19, 15, 29), datetime(2026, 10, 19, 15, 30)])
     cancelled = []
     calls = []
-    async def fetch():
+    async def fetch(*args, **kwargs):
         calls.append(True)
         if len(calls) == 1:
             return candle()
@@ -209,6 +211,206 @@ async def test_hanging_final_fetch_is_cancelled_and_cleanup_still_runs(loop, mon
     assert ctx.engine.tick.call_count == 1
     ctx.outbox.close.assert_awaited_once()
     ctx.feed.stop.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_normal_session_samebar_retry_after_chain_failure(loop):
+    c10 = candle(hour=10, minute=0)
+    ctx = loop([], [
+        datetime(2026, 10, 19, 10, 0),
+        datetime(2026, 10, 19, 10, 1),
+        datetime(2026, 10, 19, 15, 30),
+    ])
+    # Mimic actual fetcher dedup behavior
+    last_acked = None
+    async def fetch_dedup(auto_ack=True):
+        nonlocal last_acked
+        if last_acked is not None and c10.timestamp <= last_acked:
+            return None
+        if auto_ack:
+            last_acked = c10.timestamp
+        return c10
+
+    def ack(c):
+        nonlocal last_acked
+        if c is not None:
+            ts = getattr(c, "timestamp", c)
+            if last_acked is None or ts > last_acked:
+                last_acked = ts
+
+    ctx.price.fetch_latest_candle.side_effect = fetch_dedup
+    ctx.price.acknowledge_candle.side_effect = ack
+    ctx.engine.tick.side_effect = None
+    ctx.engine.tick.return_value = None
+
+    # Chain fails on first poll, succeeds on second poll
+    ctx.oi.fetch_chain.side_effect = [
+        RuntimeError("transient option chain outage"),
+        (None, []),
+    ]
+
+    await main.run()
+
+    # Engine tick must be called exactly once for c10 after retry
+    assert [call.args[0] for call in ctx.engine.tick.call_args_list] == [c10]
+    assert last_acked == c10.timestamp
+
+
+@pytest.mark.asyncio
+async def test_cross_close_1529_chain_failure_followed_by_successful_final_drain(loop):
+    c28 = candle(minute=28)
+    c29 = candle(minute=29)
+    ctx = loop([], [
+        datetime(2026, 10, 19, 15, 28),
+        datetime(2026, 10, 19, 15, 29, 30),
+        datetime(2026, 10, 19, 15, 30, 5),
+    ])
+    provider_candles = [c28, c29, c29]
+    poll_idx = 0
+    last_acked = None
+
+    async def fetch_dedup(auto_ack=True):
+        nonlocal poll_idx, last_acked
+        if poll_idx >= len(provider_candles):
+            return None
+        c = provider_candles[poll_idx]
+        poll_idx += 1
+        if last_acked is not None and c.timestamp <= last_acked:
+            return None
+        if auto_ack:
+            last_acked = c.timestamp
+        return c
+
+    def ack(c):
+        nonlocal last_acked
+        if c is not None:
+            ts = getattr(c, "timestamp", c)
+            if last_acked is None or ts > last_acked:
+                last_acked = ts
+
+    ctx.price.fetch_latest_candle.side_effect = fetch_dedup
+    ctx.price.acknowledge_candle.side_effect = ack
+
+    # Poll 1 (15:28) succeeds.
+    # Poll 2 (15:29:30) chain fails.
+    # Poll 3 (15:30:05 final drain) chain succeeds.
+    ctx.oi.fetch_chain.side_effect = [
+        (None, []),
+        RuntimeError("chain failure at 15:29 across close"),
+        (None, []),
+    ]
+
+    signal = AresSignal(
+        SetupType.TREND_CONTINUATION, Direction.BULLISH, 24000,
+        (23995, 24005), 23990, 24020, 24040, "MEDIUM", [],
+        datetime(2026, 10, 19, 15, 29), 24000, "CE",
+    )
+    ctx.engine.tick.side_effect = [None, signal]
+
+    await main.run()
+
+    # Both c28 and c29 must reach engine.tick
+    assert [call.args[0] for call in ctx.engine.tick.call_args_list] == [c28, c29]
+    # Final protective wick exits must be checked for 15:29
+    ctx.positions.update_trades.assert_any_await(
+        c29.close, candle_high=c29.high, candle_low=c29.low, candle_timestamp=c29.timestamp
+    )
+    # No after-close entry
+    assert signal.trade_binding_status == "SESSION_CLOSED"
+    ctx.dispatcher.dispatch.assert_not_awaited()
+    assert last_acked == c29.timestamp
+
+
+@pytest.mark.asyncio
+async def test_post_engine_failure_does_not_repeat_engine_tick(loop):
+    c10 = candle(hour=10, minute=0)
+    ctx = loop([], [
+        datetime(2026, 10, 19, 10, 0),
+        datetime(2026, 10, 19, 10, 1),
+        datetime(2026, 10, 19, 15, 30),
+    ])
+    last_acked = None
+    async def fetch_dedup(auto_ack=True):
+        nonlocal last_acked
+        if last_acked is not None and c10.timestamp <= last_acked:
+            return None
+        if auto_ack:
+            last_acked = c10.timestamp
+        return c10
+
+    def ack(c):
+        nonlocal last_acked
+        if c is not None:
+            ts = getattr(c, "timestamp", c)
+            if last_acked is None or ts > last_acked:
+                last_acked = ts
+
+    ctx.price.fetch_latest_candle.side_effect = fetch_dedup
+    ctx.price.acknowledge_candle.side_effect = ack
+
+    # Signal produced, but storage raises error after engine.tick
+    signal = AresSignal(
+        SetupType.TREND_CONTINUATION, Direction.BULLISH, 24000,
+        (23995, 24005), 23990, 24020, 24040, "MEDIUM", [],
+        datetime(2026, 10, 19, 10, 0), 24000, "CE",
+    )
+    ctx.engine.tick.side_effect = [signal, None]
+    ctx.storage.log_signal.side_effect = RuntimeError("post-engine persistence explosion")
+
+    await main.run()
+
+    # Engine tick called only once; subsequent cycle does not duplicate engine tick
+    assert [call.args[0] for call in ctx.engine.tick.call_args_list] == [c10]
+
+
+@pytest.mark.asyncio
+async def test_final_snapshot_completed_before_run_returns_causal(loop, monkeypatch):
+    first, final = candle(minute=28), candle(minute=29)
+    ctx = loop([first, final], [datetime(2026, 10, 19, 15, 29), datetime(2026, 10, 19, 15, 30)])
+    monkeypatch.setattr(main, "initialize_oi_watch_outbox", AsyncMock(return_value=None))
+    completed = []
+
+    async def yielding_snapshot(*args, **kwargs):
+        future = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(future.set_result, None)
+        await future
+        completed.append(kwargs["candle"].timestamp)
+
+    def check_final_completed_at_stop():
+        assert final.timestamp in completed
+
+    ctx.collector.snapshot.side_effect = yielding_snapshot
+    ctx.feed.stop.side_effect = check_final_completed_at_stop
+    await main.run()
+    assert final.timestamp in completed
+    final_call = [call for call in ctx.collector.snapshot.call_args_list
+                  if call.kwargs["candle"].timestamp == final.timestamp]
+    assert len(final_call) == 1
+    assert final_call[0].kwargs["wait_for_completion"] is True
+
+
+@pytest.mark.asyncio
+async def test_snapshot_completed_on_fresh_clock_crossing_close_causal(loop, monkeypatch):
+    final = candle(minute=29)
+    ctx = loop([final], [datetime(2026, 10, 19, 15, 29, 59), datetime(2026, 10, 19, 15, 30, 2)])
+    monkeypatch.setattr(main, "initialize_oi_watch_outbox", AsyncMock(return_value=None))
+    monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 10, 19, 15, 30, 2))
+    completed = []
+
+    async def yielding_snapshot(*args, **kwargs):
+        future = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(future.set_result, None)
+        await future
+        completed.append(kwargs["candle"].timestamp)
+
+    def check_final_completed_at_stop():
+        assert completed == [final.timestamp]
+
+    ctx.collector.snapshot.side_effect = yielding_snapshot
+    ctx.feed.stop.side_effect = check_final_completed_at_stop
+    await main.run()
+    assert completed == [final.timestamp]
+    assert ctx.collector.snapshot.call_args.kwargs["wait_for_completion"] is True
 
 
 @pytest.mark.asyncio
@@ -275,3 +477,61 @@ async def test_prior_bar_request_crossing_close_drains_final_bar_without_poll_sl
     assert [call.args[0] for call in ctx.engine.tick.call_args_list] == [first, final]
     main.asyncio.sleep.assert_not_awaited()
     ctx.dispatcher.on_snapshot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_partial_real_engine_failure_never_appends_same_candle_twice(loop, monkeypatch):
+    from datetime import timezone
+    from unittest.mock import patch
+    from engine import AresEngine
+    from fetchers.price_fetcher import PriceFetcher
+
+    with patch("fetchers.price_fetcher.dhanhq"):
+        real_price = PriceFetcher()
+    real_price.dhan.intraday_minute_data.return_value = {
+        "status": "success", "data": {
+            "timestamp": ["2026-10-19 11:33:00"], "open": [24000],
+            "high": [24020], "low": [23980], "close": [24000], "volume": [100],
+        },
+    }
+    real_price.fetch_previous_day_ohlc = AsyncMock(return_value=(24100, 23900))
+    real_price.fetch_latest_spot = AsyncMock(return_value=24000)
+    real_engine = AresEngine()
+    ctx = loop([], [datetime(2026, 10, 19, 11, 34), datetime(2026, 10, 19, 11, 35),
+                    datetime(2026, 10, 19, 15, 30)])
+    monkeypatch.setattr(main, "PriceFetcher", lambda: real_price)
+    monkeypatch.setattr(main, "AresEngine", lambda: real_engine)
+    # The real engine appends the candle, then missing ATM data raises at the
+    # detector boundary. Retrying would mutate its actual rolling buffer twice.
+    ctx.oi.fetch_chain.return_value = (None, [])
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = datetime(2026, 10, 19, 6, 5, tzinfo=timezone.utc)
+        await main.run()
+        assert [bar.timestamp for bar in real_engine.candle_buffer] == [datetime(2026, 10, 19, 11, 33)]
+        assert await real_price.fetch_latest_candle(auto_ack=False) is None
+
+
+@pytest.mark.asyncio
+async def test_chain_failure_crossing_close_drains_without_second_poll_sleep(loop, monkeypatch):
+    first, final = candle(minute=28), candle(minute=29)
+    ctx = loop([first, final, final], [datetime(2026, 10, 19, 15, 29),
+                                    datetime(2026, 10, 19, 15, 29, 59),
+                                    datetime(2026, 10, 19, 15, 30, 2)])
+    ctx.settings.poll_interval_seconds = 60
+    current = [datetime(2026, 10, 19, 15, 29)]
+    monkeypatch.setattr(main, "_session_now", lambda: current[0])
+    calls = []
+
+    async def chain_with_crossing_failure(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 2:
+            current[0] = datetime(2026, 10, 19, 15, 30, 2)
+            raise RuntimeError("chain request crossed market close")
+        return None, []
+
+    ctx.oi.fetch_chain.side_effect = chain_with_crossing_failure
+    await main.run()
+    assert [call.args[0] for call in ctx.engine.tick.call_args_list] == [first, final]
+    main.asyncio.sleep.assert_awaited_once_with(60)
+    ctx.positions.update_trades.assert_any_await(final.close, candle_high=final.high,
+                                               candle_low=final.low, candle_timestamp=final.timestamp)

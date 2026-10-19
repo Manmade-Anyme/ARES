@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from fetchers.price_fetcher import PriceFetcher
+from models import OHLCVCandle
 
 IST = ZoneInfo("Asia/Kolkata")
 NOW = datetime(2026, 10, 19, 11, 34, 30, tzinfo=IST)
@@ -207,3 +208,75 @@ async def test_watch_normalization_remains_forgiving_without_trading_strict_mode
     rows = build_watch_candles(payload["data"], NOW)
     assert len(rows) == 1
     assert rows[0]["timestamp"].startswith("2026-10-19T09:15:00")
+
+
+@pytest.mark.asyncio
+async def test_deferred_fetch_twice_before_ack_and_subsequent_duplicate_none():
+    subject = fetcher()
+    subject.dhan.intraday_minute_data.return_value = response(
+        ["2026-10-19 09:15:00", "2026-10-19 11:33:00"], [100, 120]
+    )
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = NOW
+        # First deferred fetch without auto_ack
+        c1 = await subject.fetch_latest_candle(auto_ack=False)
+        assert c1 is not None
+        assert c1.timestamp == datetime(2026, 10, 19, 11, 33)
+
+        # Second deferred fetch before ack returns the same candle
+        c2 = await subject.fetch_latest_candle(auto_ack=False)
+        assert c2 is not None
+        assert c2.timestamp == c1.timestamp
+
+        # Monotonically acknowledge candle consumption
+        subject.acknowledge_candle(c1)
+
+        # Once acknowledged, duplicate poll returns None
+        assert await subject.fetch_latest_candle(auto_ack=False) is None
+        assert await subject.fetch_latest_candle(auto_ack=True) is None
+
+
+@pytest.mark.asyncio
+async def test_acknowledge_candle_monotonic_marking():
+    subject = fetcher()
+    subject.dhan.intraday_minute_data.return_value = response(
+        ["2026-10-19 11:32:00", "2026-10-19 11:33:00"])
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = NOW
+        current = await subject.fetch_latest_candle(auto_ack=False)
+        subject.acknowledge_candle(current)
+        subject.acknowledge_candle(current)
+        subject.acknowledge_candle(OHLCVCandle(datetime(2026, 10, 19, 11, 32), 100, 100, 100, 100, 10))
+        subject.acknowledge_candle(None)
+        assert await subject.fetch_latest_candle(auto_ack=False) is None
+
+
+@pytest.mark.parametrize("invalid", [
+    None, datetime(2026, 10, 19, 11, 33),
+    OHLCVCandle(datetime(2026, 10, 20, 11, 33), 100, 100, 100, 100, 10),
+    OHLCVCandle(datetime(2026, 10, 16, 11, 33), 100, 100, 100, 100, 10),
+    OHLCVCandle(datetime(2026, 10, 19, 8), 100, 100, 100, 100, 10),
+    OHLCVCandle(datetime(2026, 10, 19, 15, 30), 100, 100, 100, 100, 10),
+    OHLCVCandle(datetime(2026, 10, 19, 11, 34), 100, 100, 100, 100, 10),
+])
+@pytest.mark.asyncio
+async def test_invalid_acknowledgement_cannot_suppress_valid_provider_bar(invalid):
+    subject = fetcher()
+    subject.dhan.intraday_minute_data.return_value = response(["2026-10-19 11:33:00"])
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = NOW
+        current = await subject.fetch_latest_candle(auto_ack=False)
+        subject.acknowledge_candle(invalid)
+        assert await subject.fetch_latest_candle(auto_ack=False) == current
+        subject.acknowledge_candle(current)
+        assert await subject.fetch_latest_candle(auto_ack=False) is None
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_before_any_source_session_cannot_suppress_valid_bar():
+    subject = fetcher()
+    subject.acknowledge_candle(OHLCVCandle(datetime(2026, 10, 20, 11, 33), 100, 100, 100, 100, 10))
+    subject.dhan.intraday_minute_data.return_value = response(["2026-10-19 11:33:00"])
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = NOW
+        assert await subject.fetch_latest_candle(auto_ack=False) is not None
