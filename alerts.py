@@ -3,6 +3,7 @@ import math
 from datetime import datetime, timezone, timedelta
 from models import AresSignal, OIWallBias, OIWallWatchCancellation
 from config import settings, detector_names, SESSION_DISPLAY
+from options_math import CAPITAL_SIZING_REJECTIONS
 
 
 def _number(value, precision=".2f"):
@@ -22,7 +23,7 @@ def _option_bracket_fields(signal):
     status = getattr(signal, "options_sizing_status", "PENDING")
     if bracket is None and status == "PENDING":
         return []
-    if bracket is None or not bracket.is_valid:
+    if bracket is None or (not bracket.is_valid and bracket.rejection_reason not in CAPITAL_SIZING_REJECTIONS):
         reason = getattr(bracket, "rejection_reason", None) or status
         return [{"name": "📐 Option Sizing", "value": f"{status}: {reason}. No executable bracket.", "inline": False}]
     greeks = bracket.greeks
@@ -38,7 +39,7 @@ def _option_bracket_fields(signal):
         {"name": "📄 Contract", "value": f"{bracket.security_id} | Expiry {bracket.expiry_date}", "inline": True},
         {"name": "🎯 Entry Limit", "value": f"₹ {_number(bracket.entry_limit)} | LTP: ₹ {_number(signal.option_premium)}", "inline": True},
         {"name": "📊 Option Greeks", "value": f"Δ {_number(greeks.delta, '+.3f')} | Γ {_number(greeks.gamma, '.4f')} | Θ {_number(greeks.theta, '.1f')}/day | Vega {_number(greeks.vega)} | IV {_number(greeks.iv, '.1f')}%", "inline": False},
-        {"name": "🎯 Target 1", "value": f"₹ {_number(bracket.target_1)} ({max(1, bracket.lots // 2)} lots planned | Spot: {_number(signal.target_1)})", "inline": True},
+        {"name": "🎯 Target 1", "value": f"₹ {_number(bracket.target_1)} ({min(bracket.lots, max(1, bracket.lots // 2))} lots planned | Spot: {_number(signal.target_1)})", "inline": True},
         {"name": "🎯 Target 2", "value": f"₹ {_number(bracket.target_2)} (Runner | Spot: {_number(signal.target_2)})", "inline": True},
         {"name": "🛑 Stop Loss", "value": f"Layer 1 (Synthetic Invalidation): Spot {_number(bracket.synthetic_spot_sl)}\nLayer 2 (Broker Emergency Floor): ₹ {_number(bracket.catastrophic_opt_sl)}", "inline": False},
         {"name": "📐 Sizing", "value": f"{bracket.lots} Lots ({bracket.lots * lot_size} qty)", "inline": True},

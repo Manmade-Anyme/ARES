@@ -58,11 +58,12 @@ async def test_limit_waits_and_registers_only_after_observed_fill():
 
 
 @pytest.mark.asyncio
-async def test_invalid_bracket_never_registers():
+@pytest.mark.parametrize('reason', ['INVALID_DATA', 'NO_AVAILABLE_CAPITAL', 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET'])
+async def test_invalid_bracket_never_registers(reason):
     positions = Positions()
     dispatcher = SignalDispatcher(OrderManager(), positions)
     signal = candidate()
-    signal.bracket = replace(signal.bracket,is_valid=False,lots=0,rejection_reason="INVALID_DATA")
+    signal.bracket = replace(signal.bracket,is_valid=False,lots=0,rejection_reason=reason)
     assert not await dispatcher.dispatch(signal, 24000, chain())
     assert not positions.entries
 

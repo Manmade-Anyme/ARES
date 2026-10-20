@@ -63,6 +63,40 @@ def test_invalid_capital_never_produces_lots(capital):
 
 
 @pytest.mark.parametrize('direction', [Direction.BULLISH, Direction.BEARISH])
+@pytest.mark.parametrize('capital', [0, None, -39.19, float('nan'), float('inf'), True, 'invalid', 1])
+def test_option_prices_do_not_depend_on_available_capital(direction, capital):
+    signal = make_signal(direction)
+    funded = build_option_bracket(signal, [make_row()], 100000, TuningConfig())
+    unfunded = build_option_bracket(signal, [make_row()], capital, TuningConfig())
+    for field in ('security_id', 'expiry_date', 'strike', 'greeks', 'entry_limit',
+                  'catastrophic_opt_sl', 'target_1', 'target_2', 'risk_loss_pts'):
+        assert getattr(unfunded, field) == getattr(funded, field)
+    assert (unfunded.lots, unfunded.affordable_lots, unfunded.is_valid) == (0, 0, False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('response, status', [
+    ({'status': 'success', 'data': {'availabelBalance': 0}}, 'NO_AVAILABLE_CAPITAL'),
+    ({'status': 'failure'}, 'NO_AVAILABLE_CAPITAL'),
+    ({'status': 'success', 'data': {'availabelBalance': 1}}, 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET'),
+])
+async def test_unfunded_signal_retains_prices_in_context_and_summary(response, status):
+    client = MagicMock()
+    client.get_fund_limits.return_value = response
+    signal = make_signal()
+    await process_options_calculation(signal, [make_row()], client, TuningConfig())
+    context = signal.market_context['options_sizing']
+    assert (context['entry_limit'], signal.option_sl, signal.option_target,
+            context['target_2']) == (100.05, 95.1, 110.4, 121.6)
+    assert context['suggested_lots'] == 0
+    assert signal.options_sizing_status == status
+    summary = option_sizing_summary(signal)
+    assert 'Option Sizing: 0 lots' in summary
+    for price in ('100.05', '95.10', '110.40', '121.60'):
+        assert price in summary
+
+
+@pytest.mark.parametrize('direction', [Direction.BULLISH, Direction.BEARISH])
 def test_complete_bracket_uses_signed_greeks_ticks_and_risk_floor(direction):
     bracket = build_option_bracket(make_signal(direction), [make_row()], 100000, TuningConfig())
     assert bracket.is_valid
@@ -80,10 +114,12 @@ def test_complete_bracket_uses_signed_greeks_ticks_and_risk_floor(direction):
     ('ce_ltp',0),('ce_ltp',float('nan')),('ce_gamma',None),('ce_gamma',-1),
     ('ce_theta',float('inf')),('ce_vega',None),('ce_iv',None),('ce_security_id',None),
     ('expiry_date',None),('expiry_date','2026-10-14')])
-def test_bad_quote_is_rejected_without_fabrication(field,value):
-    bracket = build_option_bracket(make_signal(), [make_row(**{field:value})], 100000, TuningConfig())
+@pytest.mark.parametrize('capital', [0, 100000])
+def test_bad_quote_is_rejected_without_fabrication(field,value,capital):
+    bracket = build_option_bracket(make_signal(), [make_row(**{field:value})], capital, TuningConfig())
     assert not bracket.is_valid
     assert bracket.lots == 0
+    assert bracket.rejection_reason == 'INVALID_DATA'
 
 
 def test_nearest_current_expiry_is_selected_before_delta_ranking():

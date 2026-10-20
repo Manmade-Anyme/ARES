@@ -14,6 +14,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 - **TASK-20261019 PR #140 fourth review:** Bound authentication backoff and main-loop polling waits by the fresh seconds remaining until 15:30. Recalculate active-feed sleep budgets after callbacks without cancelling protective work; preserve standalone helper defaults. Verified offline on 20 October with 1,572 passing tests and 45 subtests. Earlier 1,566-test results apply to `970c8ea`. No deployment is recorded.
 
+- **MANM-176 capital-independent option prices:** Calculate and display option entry limits, stop loss, T1 and T2 even when Dhan capital is zero, unavailable, or insufficient. Capital controls suggested lots only; zero-lot brackets retain sizing diagnostics and remain blocked from execution. Alerts and persisted signal summaries preserve the calculated prices.
+
 - **MANM-176 carried-trade context (PR #136):** Restore persisted option sizing and paper execution context from `trade_analytics` when loading active trades after restart. Persisted analytics context takes precedence while unrelated active-row keys survive; legacy rows and analytics read failures retain existing carry monitoring. This restores lifecycle reporting context without resuming paper order simulation or enabling live execution.
 
 - **MANM-176 review fixes (PR #136):** Use the matched option quote's validated underlying spot for paper fills and post-T1 break-even. Persist protected fills that exit immediately, including their realized paper loss, and retry registration and canonical ML linkage until confirmed. Terminal persistence retries no longer block pending-entry deduplication. Historical spot outcome scoring stays separate; live activation remains blocked.
