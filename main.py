@@ -118,23 +118,30 @@ async def _persist_ml_snapshot_before_exit_checks(collector, **snapshot):
         print(f"MLCollector: signal-bound snapshot persistence failed: {exc}")
         return False
 
-async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine, dispatcher=None):
+async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine, dispatcher=None, *, respect_close=False):
     """
     Sleeps for `total_seconds` (the REST poll interval), but when the
     WebSocket TickFeed is active, wakes every `tick_exit_check_interval_seconds`
     to run a tick-driven exit check against the feed's latest LTP — SL/T1/T2
     hits are caught between candle closes instead of waiting up to 60s
     (TASK-173, audit item 18). Falls back to a single plain sleep when the
-    feed isn't active, identical to the pre-TASK-173 loop.
+    feed isn't active, identical to the pre-TASK-173 loop. The main session
+    opts into clipping each timer delay at close, while protective callbacks finish.
     """
     if not tick_feed.is_active:
-        await asyncio.sleep(total_seconds)
+        delay = _close_bounded_delay(total_seconds) if respect_close else total_seconds
+        if delay > 0 or not respect_close:
+            await asyncio.sleep(delay)
         return
 
     interval = settings.tick_exit_check_interval_seconds
     elapsed = 0.0
     while elapsed < total_seconds:
         step = min(interval, total_seconds - elapsed)
+        if respect_close:
+            step = _close_bounded_delay(step)
+            if step <= 0:
+                return
         await asyncio.sleep(step)
         elapsed += step
 
@@ -153,21 +160,70 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                 print(f"[-] Tick-driven exit check failed: {e}")
 
 
-async def _record_ml_snapshot(ml_collector, signal, **snapshot_fields):
+def _session_now():
+    return datetime.now()
+
+
+def _close_bounded_delay(requested_seconds):
+    now = _session_now()
+    close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return max(0.0, min(requested_seconds, (close - now).total_seconds()))
+
+
+def _mark_signal_session_closed(signal):
+    signal.bracket = None
+    signal.suggested_lots = 0
+    signal.options_sizing_status = "SESSION_CLOSED"
+    signal.trade_binding_status = "SESSION_CLOSED"
+    signal.market_context["session_status"] = "SESSION_CLOSED"
+    signal.market_context["analysis_only"] = True
+    signal.market_context["options_sizing"] = {
+        "status": "SESSION_CLOSED", "final_lots": 0,
+        "rejection_reason": "SESSION_CLOSED",
+    }
+    reason = "Session closed: completed bar is analysis only; no trade entry."
+    if reason not in signal.reasons:
+        signal.reasons.append(reason)
+
+
+async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manager, engine, dispatcher):
+    """Keep exits and pending orders live without replaying a detector candle."""
+    spot = await price_fetcher.fetch_latest_spot()
+    # Risk checks must survive an independent option-chain outage.
+    try:
+        events = await position_manager.update_trades(spot)
+        if any(event == "SL_HIT" for _, event in events):
+            engine.clear_cooldown()
+    except Exception as exc:
+        logger.warning("REST exit check failed: %s", exc)
+    await dispatcher.on_spot(spot)
+    if _session_now().time() >= time(15, 30):
+        return
+    expiry = await oi_fetcher.get_nearest_expiry()
+    _, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry)
+    if _session_now().time() < time(15, 30):
+        await dispatcher.on_snapshot(full_chain, spot)
+
+
+async def _record_ml_snapshot(ml_collector, signal, wait_for_completion: bool = False, **snapshot_fields):
     """Persist signal snapshots before exits can label them.
 
     Ordinary feature snapshots remain fire-and-forget so the polling loop does
-    not acquire a database round trip on every cycle.
+    not acquire a database round trip on every cycle. Final or close-of-session
+    snapshots await persistence to avoid cancellation during loop shutdown.
     """
     try:
+        if wait_for_completion:
+            snapshot_fields["wait_for_completion"] = True
         insert_coro = ml_collector.snapshot(signal=signal, **snapshot_fields)
         if insert_coro is not None:
-            if signal is not None:
+            if signal is not None or wait_for_completion:
                 await insert_coro
             else:
                 asyncio.ensure_future(insert_coro)
     except Exception as e:
         print(f"[-] _record_ml_snapshot failed: {e}")
+
 
 async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle, *, outbox=None):
     """Confirm final Discord delivery before resolving a delivered OI watch."""
@@ -306,6 +362,7 @@ async def run():
 
     watch_outbox = await initialize_oi_watch_outbox()
     last_watch_candle = None
+    session_activity_date = None
     prev_iv = None
     last_vwap_reset_date = None
     waiting_printed = False
@@ -319,6 +376,11 @@ async def run():
         while True:
             now = datetime.now()
             current_time = now.time()
+            finalizing = False
+            session_closed = False
+            final_exit_checked = False
+            if time(9, 15) <= current_time < time(15, 30):
+                session_activity_date = now.date()
         
             # Reset VWAP at 09:15 once per day
             if current_time >= time(9, 15) and now.date() != last_vwap_reset_date:
@@ -342,9 +404,18 @@ async def run():
                     monthly_report_sent = await send_performance_report(storage.supabase, now, "monthly")
 
             if current_time >= time(15, 30):
-                print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
-                tick_feed.stop()
-                break
+                # One bounded drain belongs only to an already-running session.
+                # Cold starts and stale provider rows must never replay old bars.
+                finalizing = (
+                    current_time < time(15, 31)
+                    and session_activity_date == now.date()
+                    and (last_watch_candle is None
+                         or last_watch_candle.timestamp.date() != now.date()
+                         or last_watch_candle.timestamp.time() < time(15, 29))
+                )
+                if not finalizing:
+                    print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
+                    break
             
             if current_time < time(9, 15):
                 if not waiting_printed:
@@ -359,13 +430,51 @@ async def run():
             
             try:
                 # Fetch latest price candle
-                candle = await price_fetcher.fetch_latest_candle()
+                if finalizing:
+                    candle = await asyncio.wait_for(price_fetcher.fetch_latest_candle(auto_ack=False), timeout=10)
+                    if (candle is None or candle.timestamp.date() != now.date()
+                            or candle.timestamp.time() != time(15, 29)):
+                        break
+                    # Final wicks protect carried trades before optional chain I/O.
+                    final_exit_checked = True
+                    try:
+                        events = await position_manager.update_trades(
+                            candle.close, candle_high=candle.high, candle_low=candle.low,
+                            candle_timestamp=candle.timestamp,
+                        )
+                        if any(event == "SL_HIT" for _, event in events):
+                            engine.clear_cooldown()
+                    except Exception as exc:
+                        logger.warning("Final candle exit check failed: %s", exc)
+                else:
+                    candle = await price_fetcher.fetch_latest_candle(auto_ack=False)
+                if candle is None:
+                    if not tick_feed.is_active:
+                        await _monitor_rest_without_candle(
+                            price_fetcher, oi_fetcher, position_manager, engine, order_dispatcher,
+                        )
+                    if _session_now().time() >= time(15, 30):
+                        continue
+                    await _sleep_with_tick_exits(
+                        settings.poll_interval_seconds, tick_feed, position_manager,
+                        engine, order_dispatcher, respect_close=True,
+                    )
+                    continue
                 spot = candle.close
+                session_closed = finalizing or _session_now().time() >= time(15, 30)
             
                 # Fetch option chain dynamically
-                expiry_date = await oi_fetcher.get_nearest_expiry()
-                atm, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry_date)
-                await order_dispatcher.on_snapshot(full_chain, spot)
+                if finalizing:
+                    expiry_date = await asyncio.wait_for(oi_fetcher.get_nearest_expiry(), timeout=10)
+                    atm, full_chain = await asyncio.wait_for(
+                        oi_fetcher.fetch_chain(spot, expiry=expiry_date), timeout=10,
+                    )
+                else:
+                    expiry_date = await oi_fetcher.get_nearest_expiry()
+                    atm, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry_date)
+                    session_closed = session_closed or _session_now().time() >= time(15, 30)
+                    if not session_closed:
+                        await order_dispatcher.on_snapshot(full_chain, spot)
             
                 # Build and update dynamic levels
                 levels = level_fetcher.build_levels(
@@ -378,21 +487,25 @@ async def run():
                 current_iv = atm.ce.iv if (atm and atm.ce) else None
                 iv_change_pct, prev_iv = compute_iv_change_pct(current_iv, prev_iv)
             
-                # Run the engine
+                # Once prerequisites succeed, consume before the stateful engine:
+                # a detector exception can occur after its rolling buffers mutate.
+                price_fetcher.acknowledge_candle(candle)
                 signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
 
                 # Close expired watches before publishing fresh watches, retrying failures.
                 last_watch_candle = candle
-                await dispatch_oi_wall_watch_alerts(
-                    engine.oi_wall_filter, spot, outbox=watch_outbox,
-                    candles=price_fetcher.watch_candles, full_chain=full_chain,
-                    levels=levels if previous_day_verified else [
-                        level for level in levels if level.price not in (pdh, pdl)
-                    ],
-                    pdh=pdh if previous_day_verified else None,
-                    pdl=pdl if previous_day_verified else None,
-                    expiry_date=expiry_date,
-                )
+                session_closed = session_closed or _session_now().time() >= time(15, 30)
+                if not session_closed:
+                    await dispatch_oi_wall_watch_alerts(
+                        engine.oi_wall_filter, spot, outbox=watch_outbox,
+                        candles=price_fetcher.watch_candles, full_chain=full_chain,
+                        levels=levels if previous_day_verified else [
+                            level for level in levels if level.price not in (pdh, pdl)
+                        ],
+                        pdh=pdh if previous_day_verified else None,
+                        pdl=pdl if previous_day_verified else None,
+                        expiry_date=expiry_date,
+                    )
 
                 # Terminal UI: Track Warmup State
                 buffer_len = len(engine.candle_buffer)
@@ -438,20 +551,28 @@ async def run():
                         except Exception as pred_err:
                             print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ ML Prediction failed: {pred_err}{RESET}")
 
-                    # Run options calculations (sizing, optimal strike selection)
-                    try:
-                        await process_options_calculation(signal, full_chain, price_fetcher.dhan)
-                    except Exception as sizing_err:
-                        signal.bracket = None
-                        signal.options_sizing_status = "INVALID_DATA"
-                        signal.suggested_lots = 0
-                        signal.market_context["options_sizing"] = {
-                            "status": "INVALID_DATA", "final_lots": 0,
-                            "rejection_reason": "CALCULATION_FAILED",
-                        }
-                        print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
-
-                    format_signal_console(signal, spot)
+                    session_closed = session_closed or _session_now().time() >= time(15, 30)
+                    if session_closed:
+                        _mark_signal_session_closed(signal)
+                    else:
+                        # Run options calculations (sizing, optimal strike selection)
+                        try:
+                            await process_options_calculation(signal, full_chain, price_fetcher.dhan)
+                        except Exception as sizing_err:
+                            signal.bracket = None
+                            signal.options_sizing_status = "INVALID_DATA"
+                            signal.suggested_lots = 0
+                            signal.market_context["options_sizing"] = {
+                                "status": "INVALID_DATA", "final_lots": 0,
+                                "rejection_reason": "CALCULATION_FAILED",
+                            }
+                            print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Option sizing calculation failed: {sizing_err}{RESET}")
+                    session_closed = session_closed or _session_now().time() >= time(15, 30)
+                    if session_closed:
+                        _mark_signal_session_closed(signal)
+                        logger.info("SESSION_CLOSED: completed-bar observation %s; analysis only", signal.id)
+                    else:
+                        format_signal_console(signal, spot)
                     trade_executed = False
                     try:
                         if await storage.log_signal(signal, spot):
@@ -461,7 +582,10 @@ async def run():
                     except Exception as db_err:
                         print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Database log failed: {db_err}{RESET}")
 
-                    if trade_executed:
+                    session_closed = session_closed or _session_now().time() >= time(15, 30)
+                    if session_closed:
+                        _mark_signal_session_closed(signal)
+                    if trade_executed and not session_closed:
                         try:
                             await order_dispatcher.dispatch(signal, spot, full_chain, atm=atm)
                         except Exception as pm_err:
@@ -490,10 +614,12 @@ async def run():
                             logger.warning("Non-blocking prediction dispatch error: %s", log_err)
                             print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Non-blocking prediction dispatch error: {log_err}{RESET}")
 
-                    await _deliver_signal_alert(
-                        signal, spot, trade_executed, engine.oi_wall_filter, candle,
-                        outbox=watch_outbox,
-                    )
+                    session_closed = session_closed or _session_now().time() >= time(15, 30)
+                    if not session_closed:
+                        await _deliver_signal_alert(
+                            signal, spot, trade_executed, engine.oi_wall_filter, candle,
+                            outbox=watch_outbox,
+                        )
 
                 # ML Data Collection: log a feature snapshot every cycle, signal or not.
                 #
@@ -506,6 +632,7 @@ async def run():
                 await _record_ml_snapshot(
                     ml_collector,
                     signal,
+                    wait_for_completion=finalizing or _session_now().time() >= time(15, 30),
                     candle=candle,
                     atm=atm,
                     full_chain=full_chain,
@@ -526,17 +653,18 @@ async def run():
 
                 # Update active trades with new spot price. Candle high/low enable
                 # intrabar SL/target detection (TASK-172, audit item 11).
-                try:
-                    trade_events = await position_manager.update_trades(
-                        spot, candle_high=candle.high, candle_low=candle.low, candle_timestamp=candle.timestamp
-                    )
-                    # A stop-out frees the engine cooldown so the next setup can be
-                    # taken immediately instead of waiting out the timer.
-                    if any(ev_type == "SL_HIT" for _, ev_type in trade_events):
-                        engine.clear_cooldown()
-                        print(f"{Y}[{now.strftime('%H:%M:%S')}] 🔓 Cooldown cleared after stop-out — re-entry unlocked.{RESET}")
-                except Exception as pm_update_err:
-                    print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager update_trades failed: {pm_update_err}{RESET}")
+                if not final_exit_checked:
+                    try:
+                        trade_events = await position_manager.update_trades(
+                            spot, candle_high=candle.high, candle_low=candle.low, candle_timestamp=candle.timestamp
+                        )
+                        # A stop-out frees the engine cooldown so the next setup can be
+                        # taken immediately instead of waiting out the timer.
+                        if any(ev_type == "SL_HIT" for _, ev_type in trade_events):
+                            engine.clear_cooldown()
+                            print(f"{Y}[{now.strftime('%H:%M:%S')}] 🔓 Cooldown cleared after stop-out — re-entry unlocked.{RESET}")
+                    except Exception as pm_update_err:
+                        print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager update_trades failed: {pm_update_err}{RESET}")
             
                 # Clear error tracking on successful cycle
                 if last_error_msg is not None:
@@ -547,7 +675,10 @@ async def run():
                 error_str = str(e).lower()
                 current_error = str(e)
             
-                if "401" in error_str or "auth" in error_str:
+                if finalizing:
+                    logger.warning("Final completed-bar drain failed: %s", e)
+                    await send_error_alert(f"Final completed-bar drain failed: {e}")
+                elif "401" in error_str or "auth" in error_str:
                     print(f"{R}[{now.strftime('%H:%M:%S')}] ❌ ERROR: Dhan API Authentication failed.{RESET}")
                     print(f"   {W}Details: {e}{RESET}")
                     print(f"   {W}Action : Reloading credentials from Supabase...{RESET}")
@@ -565,29 +696,41 @@ async def run():
                     except Exception as reload_err:
                         print(f"{R}   [!] Supabase credentials reload failed: {reload_err}{RESET}")
                 
-                    print(f"   {Y}Retrying in 60s...\n{RESET}")
-                
                     if last_error_msg != current_error:
                         await send_error_alert(f"Dhan API Authentication failed: {e}")
                         last_error_msg = current_error
                     
-                    await asyncio.sleep(60)
+                    retry_delay = _close_bounded_delay(60)
+                    if retry_delay > 0:
+                        print(f"   {Y}Retrying in {retry_delay:g}s...\n{RESET}")
+                        await asyncio.sleep(retry_delay)
                 else:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Warning: Fetch cycle error - {e}{RESET}")
                     if last_error_msg != current_error:
                         await send_error_alert(f"Fetch cycle error - {e}")
                         last_error_msg = current_error
             
-            await _sleep_with_tick_exits(settings.poll_interval_seconds, tick_feed, position_manager, engine, order_dispatcher)
-    finally:
-        if last_watch_candle is not None:
-            engine.oi_wall_filter.reset_session(last_watch_candle)
-            await dispatch_oi_wall_watch_alerts(
-                engine.oi_wall_filter, last_watch_candle.close, outbox=watch_outbox,
+            if finalizing:
+                break
+            if session_closed or _session_now().time() >= time(15, 30):
+                continue
+            await _sleep_with_tick_exits(
+                settings.poll_interval_seconds, tick_feed, position_manager,
+                engine, order_dispatcher, respect_close=True,
             )
-        if watch_outbox is not None:
-            await watch_outbox.close()
-        tick_feed.stop()
+    finally:
+        try:
+            if last_watch_candle is not None:
+                engine.oi_wall_filter.reset_session(last_watch_candle)
+                await dispatch_oi_wall_watch_alerts(
+                    engine.oi_wall_filter, last_watch_candle.close, outbox=watch_outbox,
+                )
+        finally:
+            try:
+                if watch_outbox is not None:
+                    await watch_outbox.close()
+            finally:
+                tick_feed.stop()
 
 if __name__ == "__main__":
     try:

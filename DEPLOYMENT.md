@@ -83,8 +83,10 @@ fly deploy
 > section 7.
 >
 > Note there is **no market-hours guard**: merging to `main` between 09:15 and
-> 15:30 IST restarts the machine mid-session, which resets VWAP and the candle
-> buffers for the rest of the day. Merge after the close.
+> 15:30 IST restarts the machine mid-session and resets detector candle buffers.
+> VWAP is rebuilt from the current session's completed provider history on the
+> next successful fetch. Plan routine deployments outside market hours; urgent
+> market-session repairs require verification against fresh completed bars.
 >
 > The pipeline only ever runs `flyctl deploy`. It never creates the app and
 > never touches the secrets set in Step 2 — those live on the Fly app.

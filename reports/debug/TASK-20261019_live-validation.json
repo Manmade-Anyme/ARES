@@ -1,0 +1,33 @@
+{
+  "series_sampled_at": "2026-10-19T09:42:22.823772+00:00",
+  "completed_session_bars": 357,
+  "snapshots": [
+    {
+      "snapshot_id": 28883,
+      "poll_ist": "2026-10-19 15:10:06.548635+05:30",
+      "completed_bar_ist": "2026-10-19T15:09:00+05:30",
+      "volume": 1573756,
+      "vwap": 22986.809335496815,
+      "vwap_error": 0.0,
+      "signal_generated": false
+    },
+    {
+      "snapshot_id": 28884,
+      "poll_ist": "2026-10-19 15:11:06.918697+05:30",
+      "completed_bar_ist": "2026-10-19T15:10:00+05:30",
+      "volume": 1946743,
+      "vwap": 22985.861920402054,
+      "vwap_error": 0.0,
+      "signal_generated": false
+    },
+    {
+      "snapshot_id": 28885,
+      "poll_ist": "2026-10-19 15:12:07.166276+05:30",
+      "completed_bar_ist": "2026-10-19T15:11:00+05:30",
+      "volume": 1556693,
+      "vwap": 22985.169073554065,
+      "vwap_error": 0.0,
+      "signal_generated": false
+    }
+  ]
+}

@@ -41,6 +41,35 @@ class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(insert_finished.done())
         insert_finished.cancel()
 
+    async def test_non_signal_snapshot_with_wait_for_completion_awaits(self):
+        collector = MagicMock()
+        insert_finished = asyncio.get_running_loop().create_future()
+        collector.snapshot.return_value = insert_finished
+
+        task = asyncio.create_task(
+            main._record_ml_snapshot(collector, None, wait_for_completion=True, spot=24000.0)
+        )
+        await asyncio.sleep(0)
+
+        self.assertFalse(task.done())
+        insert_finished.set_result(None)
+        await task
+        collector.snapshot.assert_called_once_with(
+            signal=None, wait_for_completion=True, spot=24000.0
+        )
+
+
+    async def test_default_snapshot_accepts_existing_strict_signature(self):
+        from types import SimpleNamespace
+        recorded = []
+
+        async def snapshot(*, signal, spot):
+            recorded.append((signal, spot))
+
+        await main._record_ml_snapshot(SimpleNamespace(snapshot=snapshot), None, spot=24000.0)
+        await asyncio.sleep(0)
+        self.assertEqual(recorded, [(None, 24000.0)])
+
     async def test_record_ml_snapshot_catches_exception(self):
         # 1. Sync exception from snapshot() call
         collector = MagicMock()
