@@ -314,8 +314,7 @@ def option_sizing_summary(signal: AresSignal) -> str:
         return f'Option sizing unavailable: {bracket.rejection_reason}'
     return (f'Option Sizing: {bracket.lots} lots | {bracket.strike} {bracket.option_type} | '
             f'Limit {bracket.entry_limit:.2f} | Emergency SL {bracket.catastrophic_opt_sl:.2f} | '
-            f'T1 {bracket.target_1:.2f} | T2 {bracket.target_2:.2f}'
-            + (f' | {bracket.rejection_reason}' if bracket.rejection_reason else ''))
+            f'T1 {bracket.target_1:.2f} | T2 {bracket.target_2:.2f}')
 
 
 def attach_options_sizing(signal: AresSignal, bracket: OptionOrderBracket, config: TuningConfig) -> None:

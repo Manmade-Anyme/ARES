@@ -45,8 +45,6 @@ def _option_bracket_fields(signal):
         {"name": "📐 Sizing", "value": f"{bracket.lots} Lots ({bracket.lots * lot_size} qty)", "inline": True},
         {"name": "💰 Risk Budget", "value": f"₹{_number(risk, '.0f')} ({_number(risk_pct, '.1f')}% of ₹{_number(capital, '.0f')} | Uncapped Suggestion: {_number(uncapped, '.0f')} lots)", "inline": False},
     ]
-    if bracket.rejection_reason in CAPITAL_SIZING_REJECTIONS:
-        fields.append({"name": "📐 Lot Sizing", "value": f"{bracket.rejection_reason}: suggested lots = 0. Capital affects lot sizing only; option prices remain available.", "inline": False})
     if getattr(bracket, "iv_feed_warning", None):
         fields.append({"name": "⚠️ IV Diagnostic", "value": f"{bracket.iv_feed_warning} (diagnostic only)", "inline": False})
     return fields
