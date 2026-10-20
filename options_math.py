@@ -11,6 +11,7 @@ from config_profiles import TuningConfig
 from models import AresSignal, OptionGreeks, OptionOrderBracket
 
 IST = timezone(timedelta(hours=5, minutes=30))
+CAPITAL_SIZING_REJECTIONS = frozenset({'NO_AVAILABLE_CAPITAL', 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET'})
 
 
 def _finite(value: Any) -> bool:
@@ -199,14 +200,12 @@ def _expected_move_diagnostics(signal: AresSignal, full_chain: list) -> dict:
     return {'expected_move_straddle': straddle, 'expected_move_iv': iv_move, 'iv_feed_warning': warning}
 
 
-def build_option_bracket(signal: AresSignal, full_chain: list, capital: float,
+def build_option_bracket(signal: AresSignal, full_chain: list, capital: Optional[float],
                          config: TuningConfig) -> OptionOrderBracket:
-    """Construct an instantaneous bracket; theta gates feasibility, never inflates lots."""
+    """Price independently of capital; only positive allocations permit execution."""
     balance, capital_valid = validate_capital(capital)
     bracket = OptionOrderBracket('', '', 0, signal.option_type, 0, 0, 0, 0, None,
                                  0, None, False, signal_id=signal.id, capital=balance)
-    if not capital_valid:
-        return replace(bracket, rejection_reason='NO_AVAILABLE_CAPITAL')
     bracket = replace(bracket, **_expected_move_diagnostics(signal, full_chain))
     lot_size = config.nifty_lot_size
     cap = config.options_max_lots_cap
@@ -272,7 +271,8 @@ def build_option_bracket(signal: AresSignal, full_chain: list, capital: float,
     lots = max(0, min(suggested, affordable, int(cap)))
     return replace(bracket, lots=lots, uncapped_suggested_lots=suggested,
                    affordable_lots=affordable, is_valid=lots > 0,
-                   rejection_reason=None if lots > 0 else 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET')
+                   rejection_reason=(None if lots > 0 else 'NO_AVAILABLE_CAPITAL' if not capital_valid
+                                     else 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET'))
 
 
 def option_sizing_context(signal: AresSignal) -> dict:
@@ -310,17 +310,18 @@ def option_sizing_summary(signal: AresSignal) -> str:
     if bracket is None:
         context = option_sizing_context(signal)
         return f"Option Sizing: {context['suggested_lots']} lots | {context['status']}"
-    if not bracket.is_valid:
+    if not bracket.is_valid and bracket.rejection_reason not in CAPITAL_SIZING_REJECTIONS:
         return f'Option sizing unavailable: {bracket.rejection_reason}'
     return (f'Option Sizing: {bracket.lots} lots | {bracket.strike} {bracket.option_type} | '
             f'Limit {bracket.entry_limit:.2f} | Emergency SL {bracket.catastrophic_opt_sl:.2f} | '
-            f'T1 {bracket.target_1:.2f} | T2 {bracket.target_2:.2f}')
+            f'T1 {bracket.target_1:.2f} | T2 {bracket.target_2:.2f}'
+            + (f' | {bracket.rejection_reason}' if bracket.rejection_reason else ''))
 
 
 def attach_options_sizing(signal: AresSignal, bracket: OptionOrderBracket, config: TuningConfig) -> None:
     signal.bracket = bracket
     signal.options_sizing_status = ('VALID' if bracket.is_valid else
-                                    'NO_AVAILABLE_CAPITAL' if bracket.rejection_reason == 'NO_AVAILABLE_CAPITAL'
+                                    bracket.rejection_reason if bracket.rejection_reason in CAPITAL_SIZING_REJECTIONS
                                     else 'INVALID_DATA')
     signal.suggested_lots = bracket.lots
     signal.capital = bracket.capital

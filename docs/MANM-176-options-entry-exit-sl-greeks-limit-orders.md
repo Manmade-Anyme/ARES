@@ -131,7 +131,7 @@ $$\text{Expected Move}_{1\sigma} \approx \text{ATM Straddle Price} \times 1.25$$
 
 ### 3.6 Strict Risk Sizing & Capital Hard-Borders
 Let $C$ be the available balance returned from DhanHQ, and $r$ the configured risk fraction (`risk_per_trade_pct / 100.0`):
-1. **Capital Validity**: If $C \le 0$ or balance fetch fails without verified fallback, set `suggested_lots = 0`, `affordable_lots = 0`, attach reason `NO_AVAILABLE_CAPITAL`, and abort execution.
+1. **Capital Validity**: Capital affects lot allocation only. Calculate and display option entry, stop loss, T1 and T2 independently of account balance, subject to the existing quote, Greeks, ordering and feasibility checks. If $C \le 0$ or balance fetch fails without verified fallback, set `suggested_lots = 0`, `affordable_lots = 0`, attach reason `NO_AVAILABLE_CAPITAL`, and block execution while retaining the calculated prices. A positive balance that cannot fund the risk or premium also retains prices with zero final lots and reason `INSUFFICIENT_CAPITAL_OR_RISK_BUDGET`. `is_valid` continues to require positive final lots for execution; these allocation-only rejections do not hide valid prices in alerts or persisted summaries.
 2. **Sizing Math**:
    $$B = C \times r$$
    $$\text{PerLotLoss} = \text{RiskLossPts} \times \text{lot\_size}$$
@@ -297,7 +297,7 @@ class OptionOrderBracket:
 class AresSignal:
     # Existing fields...
     bracket: Optional[OptionOrderBracket] = None
-    options_sizing_status: str = "PENDING"  # "VALID", "NO_AVAILABLE_CAPITAL", "INVALID_DATA"
+    options_sizing_status: str = "PENDING"  # "VALID", "NO_AVAILABLE_CAPITAL", "INSUFFICIENT_CAPITAL_OR_RISK_BUDGET", "INVALID_DATA"
 ```
 
 ### 5.2 `config_profiles.py`
@@ -318,7 +318,7 @@ Refactor existing linear functions into a pure, comprehensive calculation suite:
 - `validate_capital(capital: Optional[float]) -> Tuple[float, bool]`: Returns validated non-negative balance and validity flag.
 - `calculate_lots(risk_amt: float, sl_points: float, lot_size: int) -> int`: Returns $\ge 0$ integer, returns 0 if inputs $\le 0$.
 - `calculate_affordable_lots(capital: float, premium: float, lot_size: int) -> int`: Returns $\ge 0$ integer.
-- `build_option_bracket(signal: AresSignal, full_chain: list, capital: float, config: TuningConfig) -> OptionOrderBracket`: Pure constructor for executable bracket, applying `config.options_max_lots_cap` and `config.options_slippage_buffer_pts`.
+- `build_option_bracket(signal: AresSignal, full_chain: list, capital: Optional[float], config: TuningConfig) -> OptionOrderBracket`: Pure constructor that prices independently of capital and applies `config.options_max_lots_cap` and `config.options_slippage_buffer_pts`. Zero-lot brackets retain valid prices but cannot execute.
 - `process_options_calculation(...)`: Orchestrates strike selection, Greek calculation, bracket construction, and signal attachment without fabricating sentinel quotes.
 
 ### 5.5 `execution/order_manager.py` & `main.py` Wiring
