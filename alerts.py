@@ -17,7 +17,7 @@ def _number(value, precision=".2f"):
         return "unavailable"
 
 
-def _option_bracket_fields(signal):
+def _option_bracket_fields(signal, *, for_discord=False):
     """Shared console/embed presentation for calculated brackets and rejections."""
     bracket = getattr(signal, "bracket", None)
     status = getattr(signal, "options_sizing_status", "PENDING")
@@ -41,10 +41,14 @@ def _option_bracket_fields(signal):
         {"name": "📊 Option Greeks", "value": f"Δ {_number(greeks.delta, '+.3f')} | Γ {_number(greeks.gamma, '.4f')} | Θ {_number(greeks.theta, '.1f')}/day | Vega {_number(greeks.vega)} | IV {_number(greeks.iv, '.1f')}%", "inline": False},
         {"name": "🎯 Target 1", "value": f"₹ {_number(bracket.target_1)} ({min(bracket.lots, max(1, bracket.lots // 2))} lots planned | Spot: {_number(signal.target_1)})", "inline": True},
         {"name": "🎯 Target 2", "value": f"₹ {_number(bracket.target_2)} (Runner | Spot: {_number(signal.target_2)})", "inline": True},
-        {"name": "🛑 Stop Loss", "value": f"Layer 1 (Synthetic Invalidation): Spot {_number(bracket.synthetic_spot_sl)}\nLayer 2 (Broker Emergency Floor): ₹ {_number(bracket.catastrophic_opt_sl)}", "inline": False},
+        {"name": "🛑 Stop Loss", "value": f"₹ {_number(bracket.catastrophic_opt_sl)}" if for_discord else f"Layer 1 (Synthetic Invalidation): Spot {_number(bracket.synthetic_spot_sl)}\nLayer 2 (Broker Emergency Floor): ₹ {_number(bracket.catastrophic_opt_sl)}", "inline": False},
         {"name": "📐 Sizing", "value": f"{bracket.lots} Lots ({bracket.lots * lot_size} qty)", "inline": True},
         {"name": "💰 Risk Budget", "value": f"₹{_number(risk, '.0f')} ({_number(risk_pct, '.1f')}% of ₹{_number(capital, '.0f')} | Uncapped Suggestion: {_number(uncapped, '.0f')} lots)", "inline": False},
     ]
+    if for_discord and not settings.discord_show_option_details:
+        fields = [field for field in fields if field["name"] not in {
+            "⚡ Order Type", "📊 Option Greeks", "💰 Risk Budget",
+        }]
     if getattr(bracket, "iv_feed_warning", None):
         fields.append({"name": "⚠️ IV Diagnostic", "value": f"{bracket.iv_feed_warning} (diagnostic only)", "inline": False})
     return fields
@@ -183,7 +187,7 @@ async def send_discord(signal: AresSignal, spot: float) -> bool:
             fields.append({"name": "🔁 Retest Confirmation", "value": retest_text, "inline": False})
 
     # Sizing fields
-    bracket_fields = _option_bracket_fields(signal)
+    bracket_fields = _option_bracket_fields(signal, for_discord=True)
     if bracket_fields:
         fields.extend(bracket_fields)
     elif getattr(signal, "suggested_lots", None) is not None:

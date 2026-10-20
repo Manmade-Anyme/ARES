@@ -39,7 +39,8 @@ def test_text_alert_contains_bracket_and_greeks():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reason', ['NO_AVAILABLE_CAPITAL', 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET'])
-async def test_zero_lot_alerts_keep_option_prices_visible(reason):
+@pytest.mark.parametrize('show_details', [False, True])
+async def test_zero_lot_alerts_keep_option_prices_visible(reason, show_details):
     signal = signal_with_bracket()
     signal.bracket.is_valid = False
     signal.bracket.lots = 0
@@ -52,15 +53,17 @@ async def test_zero_lot_alerts_keep_option_prices_visible(reason):
     assert 'No executable bracket' not in message
     client = AsyncMock()
     client.post.return_value = MagicMock()
-    with patch('alerts.settings.discord_webhook_url', 'http://example.invalid'), patch('httpx.AsyncClient') as factory:
+    with patch('alerts.settings.discord_show_option_details', show_details), patch('alerts.settings.discord_webhook_url', 'http://example.invalid'), patch('httpx.AsyncClient') as factory:
         factory.return_value.__aenter__.return_value = client
         assert await send_discord(signal, 24000)
     fields = {field['name']: field['value'] for field in client.post.call_args.kwargs['json']['embeds'][0]['fields']}
     assert '100.50' in fields['🎯 Entry Limit']
-    assert '95.50' in fields['🛑 Stop Loss']
+    assert fields['🛑 Stop Loss'] == '₹ 95.50'
     assert '110.00' in fields['🎯 Target 1']
     assert '122.00' in fields['🎯 Target 2']
     assert fields['📐 Sizing'] == '0 Lots (0 qty)'
+    for name in ('⚡ Order Type', '📊 Option Greeks', '💰 Risk Budget'):
+        assert (name in fields) is show_details
     assert len(fields) <= 25
 
 
@@ -120,11 +123,12 @@ def test_dirty_lots_never_reverse_or_poison_report_pnl(lots, pnl):
 
 
 @pytest.mark.asyncio
-async def test_valid_discord_bracket_separates_limits_from_spot_levels():
+@pytest.mark.parametrize('show_details', [False, True])
+async def test_valid_discord_bracket_separates_limits_from_spot_levels(show_details):
     signal = signal_with_bracket()
     client = AsyncMock()
     client.post.return_value = MagicMock()
-    with patch("alerts.settings.discord_webhook_url", "http://example.invalid"), patch("httpx.AsyncClient") as factory:
+    with patch('alerts.settings.discord_show_option_details', show_details), patch("alerts.settings.discord_webhook_url", "http://example.invalid"), patch("httpx.AsyncClient") as factory:
         factory.return_value.__aenter__.return_value = client
         assert await send_discord(signal, 24000)
     fields = {field["name"]: field["value"] for field in client.post.call_args.kwargs["json"]["embeds"][0]["fields"]}
@@ -132,10 +136,25 @@ async def test_valid_discord_bracket_separates_limits_from_spot_levels():
     assert "LTP: ₹ 100.00" in fields["🎯 Entry Limit"]
     assert "24018.00" in fields["🎯 Target 1"]
     assert "122.00" in fields["🎯 Target 2"]
-    assert "23990.00" in fields["🛑 Stop Loss"]
-    assert "95.50" in fields["🛑 Stop Loss"]
-    assert "₹500" in fields["💰 Risk Budget"]
+    assert fields["🛑 Stop Loss"] == "₹ 95.50"
+    assert fields["🛑 SL"] == "**23990.00** (Spot Ref)"
+    for name in ("⚡ Order Type", "📊 Option Greeks", "💰 Risk Budget"):
+        assert (name in fields) is show_details
+    if show_details:
+        assert "PAPER simulation; live activation blocked" in fields["⚡ Order Type"]
+        assert "Γ 0.0020" in fields["📊 Option Greeks"]
+        assert "₹500" in fields["💰 Risk Budget"]
     assert len(fields) <= 25  # Discord embed field limit.
+
+
+def test_discord_option_details_default_off_in_both_profiles():
+    from config import Settings
+    from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
+
+    settings = Settings()
+    for profile in (EXPIRY_CONFIG, NON_EXPIRY_CONFIG):
+        settings.apply_profile(profile)
+        assert settings.discord_show_option_details is False
 
 
 @pytest.mark.parametrize("update_type,spot,price", [

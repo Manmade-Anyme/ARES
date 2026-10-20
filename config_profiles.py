@@ -215,6 +215,9 @@ class TuningConfig:
     options_slippage_buffer_pts: float = 0.50
     options_holding_horizon_minutes: float = 15.0
 
+    # Discord diagnostics; option entry, stops, targets and lots remain visible.
+    discord_show_option_details: bool = False
+
     # Position manager — a new signal matching an open trade's setup/direction
     # with entry within this many points is treated as a duplicate (TASK-172
     # guard; tolerance was hardcoded 1.0).
