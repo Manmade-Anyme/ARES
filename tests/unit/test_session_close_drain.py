@@ -1,6 +1,5 @@
 """Exercise no-new-bar monitoring and final-bar draining through the run loop."""
 import asyncio
-import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -633,3 +632,105 @@ async def test_prior_day_poll_activity_never_enables_today_final_drain(loop):
     await main.run()
     ctx.price.fetch_latest_candle.assert_awaited_once()
     ctx.engine.tick.assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["auth", "ordinary", "no_new_bar"])
+@pytest.mark.asyncio
+async def test_near_close_wait_is_clipped_so_scheduling_overhead_cannot_skip_final_bar(loop, monkeypatch, path):
+    from datetime import timedelta
+    start = datetime(2026, 10, 19, 15, 29, 58 if path == "auth" else 59)
+    first, final = candle(minute=28), candle(minute=29)
+    ctx = loop([first, final], [start])
+    ctx.settings.poll_interval_seconds = 60
+    current = [start]
+    sleeps = []
+    fetched = []
+    ctx.clock.now.side_effect = lambda: current[0]
+    monkeypatch.setattr(main, "_session_now", lambda: current[0])
+
+    async def price(*args, **kwargs):
+        fetched.append(True)
+        if len(fetched) == 1:
+            if path == "auth":
+                current[0] = datetime(2026, 10, 19, 15, 29, 59)
+                raise RuntimeError("401 authentication failed before close")
+            if path == "no_new_bar":
+                return None
+            return first
+        return final
+
+    async def sleep_with_scheduling_overhead(seconds):
+        sleeps.append(seconds)
+        current[0] += timedelta(seconds=seconds + 1.1)
+
+    ctx.price.fetch_latest_candle.side_effect = price
+    monkeypatch.setattr(main.asyncio, "sleep", sleep_with_scheduling_overhead)
+    if path == "auth":
+        monkeypatch.setattr("dhanhq.DhanContext", MagicMock())
+        monkeypatch.setattr("dhanhq.dhanhq", MagicMock())
+    await main.run()
+    expected = [first, final] if path == "ordinary" else [final]
+    assert [call.args[0] for call in ctx.engine.tick.call_args_list] == expected
+    assert sleeps == [1.0]
+    assert fetched == [True, True]
+    assert ctx.collector.snapshot.call_args.kwargs["candle"] is final
+    assert ctx.collector.snapshot.call_args.kwargs["wait_for_completion"] is True
+    ctx.positions.update_trades.assert_any_await(final.close, candle_high=final.high,
+                                               candle_low=final.low, candle_timestamp=final.timestamp)
+    ctx.dispatcher.dispatch.assert_not_awaited()
+    ctx.alerts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_aware_tick_sleep_finishes_protective_callbacks_without_another_delay(loop, monkeypatch):
+    from datetime import timedelta
+    ctx = loop([], [datetime(2026, 10, 19, 15, 29, 58)])
+    ctx.feed.is_active = True
+    ctx.feed.get_latest_price.return_value = 24000
+    ctx.positions.active_trades = [{"id": "existing"}]
+    current = [datetime(2026, 10, 19, 15, 29, 58)]
+    sleeps = []
+    protected = []
+    monkeypatch.setattr(main, "_session_now", lambda: current[0])
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        current[0] += timedelta(seconds=seconds)
+
+    async def pending_update(spot):
+        current[0] = datetime(2026, 10, 19, 15, 30, 10)
+
+    async def protect_position(spot):
+        protected.append(spot)
+        return [("existing", "SL_HIT")]
+
+    monkeypatch.setattr(main.asyncio, "sleep", sleep)
+    ctx.dispatcher.on_spot.side_effect = pending_update
+    ctx.positions.update_trades.side_effect = protect_position
+    await main._sleep_with_tick_exits(60, ctx.feed, ctx.positions, ctx.engine,
+                                     ctx.dispatcher, respect_close=True)
+    assert sleeps == [1]
+    assert protected == [24000]
+    ctx.engine.clear_cooldown.assert_called_once()
+
+
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.asyncio
+async def test_close_aware_daytime_wait_keeps_existing_cadence(loop, monkeypatch, active):
+    from datetime import timedelta
+    ctx = loop([], [datetime(2026, 10, 19, 10)])
+    ctx.feed.is_active = active
+    ctx.feed.get_latest_price.return_value = None
+    ctx.settings.tick_exit_check_interval_seconds = 2
+    current = [datetime(2026, 10, 19, 10)]
+    sleeps = []
+    monkeypatch.setattr(main, "_session_now", lambda: current[0])
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        current[0] += timedelta(seconds=seconds)
+
+    monkeypatch.setattr(main.asyncio, "sleep", sleep)
+    await main._sleep_with_tick_exits(6, ctx.feed, ctx.positions, ctx.engine,
+                                     ctx.dispatcher, respect_close=True)
+    assert sleeps == ([2, 2, 2] if active else [6])

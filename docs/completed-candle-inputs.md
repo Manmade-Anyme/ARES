@@ -46,9 +46,17 @@ await limit; expiry lookup and chain fetch each have their own 10-second limit.
 This is not a single 10-second limit for the whole finalization path. This
 activity-based eligibility correction is the third review follow-up; focused
 and integrated tests pass and independent QA approved it, all offline.
-Authentication recovery retains credential reload and error alerts,
-but its 60-second retry backoff runs only when a fresh clock remains before
-15:30, so an authentication failure crossing the close can reach the same gate.
+The fourth review follow-up implements a shared close-bounded wait budget,
+verified offline on 20 October. A fresh clock clips a
+requested delay to the nonnegative seconds remaining until 15:30. Authentication
+recovery retains credential reload and error alerts but uses that clipped
+backoff, including when it begins just before the close. Normal main-loop and
+no-new-bar tick-aware waits opt into the same limit. With an active feed, the
+helper recomputes the remaining budget before each sleep step so protective
+callback processing cannot add further sleeps after close. In-flight protective
+callbacks are not cancelled; standalone helper callers retain the default
+`respect_close=False` and existing daytime behavior. Both main-loop polling
+paths use `respect_close=True`.
 
 The final bar's high/low protective exit checks run before optional chain I/O.
 When chain data is available, the final bar also reaches normal detector and ML

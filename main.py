@@ -118,23 +118,30 @@ async def _persist_ml_snapshot_before_exit_checks(collector, **snapshot):
         print(f"MLCollector: signal-bound snapshot persistence failed: {exc}")
         return False
 
-async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine, dispatcher=None):
+async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine, dispatcher=None, *, respect_close=False):
     """
     Sleeps for `total_seconds` (the REST poll interval), but when the
     WebSocket TickFeed is active, wakes every `tick_exit_check_interval_seconds`
     to run a tick-driven exit check against the feed's latest LTP — SL/T1/T2
     hits are caught between candle closes instead of waiting up to 60s
     (TASK-173, audit item 18). Falls back to a single plain sleep when the
-    feed isn't active, identical to the pre-TASK-173 loop.
+    feed isn't active, identical to the pre-TASK-173 loop. The main session
+    opts into clipping each timer delay at close, while protective callbacks finish.
     """
     if not tick_feed.is_active:
-        await asyncio.sleep(total_seconds)
+        delay = _close_bounded_delay(total_seconds) if respect_close else total_seconds
+        if delay > 0 or not respect_close:
+            await asyncio.sleep(delay)
         return
 
     interval = settings.tick_exit_check_interval_seconds
     elapsed = 0.0
     while elapsed < total_seconds:
         step = min(interval, total_seconds - elapsed)
+        if respect_close:
+            step = _close_bounded_delay(step)
+            if step <= 0:
+                return
         await asyncio.sleep(step)
         elapsed += step
 
@@ -155,6 +162,12 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
 
 def _session_now():
     return datetime.now()
+
+
+def _close_bounded_delay(requested_seconds):
+    now = _session_now()
+    close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return max(0.0, min(requested_seconds, (close - now).total_seconds()))
 
 
 def _mark_signal_session_closed(signal):
@@ -444,7 +457,7 @@ async def run():
                         continue
                     await _sleep_with_tick_exits(
                         settings.poll_interval_seconds, tick_feed, position_manager,
-                        engine, order_dispatcher,
+                        engine, order_dispatcher, respect_close=True,
                     )
                     continue
                 spot = candle.close
@@ -687,9 +700,10 @@ async def run():
                         await send_error_alert(f"Dhan API Authentication failed: {e}")
                         last_error_msg = current_error
                     
-                    if _session_now().time() < time(15, 30):
-                        print(f"   {Y}Retrying in 60s...\n{RESET}")
-                        await asyncio.sleep(60)
+                    retry_delay = _close_bounded_delay(60)
+                    if retry_delay > 0:
+                        print(f"   {Y}Retrying in {retry_delay:g}s...\n{RESET}")
+                        await asyncio.sleep(retry_delay)
                 else:
                     print(f"{Y}[{now.strftime('%H:%M:%S')}] ⚠️ Warning: Fetch cycle error - {e}{RESET}")
                     if last_error_msg != current_error:
@@ -700,7 +714,10 @@ async def run():
                 break
             if session_closed or _session_now().time() >= time(15, 30):
                 continue
-            await _sleep_with_tick_exits(settings.poll_interval_seconds, tick_feed, position_manager, engine, order_dispatcher)
+            await _sleep_with_tick_exits(
+                settings.poll_interval_seconds, tick_feed, position_manager,
+                engine, order_dispatcher, respect_close=True,
+            )
     finally:
         try:
             if last_watch_candle is not None:

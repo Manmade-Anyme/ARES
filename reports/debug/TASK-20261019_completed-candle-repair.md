@@ -120,7 +120,7 @@ Additional implementation evidence: `/tmp/ares-pr140-new-review-findings.json`, 
 
 For a future rollout, use the normal full build after human merge, or include all four changed runtime files relative to the initial base: `main.py`, `fetchers/price_fetcher.py`, `oi_watch_context.py` and `ml_signal/collector.py`. Release 168's original three-file overlay does not contain the collector completion fix.
 
-## PR #140 third review — activity eligibility verified offline
+## PR #140 third review — `970c8ea`, activity eligibility verified offline
 
 [P2: allow the final drain after the first pre-close poll fails](https://github.com/Manmade-Anyme/ARES/pull/140#discussion_r4317190680) identified a remaining gap in `2396302`. The close gate inferred an active session from `last_watch_candle`, which is set only after a successful engine tick. A first market-open poll could therefore cross the close during a price, expiry, chain or level failure, or a no-new-candle response, and then be misclassified as an after-hours cold start.
 
@@ -136,5 +136,20 @@ Offline regression and review evidence:
 - Independent focused suite: **145 passed and 8 subtests passed in 1.59s**. Evidence: `/tmp/ares-pr140-session-activity-qa.md`. These focused runs overlap and must not be summed.
 - Final integrated suite: `python3 -m pytest tests/ -q --import-mode=importlib --disable-warnings --tb=short` — **1,566 passed, 12 warnings; 45 subtests passed in 56.46s**. Evidence: `/tmp/ares-pr140-session-activity-full-suite.txt`. The focused results above overlap this full run and are not additional test counts.
 
-This final integrated result verifies the frozen activity/authentication correction offline; the preceding 1,559-test result and green CI remain historical evidence for `2396302`. No deployment or live-session result is claimed for the review follow-ups.
+This integrated result verified the activity/authentication correction in `970c8ea` offline; it predates the fourth review correction below. The preceding 1,559-test result and green CI remain historical evidence for `2396302`. No deployment or live-session result is claimed for the review follow-ups.
+
+## PR #140 fourth review — close-bounded waits verified offline, 20 October
+
+[P2: bound the pre-close authentication backoff by the close](https://github.com/Manmade-Anyme/ARES/pull/140#discussion_r4317280170) exposed a remaining timing gap in `970c8ea`: testing only whether the clock was already closed still allowed a 60-second sleep starting at 15:29:59, plus processing overhead, to miss the 15:31 finalization cutoff.
+
+The implemented correction shares a close-bounded delay budget: a fresh clock clips each requested wait to the seconds remaining until 15:30, clamped at zero. Authentication backoff logs and sleeps the actual clipped delay. Normal main-loop and no-new-candle tick-aware waits use `respect_close=True`; the active-feed path recalculates remaining time before each sleep step so time spent in pending-order and existing-position protective callbacks cannot lead to more sleeps after close. Standalone helper callers retain `respect_close=False` and daytime cadence remains intact. In-flight protective callbacks are not cancelled, so this bounds scheduled waiting rather than promising that arbitrary callback work finishes before the close.
+
+Offline verification on **20 October 2026**:
+
+- Before the fix: **4 failing regressions** reproduced the authentication, ordinary-poll and no-new-bar waits requesting 60 seconds at 15:29:59, plus the missing active-callback budget contract. With 1.1 seconds of simulated scheduling overhead, those timers skipped the final bar. Fixed run-loop scenarios request one second and evaluate the final 15:29 bar once, retaining wick exits and the ML completion barrier.
+- Implementation-focused suite: **168 passed and 8 subtests passed in 1.78s**. Evidence: `/tmp/ares-pr140-close-wait-fix.md`. Active-feed cases preserve both protective callbacks after the clock crosses close and request no subsequent sleep; daytime/default controls remain green.
+- Final integrated suite: `python3 -m pytest tests/ -q --import-mode=importlib --disable-warnings --tb=short` — **1,572 passed, 12 warnings; 45 subtests passed in 57.69s**. Evidence: `/tmp/ares-pr140-close-wait-full-suite.txt`.
+- Independent QA results supplied to the parent: **13/13 close-wait causal cases** and **11/11 activity cases** passed, with **151 focused tests and 8 subtests passed**. Focused suites overlap the full run and are not additional test counts. The final QA report is `/tmp/ares-pr140-close-wait-qa.md` when saved.
+
+The preceding 1,566-test result remains historical evidence for `970c8ea`. This later verification is offline; no deployment or live-session result is claimed for the review follow-ups.
 
