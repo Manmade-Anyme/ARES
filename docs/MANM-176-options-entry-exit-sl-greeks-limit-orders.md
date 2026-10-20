@@ -335,7 +335,8 @@ Refactor existing linear functions into a pure, comprehensive calculation suite:
 Overhaul signal dispatch and trade lifecycle alerts to provide full transparency on Greeks, bracket limit orders, and option performance:
 
 #### 1. Signal Detection Alert (`format_signal` & `send_discord`)
-Add dedicated Greeks, bracket execution, and dual-layer stop fields to the Discord Embed:
+Display bracket levels and optional diagnostics in the Discord Embed:
+- **Discord verbosity**: `TuningConfig.discord_show_option_details` defaults to `False` in both day profiles and hides `⚡ Order Type`, `📊 Option Greeks` and `💰 Risk Budget`. Set it to `True` to restore those three fields. Console diagnostics retain all details. This presentation flag does not change pricing, sizing or execution.
 - **Order Execution Type**:
   - `⚡ Order Type`: `LIMIT (Upfront Bracket)`
   - `🎯 Entry Limit`: `₹ {bracket.entry_limit:.2f}` (Calculated limit plan; separately display `LTP: ₹ {signal.option_premium:.2f}`)
@@ -344,10 +345,8 @@ Add dedicated Greeks, bracket execution, and dual-layer stop fields to the Disco
 - **Dual Target Breakdown**:
   - `🎯 Target 1`: `₹ {target_1:.2f}` (50% position book | Spot: `{t1_spot:.1f}`)
   - `🎯 Target 2`: `₹ {target_2:.2f}` (Runner position | Spot: `{t2_spot:.1f}`)
-- **Dual-Layer Stop Loss Field**:
-  - `🛑 Stop Loss`:
-    - `• Layer 1 (Synthetic Invalidation)`: `Spot {signal.stop_loss:.2f}` (Real-time spot trigger)
-    - `• Layer 2 (Broker Emergency Floor)`: `₹ {option_sl:.2f}` (Upfront broker hard stop)
+- **Option Stop Loss Field**:
+  - Discord `🛑 Stop Loss`: `₹ {option_sl:.2f}` in both verbosity modes; the existing spot `🛑 SL` field already shows structural invalidation. Console diagnostics retain both stop layers.
 - **Capital & Sizing Breakdown**:
   - `📐 Sizing`: `{bracket.lots} Lots ({bracket.lots * lot_size} qty)` (Final planned lots, capped by max cap; not a fill assertion)
   - `💰 Risk Budget`: `₹{risk_amt:.0f} ({risk_pct:.1f}% of ₹{capital:.0f} | Uncapped Suggestion: {bracket.uncapped_suggested_lots} lots)`

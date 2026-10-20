@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Compact Discord option alerts:** Hide Order Type, Option Greeks and Risk Budget by default behind `discord_show_option_details`. Show the option Stop Loss as a single premium value, retaining the spot SL above. Console diagnostics remain detailed.
+
 - **TASK-20261019 completed-candle repair:** Feed detectors only newly completed current-session one-minute bars. Rebuild VWAP from unique completed provider history, including bars before startup, and preserve partial/final watch provenance. Duplicate and forming-only polls keep tick exit and order monitoring active without advancing strategy state. Friday strategy thresholds and execution rules remain unchanged.
 
 - **TASK-20261019 PR #140 review follow-up:** Reject malformed completed history before changing candle/VWAP state, preserve fresh REST exit and pending-order monitoring when no candle completes during a WebSocket outage, and allow one bounded final 15:29-bar evaluation after the close for an existing session. Final candidates are analysis only with no entries or entry alerts. Fence requests crossing the close and guarantee later cleanup stages run after earlier cleanup errors. Friday strategy rules remain unchanged. Prepared after the 19 October close; production deployment is pending separately from the initial release 168 repair.
