@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #143 rejected-bracket presentation:** Show the existing rejection reason as `REJECTED — NON-EXECUTABLE` in console and both Discord modes while keeping calculated prices and lot suggestions visible as references. Rejected brackets no longer advertise LIMIT orders or planned execution lots. Pricing, eligibility and manual T1/ATR tracking are unchanged.
+
 - **PR #143 review fixes:** Preserve separate manual trades for distinct nearby signals, with stable per-signal retry identities. Store overflowed optional theta projections as null while retaining prices, lot suggestions and signal tracking. No signal filter or R:R gate is added.
 
 - **PR #143 registration recovery:** Retain failed manual-reference registrations in memory and retry on later market polls using the frozen original entry payload. Link the saved canonical ML snapshot after recovery without resetting T1/ATR state or adding paper telemetry. The retry queue is process-local; it does not survive restart or replay missed market moves.

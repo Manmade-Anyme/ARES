@@ -305,6 +305,7 @@ Overhaul signal dispatch and trade lifecycle alerts to provide full transparency
 #### 1. Signal Detection Alert (`format_signal` & `send_discord`)
 Display bracket levels and optional diagnostics in the Discord Embed:
 - **Discord verbosity**: `TuningConfig.discord_show_option_details` defaults to `False` in both day profiles and hides `⚡ Order Type`, `📊 Option Greeks` and `💰 Risk Budget`. Set it to `True` to restore those three fields. Console diagnostics retain all details. This presentation flag does not change pricing, sizing or execution.
+- **Rejected brackets**: When `is_valid=False` but calculated values exist, show `⚠️ Option Bracket: REJECTED — NON-EXECUTABLE: {rejection_reason}` in console and both Discord modes. Retain contract, prices, Greeks, stops, targets and lot suggestions; label entry/sizing as `Reference only` and replace T1's `lots planned` wording with `Reference only`. Omit the LIMIT order field for rejected brackets. This is presentation only: no new entry filter, hidden values or change to manual T1/ATR tracking.
 - **Order Execution Type**:
   - `⚡ Order Type`: `LIMIT (Upfront Bracket)`
   - `🎯 Entry Limit`: `₹ {bracket.entry_limit:.2f}` (Calculated limit plan; separately display `LTP: ₹ {signal.option_premium:.2f}`)

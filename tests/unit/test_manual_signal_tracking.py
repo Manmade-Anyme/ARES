@@ -76,7 +76,9 @@ async def test_real_pricing_and_discord_keep_manual_trend_tracking_without_rr_ga
                         ("🛑 Stop Loss", signal.bracket.catastrophic_opt_sl),
                         ("🎯 Target 1", signal.bracket.target_1), ("🎯 Target 2", signal.bracket.target_2)):
         assert f"{value:.2f}" in fields[name]
-    assert fields["📐 Sizing"] == f"{signal.suggested_lots} Lots ({signal.suggested_lots * config.nifty_lot_size} qty)"
+    reference = " (Reference only)" if capital == 0 else ""
+    assert fields["📐 Sizing"] == f"{signal.suggested_lots} Lots ({signal.suggested_lots * config.nifty_lot_size} qty){reference}"
+    assert ("⚠️ Option Bracket" in fields) is (capital == 0)
     assert "INSUFFICIENT_OPTION_RR" not in str(fields)
     assert "No executable bracket" not in str(fields)
 

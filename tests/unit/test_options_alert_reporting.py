@@ -40,16 +40,20 @@ def test_text_alert_contains_bracket_and_greeks():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reason', ['NO_AVAILABLE_CAPITAL', 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET', 'INVALID_BRACKET_ORDERING'])
 @pytest.mark.parametrize('show_details', [False, True])
-async def test_zero_lot_alerts_keep_option_prices_visible(reason, show_details):
+@pytest.mark.parametrize('lots', [0, 2])
+async def test_rejected_alerts_keep_option_prices_as_references(reason, show_details, lots):
     signal = signal_with_bracket()
     signal.bracket.is_valid = False
-    signal.bracket.lots = 0
+    signal.bracket.lots = lots
     signal.bracket.rejection_reason = reason
     signal.options_sizing_status = reason
     signal.capital = 0 if reason == 'NO_AVAILABLE_CAPITAL' else 1
     message = format_signal(signal, 24000)
-    for value in ('100.50', '95.50', '110.00', '122.00', '0 Lots', '0 lots planned'):
+    for value in ('100.50', '95.50', '110.00', '122.00', f'{lots} Lots', 'REJECTED — NON-EXECUTABLE', reason):
         assert value in message
+    assert 'Reference only' in message
+    assert 'lots planned' not in message
+    assert 'LIMIT (Upfront Bracket)' not in message
     assert 'No executable bracket' not in message
     client = AsyncMock()
     client.post.return_value = MagicMock()
@@ -61,8 +65,14 @@ async def test_zero_lot_alerts_keep_option_prices_visible(reason, show_details):
     assert fields['🛑 Stop Loss'] == '₹ 95.50'
     assert '110.00' in fields['🎯 Target 1']
     assert '122.00' in fields['🎯 Target 2']
-    assert fields['📐 Sizing'] == '0 Lots (0 qty)'
-    for name in ('⚡ Order Type', '📊 Option Greeks', '💰 Risk Budget'):
+    assert fields['📐 Sizing'] == f'{lots} Lots ({lots * 65} qty) (Reference only)'
+    assert fields['⚠️ Option Bracket'] == f'REJECTED — NON-EXECUTABLE: {reason}'
+    assert 'Reference only' in fields['🎯 Entry Limit']
+    assert 'Reference only' in fields['🎯 Target 1']
+    assert 'lots planned' not in str(fields)
+    assert 'LIMIT (Upfront Bracket)' not in str(fields)
+    assert '⚡ Order Type' not in fields
+    for name in ('📊 Option Greeks', '💰 Risk Budget'):
         assert (name in fields) is show_details
     assert len(fields) <= 25
 
