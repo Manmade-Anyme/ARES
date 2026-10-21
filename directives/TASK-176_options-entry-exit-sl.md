@@ -17,6 +17,7 @@ Implement ADR-176 Greeks-based option plans and the authorized post-T1 ATR runne
 - After T1, monitor completed five-minute spot closes against the previously active stop, then ratchet with entry/previous stop and Wilder ATR(5), HHV/LLV(10), multiplier 2.5. Preserve warmup, gap/session resets and restart watermarks; fixed T2 becomes reference only.
 - Track every emitted, persisted signal as manual `SIGNAL_REFERENCE`, independent of capital/lot allocation/execution checks, without submitting new paper or broker entry orders; emit ATR stop-update/close-through alerts and preserve score 1 for post-T1 exits. Paper fills still require observed quotes.
 - Verify focused regressions and the repository suite, complete review, update docs and CHANGELOG, and update PR #143 without merging.
+- Retain failed manual-reference registrations for later-poll retry with their original payload and canonical ML linkage; preserve recovered lifecycle state. Keep the queue process-local, without new entry filters.
 
 ## Boundaries
 ATR trailing is now implemented on this branch under ADR §4.3; the earlier deferral applied to PR #136. No detector geometry changes, new time stops, production database mutations, deployment or live account activation. Existing untracked research artifacts are unrelated and must remain untouched. Obsidian production sync follows the pipeline post-merge gate.

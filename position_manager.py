@@ -34,6 +34,7 @@ class PositionManager:
         self._execution_snapshots = {}
         self._execution_ml_bound = set()
         self._context_locks = {}
+        self._pending_reference_registrations = {}
         self.is_initialized = False
         self._initialize_db()
 
@@ -184,6 +185,11 @@ class PositionManager:
                 if str(existing.get("signal_uuid") or existing.get("signal_id")) == str(signal.id):
                     signal.trade_id = existing["id"]
                     return signal.trade_id, "BOUND"
+            pending = self._pending_reference_registrations.get(str(signal.id))
+            if pending is not None:
+                trade_id, status = await self._persist_trade_entry(*pending)
+                signal.trade_id, signal.trade_binding_status = trade_id, status
+                return trade_id, status
         elif self.find_duplicate_trade(signal, spot):
             return "", "DUPLICATE_SKIPPED"
 
@@ -248,26 +254,28 @@ class PositionManager:
         mode = settings.signal_schema_mode
         if mode not in {"bridge", "greenfield"}:
             raise ValueError(f"Unsupported signal schema mode: {mode}")
+        payload = {
+            "p_trade_id": trade_id,
+            "p_signal_uuid": str(signal.id),
+            "p_display_id": signal.display_id,
+            "p_setup_type": signal.setup_type.value,
+            "p_direction": signal.direction.value,
+            "p_entry_price": float(spot),
+            "p_stop_loss": float(signal.stop_loss),
+            "p_target_1": float(signal.target_1),
+            "p_target_2": float(signal.target_2),
+            "p_added_time_ist": trade_data["added_time_ist"],
+            "p_market_context": market_context,
+            "p_oi_data": oi_data,
+            "p_entry_timestamp": entry_timestamp,
+        }
+        if mode == "bridge":
+            payload["p_legacy_signal_id"] = signal.db_id
+        payload = deepcopy(payload)
+        trade_data = deepcopy(trade_data)
         def _insert():
-            payload = {
-                "p_trade_id": trade_id,
-                "p_signal_uuid": str(signal.id),
-                "p_display_id": signal.display_id,
-                "p_setup_type": signal.setup_type.value,
-                "p_direction": signal.direction.value,
-                "p_entry_price": float(spot),
-                "p_stop_loss": float(signal.stop_loss),
-                "p_target_1": float(signal.target_1),
-                "p_target_2": float(signal.target_2),
-                "p_added_time_ist": trade_data["added_time_ist"],
-                "p_market_context": market_context,
-                "p_oi_data": oi_data,
-                "p_entry_timestamp": entry_timestamp,
-            }
-            if mode == "bridge":
-                payload["p_legacy_signal_id"] = signal.db_id
             rpc_name = f"create_trade_entry_{mode}"
-            response = self.supabase.rpc(rpc_name, payload).execute()
+            response = self.supabase.rpc(rpc_name, deepcopy(payload)).execute()
             persisted_id = getattr(response, "data", None)
             if isinstance(persisted_id, list) and len(persisted_id) == 1:
                 persisted_id = persisted_id[0]
@@ -275,38 +283,63 @@ class PositionManager:
                 raise RuntimeError(f"{rpc_name} returned an unexpected trade id")
             return True
 
-        import asyncio
+        try:
+            return await self._persist_trade_entry(signal, trade_data, _insert)
+        except Exception:
+            if reference:
+                self._pending_reference_registrations[str(signal.id)] = (signal, trade_data, _insert)
+                signal.trade_binding_status = "REGISTRATION_PENDING"
+            raise
+
+    async def _persist_trade_entry(self, signal, trade_data, insert, attempts=3):
+        """Retry an unchanged entry payload and register each trade once in memory."""
+        trade_id = trade_data["id"]
         loop = asyncio.get_running_loop()
-        for attempt in range(3):
+        attempt = 1
+        while True:
             try:
-                success = await loop.run_in_executor(None, _insert)
+                success = await loop.run_in_executor(None, insert)
                 if success:
-                    signal.trade_id = trade_id
+                    signal.trade_id, signal.trade_binding_status = trade_id, "BOUND"
                     if not any(trade["id"] == trade_id for trade in self.active_trades):
                         self.active_trades.append(trade_data)
                     return trade_id, "BOUND"
             except Exception as e:
-                print(f"Failed to push new trade to Supabase (attempt {attempt+1}): {e}")
-                if attempt == 2:
-                    raise RuntimeError("Database insertion failed for atomic trade entry after 3 attempts")
+                print(f"Failed to push new trade to Supabase (attempt {attempt}): {e}")
+                if attempt == attempts:
+                    raise RuntimeError(f"Database insertion failed for atomic trade entry after {attempts} attempts")
+                attempt += 1
                 await asyncio.sleep(1)
 
-    async def sync_execution(self, signal: AresSignal, execution: dict) -> bool:
+    async def retry_reference_registrations(self):
+        """Retain failed manual entries until registration and snapshot linkage recover."""
+        for key, (signal, trade_data, insert) in tuple(self._pending_reference_registrations.items()):
+            try:
+                if not any(trade["id"] == trade_data["id"] for trade in self.active_trades):
+                    await self._persist_trade_entry(signal, trade_data, insert, attempts=1)
+                signal.trade_id, signal.trade_binding_status = trade_data["id"], "BOUND"
+                if await self.sync_execution(signal, None):
+                    self._pending_reference_registrations.pop(key, None)
+            except Exception as exc:
+                print(f"Reference trade registration retry failed for {signal.id}: {exc}")
+
+    async def sync_execution(self, signal: AresSignal, execution: Optional[dict]) -> bool:
         """Persist paper fill telemetry and bind a snapshot after a delayed entry.
 
         The signal UUID guard prevents a delayed fill from labeling an unrelated
         ML row. Return False until that snapshot exists and is linked, so even
         a terminal paper fill remains retryable after main writes the snapshot.
+        Passing None links a recovered manual entry without adding paper telemetry.
         """
         trade_id = signal.trade_id
-        snapshot = dict(execution)
+        snapshot = dict(execution) if execution is not None else None
         mode = settings.signal_schema_mode
         if mode not in {"bridge", "greenfield"}:
             raise ValueError(f"Unsupported signal schema mode: {mode}")
         signal_column = "signal_uuid" if mode == "bridge" else "signal_id"
 
         def persist():
-            if self._execution_snapshots.get(trade_id) != snapshot:
+            if snapshot is not None and self._execution_snapshots.get(trade_id) != snapshot:
                 with self._context_locks.setdefault(trade_id, threading.Lock()):
                     response = self.supabase.table("trade_analytics").select(
                         "market_context"

@@ -162,3 +162,24 @@ async def test_manual_registration_failure_does_not_hide_signal_prices(loop):
     ctx.dispatcher.dispatch.assert_not_awaited()
     ctx.errors.assert_not_awaited()
     ctx.alerts.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failed', [False, True])
+async def test_reference_retry_failure_does_not_interrupt_polling(failed):
+    positions = MagicMock()
+    positions.retry_reference_registrations = AsyncMock(side_effect=RuntimeError('db down') if failed else None)
+    await main._retry_reference_entries(positions)
+    positions.retry_reference_registrations.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reference_retries_run_on_later_polls_without_new_candles(loop):
+    ctx = loop([None, None], [datetime(2026, 10, 21, 10), datetime(2026, 10, 21, 10, 1), datetime(2026, 10, 21, 15, 31)])
+    ctx.positions.retry_reference_registrations = AsyncMock()
+    ctx.positions.update_atr_trailing = AsyncMock(return_value=[])
+    ctx.dispatcher.on_candles = AsyncMock()
+    await main.run()
+    assert ctx.positions.retry_reference_registrations.await_count == 2
+    ctx.engine.tick.assert_not_called()
+    ctx.errors.assert_not_awaited()

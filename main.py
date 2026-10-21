@@ -205,6 +205,14 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
         await dispatcher.on_snapshot(full_chain, spot)
 
 
+async def _retry_reference_entries(position_manager):
+    """Registration outages must not suppress market monitoring or entry alerts."""
+    try:
+        await position_manager.retry_reference_registrations()
+    except Exception as exc:
+        logger.warning("Reference registration retry failed: %s", exc)
+
+
 async def _monitor_completed_atr(candles, position_manager, dispatcher):
     """One monitor's failure must not suppress the other's protective work."""
     for monitor in (position_manager.update_atr_trailing, dispatcher.on_candles):
@@ -438,6 +446,7 @@ async def run():
                 waiting_printed = False
             
             try:
+                await _retry_reference_entries(position_manager)
                 # Fetch latest price candle
                 if finalizing:
                     candle = await asyncio.wait_for(price_fetcher.fetch_latest_candle(auto_ack=False), timeout=10)
