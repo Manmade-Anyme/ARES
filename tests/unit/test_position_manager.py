@@ -1139,3 +1139,71 @@ async def test_terminal_atr_telemetry_survives_closed_analytics_callback_loop(at
     assert terminal[0]['exit_price'] == 23999
     pm.analytics.log_exit.assert_not_called()
     assert 'Failed to schedule trade exit analytics: loop closed' in capsys.readouterr().out
+
+
+def _reference_signal():
+    signal = AresSignal(SetupType.TREND_CONTINUATION, Direction.BULLISH, 24000,
+                        (23995, 24005), 23990, 24020, 24040, 'MEDIUM', [],
+                        datetime(2026, 10, 21, 10), 24000, 'CE')
+    signal.market_context['tracking_mode'] = 'SIGNAL_REFERENCE'
+    return signal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['bridge', 'greenfield'])
+async def test_reference_signals_at_same_price_have_independent_lifecycles(atr_position_manager, mode):
+    pm, _, _ = atr_position_manager
+    first, second = _reference_signal(), _reference_signal()
+    with patch('position_manager.settings.signal_schema_mode', mode), \
+         patch('position_manager.settings.trade_dedupe_tolerance_pts', 1):
+        first_id, first_status = await pm.add_trade(first, 24000)
+        second_id, second_status = await pm.add_trade(second, 24000.4)
+        assert (first_status, second_status) == ('BOUND', 'BOUND')
+        assert first_id != second_id
+        events = await pm.update_trades(24025)
+        await _flush_trade_writes(pm)
+    assert set(events) == {(first_id, 'T1_HIT'), (second_id, 'T1_HIT')}
+    assert len(pm.active_trades) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['bridge', 'greenfield'])
+@pytest.mark.parametrize('state', ['OPEN', 'T1_HIT', 'CLOSED'])
+async def test_reference_signal_retry_reuses_trade_without_resetting_lifecycle(atr_position_manager, mode, state):
+    pm, client, _ = atr_position_manager
+    signal = _reference_signal()
+    pm.supabase.rpc = MagicMock(wraps=client.rpc)
+    with patch('position_manager.settings.signal_schema_mode', mode):
+        trade_id, _ = await pm.add_trade(signal, 24000)
+        pm.active_trades[0].update(state=state, stop_loss=24010)
+        signal.trade_id = ''
+        assert await pm.add_trade(signal, 24000.4) == (trade_id, 'BOUND')
+    assert signal.trade_id == trade_id
+    assert pm.supabase.rpc.call_count == 1
+    assert len(pm.active_trades) == 1
+    assert pm.active_trades[0]['state'] == state
+    assert pm.active_trades[0]['stop_loss'] == 24010
+
+
+@pytest.mark.asyncio
+async def test_reference_signal_identity_is_stable_for_concurrent_and_fresh_registration(atr_position_manager):
+    import threading
+    pm, client, _ = atr_position_manager
+    signal = _reference_signal()
+    original_rpc = client.rpc
+    concurrent_inserts = threading.Barrier(2)
+    def rpc(name, payload):
+        # Both callers pass the empty cache before either RPC can complete.
+        concurrent_inserts.wait(timeout=5)
+        return original_rpc(name, payload)
+    pm.supabase.rpc = MagicMock(side_effect=rpc)
+    with patch('position_manager.settings.signal_schema_mode', 'bridge'):
+        results = await asyncio.gather(pm.add_trade(signal, 24000), pm.add_trade(signal, 24000))
+        assert pm.supabase.rpc.call_count == 2
+        assert results[0] == results[1] == (signal.trade_id, 'BOUND')
+        assert len(pm.active_trades) == 1
+        pm.supabase.rpc = original_rpc
+        # This fake RPC checks identity stability, not closed-row recovery.
+        fresh_manager = PositionManager()
+        retry_id, status = await fresh_manager.add_trade(signal, 24000)
+    assert (retry_id, status) == results[0]

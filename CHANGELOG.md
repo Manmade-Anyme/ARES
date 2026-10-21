@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #143 review fixes:** Preserve separate manual trades for distinct nearby signals, with stable per-signal retry identities. Store overflowed optional theta projections as null while retaining prices, lot suggestions and signal tracking. No signal filter or R:R gate is added.
+
 - **Post-T1 ATR trailing (PR #143):** Implement the previously deferred five-minute spot ATR runner: Wilder ATR(5), HHV/LLV(10), multiplier 2.5. Keep entry/the locked stop during warmup, compare each completed close against the previous stop before ratcheting, and exit CE strictly below / PE strictly above. Replace automatic post-T1 fixed T2 exits with trailing while retaining T2 as a displayed reference. Persist stop/state/watermarks, emit ATR stop-update and close-through alerts, and track every emitted, persisted signal as a manual reference independently of capital/lots/execution validity, without new paper or broker entry submissions. Paper exits still require an observed bid; initial emergency premium protection and the live-order block remain. Branch implementation pending review/merge; no deployment claimed.
 
 - **Remove option R:R rejection:** Delete the theta/spread feasibility check that returned `INSUFFICIENT_OPTION_RR`, so it no longer blocks option prices or capital-based suggested lots. Pricing formulas and other validation remain unchanged.

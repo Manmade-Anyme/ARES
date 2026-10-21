@@ -455,6 +455,23 @@ def test_summary_reports_genuinely_unavailable_quote_data():
     assert option_sizing_summary(signal) == 'Option sizing unavailable: INVALID_DATA'
 
 
+@pytest.mark.parametrize('capital', [0, 100000])
+@pytest.mark.parametrize('theta', [-1e308, 1e308])
+def test_overflowed_diagnostic_does_not_reject_or_hide_option_values(capital, theta):
+    import json
+    signal = make_signal()
+    config = TuningConfig(options_holding_horizon_minutes=1e308)
+    baseline = build_option_bracket(signal, [make_row()], capital, TuningConfig())
+    bracket = build_option_bracket(signal, [make_row(ce_theta=theta)], capital, config)
+    assert bracket.projected_target_1 is None
+    for field in ('entry_limit', 'catastrophic_opt_sl', 'target_1', 'target_2',
+                  'lots', 'is_valid', 'rejection_reason'):
+        assert getattr(bracket, field) == getattr(baseline, field)
+    signal.bracket = bracket
+    json.dumps(option_sizing_context(signal), allow_nan=False)
+    assert 'Limit 100.05' in option_sizing_summary(signal)
+
+
 @pytest.mark.parametrize('spot_ordering', [True, False])
 def test_ordering_check_does_not_hide_calculated_prices_or_lots(spot_ordering):
     signal = make_signal()

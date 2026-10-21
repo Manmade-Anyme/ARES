@@ -178,10 +178,17 @@ class PositionManager:
         Formats an AresSignal, pushes it to Supabase as OPEN using atomic RPC,
         and stores it in memory. Returns (trade_id, binding_status).
         """
-        if self.find_duplicate_trade(signal, spot):
+        reference = signal.market_context.get("tracking_mode") == "SIGNAL_REFERENCE"
+        if reference:
+            for existing in self.active_trades:
+                if str(existing.get("signal_uuid") or existing.get("signal_id")) == str(signal.id):
+                    signal.trade_id = existing["id"]
+                    return signal.trade_id, "BOUND"
+        elif self.find_duplicate_trade(signal, spot):
             return "", "DUPLICATE_SKIPPED"
 
-        trade_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ares:paper:{signal.id}")) if signal.market_context.get("execution") else str(uuid.uuid4())
+        identity = "reference" if reference else "paper" if signal.market_context.get("execution") else None
+        trade_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ares:{identity}:{signal.id}")) if identity else str(uuid.uuid4())
         
         # Prepare RPC payload
         entry_timestamp = (signal.market_context.get("execution", {}).get("filled_at")
@@ -275,7 +282,8 @@ class PositionManager:
                 success = await loop.run_in_executor(None, _insert)
                 if success:
                     signal.trade_id = trade_id
-                    self.active_trades.append(trade_data)
+                    if not any(trade["id"] == trade_id for trade in self.active_trades):
+                        self.active_trades.append(trade_data)
                     return trade_id, "BOUND"
             except Exception as e:
                 print(f"Failed to push new trade to Supabase (attempt {attempt+1}): {e}")

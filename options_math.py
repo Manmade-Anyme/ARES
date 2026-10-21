@@ -259,7 +259,8 @@ def build_option_bracket(signal: AresSignal, full_chain: list, capital: Optional
     # entry premium uplift and adverse executable exit spread before sizing.
     risk_loss = max(abs(greeks.delta) * abs(spot - signal.stop_loss), entry - sl + spread)
     projected_t1 = premium + project_option_premium(signal.target_1 - spot, greeks, horizon / 375.0)
-    bracket = replace(bracket, risk_loss_pts=risk_loss, projected_target_1=projected_t1)
+    bracket = replace(bracket, risk_loss_pts=risk_loss,
+                      projected_target_1=projected_t1 if _finite(projected_t1) else None)
     suggested = calculate_lots(calculate_risk_amount(balance, config.risk_per_trade_pct), risk_loss, lot_size)
     affordable = calculate_affordable_lots(balance, entry, lot_size)
     lots = max(0, min(suggested, affordable, int(cap)))
