@@ -70,15 +70,15 @@ async def test_real_pricing_and_discord_keep_manual_trend_tracking_without_rr_ga
     http.post.assert_awaited_once()
     fields = {field["name"]:field["value"] for field in
               http.post.call_args.kwargs["json"]["embeds"][0]["fields"]}
-    for name in ("🎯 Entry Limit", "🛑 Stop Loss", "🎯 Target 1", "🎯 Target 2", "📐 Sizing"):
+    for name in ("✅ Option Entry", "🛑 Stop Loss", "🎯 Target 1", "🎯 Target 2", "📐 Sizing"):
         assert name in fields
-    for name, value in (("🎯 Entry Limit", signal.bracket.entry_limit),
+    for name, value in (("✅ Option Entry", signal.bracket.entry_limit),
                         ("🛑 Stop Loss", signal.bracket.catastrophic_opt_sl),
                         ("🎯 Target 1", signal.bracket.target_1), ("🎯 Target 2", signal.bracket.target_2)):
         assert f"{value:.2f}" in fields[name]
-    reference = " (Reference only)" if capital == 0 else ""
-    assert fields["📐 Sizing"] == f"{signal.suggested_lots} Lots ({signal.suggested_lots * config.nifty_lot_size} qty){reference}"
-    assert ("⚠️ Option Bracket" in fields) is (capital == 0)
+    assert fields["📐 Sizing"] == f"{signal.suggested_lots} Lots ({signal.suggested_lots * config.nifty_lot_size} qty)"
+    assert "⚠️ Option Bracket" not in fields
+    assert "⚡ Order Type" not in fields
     assert "INSUFFICIENT_OPTION_RR" not in str(fields)
     assert "No executable bracket" not in str(fields)
 

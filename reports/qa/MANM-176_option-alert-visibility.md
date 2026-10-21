@@ -32,8 +32,17 @@
 
 ## Rejected-bracket presentation follow-up — 2026-10-21
 
+Superseded by the manual-only presentation correction below; retained here as validation history for `582c153`.
+
 - External comment `4337316149` concerns misleading presentation: calculated invalid brackets could advertise LIMIT orders and planned lots without showing their existing rejection reason. The reviewer's cloud task described a fix but did not push it; PR head remained `cf24c96`. Applied the change directly to this PR branch.
 - Keep calculated contract, prices, stops, targets, Greeks and lot suggestions available. In console and both Discord modes, show `REJECTED — NON-EXECUTABLE` with the existing reason, label entry/sizing as references, replace rejected T1's planned allocation with `Reference only`, and omit its LIMIT order field. The existing verbosity flag still controls Greek/risk details. No filter, calculation, execution policy or manual tracking change is added.
 - TDD reproduced the missing status/reference wording in 12 cases before the fix. All **65 focused alert tests passed** afterward, including zero/positive lots, capital/ordering rejection reasons, compact/detailed Discord and unchanged valid-bracket rendering. Changed runtime lines and branch arcs are fully covered by the focused run.
 - Final full suite: **1,734 tests + 45 subtests passed**, 12 existing warnings, in 72.16 seconds with directory-based line/branch coverage. The initial full run found one stale exact sizing-string expectation in the main-loop zero-capital regression; updated it to the reference label while preserving price and manual-tracking assertions. The corrected 11-test main-loop suite and final full run passed. Changed runtime lines/branch arcs are covered; mirrored specifications and whitespace checks pass. CI for the new commit and production deployment require separate verification.
 - Independent QA/review confirmed the final test/coverage artifacts, both Discord modes and the presentation-only scope. No actionable findings remain.
+
+## Manual-only signal presentation — 2026-10-21
+
+- User clarified that execution suitability and paper-order presentation have no role in current manual signals. Remove `is_valid`-dependent rendering entirely: no rejection/non-executable banner, status-specific reference suffix, LIMIT/PAPER order type or planned T1 allocation. Rename displayed entry to `Option Entry`. Every calculated trade uses the same fields; capital only affects suggested lots. Keep the previously requested Greek/risk verbosity flag and genuine missing-input notices.
+- TDD produced 21 failures before the change. All **80 focused alert/main-loop tests passed** afterward. Coverage includes zero/positive lots, execution-valid and capital/ordering rejection statuses, compact/detailed Discord, real pricing/manual registration, missing inputs and ATR lifecycle messages. Runtime tracking, calculations, persistence and separate execution APIs were not changed.
+- Full local suite: **1,738 tests + 45 subtests passed**, 12 existing warnings, in 73.78 seconds. Directory-based coverage confirms no missing changed runtime lines or changed-source branch arcs; the helper's calculated field values are asserted through public console/Discord output. Specifications remain mirrored; whitespace checks pass. Current-commit CI and production behavior require separate verification.
+- Independent QA/review cleared the final code and tests against the user's latest instruction. No actionable findings remain; prior suitability-label guidance is superseded.

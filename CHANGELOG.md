@@ -4,7 +4,7 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
-- **PR #143 rejected-bracket presentation:** Show the existing rejection reason as `REJECTED — NON-EXECUTABLE` in console and both Discord modes while keeping calculated prices and lot suggestions visible as references. Rejected brackets no longer advertise LIMIT orders or planned execution lots. Pricing, eligibility and manual T1/ATR tracking are unchanged.
+- **PR #143 manual signal presentation:** Show calculated option entry, SL, targets and suggested lots uniformly, independent of execution eligibility. Remove suitability/rejection banners, paper-order types, planned execution allocations and per-status reference labels. Capital affects suggested lots; manual T1/ATR tracking remains independent. The earlier rejected-bracket presentation was superseded by the user's manual-only display requirement.
 
 - **PR #143 review fixes:** Preserve separate manual trades for distinct nearby signals, with stable per-signal retry identities. Store overflowed optional theta projections as null while retaining prices, lot suggestions and signal tracking. No signal filter or R:R gate is added.
 

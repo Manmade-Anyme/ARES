@@ -300,24 +300,23 @@ Refactor existing linear functions into a pure, comprehensive calculation suite:
 
 ### 5.7 `alerts.py` (Discord Alert Specification)
 
-Overhaul signal dispatch and trade lifecycle alerts to provide full transparency on Greeks, bracket limit orders, and option performance:
+Signal and trade lifecycle alerts show calculated option levels, suggested lots and optional Greeks:
 
 #### 1. Signal Detection Alert (`format_signal` & `send_discord`)
 Display bracket levels and optional diagnostics in the Discord Embed:
-- **Discord verbosity**: `TuningConfig.discord_show_option_details` defaults to `False` in both day profiles and hides `⚡ Order Type`, `📊 Option Greeks` and `💰 Risk Budget`. Set it to `True` to restore those three fields. Console diagnostics retain all details. This presentation flag does not change pricing, sizing or execution.
-- **Rejected brackets**: When `is_valid=False` but calculated values exist, show `⚠️ Option Bracket: REJECTED — NON-EXECUTABLE: {rejection_reason}` in console and both Discord modes. Retain contract, prices, Greeks, stops, targets and lot suggestions; label entry/sizing as `Reference only` and replace T1's `lots planned` wording with `Reference only`. Omit the LIMIT order field for rejected brackets. This is presentation only: no new entry filter, hidden values or change to manual T1/ATR tracking.
-- **Order Execution Type**:
-  - `⚡ Order Type`: `LIMIT (Upfront Bracket)`
-  - `🎯 Entry Limit`: `₹ {bracket.entry_limit:.2f}` (Calculated limit plan; separately display `LTP: ₹ {signal.option_premium:.2f}`)
+- **Discord verbosity**: `TuningConfig.discord_show_option_details` defaults to `False` in both day profiles and hides `📊 Option Greeks` and `💰 Risk Budget`. Set it to `True` to restore those two fields. Console diagnostics retain both. This user-selected presentation flag does not change pricing, sizing or execution.
+- **Uniform manual signals**: Show the same calculated option fields regardless of `is_valid` or execution rejection status. Capital affects suggested lots only. No suitability/rejection banner, paper-order type, planned-execution allocation or per-status reference label is shown. Missing quote/Greeks inputs are reported as unavailable; they do not block the spot signal or its manual T1/ATR tracking. The bracket remains a data container; existing execution APIs are separate from manual signal display/tracking.
+- **Option Entry**:
+  - `✅ Option Entry`: `₹ {bracket.entry_limit:.2f}` (Calculated option entry; separately display `LTP: ₹ {signal.option_premium:.2f}`)
 - **Greeks Breakdown Field**:
   - `📊 Option Greeks`: `Δ {delta:+.3f} | Γ {gamma:.4f} | Θ {theta:.1f}/day | IV {iv:.1f}%`
 - **Dual Target Breakdown**:
-  - `🎯 Target 1`: `₹ {target_1:.2f}` (50% position book | Spot: `{t1_spot:.1f}`)
+  - `🎯 Target 1`: `₹ {target_1:.2f}` (Spot: `{t1_spot:.1f}`)
   - `🎯 Target 2`: `₹ {target_2:.2f}` (Reference only; runner trails ATR | Spot: `{t2_spot:.1f}`)
 - **Option Stop Loss Field**:
   - Discord `🛑 Stop Loss`: `₹ {option_sl:.2f}` in both verbosity modes; the existing spot `🛑 SL` field already shows structural invalidation. Console diagnostics retain both stop layers.
 - **Capital & Sizing Breakdown**:
-  - `📐 Sizing`: `{bracket.lots} Lots ({bracket.lots * lot_size} qty)` (Final planned lots, capped by max cap; not a fill assertion)
+  - `📐 Sizing`: `{bracket.lots} Lots ({bracket.lots * lot_size} qty)` (Suggested lots based on capital/risk and the existing cap)
   - `💰 Risk Budget`: `₹{risk_amt:.0f} ({risk_pct:.1f}% of ₹{capital:.0f} | Uncapped Suggestion: {bracket.uncapped_suggested_lots} lots)`
 
 #### 2. Trade Lifecycle Update Alert (`send_trade_update`)

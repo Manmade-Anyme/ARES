@@ -32,45 +32,45 @@ def signal_with_bracket():
 
 def test_text_alert_contains_bracket_and_greeks():
     message = format_signal(signal_with_bracket(), 24000)
-    for value in ("LIMIT (Upfront Bracket)", "100.50", "110.00", "122.00", "95.50",
+    for value in ("Option Entry", "100.50", "110.00", "122.00", "95.50",
                   "Layer 1", "Layer 2", "0.0020", "12.5%", "2 Lots", "42528"):
         assert value in message
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reason', ['NO_AVAILABLE_CAPITAL', 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET', 'INVALID_BRACKET_ORDERING'])
+@pytest.mark.parametrize('reason', [None, 'NO_AVAILABLE_CAPITAL', 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET', 'INVALID_BRACKET_ORDERING'])
 @pytest.mark.parametrize('show_details', [False, True])
 @pytest.mark.parametrize('lots', [0, 2])
-async def test_rejected_alerts_keep_option_prices_as_references(reason, show_details, lots):
+async def test_execution_status_never_changes_visible_option_fields(reason, show_details, lots):
     signal = signal_with_bracket()
-    signal.bracket.is_valid = False
+    signal.bracket.is_valid = reason is None
     signal.bracket.lots = lots
     signal.bracket.rejection_reason = reason
-    signal.options_sizing_status = reason
+    signal.options_sizing_status = reason or 'VALID'
     signal.capital = 0 if reason == 'NO_AVAILABLE_CAPITAL' else 1
     message = format_signal(signal, 24000)
-    for value in ('100.50', '95.50', '110.00', '122.00', f'{lots} Lots', 'REJECTED — NON-EXECUTABLE', reason):
+    for value in ('100.50', '95.50', '110.00', '122.00', f'{lots} Lots'):
         assert value in message
-    assert 'Reference only' in message
-    assert 'lots planned' not in message
-    assert 'LIMIT (Upfront Bracket)' not in message
-    assert 'No executable bracket' not in message
+    for text in ('REJECTED', 'NON-EXECUTABLE', 'Reference only', 'lots planned', 'LIMIT', 'PAPER', 'No executable bracket'):
+        assert text not in message
+    if reason:
+        assert reason not in message
     client = AsyncMock()
     client.post.return_value = MagicMock()
     with patch('alerts.settings.discord_show_option_details', show_details), patch('alerts.settings.discord_webhook_url', 'http://example.invalid'), patch('httpx.AsyncClient') as factory:
         factory.return_value.__aenter__.return_value = client
         assert await send_discord(signal, 24000)
     fields = {field['name']: field['value'] for field in client.post.call_args.kwargs['json']['embeds'][0]['fields']}
-    assert '100.50' in fields['🎯 Entry Limit']
+    assert '100.50' in fields['✅ Option Entry']
     assert fields['🛑 Stop Loss'] == '₹ 95.50'
     assert '110.00' in fields['🎯 Target 1']
     assert '122.00' in fields['🎯 Target 2']
-    assert fields['📐 Sizing'] == f'{lots} Lots ({lots * 65} qty) (Reference only)'
-    assert fields['⚠️ Option Bracket'] == f'REJECTED — NON-EXECUTABLE: {reason}'
-    assert 'Reference only' in fields['🎯 Entry Limit']
-    assert 'Reference only' in fields['🎯 Target 1']
-    assert 'lots planned' not in str(fields)
-    assert 'LIMIT (Upfront Bracket)' not in str(fields)
+    assert fields['📐 Sizing'] == f'{lots} Lots ({lots * 65} qty)'
+    assert '⚠️ Option Bracket' not in fields
+    for text in ('REJECTED', 'NON-EXECUTABLE', 'Reference only', 'lots planned', 'LIMIT', 'PAPER'):
+        assert text not in str(fields)
+    if reason:
+        assert reason not in str(fields)
     assert '⚡ Order Type' not in fields
     for name in ('📊 Option Greeks', '💰 Risk Budget'):
         assert (name in fields) is show_details
@@ -143,16 +143,16 @@ async def test_valid_discord_bracket_separates_limits_from_spot_levels(show_deta
         factory.return_value.__aenter__.return_value = client
         assert await send_discord(signal, 24000)
     fields = {field["name"]: field["value"] for field in client.post.call_args.kwargs["json"]["embeds"][0]["fields"]}
-    assert "100.50" in fields["🎯 Entry Limit"]
-    assert "LTP: ₹ 100.00" in fields["🎯 Entry Limit"]
+    assert "100.50" in fields["✅ Option Entry"]
+    assert "LTP: ₹ 100.00" in fields["✅ Option Entry"]
     assert "24018.00" in fields["🎯 Target 1"]
     assert "122.00" in fields["🎯 Target 2"]
     assert fields["🛑 Stop Loss"] == "₹ 95.50"
     assert fields["🛑 SL"] == "**23990.00** (Spot Ref)"
-    for name in ("⚡ Order Type", "📊 Option Greeks", "💰 Risk Budget"):
+    assert '⚡ Order Type' not in fields
+    for name in ("📊 Option Greeks", "💰 Risk Budget"):
         assert (name in fields) is show_details
     if show_details:
-        assert "PAPER simulation; live activation blocked" in fields["⚡ Order Type"]
         assert "Γ 0.0020" in fields["📊 Option Greeks"]
         assert "₹500" in fields["💰 Risk Budget"]
     assert len(fields) <= 25  # Discord embed field limit.
