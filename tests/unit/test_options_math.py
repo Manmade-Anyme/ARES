@@ -446,4 +446,25 @@ def test_option_sizing_summary_invalid_bracket():
     signal = make_signal()
     signal.bracket = replace(build_option_bracket(signal, [make_row()], 100000, TuningConfig()),
                              is_valid=False, rejection_reason="INSUFFICIENT_OPTION_RR")
-    assert option_sizing_summary(signal) == "Option sizing unavailable: INSUFFICIENT_OPTION_RR"
+    assert "Limit 100.05" in option_sizing_summary(signal)
+
+
+def test_summary_reports_genuinely_unavailable_quote_data():
+    signal = make_signal()
+    signal.bracket = build_option_bracket(signal, [], 100000, TuningConfig())
+    assert option_sizing_summary(signal) == 'Option sizing unavailable: INVALID_DATA'
+
+
+@pytest.mark.parametrize('spot_ordering', [True, False])
+def test_ordering_check_does_not_hide_calculated_prices_or_lots(spot_ordering):
+    signal = make_signal()
+    row = make_row()
+    if spot_ordering:
+        signal.stop_loss = 24005
+    else:
+        row.update(ce_ltp=1, ce_ask=1.05, ce_bid=.95)
+    signal.bracket = build_option_bracket(signal, [row], 100000, TuningConfig())
+    assert signal.bracket.rejection_reason == 'INVALID_BRACKET_ORDERING'
+    assert signal.bracket.lots == 10
+    assert not signal.bracket.is_valid
+    assert '10 lots' in option_sizing_summary(signal)

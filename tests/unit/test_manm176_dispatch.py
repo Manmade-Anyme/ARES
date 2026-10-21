@@ -229,7 +229,9 @@ async def test_quote_spot_sets_entry_and_post_target_break_even(option_type, dir
     assert record.exited_quantity == 65
     assert record.active_spot_sl == fill_spot
     await dispatcher.on_spot(fill_spot)
-    assert record.exit_reason == "STOPPED_OUT_AT_BE"
+    assert record.exit_reason == "T1_HIT"
+    assert record.status == "FILLED"
+    assert record.exited_quantity == 65
 
 
 @pytest.mark.asyncio
@@ -288,3 +290,70 @@ async def test_closed_trade_waiting_for_ml_snapshot_does_not_block_new_signal():
     assert first.market_context["execution"]["status"] == "CLOSED"
     assert await dispatcher.dispatch(second, 24000, chain())
     assert len(positions.entries) == 2
+
+
+@pytest.mark.asyncio
+async def test_completed_candles_publish_runner_stop_and_queue_exit_without_quotes():
+    from datetime import timedelta, timezone
+
+    positions = Positions()
+    synced = []
+    async def sync_execution(signal, execution):
+        synced.append(dict(execution))
+    positions.sync_execution = sync_execution
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain())
+    await dispatcher.on_snapshot(chain(110, spot=24020), 24020)
+    record = next(iter(orders.records.values()))
+    record.atr_last_bar = "2098-12-31T00:00:00+00:00"
+    start = datetime(2099, 1, 1, 9, 15, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    candles = [{"timestamp": (start + timedelta(minutes=i)).isoformat(), "complete": True,
+                "open":24030, "high":24040, "low":24030, "close":24035}
+               for i in range(50)]
+    await dispatcher.on_candles(candles)
+    assert synced[-1]["t1_hit"] is True
+    assert synced[-1]["active_spot_sl"] == 24015
+    assert synced[-1]["atr_last_bar"] == "2099-01-01T10:05:00+05:30"
+    assert record.status == "FILLED"
+    candles.extend({"timestamp": (start + timedelta(minutes=i)).isoformat(), "complete": True,
+                    "open":24030, "high":24040, "low":24010, "close":24014}
+                   for i in range(50, 55))
+    await dispatcher.on_candles(candles)
+    assert synced[-1]["status"] == "EXIT_PENDING"
+    assert synced[-1]["exit_reason"] == "ATR_SL_HIT"
+    assert synced[-1]["exited_quantity"] == 65
+    await dispatcher.on_snapshot(chain(108, spot=24030), 24030)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == 130
+    assert record.correlation_id not in dispatcher._signals
+
+
+@pytest.mark.asyncio
+async def test_candle_sync_failure_retries_without_reprocessing_order_exit(monkeypatch):
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain())
+    record = next(iter(orders.records.values()))
+    await dispatcher.on_snapshot(chain(110, spot=24020), 24020)
+    record.atr_last_bar = "2026-10-21T04:30:00+00:00"
+    monkeypatch.setattr("execution.order_manager.completed_atr_bars", lambda candles: [{
+        "timestamp":"2026-10-21T04:35:00+00:00", "close":23999,
+        "bullish_sl": None, "bearish_sl": None,
+    }])
+    async def failure(*args):
+        raise RuntimeError("database unavailable")
+    positions.sync_execution = failure
+    await dispatcher.on_candles([])
+    assert record.status == "EXIT_PENDING"
+    assert record.exited_quantity == 65
+    assert record.correlation_id in dispatcher._signals
+    async def success(*args):
+        return True
+    positions.sync_execution = success
+    await dispatcher.on_candles([])
+    assert signal.market_context["execution"]["exit_reason"] == "ATR_SL_HIT"
+    assert record.exited_quantity == 65

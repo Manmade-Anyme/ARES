@@ -248,22 +248,24 @@ class TestStorage(unittest.IsolatedAsyncioTestCase):
             "timestamp": "2026-09-13T04:00:01+00:00",
         }]
 
-        self.analytics.log_exit(
-            "trade-be",
-            24000.0,
-            "STOPPED_OUT_AT_BE",
-            pnl_points_override=50.0,
-        )
-        await asyncio.sleep(0.05)
+        for final_state, exit_spot, pnl in [('STOPPED_OUT_AT_BE', 24000, 50), ('ATR_SL_HIT', 24014, 17)]:
+            self.mock_client.update_mock.reset_mock()
+            self.analytics.log_exit(
+                "trade-be",
+                exit_spot,
+                final_state,
+                pnl_points_override=pnl,
+            )
+            await asyncio.sleep(0.05)
 
-        calls = self.mock_client.update_mock.call_args_list
-        self.assertEqual(len(calls), 2)
-        analytics_update = calls[0].args[0]
-        ml_update = calls[1].args[0]
-        self.assertEqual(analytics_update["pnl_points"], 50.0)
-        self.assertEqual(analytics_update["exit_price"], 24000.0)
-        self.assertEqual(ml_update["trade_pnl"], 50.0)
-        self.assertEqual(ml_update["trade_score"], 1)
+            calls = self.mock_client.update_mock.call_args_list
+            self.assertEqual(len(calls), 2)
+            analytics_update = calls[0].args[0]
+            ml_update = calls[1].args[0]
+            self.assertEqual(analytics_update["pnl_points"], pnl)
+            self.assertEqual(analytics_update["exit_price"], exit_spot)
+            self.assertEqual(ml_update["trade_pnl"], pnl)
+            self.assertEqual(ml_update["trade_score"], 1)
 
     @patch('config.settings')
     async def test_log_exit_no_record_found(self, mock_settings):

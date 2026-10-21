@@ -81,10 +81,10 @@ def test_t1_books_whole_lots_and_runner_moves_to_spot_cost():
     assert record.exited_quantity == 65
     assert record.active_spot_sl == 24000
     manager.on_spot(record.correlation_id, 24000, option_bid=98)
-    assert record.exited_quantity == 195
-    assert record.status == "CLOSED"
-    assert record.exit_reason == "STOPPED_OUT_AT_BE"
-    assert record.realized_pnl == pytest.approx(65 * 9 - 130 * 2)
+    assert record.exited_quantity == 65
+    assert record.status == "FILLED"
+    assert record.exit_reason == "T1_HIT"
+    assert record.realized_pnl == pytest.approx(65 * 9)
 
 
 def test_synthetic_exit_without_bid_is_not_a_fabricated_fill():
@@ -107,7 +107,8 @@ def test_bearish_stop_uses_underlying_direction():
     manager.on_spot(record.correlation_id, 23980, option_bid=110)
     assert record.active_spot_sl == 24000
     manager.on_spot(record.correlation_id, 24000, option_bid=99)
-    assert record.status == "CLOSED"
+    assert record.status == "FILLED"
+    assert record.exited_quantity == 65
 
 
 class FakeDhan:
@@ -289,7 +290,7 @@ def test_live_fill_cannot_be_injected_by_caller(tmp_path):
     assert not record.ready_to_register
 
 
-def test_upfront_premium_targets_fill_without_a_spot_target_touch():
+def test_premium_t1_books_partial_but_t2_keeps_atr_runner():
     manager = OrderManager()
     record = manager.dispatch_bracket(bracket())
     manager.observe_quote(record.correlation_id,100,spot=24001)
@@ -297,8 +298,9 @@ def test_upfront_premium_targets_fill_without_a_spot_target_touch():
     assert record.exited_quantity == 65
     assert record.active_spot_sl == 24001
     manager.observe_quote(record.correlation_id,121,spot=24006,bid=120)
-    assert record.status == "CLOSED"
-    assert record.realized_pnl == 1950
+    assert record.status == "FILLED"
+    assert record.exited_quantity == 65
+    assert record.realized_pnl == 650
 
 
 def test_crossed_book_never_creates_a_paper_entry():
@@ -440,18 +442,18 @@ def test_on_spot_exit_pending_retry():
     assert rec.exited_quantity == 130
 
 
-def test_on_spot_direct_t2_hit_on_large_candle():
+def test_on_spot_large_jump_books_t1_and_keeps_atr_runner():
     manager = OrderManager()
     rec = manager.dispatch_bracket(bracket(lots=2))
     manager.observe_quote(rec.correlation_id, 100.0)
     assert rec.filled_quantity == 130
     manager.on_spot(rec.correlation_id, 24050, option_bid=125.0)
-    assert rec.status == "CLOSED"
-    assert rec.exited_quantity == 130
-    assert rec.exit_reason == "T2_HIT"
+    assert rec.status == "FILLED"
+    assert rec.exited_quantity == 65
+    assert rec.exit_reason == "T1_HIT"
 
 
-def test_on_spot_t2_runner_exit():
+def test_on_spot_t2_does_not_exit_atr_runner():
     manager = OrderManager()
     rec = manager.dispatch_bracket(bracket(lots=2))
     manager.observe_quote(rec.correlation_id, 100.0)
@@ -460,9 +462,9 @@ def test_on_spot_t2_runner_exit():
     assert rec.exited_quantity == 65
     assert rec.status == "FILLED"
     manager.on_spot(rec.correlation_id, 24040, option_bid=120.0)
-    assert rec.status == "CLOSED"
-    assert rec.exited_quantity == 130
-    assert rec.exit_reason == "T2_HIT"
+    assert rec.status == "FILLED"
+    assert rec.exited_quantity == 65
+    assert rec.exit_reason == "T1_HIT"
 
 
 def test_reconcile_without_broker():
@@ -508,3 +510,113 @@ def test_reconcile_unfilled_order_status_restored_to_submitted(tmp_path):
                                 {"legName": "STOP_LOSS_LEG", "orderStatus": "PENDING", "remainingQuantity": 65}]}]
     manager.reconcile()
     assert record.status == "SUBMITTED"
+
+
+@pytest.mark.parametrize("side,direction", [("CE", 1), ("PE", -1)])
+def test_atr_runner_ratchets_on_closed_bars_and_waits_for_observed_bid(side, direction, monkeypatch, tmp_path):
+    path = tmp_path / "orders.json"
+    manager = OrderManager(journal_path=path)
+    record = manager.dispatch_bracket(bracket(
+        option_type=side, synthetic_spot_sl=24000 - direction * 10,
+        spot_target_1=24000 + direction * 20, spot_target_2=24000 + direction * 40,
+    ))
+    manager.observe_quote(record.correlation_id, 100, spot=24000)
+    manager.on_spot(record.correlation_id, 24000 + direction * 20, option_bid=110)
+    assert record.atr_last_bar  # T1 fill starts a durable chronological watermark.
+    record.atr_last_bar = "2026-10-21T04:30:00+00:00"
+    bars = []
+    monkeypatch.setattr("execution.order_manager.completed_atr_bars", lambda candles: bars)
+
+    def bar(minute, close, candidate=None):
+        return {"timestamp": f"2026-10-21T04:{minute:02}:00+00:00", "close": close,
+                "bullish_sl": candidate, "bearish_sl": candidate}
+
+    # Bars ending before T1 cannot retroactively close the new runner.
+    bars[:] = [bar(25, 24000 - direction * 100)]
+    manager.on_candles(record.correlation_id, [])
+    assert record.atr_last_bar == "2026-10-21T04:30:00+00:00"
+    bars[:] = [bar(35, 24000)]  # Equality is not a close beyond the stop.
+    manager.on_candles(record.correlation_id, [])
+    assert record.status == "FILLED"
+    assert record.active_spot_sl == 24000
+    bars[:] = [bar(40, 24000 + direction * 30, 24000 + direction * 10)]
+    manager.on_candles(record.correlation_id, [])
+    assert record.active_spot_sl == 24000 + direction * 10
+    # Revisions of an already-processed bar and less protective ATR values cannot loosen it.
+    bars[:] = [bar(40, 24000 - direction * 100),
+               bar(45, 24000 + direction * 20, 24000 + direction * 5)]
+    manager.on_candles(record.correlation_id, [])
+    assert record.status == "FILLED"
+    assert record.active_spot_sl == 24000 + direction * 10
+    manager = OrderManager(journal_path=path)
+    record = manager.records[record.correlation_id]
+    assert record.atr_last_bar == "2026-10-21T04:45:00+00:00"
+    manager.on_spot(record.correlation_id, 24000 - direction * 50, option_bid=98)
+    assert record.status == "FILLED"  # Tick/wick crossing no longer exits a runner.
+    bars[:] = [bar(50, 24000 + direction * 9)]
+    manager.on_candles(record.correlation_id, [])
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exited_quantity == 65
+    assert record.exit_reason == "ATR_SL_HIT"
+    manager.observe_quote(record.correlation_id, 99)  # No bid means no fill.
+    assert record.status == "EXIT_PENDING"
+    manager.observe_quote(record.correlation_id, 99, bid=100)  # Crossed quote is not executable.
+    assert record.status == "EXIT_PENDING"
+    manager.observe_quote(record.correlation_id, 99, bid=98)
+    assert record.status == "CLOSED"
+    assert record.realized_pnl == 520
+
+
+@pytest.mark.parametrize("side,direction", [("CE", 1), ("PE", -1)])
+def test_atr_warmup_keeps_entry_floor_and_emergency_premium_stop(side, direction, monkeypatch):
+    manager = OrderManager()
+    record = manager.dispatch_bracket(bracket(
+        option_type=side, synthetic_spot_sl=24000 - direction * 10,
+        spot_target_1=24000 + direction * 20, spot_target_2=24000 + direction * 40,
+    ))
+    manager.observe_quote(record.correlation_id, 100)
+    manager.on_spot(record.correlation_id, 24000 + direction * 20, option_bid=110)
+    record.atr_last_bar = "2026-10-21T04:30:00+00:00"
+    monkeypatch.setattr("execution.order_manager.completed_atr_bars", lambda candles: [{
+        "timestamp": "2026-10-21T04:35:00+00:00", "close": 24000 - direction,
+        "bullish_sl": None, "bearish_sl": None,
+    }])
+    manager.on_candles(record.correlation_id, [])
+    assert record.exit_reason == "ATR_SL_HIT"
+    assert record.status == "EXIT_PENDING"
+
+    other = OrderManager()
+    runner = other.dispatch_bracket(record.bracket)
+    other.observe_quote(runner.correlation_id, 100)
+    other.on_spot(runner.correlation_id, 24000 + direction * 20, option_bid=110)
+    other.observe_quote(runner.correlation_id, 89, bid=88)
+    assert runner.status == "CLOSED"
+    assert runner.exit_reason == "SL_HIT"
+
+
+def test_atr_legacy_journal_begins_now_and_non_runner_records_are_ignored(monkeypatch):
+    manager = OrderManager()
+    record = manager.dispatch_bracket(bracket())
+    monkeypatch.setattr("execution.order_manager.completed_atr_bars", lambda candles: [])
+    assert manager.on_candles(record.correlation_id, []) is record
+    manager.observe_quote(record.correlation_id, 100)
+    manager.on_spot(record.correlation_id, 24020, option_bid=110)
+    record.atr_last_bar = ""
+    manager.on_candles(record.correlation_id, [])
+    assert record.atr_last_bar
+
+
+def test_atr_exit_checks_previous_stop_before_tightening(monkeypatch):
+    manager = OrderManager()
+    record = manager.dispatch_bracket(bracket())
+    manager.observe_quote(record.correlation_id, 100)
+    manager.on_spot(record.correlation_id, 24020, option_bid=110)
+    record.atr_last_bar = "2026-10-21T04:30:00+00:00"
+    monkeypatch.setattr("execution.order_manager.completed_atr_bars", lambda candles: [{
+        "timestamp": "2026-10-21T04:35:00+00:00", "close": 24005,
+        "bullish_sl": 24010, "bearish_sl": None,
+    }])
+    manager.on_candles(record.correlation_id, [])
+    assert record.status == "FILLED"
+    assert record.active_spot_sl == 24010

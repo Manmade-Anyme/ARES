@@ -1,10 +1,10 @@
 # ADR-176: Comprehensive Options Entry, Exit, and SL Calculations Using Greeks, Index-Referenced Stops, and Upfront Limit Orders
 
-- **Status**: Implemented for PR #136; live activation blocked by user decision (2026-10-16)
+- **Status**: PR #136 implemented; post-T1 ATR trailing added in PR #143 (2026-10-21), pending review/merge; live activation remains blocked
 - **Date**: 2026-10-15
 - **Task ID**: MANM-176
 - **Author**: Software Architect Agent
-- **Target Branch**: `feature/MANM-176-options-entry-exit-sl`
+- **Target Branch**: `codex/option-alert-visibility` (PR #143 follow-up)
 - **Knowledge Sources & Obsidian Cross-References**:
   - `Projects/Ares/TASK-011 Option Calculator & Greeks Audit POC.md` (Current vs Next Expiry audit, OTM strike bias elimination, Gamma pricing, Index-Referenced Synthetic Stop)
   - `Notes/Daily Market Observation/2026-10-13 - Exhaustion Stop Loss Replay - Three Iterations.md` (165 production trades audit, R:R gate constraint with widened stops)
@@ -56,7 +56,7 @@ ARES currently relies on simulated or reactive spot-level triggers. When trading
 
 ## 2. Decision and Architecture Overview
 
-We decouple and upgrade the options calculation and execution pipeline into five robust architectural pillars:
+The following diagram describes calculation and retained execution components. Main currently registers manual `SIGNAL_REFERENCE` lifecycles rather than submitting new entry orders; Section 7 defines that runtime boundary.
 
 ```mermaid
 flowchart TD
@@ -67,13 +67,13 @@ flowchart TD
     end
 
     subgraph Greeks Math & Validation [options_math.py]
-        D --> E{Capital & Quote Valid?}
-        E -->|No / Capital <= 0| F[Set lots=0, Flag UNAVAILABLE / NO_CAPITAL, Suppress Order]
+        D --> E{Quote and Greeks Available?}
+        E -->|No| F[Unavailable data diagnosed; no fabricated prices or order]
         E -->|Yes| G[2nd-Order Taylor Expansion: Delta + Gamma]
         G --> H[Theta & Vega Horizon Scenario Adjustment]
         H --> I[Validate Monotonic Ordering: 0 < SL < Entry < T1 < T2]
         I -->|Ordering Invalid| F
-        I -->|Valid| J[Compute Non-Negative Sizing Lots & Tick Rounding 0.05]
+        I -->|Valid| J[Display prices; capital determines nonnegative lots only]
     end
 
     subgraph Dual-Layer Execution Model [order_manager.py]
@@ -131,7 +131,7 @@ $$\text{Expected Move}_{1\sigma} \approx \text{ATM Straddle Price} \times 1.25$$
 
 ### 3.6 Strict Risk Sizing & Capital Hard-Borders
 Let $C$ be the available balance returned from DhanHQ, and $r$ the configured risk fraction (`risk_per_trade_pct / 100.0`):
-1. **Capital Validity**: Capital affects lot allocation only. Calculate and display option entry, stop loss, T1 and T2 independently of account balance, subject to the existing quote, Greeks and ordering checks. If $C \le 0$ or balance fetch fails without verified fallback, set `suggested_lots = 0`, `affordable_lots = 0`, attach reason `NO_AVAILABLE_CAPITAL`, and block execution while retaining the calculated prices. A positive balance that cannot fund the risk or premium also retains prices with zero final lots and reason `INSUFFICIENT_CAPITAL_OR_RISK_BUDGET`. `is_valid` continues to require positive final lots for execution; these allocation-only rejections do not hide valid prices in alerts or persisted summaries.
+1. **Capital Validity**: Capital affects lot allocation only. Calculate and display option entry, stop loss, T1 and T2 independently of account balance, when quote and Greeks inputs are available. Calculate prices and lot suggestions before execution-only ordering checks; those checks do not hide calculated values. If $C \le 0$ or balance fetch fails without verified fallback, set `suggested_lots = 0`, `affordable_lots = 0`, attach reason `NO_AVAILABLE_CAPITAL`, and block execution while retaining the calculated prices. A positive balance that cannot fund the risk or premium also retains prices with zero final lots and reason `INSUFFICIENT_CAPITAL_OR_RISK_BUDGET`. `is_valid` continues to require positive final lots for execution; these allocation-only rejections do not hide valid prices in alerts or persisted summaries.
 2. **Sizing Math**:
    $$B = C \times r$$
    $$\text{PerLotLoss} = \text{RiskLossPts} \times \text{lot\_size}$$
@@ -187,62 +187,30 @@ Strictly maintain the [[TASK-108 Remove Automatic Time-Stop]] invariant. Do not 
 The recent 165-trade audit demonstrated that widening index stop distances (e.g., from 10/12 pts to 22-30 pts) mechanically rescues trades, but causes **78% to 100% of trades to fail the engine's `min_rr_ratio = 1.0` production gate** because $T_1$ remains at 18–24 pts.
 - **Architectural Guard**: Stop loss geometry in `config_profiles.py` must never be widened in isolation without a matching expansion of $T_1$. For MANM-176, the option calculator strictly accepts whatever structural/per-type spot levels the engine provides and computes accurate option derivatives without overriding engine geometry.
 
-### 4.3 Deferred Roadmap: 5-Minute ATR Trailing Stop
-**This entire subsection is non-normative and excluded from MANM-176.** The formulas below describe a possible follow-up recorded in `TODO.md`; they are not implemented by this PR. Existing post-T1 spot break-even behavior remains active.
+### 4.3 Implemented Post-T1: 5-Minute ATR Trailing Stop
+PR #143 implements the previously deferred roadmap. This documents branch behavior, not a production deployment or live-order activation.
 
-The proposed follow-up would evaluate a **5-minute ATR Trailing Stop (ATR TS)**:
-- **Inputs**:
-  - Timeframe: `5m` candles
-  - `atr_period`: `5`
-  - `hhv_period`: `10` (Highest High Value / Lowest Low Value window = 10 bars = 50 minutes)
-  - `multiplier`: `2.5`
-- **Calculation**:
-  1. **True Range ($\text{TR}_t$)**:
-     $$\text{TR}_t = \max\Big( H_t - L_t,\quad |H_t - C_{t-1}|,\quad |L_t - C_{t-1}| \Big)$$
-  2. **Wilder's Smoothing (RMA, $N=5$)**:
-     $$\text{ATR}_5 = \frac{(\text{ATR}_{t-1} \times 4) + \text{TR}_t}{5}$$
-     *(Initial seed over first 5 bars is simple average $\frac{1}{5}\sum_{i=0}^4 \text{TR}_{t-i}$).*
-  3. **Structural Channel Window ($M=10$)**:
-     $$\text{HHV}_{10} = \max(\text{High}_t, \dots, \text{High}_{t-9}), \quad \text{LLV}_{10} = \min(\text{Low}_t, \dots, \text{Low}_{t-9})$$
-  4. **Dynamic Bands**:
-     - **For Long (Bullish / CE)**:
-       $$\text{ATR\_TS}_{\text{spot}} = \text{HHV}_{10} - \left( 2.5 \times \text{ATR}_5 \right)$$
-       Trailed dynamically: $\text{SL}_t = \max(\text{SL}_{t-1}, \text{ATR\_TS}_{\text{spot}})$
-     - **For Short (Bearish / PE)**:
-       $$\text{ATR\_TS}_{\text{spot}} = \text{LLV}_{10} + \left( 2.5 \times \text{ATR}_5 \right)$$
-       Trailed dynamically: $\text{SL}_t = \min(\text{SL}_{t-1}, \text{ATR\_TS}_{\text{spot}})$
+- **Inputs**: NIFTY spot, completed `5m` candles, Wilder ATR period `5`, HHV/LLV window `10` bars, multiplier `2.5`. `atr_trailing.completed_atr_bars(candles)` aggregates exactly five contiguous, explicitly completed one-minute provider bars aligned to five-minute boundaries in the 09:15–15:30 IST session. Output timestamps denote bar ends. Forming bars never become complete merely through elapsed time; latest duplicate revisions win. Invalid/missing bars and session changes reset the ATR seed and channel window.
+- **Math**: First true range is $H-L$. Thereafter:
+  $$\mathrm{TR}_t=\max(H_t-L_t, |H_t-C_{t-1}|, |L_t-C_{t-1}|)$$
+  The first five ranges seed ATR with their arithmetic mean; subsequent bars use:
+  $$\mathrm{ATR}_t=(4\mathrm{ATR}_{t-1}+\mathrm{TR}_t)/5$$
+  After ten contiguous five-minute bars, raw candidates are:
+  $$\mathrm{CECandidate}_t=\mathrm{HHV}_{10}-2.5\mathrm{ATR}_t,\qquad
+    \mathrm{PECandidate}_t=\mathrm{LLV}_{10}+2.5\mathrm{ATR}_t$$
+- **Before T1**: Existing setup-specific spot stop and T1 trigger behavior remain. Initial option entry, SL and target premiums retain the Delta/Gamma projection. No detector geometry is changed.
+- **At T1**: Move the active spot stop to spot entry. Spot analytics retain the 50% T1 booking model. Paper execution books whole lots: a one-lot position closes entirely; larger positions book `max(1, lots // 2)` lots and trail the remainder.
+- **Close before ratchet**: For each newly completed five-minute bar after T1 activation, first compare its close with the previously active stop. CE exits only when close is **strictly below** that stop; PE exits only when close is **strictly above** it. Equality and wicks alone do not trigger this exit. If the runner survives, calculate the stop for subsequent bars:
+  $$\mathrm{CEStop}_t=\max(\mathrm{Entry},\mathrm{PreviousStop},\mathrm{CECandidate}_t)$$
+  $$\mathrm{PEStop}_t=\min(\mathrm{Entry},\mathrm{PreviousStop},\mathrm{PECandidate}_t)$$
+  Stops are reported at two-decimal spot precision. During warmup or after a data gap, retain entry/the already locked stop until a channel candidate is available. Stops never loosen. A newly tightened stop cannot retrospectively exit the same candle.
+- **Runner policy**: Fixed T2 remains a displayed reference; it no longer automatically exits post-T1 runners. Multi-session carry remains permitted. A new session resets ATR inputs while the previously locked trade stop remains active.
+- **Persistence**: `market_context.atr_trailing` stores the processed-bar watermark, previous stop and ATR in `trade_analytics`, alongside the active state/stop. Startup restores the saved stop and watermark. Legacy T1 trades without a watermark anchor to the latest completed bar and resume prospectively, avoiding historical replay exits. ATR metadata and paper telemetry share the per-trade context lock to preserve each other's JSON keys.
+- **Manual/reference signals**: Main tracks every emitted, persisted signal as `SIGNAL_REFERENCE`, independently of capital, suggested lots or bracket execution validity. It does not dispatch new paper or broker orders at signal entry. Spot T1/ATR updates therefore remain available at zero capital or with a rejected execution plan; tracking makes no fill assertion.
+- **Paper execution**: An ATR close-through creates an exit intent for remaining quantity. The actual paper exit still requires a subsequently observed executable option bid. The initial emergency premium stop remains active; it is not replaced with a fabricated or dynamically projected premium stop. New live orders remain blocked.
+- **Discord**: `ATR_SL_UPDATED` reports a tightened stop and previous stop; unchanged stops produce no update. `ATR_SL_HIT` reports the completed-close exit trigger. Optional option SL/exit values use persisted Greeks as labelled estimates, not confirmed fills.
 
-- **Two-Phase Lifecycle Model (Fixed Setup SL + ATR TS Ratchet)**:
-  1. **Phase 1: Entry & Invalidation Gate (Fixed Setup SL)**:
-     - At entry, setup-specific structural stop (e.g. `EXHAUSTION_REVERSAL = 10.0 pts`) governs trade invalidation and position sizing.
-     - Preserves the required $1:1.8+$ Risk-to-Reward ratio and passes the `min_rr_ratio = 1.0` production filter.
-     - Option entry SL is calculated from this initial spot stop using 2nd-order Taylor expansion: $\Delta P = \Delta \cdot \Delta S + \frac{1}{2} \Gamma (\Delta S)^2$.
-  2. **Phase 2: High-Water Mark (HWM) Ratchet Trailing (In-Trade & Runners)**:
-     - As the trade matures and reaches $T_1$ (+18 pts Spot), 50% lots are closed and stop moves to Break-Even (Cost).
-     - **Domain Definition**: In Layer 1 synthetic execution, `Cost` is strictly defined as `entry_price` (the underlying NIFTY Spot entry level, e.g. 24,000 pts). The option-level prices in walkthroughs represent the corresponding instantaneous derivative valuations.
-     - **Directional Ratchet Invariants**:
-       - *Bullish (CE)*: Monotonically non-decreasing ($\max$). The spot stop moves only upward and never decreases:
-         $$\text{Active Spot SL}_t = \max\Big(\text{Spot SL}_{t-1},\ \text{Spot Entry},\ \text{ATR\_TS}_{\text{spot}}\Big)$$
-       - *Bearish (PE)*: Monotonically non-increasing ($\min$). The spot stop moves only downward as price falls and never increases:
-         $$\text{Active Spot SL}_t = \min\Big(\text{Spot SL}_{t-1},\ \text{Spot Entry},\ \text{ATR\_TS}_{\text{spot}}\Big)$$
-     - **The "Never Surrender Ground" Invariant**: Once the trailing stop ratchets in the trade direction, it can never back-track, even if ATR contracts during market pauses/pullbacks. If ATR drops from 105 to 103 on CE, the stop remains locked at 105.
-     - **Break-Even Floor Guarantee**: If ATR is beyond the entry point upon $T_1$ hit, ATR is ignored and the stop remains locked at Spot Entry. This is a proposed spot-stop constraint, not a guarantee of an option profit: premium decay, volatility shifts, gaps, fees and execution price still affect realized P&L.
-     - **Concrete Lifecycle Walkthrough (Spot & Option Mapping)**:
-       - *Entry*: Spot 24,000. Buy 2 lots @ ₹100.00 | Initial Spot SL = 23,990 (-10 pts) | Option SL = ₹86.10 (Max risk = ₹13.90/share).
-       - *$T_1$ Hit (+18 pts Spot)*: Spot 24,018. Sell 1 lot @ ~₹109.40 (+₹9.40 banked). Stop on runner shifts to Spot 24,000 (Cost).
-       - *Runner Advance*: Spot pushes toward $T_2$ (24,040). Spot ATR TS climbs to 24,008 (Option ~105) $\implies$ SL = 24,008. Spot ATR TS dips to 24,005 $\implies$ SL stays 24,008. Spot ATR TS rallies to 24,020 (Option ~112) $\implies$ SL = 24,020.
-       - *Exit*: Spot pulls back to 24,020 $\implies$ runner exits @ ~₹112 (+₹12 banked). Total net trade P&L = +₹21.40/share.
-
-- **Dual-Layer Execution**:
-  - **Layer 1 (Synthetic Invalidation on Spot Chart)**: The 5-minute ATR TS runs strictly on **NIFTY Spot 5m candles**. Position Manager monitors real-time NIFTY Spot ticks against $\text{Active Spot SL}_t$. When Spot touches the trailing level, ARES dispatches an immediate market order to close the option contract. Using spot as the trigger separates stop activation from option quote noise; it does not eliminate option pricing or execution risk.
-  - **Layer 2 (Emergency Broker Floor)**: Upfront broker stop placed at entry based on the initial fixed setup SL translated via Delta/Gamma. Upgraded to Break-Even/trailed premium when $T_1$ is achieved.
-
-> [!NOTE]
-> **Scope Boundary & Staging (2026-10-15)**: Per trader directive, the dynamic 5-minute ATR Trailing Stop (replacing post-$T_1$ fixed targets and static trailing) is formally logged in `TODO.md` as non-normative roadmap for a dedicated subsequent issue. For the active scope of **MANM-176**, the system retains the existing post-$T_1$ break-even trailing behavior and focuses exclusively on:
-> 1. Full-chain option Greeks ingestion ($\Delta, \Gamma, \Theta, \mathcal{V}, \text{IV}$) via `OIFetcher.fetch_chain()`.
-> 2. ATM strike selection ($||\Delta| - 0.50| \to \min$).
-> 3. 2nd-order Taylor expansion for precise entry, targets, and stop premiums.
-> 4. Upfront limit orders and dual-layer bracket contracts.
+Example for CE: entry 24,000; active stop 24,000; completed close 24,030 and candidate 24,008 tighten the next stop to 24,008. A later candidate 24,005 leaves it unchanged. A later close 24,007 triggers the runner exit at the observed close for spot analytics; it does not claim an option fill at 24,008 or at any model premium.
 
 ### 4.4 Trade Outcome Resolution & Multi-Class Scoring Contract (TASK-198 Alignment)
 Per trader mandate and TASK-198 conventions, every trade resolution must preserve the verified outcome scoring taxonomy:
@@ -250,12 +218,12 @@ Per trader mandate and TASK-198 conventions, every trade resolution must preserv
    - *Trigger*: Spot hits initial structural stop loss before reaching $T_1$.
    - *Business Score*: `-1` (Full Loss on Trade).
    - *ML / Storage Label*: `0` in non-negative categorical label space (`trade_analytics.score`), with negative magnitude recorded in `pnl_points`.
-2. **First Target Reached & Break-Even / Trailing Stop (`T1_HIT` / `STOPPED_OUT_AT_BE`)**:
-   - *Trigger*: Spot hits $T_1$ (+18 pts), 50% position booked into profit, runner trails and exits at Break-Even (Cost) or trailing stop.
+2. **First Target Reached & Trailing Stop (`T1_HIT` / `ATR_SL_HIT`; legacy `STOPPED_OUT_AT_BE`)**:
+   - *Trigger*: Spot reaches setup T1; spot analytics model 50% booked there and the runner exits on a completed five-minute close through its active stop. `ATR_SL_HIT` records that close as exit price; signed spot P&L is the mean of entry-to-T1 and entry-to-close movement.
    - *Business Score*: `+1` (Banked partial profit, protected runner).
    - *ML / Storage Label*: `1` in `trade_analytics.score` and `ml_collection.trade_score`.
-3. **Second Target Reached (`T2_HIT`)**:
-   - *Trigger*: Spot hits $T_2$ (+40 pts) full target.
+3. **Historical Second Target Reached (`T2_HIT`)**:
+   - *Historical trigger*: Spot reached $T_2$ for a full-target exit. Existing records retain score 2; the current post-T1 ATR runner does not automatically exit at fixed T2.
    - *Business Score*: `+2` (Double Win / Multi-target winner).
    - *ML / Storage Label*: `2` in `trade_analytics.score` and `ml_collection.trade_score`.
 
@@ -323,8 +291,8 @@ Refactor existing linear functions into a pure, comprehensive calculation suite:
 
 ### 5.5 `execution/order_manager.py` & `main.py` Wiring
 - Implement `OrderManager` to handle Dhan limit order dispatch and contingent OCO bracket management.
-- Pure order state machine supporting simulated execution and live Dhan API integration.
-- **`main.py` Call Site Wiring**: Wire `OrderManager` into the signal dispatch loop (`main.py:432-450`). When an actionable signal is generated, `OrderManager.dispatch_bracket(signal.bracket)` is executed. Submission alone must not register a position. A confirmed fill with confirmed protection gates `PositionManager.add_trade()`; pending submissions remain execution records.
+- Paper order state machine with observed quote fills and completed-candle ATR runner exits; new live dispatch remains blocked.
+- **`main.py` wiring**: Main registers every emitted, persisted signal through `PositionManager.add_trade()` with `tracking_mode=SIGNAL_REFERENCE`; it does not dispatch a new paper/broker entry order. Manual spot tracking is independent of lot allocation and executable-bracket checks. Existing order-manager APIs and paper monitoring remain supported/tested for execution records. Completed provider history reaches both `PositionManager.update_atr_trailing(candles)` and the dispatcher’s `on_candles(candles)`. `atr_trailing.completed_atr_bars(candles)` is the shared pure ATR calculation; each consumer persists its own trade activation/watermark.
 
 ### 5.6 `storage.py` and `reports.py`
 - Persist `market_context.options_sizing` containing `greeks` (`delta`, `gamma`, `theta`, `vega`), `security_id`, `entry_limit`, `option_sl`, `option_target`, `capital`, and `rejection_reason`.
@@ -344,7 +312,7 @@ Display bracket levels and optional diagnostics in the Discord Embed:
   - `📊 Option Greeks`: `Δ {delta:+.3f} | Γ {gamma:.4f} | Θ {theta:.1f}/day | IV {iv:.1f}%`
 - **Dual Target Breakdown**:
   - `🎯 Target 1`: `₹ {target_1:.2f}` (50% position book | Spot: `{t1_spot:.1f}`)
-  - `🎯 Target 2`: `₹ {target_2:.2f}` (Runner position | Spot: `{t2_spot:.1f}`)
+  - `🎯 Target 2`: `₹ {target_2:.2f}` (Reference only; runner trails ATR | Spot: `{t2_spot:.1f}`)
 - **Option Stop Loss Field**:
   - Discord `🛑 Stop Loss`: `₹ {option_sl:.2f}` in both verbosity modes; the existing spot `🛑 SL` field already shows structural invalidation. Console diagnostics retain both stop layers.
 - **Capital & Sizing Breakdown**:
@@ -357,13 +325,19 @@ Enrich spot lifecycle alerts with explicitly labelled option premium estimates. 
   - `⚡ Action`: `Target 1 Hit (spot); partial-booking estimate`
   - `💰 Estimated Option Exit`: `₹ {t1_option_price:.2f} (+₹ {pnl_per_lot:.2f} / lot)`
   - `🛡️ SL Status`: `Trailed to Break-Even (Spot {entry_price:.2f} / Option ₹{entry_premium:.2f})`
-- **`STOPPED_OUT_AT_BE` Update**:
+- **`ATR_SL_UPDATED` Update**:
+  - `⚡ Action`: `ATR trailing stop tightened.`
+  - Show current and previous spot SL, the 5-minute ATR method and an estimated option SL when stored pricing data supports it. No update is sent when the stop does not tighten.
+- **`ATR_SL_HIT` Update**:
+  - `⚡ Action`: `5-minute close crossed ATR Stop Loss. Runner exit triggered.`
+  - Show completed spot close, active/previous SL and any calculated option exit explicitly labelled as a model estimate. This does not assert a paper or broker fill.
+- **Legacy `STOPPED_OUT_AT_BE` Update**:
   - `⚡ Action`: `Runner reached spot break-even; option exit estimate`
   - `💰 Estimated Trade PnL`: `₹ {net_trade_pnl:.2f} (50% T1 booking model; not guaranteed)`
 - **`SL_HIT` Update**:
   - `⚡ Action`: `Stop Loss Triggered`
   - `🛑 Exit Price`: `₹ {exit_premium:.2f} (-₹ {loss_per_lot:.2f} / lot)`
-- **`T2_HIT` Update**:
+- **Legacy `T2_HIT` Update**:
   - `⚡ Action`: `Target 2 Hit (spot); runner exit estimate`
   - `💰 Estimated Option Exit`: `₹ {t2_option_price:.2f} (+₹ {runner_pnl:.2f} / lot)`
 
@@ -383,9 +357,9 @@ Enrich spot lifecycle alerts with explicitly labelled option premium estimates. 
 - [x] **Pre-commit Doc Sync**: Sync ADR to repository docs in PR #136. Obsidian production documentation sync occurs locally after the user merges, per the Global Development Pipeline.
 
 
-## 7. Implementation Contract for PR #136
+## 7. Implementation Contract (PR #136 and PR #143 follow-up)
 
-This section specifies the implemented scope and qualifies illustrative execution claims above. Section 4.3 remains deferred. No deployment or live account activation is included.
+This section specifies the implemented scope and qualifies illustrative execution claims above. PR #143 adds Section 4.3 ATR behavior and removes the option R:R feasibility rejection. No deployment or live account activation is included.
 
 ### Calculation and persistence
 - `OIFetcher.fetch_chain()` preserves side-specific security IDs, expiry, underlying spot reference, bid/ask, IV and all four Greeks across the chain. Missing and nonfinite numeric data remain missing.
@@ -396,27 +370,29 @@ This section specifies the implemented scope and qualifies illustrative executio
 - Expected-move diagnostics compare IV and ATM straddle estimates when both are available. A missing IV is not substituted into an executable bracket.
 
 ### Execution boundaries
+The following paper-order contracts describe the retained order-manager APIs/monitoring. Main’s new-signal path performs manual reference tracking and submits no new entry orders.
+
 - `OrderManager` defaults to paper mode. Dispatch records a pending limit plan; submission alone does not constitute a fill. Paper entries require an observed executable ask at or below the limit, and paper exits require an observed bid.
-- Paper invalidation cancels pending entries at the structural stop, target or expiry. Filled paper positions use the spot stop and emergency premium floor. T1 closes whole lots: one lot closes entirely, otherwise the first allocation is `max(1, lots // 2)`. Remaining lots retain the existing spot break-even/T2 lifecycle. A pending exit without a bid remains pending.
+- Paper invalidation cancels pending entries at the structural stop, target or expiry. Filled paper positions use the spot stop and emergency premium floor. T1 closes whole lots: one lot closes entirely, otherwise the first allocation is `max(1, lots // 2)`. Remaining lots use completed-five-minute-close ATR trailing after moving the spot stop to entry. T2 remains a reference, not an automatic runner exit. A pending exit without a bid remains pending; the initial emergency premium floor remains active.
 - `DhanSuperOrderAdapter` exposes an independently tested low-level LIMIT super-order payload and order-book reads for an injected SDK. `OrderManager` rejects every new live dispatch with `LIVE_RUNTIME_UNSUPPORTED` before calling the broker. `allow_live=True` plus a durable single-writer journal permits recovery inspection only; it does not enable new orders. Reconciliation requires cumulative fill and protective-leg evidence.
 - The user explicitly chose to keep live activation blocked on 2026-10-16. A subsequent reviewed design must establish synthetic exit/cancellation race handling, partial fills, emergency flattening, complete exit reconciliation, DAY protection versus overnight carry, expiry settlement and whitelisted static egress. Recovered live records remain inspection-only; they are not automatically managed by the paper runtime.
 - Stop orders and synthetic stop triggers cannot guarantee a maximum realized loss or fill during gaps, illiquidity or infrastructure failure.
 
 ### Runtime integration and recovery
-- Main dispatches only after the signal audit is saved. Registration requires a protected observed paper fill, not a submission acknowledgment. Pending signals are deduplicated and invalidated on spot ticks even before a trade exists.
+- Main registers persisted, emitted signals as manual `SIGNAL_REFERENCE` spot trades without dispatching new entry orders. Capital, lot allocation and executable-bracket checks do not prevent that registration or its T1/ATR lifecycle. Existing paper-order APIs still require protected observed fills for execution-backed registration; a submission acknowledgment is not a fill. Existing pending execution records remain deduplicated and monitored.
 - Paper quote processing uses the matched contract row's finite, positive `underlying_spot` for the fill reference, persisted `spot_at_fill`, analytics entry and post-T1 break-even level. Missing, nonfinite, boolean or nonpositive quote spot prevents quote execution; independent spot ticks can still invalidate pending entries or trigger synthetic exits. A delayed fill retains its actual fill timestamp. Candle wicks from before that fill are excluded from the new trade's first exit evaluation.
 - Every protected observed fill is registered, including a record already `CLOSED` or `EXIT_PENDING` before registration. A fill and emergency exit on the same quote persist their quantities, entry price, exit reason and realized paper P&L in trade execution context. Registration retries retain the original fill spot and timestamp.
 - Paper execution transitions update trade analytics and bind the original canonical signal snapshot to the trade. `PositionManager.sync_execution()` returns `False` until that snapshot exists and its trade link is confirmed, then `True`. Filled terminal records remain available for persistence retries after main writes the snapshot; they are excluded from pending-entry deduplication. Failures remain retryable without preventing other orders or spot processing.
 - On startup, `PositionManager` uses its existing analytics reconciliation read to restore `market_context` for nonterminal active trades by trade ID. Both entry RPCs persist that context in `trade_analytics`; a schema migration is unnecessary. Persisted analytics keys override matching active-row keys, while unrelated active-row keys survive. Legacy trades without usable analytics context retain their existing context, and analytics read failures remain best-effort so active-trade monitoring can still initialize. Terminal analytics reconciliation continues to exclude already resolved trades.
-- Restored `options_sizing` and `execution` context remain available to carried-trade lifecycle reporting. Execution context describes the last persisted paper state; startup does not reconstruct pending orders or resume paper simulation.
-- Paper target limits may fill from observed bid quotes before the corresponding spot target. Execution telemetry and historical spot outcome scoring remain separate models; neither is live broker P&L.
+- Restored `options_sizing`, `execution` and `atr_trailing` context remain available to carried-trade lifecycle reporting. Spot runner stop/state/watermark resume from persisted analytics. Execution context describes the last persisted paper state; application startup does not reconstruct pending orders or resume paper simulation.
+- Paper T1 target limits may fill from observed bid quotes before the corresponding spot target. Execution telemetry and historical spot outcome scoring remain separate models; neither is live broker P&L.
 - Pending paper orders exist only for the current runtime session. Restarted spot analytics continue their established carry behavior; the application does not reconstruct a broker portfolio or claim live protection. Optional order journals support state-machine recovery tests, not production live activation.
 
 ### Reporting interpretation
-- Signal alerts show calculated limits separately from LTP, full Greeks, both stop layers, planned quantity and uncapped sizing. They do not claim submission or execution.
+- Signal alerts show available calculated limits separately from LTP and capital-based suggested quantity even when execution is rejected. Missing provider data is explicitly unavailable. Discord hides optional Greeks/order/risk diagnostics by default and shows one premium stop; console diagnostics retain details. Neither display claims submission or execution.
 - Lifecycle option prices and the 50% booking P&L example are estimates, not broker fills. In particular, a spot break-even exit can still lose option premium after theta, IV changes, spread and fees.
 - Aggregate option P&L retains the existing linear-Delta approximation; one-lot bracket P&L uses the stored plan. Both are labelled estimates and use persisted lot size where available. Neither is a realized-fill accounting ledger.
-- Spot outcome labels remain `0` for initial loss, `1` for post-T1 break-even/trailing resolution and `2` for T2. These labels do not assert realized option profit.
+- Spot outcome labels remain `0` for initial loss, `1` for post-T1 trailing resolution (`ATR_SL_HIT`) and `2` for historical T2 records. These labels do not assert realized option profit.
 
 ### Verification and delivery
-Focused contracts live in `tests/unit/test_options_math.py`, `test_order_manager.py`, `test_options_alert_reporting.py`, `test_oi_fetcher.py`, `test_manm176_persistence.py`, `test_manm176_dispatch.py` and `test_manm176_review_persistence.py`. Review regressions cover synchronized quote spot, invalid quote spot, same-quote emergency exits, registration/persistence retries, canonical ML linkage in both schema modes and carried-trade context restoration after restart. Final QA results are recorded in `reports/qa/MANM-176_implementation.md`; implementation documentation does not claim deployment validation. Repository documentation and CHANGELOG stay on PR #136; Obsidian production sync follows manual merge.
+Focused contracts live in `tests/unit/test_options_math.py`, `test_order_manager.py`, `test_options_alert_reporting.py`, `test_oi_fetcher.py`, `test_manm176_persistence.py`, `test_manm176_dispatch.py` and `test_manm176_review_persistence.py`. Review regressions cover synchronized quote spot, invalid quote spot, same-quote emergency exits, registration/persistence retries, canonical ML linkage in both schema modes and carried-trade context restoration after restart. Final QA results are recorded in `reports/qa/MANM-176_implementation.md`; implementation documentation does not claim deployment validation. ATR public contracts additionally cover `tests/unit/test_atr_trailing.py` and the position-manager, dispatcher, paper-order and alert regression suites. Repository documentation and CHANGELOG stay on the implementation PR; Obsidian production sync follows manual merge.

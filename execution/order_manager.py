@@ -4,7 +4,7 @@ The live adapter is intentionally not enabled by main. Ambiguous submissions and
 unconfirmed protection require reconciliation, never a blind submission retry.
 """
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import hashlib
 import json
 import math
@@ -15,6 +15,7 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from models import OptionGreeks, OptionOrderBracket
+from atr_trailing import completed_atr_bars
 
 
 def _exchange_date():
@@ -39,6 +40,7 @@ class OrderRecord:
     realized_pnl: float = 0.0
     active_spot_sl: float = 0.0
     t1_hit: bool = False
+    atr_last_bar: str = ""
     exit_reason: str = ""
     pending_exit_quantity: int = 0
     slices: list = field(default_factory=list)
@@ -227,8 +229,6 @@ class OrderManager:
             if not record.t1_hit and bid >= b.target_1:
                 lots = record.filled_quantity // b.lot_size
                 self._paper_exit(record, max(1, lots // 2) * b.lot_size, bid, "T1_HIT")
-            if record.t1_hit and _positive(b.target_2) and bid >= b.target_2:
-                self._paper_exit(record, record.filled_quantity - record.exited_quantity, bid, "T2_HIT")
         return record
 
     def _paper_exit(self, record, quantity, bid, reason):
@@ -247,6 +247,7 @@ class OrderManager:
             if reason == "T1_HIT":
                 record.t1_hit = True
                 record.active_spot_sl = record.entry_spot or record.bracket.spot_entry
+                record.atr_last_bar = datetime.now(timezone.utc).isoformat()
         self._save()
 
     def on_spot(self, correlation_id, spot, option_bid=None):
@@ -270,20 +271,43 @@ class OrderManager:
                 self._save()
             return record
         remaining = record.filled_quantity - record.exited_quantity
-        if stop_hit:
-            reason = "STOPPED_OUT_AT_BE" if record.t1_hit else "SL_HIT"
-            self._paper_exit(record, remaining, option_bid, reason)
-        elif record.status == "EXIT_PENDING":
+        if record.status == "EXIT_PENDING":
             if _positive(option_bid):
                 self._paper_exit(record, record.pending_exit_quantity, option_bid, record.exit_reason)
+        elif not record.t1_hit and stop_hit:
+            self._paper_exit(record, remaining, option_bid, "SL_HIT")
         elif not record.t1_hit and t1_hit:
             lots = record.filled_quantity // b.lot_size
             quantity = min(remaining, max(1, lots // 2) * b.lot_size)
             self._paper_exit(record, quantity, option_bid, "T1_HIT")
-            if record.status == "FILLED" and _positive(b.spot_target_2) and direction * (spot - b.spot_target_2) >= 0:
-                self._paper_exit(record, record.filled_quantity - record.exited_quantity, option_bid, "T2_HIT")
-        elif record.t1_hit and _positive(b.spot_target_2) and direction * (spot - b.spot_target_2) >= 0:
-            self._paper_exit(record, remaining, option_bid, "T2_HIT")
+        return record
+
+    def on_candles(self, correlation_id, candles):
+        """Trail paper runners on completed five-minute closes, never fabricate bids."""
+        record = self.records[correlation_id]
+        if record.mode != "PAPER" or not record.t1_hit or record.status != "FILLED":
+            return record
+        # Old journals have no T1 timestamp; begin watching now, without replaying exits.
+        if not record.atr_last_bar:
+            record.atr_last_bar = datetime.now(timezone.utc).isoformat()
+            self._save()
+        direction = 1 if record.bracket.option_type == "CE" else -1
+        for bar in completed_atr_bars(candles):
+            if datetime.fromisoformat(bar["timestamp"]) <= datetime.fromisoformat(record.atr_last_bar):
+                continue
+            record.atr_last_bar = bar["timestamp"]
+            if direction * (bar["close"] - record.active_spot_sl) < 0:
+                self._paper_exit(record, record.filled_quantity - record.exited_quantity,
+                                 None, "ATR_SL_HIT")
+                break
+            candidate = bar["bullish_sl" if direction == 1 else "bearish_sl"]
+            if candidate is not None:
+                bound = max if direction == 1 else min
+                record.active_spot_sl = round(bound(
+                    record.entry_spot or record.bracket.spot_entry,
+                    record.active_spot_sl, candidate,
+                ), 2)
+            self._save()
         return record
 
     def reconcile(self):

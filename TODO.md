@@ -28,7 +28,7 @@ Starting picture (129 trades, Strategy A applied in TASK-204):
 Two things to carry into that discussion:
 
 - **Multi-day carry is intentional** (TASK-170, confirmed 2026-07-31). There is no
-  EOD square-off and none is wanted. T2 rides until hit or stopped.
+  EOD square-off and none is wanted. Post-T1 runners now follow the ATR policy below; T2 remains a reference.
 - **`pnl_points` is NIFTY spot, and that is correct.** ARES is a spot-based system:
   detection, entry, SL, targets, ML features and P&L are all judged on the spot
   chart. The options layer is derived reference projected from spot via delta, and
@@ -39,25 +39,18 @@ Two things to carry into that discussion:
   net negative and the carries are where the entire edge sits.
 
 ### 📈 Dynamic Post-T1 Trailing Stop: 5-Minute ATR TS (Atr 5, HHV 10, Mult 2.5)
-**Owner: Software Architect / Project Manager.** Scoped from MANM-176 discussion (2026-10-15). Deferred for separate implementation.
+**Status: implemented on PR #143 branch (2026-10-21), pending review/merge; deployment not claimed.** Originally deferred on 2026-10-15; now authorized by the user.
 
-- [ ] **Replace post-T1 fixed target / static trailing with dynamic 5-minute ATR Trailing Stop.**
-  - **Context**: Currently, once T1 is hit, the position manager moves SL to cost/Break-Even and waits for a static T2 or BE exit.
-  - **Planned Architecture**:
-    1. **At Entry**: Maintain fixed structural setup SL (e.g. 10 pts for `EXHAUSTION_REVERSAL`) to preserve R:R ($1:1.8$) and satisfy the `min_rr_ratio = 1.0` gate.
-    2. **At T1**: Book 50% partial profits and move SL to cost (Break-Even).
-    3. **Post-T1 Runner Trailing**: Replace static T2 and fixed trailing with 5-minute ATR TS:
-       - Timeframe: `5m`
-       - ATR Period: `5` (Wilder's RMA)
-       - HHV / LLV Period: `10` bars (50 minutes)
-       - Multiplier: `2.5`
-       - Long SL: $\max(\text{Previous SL},\ \text{Cost},\ \text{HHV}_{10} - 2.5 \times \text{ATR}_5)$
-       - Short SL: $\min(\text{Previous SL},\ \text{Cost},\ \text{LLV}_{10} + 2.5 \times \text{ATR}_5)$
-       - **The Directional Ratchet Invariant**:
-         - *Bullish (CE)*: Monotonically non-decreasing ($\max$). Stop moves only upward and never decreases. If ATR dips, stop stays locked at highest level.
-         - *Bearish (PE)*: Monotonically non-increasing ($\min$). Stop moves only downward and never increases. If ATR rises, stop stays locked at lowest level.
-    4. **Execution Domain (Spot Chart Trigger)**: The ATR TS indicator runs strictly on **NIFTY Spot 5m candles**. When Spot crosses the ATR TS line, ARES executes a market exit on the open option contract. This eliminates Greek drift, avoids theta-decay distortions, avoids erratic option wicks, and requires zero dynamic Greek recalculation.
-    5. **Benefit**: Allows runners to ride large multi-session / intraday trends without arbitrary fixed ceilings, while protecting accumulated profits during structural reversals.
+- [x] Replace automatic post-T1 fixed T2/entry-stop exits with completed-five-minute-close ATR trailing.
+  - Initial structural stop and T1 geometry remain unchanged. T1 moves the spot stop to entry; paper partial booking uses whole lots, and a one-lot trade closes entirely at T1.
+  - Aggregate five contiguous, explicitly completed one-minute spot bars. ATR(5) uses a five-range SMA seed then Wilder smoothing; HHV/LLV(10), multiplier 2.5. Gaps/session changes reset indicator warmup.
+  - CE stop: $\max(\text{Previous SL},\text{Entry},\text{HHV}_{10}-2.5\mathrm{ATR}_5)$; PE stop: $\min(\text{Previous SL},\text{Entry},\text{LLV}_{10}+2.5\mathrm{ATR}_5)$. Retain entry/the locked stop during warmup; never loosen it.
+  - Compare each completed close with the previously active stop **before** ratcheting for subsequent bars. CE exits strictly below; PE exits strictly above. Wicks/equality do not trigger the ATR exit. T2 is displayed as a reference only.
+  - Persist spot stop/state and processed-bar watermark; old carried T1 trades without a watermark resume prospectively. New session indicator resets preserve the locked stop.
+  - Every emitted, persisted signal receives manual `SIGNAL_REFERENCE` T1/ATR tracking independently of capital/lots/bracket validity; main submits no new entry orders. Discord reports tightened stops and close-through exits; option estimates remain labelled estimates.
+  - Paper ATR exits wait for an observed executable bid. Initial emergency premium protection remains active; new live orders remain blocked.
+
+Full contract: [ADR-176 §4.3](docs/MANM-176-options-entry-exit-sl-greeks-limit-orders.md#43-implemented-post-t1-5-minute-atr-trailing-stop).
 
 ---
 

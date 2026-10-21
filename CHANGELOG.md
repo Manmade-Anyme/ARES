@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Post-T1 ATR trailing (PR #143):** Implement the previously deferred five-minute spot ATR runner: Wilder ATR(5), HHV/LLV(10), multiplier 2.5. Keep entry/the locked stop during warmup, compare each completed close against the previous stop before ratcheting, and exit CE strictly below / PE strictly above. Replace automatic post-T1 fixed T2 exits with trailing while retaining T2 as a displayed reference. Persist stop/state/watermarks, emit ATR stop-update and close-through alerts, and track every emitted, persisted signal as a manual reference independently of capital/lots/execution validity, without new paper or broker entry submissions. Paper exits still require an observed bid; initial emergency premium protection and the live-order block remain. Branch implementation pending review/merge; no deployment claimed.
+
 - **Remove option R:R rejection:** Delete the theta/spread feasibility check that returned `INSUFFICIENT_OPTION_RR`, so it no longer blocks option prices or capital-based suggested lots. Pricing formulas and other validation remain unchanged.
 
 - **Compact Discord option alerts:** Hide Order Type, Option Greeks and Risk Budget by default behind `discord_show_option_details`. Show the option Stop Loss as a single premium value, retaining the spot SL above. Console diagnostics remain detailed.

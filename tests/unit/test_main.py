@@ -1,3 +1,4 @@
+import pytest
 """
 Tests for TASK-173 audit P2 item 18: main.py's tick-driven exit sleep helper.
 
@@ -361,3 +362,16 @@ class TestComputeIVChangePct(unittest.TestCase):
         self.assertAlmostEqual(iv_change_down, -10.0)
         self.assertEqual(next_prev_down, 13.5)
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failed', [None, 'spot', 'paper'])
+async def test_completed_atr_monitors_both_run_independently(failed):
+    positions = MagicMock()
+    dispatcher = MagicMock()
+    positions.update_atr_trailing = AsyncMock(side_effect=RuntimeError('down') if failed == 'spot' else None)
+    dispatcher.on_candles = AsyncMock(side_effect=RuntimeError('down') if failed == 'paper' else None)
+    candles = [{'complete': True}]
+    await main._monitor_completed_atr(candles, positions, dispatcher)
+    positions.update_atr_trailing.assert_awaited_once_with(candles)
+    dispatcher.on_candles.assert_awaited_once_with(candles)
