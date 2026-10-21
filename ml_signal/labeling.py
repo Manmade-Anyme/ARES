@@ -8,7 +8,7 @@ def classify_ares_outcome(result_state: str, t1_is_win: bool = True) -> Optional
     """Pure function to map an ARES result state to a binary ML label."""
     if result_state == "T2_HIT":
         return 1
-    if result_state in ("T1_HIT", "STOPPED_OUT_AT_BE"):
+    if result_state in ("T1_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT"):
         return 1 if t1_is_win else 0
     if result_state in ("SL_HIT", "STOPPED_OUT", "TIME_STOP"):
         # Note: TIME_STOP is retained strictly as a legacy loss (0) for historical

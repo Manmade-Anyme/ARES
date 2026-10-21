@@ -320,7 +320,7 @@ class AnalyticsLogger:
             score = None
             if final_state == "T2_HIT":
                 score = 2
-            elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE"):
+            elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT"):
                 score = 1
             elif final_state in ("SL_HIT", "STOPPED_OUT"):
                 score = 0

@@ -103,9 +103,9 @@ async def test_position_manager_passes_candle_timestamp():
     candle_ts = datetime(2026, 9, 1, 10, 5, 0, tzinfo=timezone.utc)
     
     with patch("position_manager.send_trade_update"):
-        events = await pm.update_trades(125.0, candle_high=125.0, candle_low=120.0, candle_timestamp=candle_ts)
+        events = await pm.update_trades(85.0, candle_high=86.0, candle_low=80.0, candle_timestamp=candle_ts)
         assert len(events) == 1
-        assert events[0][1] == "T2_HIT"
+        assert events[0][1] == "SL_HIT"
         
         # Check that write is queued
         assert "trade-1" in pm._trade_writes

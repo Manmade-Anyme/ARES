@@ -464,6 +464,7 @@ def repair_stuck_open_trades(
             "T2_HIT": 2,
             "T1_HIT": 1,
             "STOPPED_OUT_AT_BE": 1,
+            "ATR_SL_HIT": 1,
             "SL_HIT": 0,
             "STOPPED_OUT": 0,
         }.get(final_state)

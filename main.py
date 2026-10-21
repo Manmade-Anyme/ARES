@@ -205,6 +205,23 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
         await dispatcher.on_snapshot(full_chain, spot)
 
 
+async def _retry_reference_entries(position_manager):
+    """Registration outages must not suppress market monitoring or entry alerts."""
+    try:
+        await position_manager.retry_reference_registrations()
+    except Exception as exc:
+        logger.warning("Reference registration retry failed: %s", exc)
+
+
+async def _monitor_completed_atr(candles, position_manager, dispatcher):
+    """One monitor's failure must not suppress the other's protective work."""
+    for monitor in (position_manager.update_atr_trailing, dispatcher.on_candles):
+        try:
+            await monitor(candles)
+        except Exception as exc:
+            logger.warning("Completed ATR monitoring failed: %s", exc)
+
+
 async def _record_ml_snapshot(ml_collector, signal, wait_for_completion: bool = False, **snapshot_fields):
     """Persist signal snapshots before exits can label them.
 
@@ -429,6 +446,7 @@ async def run():
                 waiting_printed = False
             
             try:
+                await _retry_reference_entries(position_manager)
                 # Fetch latest price candle
                 if finalizing:
                     candle = await asyncio.wait_for(price_fetcher.fetch_latest_candle(auto_ack=False), timeout=10)
@@ -460,6 +478,9 @@ async def run():
                         engine, order_dispatcher, respect_close=True,
                     )
                     continue
+                # ATR exits use completed source history, even if the option
+                # chain later fails. Paper exits wait for an observed quote.
+                await _monitor_completed_atr(price_fetcher.watch_candles, position_manager, order_dispatcher)
                 spot = candle.close
                 session_closed = finalizing or _session_now().time() >= time(15, 30)
             
@@ -587,12 +608,15 @@ async def run():
                         _mark_signal_session_closed(signal)
                     if trade_executed and not session_closed:
                         try:
-                            await order_dispatcher.dispatch(signal, spot, full_chain, atm=atm)
+                            # Signal-reference tracking is independent of lot
+                            # allocation and paper/broker order eligibility.
+                            signal.market_context["tracking_mode"] = "SIGNAL_REFERENCE"
+                            signal.trade_id, signal.trade_binding_status = await position_manager.add_trade(signal, spot, atm=atm)
                         except Exception as pm_err:
                             # Registration may have succeeded before telemetry sync
                             # failed. Preserve that binding so the next poll retries
                             # only persistence, not order/trade creation.
-                            print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Paper order registration or telemetry sync failed: {pm_err}{RESET}")
+                            print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Trade tracking or paper telemetry sync failed: {pm_err}{RESET}")
 
                     # Log ML prediction asynchronously if model scored this signal (ADR-153)
                     # Invariant: Persists on every inference event even if storage.log_signal fails or trade is aborted.

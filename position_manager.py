@@ -1,5 +1,7 @@
 import asyncio
 import uuid
+import threading
+from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -8,6 +10,8 @@ from options_math import option_sizing_context, option_sizing_summary
 from models import AresSignal, ATMStrikes
 from config import settings
 from alerts import send_trade_update
+from atr_trailing import completed_atr_bars
+from oi_watch_context import parse_candle_timestamp
 from storage import AnalyticsLogger
 
 
@@ -29,6 +33,8 @@ class PositionManager:
         self._trade_writes: Dict[str, asyncio.Task] = {}
         self._execution_snapshots = {}
         self._execution_ml_bound = set()
+        self._context_locks = {}
+        self._pending_reference_registrations = {}
         self.is_initialized = False
         self._initialize_db()
 
@@ -54,7 +60,7 @@ class PositionManager:
         """
         Loads all non-closed trades from Supabase into the active memory list,
         regardless of the date they were opened. Trades ride across sessions
-        until they hit T1/T2/SL. Closed rows stay in the table untouched
+        until their initial stop or post-T1 ATR close exit. Closed rows stay in the table untouched
         (trade_analytics remains the permanent record).
         """
         try:
@@ -88,7 +94,7 @@ class PositionManager:
             try:
                 terminal_states = {
                     "CLOSED", "T2_HIT", "SL_HIT", "STOPPED_OUT",
-                    "STOPPED_OUT_AT_BE",
+                    "STOPPED_OUT_AT_BE", "ATR_SL_HIT",
                 }
                 active_ids = [
                     record["id"] for record in records
@@ -119,6 +125,10 @@ class PositionManager:
                                 **(existing if isinstance(existing, dict) else {}),
                                 **context,
                             }
+                        atr = record.get("market_context", {}).get("atr_trailing") or {}
+                        if atr.get("state") == "T1_HIT":
+                            record["state"] = "T1_HIT"
+                            record["stop_loss"] = atr["stop_loss"]
                         if analytics_row.get("result_state") not in terminal_states:
                             continue
                         final_state = analytics_row["result_state"]
@@ -169,10 +179,22 @@ class PositionManager:
         Formats an AresSignal, pushes it to Supabase as OPEN using atomic RPC,
         and stores it in memory. Returns (trade_id, binding_status).
         """
-        if self.find_duplicate_trade(signal, spot):
+        reference = signal.market_context.get("tracking_mode") == "SIGNAL_REFERENCE"
+        if reference:
+            for existing in self.active_trades:
+                if str(existing.get("signal_uuid") or existing.get("signal_id")) == str(signal.id):
+                    signal.trade_id = existing["id"]
+                    return signal.trade_id, "BOUND"
+            pending = self._pending_reference_registrations.get(str(signal.id))
+            if pending is not None:
+                trade_id, status = await self._persist_trade_entry(*pending)
+                signal.trade_id, signal.trade_binding_status = trade_id, status
+                return trade_id, status
+        elif self.find_duplicate_trade(signal, spot):
             return "", "DUPLICATE_SKIPPED"
 
-        trade_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ares:paper:{signal.id}")) if signal.market_context.get("execution") else str(uuid.uuid4())
+        identity = "reference" if reference else "paper" if signal.market_context.get("execution") else None
+        trade_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ares:{identity}:{signal.id}")) if identity else str(uuid.uuid4())
         
         # Prepare RPC payload
         entry_timestamp = (signal.market_context.get("execution", {}).get("filled_at")
@@ -232,26 +254,28 @@ class PositionManager:
         mode = settings.signal_schema_mode
         if mode not in {"bridge", "greenfield"}:
             raise ValueError(f"Unsupported signal schema mode: {mode}")
+        payload = {
+            "p_trade_id": trade_id,
+            "p_signal_uuid": str(signal.id),
+            "p_display_id": signal.display_id,
+            "p_setup_type": signal.setup_type.value,
+            "p_direction": signal.direction.value,
+            "p_entry_price": float(spot),
+            "p_stop_loss": float(signal.stop_loss),
+            "p_target_1": float(signal.target_1),
+            "p_target_2": float(signal.target_2),
+            "p_added_time_ist": trade_data["added_time_ist"],
+            "p_market_context": market_context,
+            "p_oi_data": oi_data,
+            "p_entry_timestamp": entry_timestamp,
+        }
+        if mode == "bridge":
+            payload["p_legacy_signal_id"] = signal.db_id
+        payload = deepcopy(payload)
+        trade_data = deepcopy(trade_data)
         def _insert():
-            payload = {
-                "p_trade_id": trade_id,
-                "p_signal_uuid": str(signal.id),
-                "p_display_id": signal.display_id,
-                "p_setup_type": signal.setup_type.value,
-                "p_direction": signal.direction.value,
-                "p_entry_price": float(spot),
-                "p_stop_loss": float(signal.stop_loss),
-                "p_target_1": float(signal.target_1),
-                "p_target_2": float(signal.target_2),
-                "p_added_time_ist": trade_data["added_time_ist"],
-                "p_market_context": market_context,
-                "p_oi_data": oi_data,
-                "p_entry_timestamp": entry_timestamp,
-            }
-            if mode == "bridge":
-                payload["p_legacy_signal_id"] = signal.db_id
             rpc_name = f"create_trade_entry_{mode}"
-            response = self.supabase.rpc(rpc_name, payload).execute()
+            response = self.supabase.rpc(rpc_name, deepcopy(payload)).execute()
             persisted_id = getattr(response, "data", None)
             if isinstance(persisted_id, list) and len(persisted_id) == 1:
                 persisted_id = persisted_id[0]
@@ -259,49 +283,76 @@ class PositionManager:
                 raise RuntimeError(f"{rpc_name} returned an unexpected trade id")
             return True
 
-        import asyncio
+        try:
+            return await self._persist_trade_entry(signal, trade_data, _insert)
+        except Exception:
+            if reference:
+                self._pending_reference_registrations[str(signal.id)] = (signal, trade_data, _insert)
+                signal.trade_binding_status = "REGISTRATION_PENDING"
+            raise
+
+    async def _persist_trade_entry(self, signal, trade_data, insert, attempts=3):
+        """Retry an unchanged entry payload and register each trade once in memory."""
+        trade_id = trade_data["id"]
         loop = asyncio.get_running_loop()
-        for attempt in range(3):
+        attempt = 1
+        while True:
             try:
-                success = await loop.run_in_executor(None, _insert)
+                success = await loop.run_in_executor(None, insert)
                 if success:
-                    signal.trade_id = trade_id
-                    self.active_trades.append(trade_data)
+                    signal.trade_id, signal.trade_binding_status = trade_id, "BOUND"
+                    if not any(trade["id"] == trade_id for trade in self.active_trades):
+                        self.active_trades.append(trade_data)
                     return trade_id, "BOUND"
             except Exception as e:
-                print(f"Failed to push new trade to Supabase (attempt {attempt+1}): {e}")
-                if attempt == 2:
-                    raise RuntimeError("Database insertion failed for atomic trade entry after 3 attempts")
+                print(f"Failed to push new trade to Supabase (attempt {attempt}): {e}")
+                if attempt == attempts:
+                    raise RuntimeError(f"Database insertion failed for atomic trade entry after {attempts} attempts")
+                attempt += 1
                 await asyncio.sleep(1)
 
-    async def sync_execution(self, signal: AresSignal, execution: dict) -> bool:
+    async def retry_reference_registrations(self):
+        """Retain failed manual entries until registration and snapshot linkage recover."""
+        for key, (signal, trade_data, insert) in tuple(self._pending_reference_registrations.items()):
+            try:
+                if not any(trade["id"] == trade_data["id"] for trade in self.active_trades):
+                    await self._persist_trade_entry(signal, trade_data, insert, attempts=1)
+                signal.trade_id, signal.trade_binding_status = trade_data["id"], "BOUND"
+                if await self.sync_execution(signal, None):
+                    self._pending_reference_registrations.pop(key, None)
+            except Exception as exc:
+                print(f"Reference trade registration retry failed for {signal.id}: {exc}")
+
+    async def sync_execution(self, signal: AresSignal, execution: Optional[dict]) -> bool:
         """Persist paper fill telemetry and bind a snapshot after a delayed entry.
 
         The signal UUID guard prevents a delayed fill from labeling an unrelated
         ML row. Return False until that snapshot exists and is linked, so even
         a terminal paper fill remains retryable after main writes the snapshot.
+        Passing None links a recovered manual entry without adding paper telemetry.
         """
         trade_id = signal.trade_id
-        snapshot = dict(execution)
+        snapshot = dict(execution) if execution is not None else None
         mode = settings.signal_schema_mode
         if mode not in {"bridge", "greenfield"}:
             raise ValueError(f"Unsupported signal schema mode: {mode}")
         signal_column = "signal_uuid" if mode == "bridge" else "signal_id"
 
         def persist():
-            if self._execution_snapshots.get(trade_id) != snapshot:
-                response = self.supabase.table("trade_analytics").select(
-                    "market_context"
-                ).eq("id", trade_id).execute()
-                if not response.data:
-                    raise RuntimeError("Paper trade analytics row is unavailable")
-                context = dict(response.data[0].get("market_context") or {})
-                context["execution"] = snapshot
-                updated = self.supabase.table("trade_analytics").update(
-                    {"market_context": context}
-                ).eq("id", trade_id).execute()
-                if not updated.data:
-                    raise RuntimeError("Paper execution update was not persisted")
+            if snapshot is not None and self._execution_snapshots.get(trade_id) != snapshot:
+                with self._context_locks.setdefault(trade_id, threading.Lock()):
+                    response = self.supabase.table("trade_analytics").select(
+                        "market_context"
+                    ).eq("id", trade_id).execute()
+                    if not response.data:
+                        raise RuntimeError("Paper trade analytics row is unavailable")
+                    context = dict(response.data[0].get("market_context") or {})
+                    context["execution"] = snapshot
+                    updated = self.supabase.table("trade_analytics").update(
+                        {"market_context": context}
+                    ).eq("id", trade_id).execute()
+                    if not updated.data:
+                        raise RuntimeError("Paper execution update was not persisted")
                 self._execution_snapshots[trade_id] = snapshot
             if trade_id not in self._execution_ml_bound:
                 updated = self.supabase.table("ml_collection").update({
@@ -330,10 +381,10 @@ class PositionManager:
         Loops through active trades and evaluates live price action against the active trailing stops.
         If state changes or SL is hit, updates the row in Supabase and triggers a Discord alert.
 
-        Intrabar detection (TASK-172, audit item 11): SL/T1/T2 touches are
+        Before T1, intrabar detection (TASK-172, audit item 11): SL/T1 touches are
         checked against the candle's high/low when provided, not just the poll
-        close — close-only detection cost an average +6.8 pts of slippage per
-        stop. Falls back to spot_price when candle extremes are omitted.
+        close. Post-T1 ATR exits are handled separately on completed 5-minute closes;
+        initial protection falls back to spot_price when candle extremes are omitted.
         Two accounting rules follow from this:
           - Fill-at-level: events are reported/logged at the touched level
             (stop or target price), not at the close that detected them.
@@ -352,8 +403,6 @@ class PositionManager:
 
         high = candle_high if candle_high is not None else spot_price
         low = candle_low if candle_low is not None else spot_price
-        event_loop = asyncio.get_event_loop()
-
         event_ts_base = __import__("storage").to_utc_iso(candle_timestamp) if candle_timestamp else datetime.now(timezone.utc).isoformat()
 
         for trade in self.active_trades:
@@ -380,135 +429,175 @@ class PositionManager:
             direction = trade["direction"]
 
             trade_high, trade_low = high, low
-            execution = (trade.get("market_context") or {}).get("execution")
-            if execution and candle_timestamp is not None and trade.get("entry_timestamp"):
+            context = trade.get("market_context") or {}
+            if (context.get("execution") or context.get("tracking_mode") == "SIGNAL_REFERENCE") and candle_timestamp is not None and trade.get("entry_timestamp"):
                 candle_ts = __import__("storage").to_utc_iso(candle_timestamp)
                 if datetime.fromisoformat(candle_ts) <= datetime.fromisoformat(trade["entry_timestamp"]):
                     # A limit filled after this candle opened; its earlier wicks
                     # cannot close the newly filled paper position retroactively.
                     trade_high = trade_low = spot_price
 
-            # Evaluate trailing stop logic
-            if direction == "BULLISH":
-                # Check if T2 hit
-                if trade_high >= trade["target_2"]:
-                    trade["state"] = "CLOSED"
-                    state_changed = True
-                    update_type = "T2_HIT"
-                    event_price = trade["target_2"]
-                # Check if T1 hit and we haven't trailed yet
-                elif trade["state"] == "OPEN" and trade_high >= trade["target_1"]:
-                    trade["state"] = "T1_HIT"
-                    trade["stop_loss"] = trade["entry_price"]
-                    state_changed = True
-                    update_type = "T1_HIT"
-                    event_price = trade["target_1"]
-                # Check SL (optimistic when the candle spans both)
-                elif trade_low <= trade["stop_loss"]:
-                    trade["state"] = "CLOSED"
-                    state_changed = True
-                    event_price = trade["stop_loss"]
-                    if trade["stop_loss"] == trade["entry_price"]:
-                        update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
-                    else:
-                        update_type = "SL_HIT"
-            elif direction == "BEARISH":
-                # Check if T2 hit
-                if trade_low <= trade["target_2"]:
-                    trade["state"] = "CLOSED"
-                    state_changed = True
-                    update_type = "T2_HIT"
-                    event_price = trade["target_2"]
-                # Check if T1 hit and we haven't trailed yet
-                elif trade["state"] == "OPEN" and trade_low <= trade["target_1"]:
-                    trade["state"] = "T1_HIT"
-                    trade["stop_loss"] = trade["entry_price"]
-                    state_changed = True
-                    update_type = "T1_HIT"
-                    event_price = trade["target_1"]
-                # Check SL (optimistic when the candle spans both)
-                elif trade_high >= trade["stop_loss"]:
-                    trade["state"] = "CLOSED"
-                    state_changed = True
-                    event_price = trade["stop_loss"]
-                    if trade["stop_loss"] == trade["entry_price"]:
-                        update_type = "STOPPED_OUT_AT_BE"  # Trailed SL hit, logged as break-even exit
-                    else:
-                        update_type = "SL_HIT"
+            # After T1 only a completed five-minute close can exit the runner.
+            if trade["state"] == "T1_HIT":
+                continue
+            sign = 1 if direction == "BULLISH" else -1
+            target_hit = trade_high >= trade["target_1"] if sign == 1 else trade_low <= trade["target_1"]
+            stop_hit = trade_low <= trade["stop_loss"] if sign == 1 else trade_high >= trade["stop_loss"]
+            if target_hit:
+                trade["state"] = "T1_HIT"
+                trade["stop_loss"] = trade["entry_price"]
+                # A completed source minute is known only at its end. Never
+                # apply an earlier five-minute close to a newly activated runner.
+                activated = (parse_candle_timestamp(candle_timestamp) + timedelta(minutes=1)
+                             if candle_timestamp else datetime.now(timezone.utc))
+                trade.setdefault("market_context", {})["atr_trailing"] = {
+                    "last_bar": activated.isoformat(),
+                }
+                state_changed = True
+                update_type = "T1_HIT"
+                event_price = trade["target_1"]
+            elif stop_hit:
+                trade["state"] = "CLOSED"
+                state_changed = True
+                update_type = "SL_HIT"
+                event_price = trade["stop_loss"]
 
             if state_changed:
                 events.append((trade["id"], update_type))
+                await self._record_trade_update(trade, event_price, update_type, event_ts)
 
-                pnl_points_override = None
-                if trade["state"] in ["CLOSED", "STOPPED_OUT"] and update_type == "STOPPED_OUT_AT_BE":
-                    if direction == "BULLISH":
-                        pnl_points_override = trade["target_1"] - trade["entry_price"]
-                    else:
-                        pnl_points_override = trade["entry_price"] - trade["target_1"]
+        return events
 
-                # Prepare update payload
-                update_data = {
-                    "state": trade["state"],
-                    "stop_loss": trade["stop_loss"]
-                }
-                if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
-                    update_data["exit_price"] = float(event_price)
-                    update_data["exit_type"] = update_type
-                    update_data["exit_timestamp"] = event_ts
-                    if pnl_points_override is not None:
-                        update_data["pnl_points_override"] = float(pnl_points_override)
 
-                # Push update to Supabase asynchronously
-                def _update(t_id=trade["id"], data=update_data):
-                    self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+    async def _record_trade_update(self, trade, event_price, update_type, event_ts, pnl_points_override=None):
+        """Persist each lifecycle transition through the existing ordered writer."""
+        event_loop = asyncio.get_event_loop()
+        # Prepare update payload
+        update_data = {
+            "state": trade["state"],
+            "stop_loss": trade["stop_loss"]
+        }
+        if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
+            update_data["exit_price"] = float(event_price)
+            update_data["exit_type"] = update_type
+            update_data["exit_timestamp"] = event_ts
+            if pnl_points_override is not None:
+                update_data["pnl_points_override"] = float(pnl_points_override)
 
-                def _log_exit(
-                    t_id=trade["id"],
-                    exit_price=event_price,
-                    final_state=update_type,
-                    pnl_override=pnl_points_override,
-                    exit_ts=event_ts,
-                ):
-                    try:
-                        if pnl_override is not None:
-                            self.analytics.log_exit(
-                                t_id,
-                                exit_price,
-                                final_state,
-                                exit_timestamp=exit_ts,
-                                pnl_points_override=pnl_override,
-                            )
-                        else:
-                            self.analytics.log_exit(t_id, exit_price, final_state, exit_timestamp=exit_ts)
-                    except Exception as e:
-                        print(f"Failed to log trade exit to Analytics: {e}")
+        # Push update to Supabase asynchronously
+        atr = trade.get("market_context", {}).get("atr_trailing")
+        if atr is not None:
+            atr.update(state=trade["state"], stop_loss=trade["stop_loss"])
+        atr_snapshot = deepcopy(atr)
 
-                def _update_and_log_exit(
-                    update_fn=_update,
-                    log_fn=_log_exit,
-                ):
-                    try:
-                        update_fn()
-                    except Exception as e:
-                        print(f"Failed to persist active trade state: {e}")
-                    try:
-                        event_loop.call_soon_threadsafe(log_fn)
-                    except RuntimeError as e:
-                        print(f"Failed to schedule trade exit analytics: {e}")
+        def _update(t_id=trade["id"], data=update_data, snapshot=atr_snapshot):
+            terminal = data["state"] in ["CLOSED", "STOPPED_OUT"]
+            if terminal:
+                self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+            if snapshot is not None:
+                with self._context_locks.setdefault(t_id, threading.Lock()):
+                    response = self.supabase.table("trade_analytics").select("market_context").eq("id", t_id).execute()
+                    if not response.data:
+                        raise RuntimeError("ATR trade analytics row is unavailable")
+                    context = dict(response.data[0].get("market_context") or {})
+                    context["atr_trailing"] = snapshot
+                    self.supabase.table("trade_analytics").update({"market_context": context}).eq("id", t_id).execute()
+            if not terminal:
+                self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
 
-                try:
-                    write = (
-                        _update_and_log_exit
-                        if trade["state"] in ["CLOSED", "STOPPED_OUT"]
-                        else _update
+        def _log_exit(
+            t_id=trade["id"],
+            exit_price=event_price,
+            final_state=update_type,
+            pnl_override=pnl_points_override,
+            exit_ts=event_ts,
+        ):
+            try:
+                if pnl_override is not None:
+                    self.analytics.log_exit(
+                        t_id,
+                        exit_price,
+                        final_state,
+                        exit_timestamp=exit_ts,
+                        pnl_points_override=pnl_override,
                     )
-                    self._queue_trade_write(trade["id"], write)
-                except Exception as e:
-                    print(f"Failed to update trade in Supabase: {e}")
-                # Send Discord alert
-                try:
-                    await send_trade_update(trade, event_price, update_type)
-                except Exception as e:
-                    print(f"Failed to send trade update alert: {e}")
+                else:
+                    self.analytics.log_exit(t_id, exit_price, final_state, exit_timestamp=exit_ts)
+            except Exception as e:
+                print(f"Failed to log trade exit to Analytics: {e}")
 
+        def _update_and_log_exit(
+            update_fn=_update,
+            log_fn=_log_exit,
+        ):
+            try:
+                update_fn()
+            except Exception as e:
+                print(f"Failed to persist active trade state: {e}")
+            try:
+                event_loop.call_soon_threadsafe(log_fn)
+            except RuntimeError as e:
+                print(f"Failed to schedule trade exit analytics: {e}")
+
+        try:
+            write = (
+                _update_and_log_exit
+                if trade["state"] in ["CLOSED", "STOPPED_OUT"]
+                else _update
+            )
+            self._queue_trade_write(trade["id"], write)
+        except Exception as e:
+            print(f"Failed to update trade in Supabase: {e}")
+        if update_type is not None:
+            try:
+                await send_trade_update(trade, event_price, update_type)
+            except Exception as e:
+                print(f"Failed to send trade update alert: {e}")
+
+    async def update_atr_trailing(self, candles):
+        """Ratchet post-T1 stops and exit at completed five-minute closes only."""
+        bars = completed_atr_bars(candles)
+        events = []
+        if not bars:
+            return events
+        for trade in self.active_trades:
+            if trade["state"] != "T1_HIT":
+                continue
+            context = trade.setdefault("market_context", {})
+            atr = context.setdefault("atr_trailing", {})
+            # Old carried runners lack a T1 timestamp. Resume from the latest
+            # complete bar without replaying their unknown historical lifecycle.
+            if not atr.get("last_bar"):
+                atr["last_bar"] = bars[-1]["timestamp"]
+                await self._record_trade_update(trade, bars[-1]["close"], None, bars[-1]["timestamp"])
+                continue
+            sign = 1 if trade["direction"] == "BULLISH" else -1
+            for bar in bars:
+                if parse_candle_timestamp(bar["timestamp"]) <= parse_candle_timestamp(atr["last_bar"]):
+                    continue
+                atr["last_bar"] = bar["timestamp"]
+                old_stop = trade["stop_loss"]
+                atr["previous_sl"] = old_stop
+                update_type = None
+                pnl = None
+                if sign * (bar["close"] - old_stop) < 0:
+                    trade["state"] = "CLOSED"
+                    update_type = "ATR_SL_HIT"
+                    pnl = sign * ((trade["target_1"] - trade["entry_price"]) +
+                                  (bar["close"] - trade["entry_price"])) / 2
+                else:
+                    candidate = bar["bullish_sl" if sign == 1 else "bearish_sl"]
+                    values = [old_stop, trade["entry_price"]]
+                    if candidate is not None:
+                        values.append(candidate)
+                    trade["stop_loss"] = round(max(values) if sign == 1 else min(values), 2)
+                    if trade["stop_loss"] != old_stop:
+                        update_type = "ATR_SL_UPDATED"
+                atr["atr"] = bar["atr"]
+                await self._record_trade_update(trade, bar["close"], update_type,
+                                                __import__("storage").to_utc_iso(bar["timestamp"]), pnl)
+                if update_type:
+                    events.append((trade["id"], update_type))
+                if trade["state"] == "CLOSED":
+                    break
         return events

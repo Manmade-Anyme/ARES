@@ -32,37 +32,47 @@ def signal_with_bracket():
 
 def test_text_alert_contains_bracket_and_greeks():
     message = format_signal(signal_with_bracket(), 24000)
-    for value in ("LIMIT (Upfront Bracket)", "100.50", "110.00", "122.00", "95.50",
+    for value in ("Option Entry", "100.50", "110.00", "122.00", "95.50",
                   "Layer 1", "Layer 2", "0.0020", "12.5%", "2 Lots", "42528"):
         assert value in message
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reason', ['NO_AVAILABLE_CAPITAL', 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET'])
+@pytest.mark.parametrize('reason', [None, 'NO_AVAILABLE_CAPITAL', 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET', 'INVALID_BRACKET_ORDERING'])
 @pytest.mark.parametrize('show_details', [False, True])
-async def test_zero_lot_alerts_keep_option_prices_visible(reason, show_details):
+@pytest.mark.parametrize('lots', [0, 2])
+async def test_execution_status_never_changes_visible_option_fields(reason, show_details, lots):
     signal = signal_with_bracket()
-    signal.bracket.is_valid = False
-    signal.bracket.lots = 0
+    signal.bracket.is_valid = reason is None
+    signal.bracket.lots = lots
     signal.bracket.rejection_reason = reason
-    signal.options_sizing_status = reason
+    signal.options_sizing_status = reason or 'VALID'
     signal.capital = 0 if reason == 'NO_AVAILABLE_CAPITAL' else 1
     message = format_signal(signal, 24000)
-    for value in ('100.50', '95.50', '110.00', '122.00', '0 Lots', '0 lots planned'):
+    for value in ('100.50', '95.50', '110.00', '122.00', f'{lots} Lots'):
         assert value in message
-    assert 'No executable bracket' not in message
+    for text in ('REJECTED', 'NON-EXECUTABLE', 'Reference only', 'lots planned', 'LIMIT', 'PAPER', 'No executable bracket'):
+        assert text not in message
+    if reason:
+        assert reason not in message
     client = AsyncMock()
     client.post.return_value = MagicMock()
     with patch('alerts.settings.discord_show_option_details', show_details), patch('alerts.settings.discord_webhook_url', 'http://example.invalid'), patch('httpx.AsyncClient') as factory:
         factory.return_value.__aenter__.return_value = client
         assert await send_discord(signal, 24000)
     fields = {field['name']: field['value'] for field in client.post.call_args.kwargs['json']['embeds'][0]['fields']}
-    assert '100.50' in fields['🎯 Entry Limit']
+    assert '100.50' in fields['✅ Option Entry']
     assert fields['🛑 Stop Loss'] == '₹ 95.50'
     assert '110.00' in fields['🎯 Target 1']
     assert '122.00' in fields['🎯 Target 2']
-    assert fields['📐 Sizing'] == '0 Lots (0 qty)'
-    for name in ('⚡ Order Type', '📊 Option Greeks', '💰 Risk Budget'):
+    assert fields['📐 Sizing'] == f'{lots} Lots ({lots * 65} qty)'
+    assert '⚠️ Option Bracket' not in fields
+    for text in ('REJECTED', 'NON-EXECUTABLE', 'Reference only', 'lots planned', 'LIMIT', 'PAPER'):
+        assert text not in str(fields)
+    if reason:
+        assert reason not in str(fields)
+    assert '⚡ Order Type' not in fields
+    for name in ('📊 Option Greeks', '💰 Risk Budget'):
         assert (name in fields) is show_details
     assert len(fields) <= 25
 
@@ -73,7 +83,7 @@ def test_invalid_sizing_with_missing_prices_formats_safely():
     signal.options_sizing_status = "INVALID_DATA"
     signal.suggested_lots = 0
     signal.option_premium = None
-    assert "INVALID_DATA" in format_signal(signal, 24000)
+    assert "Option prices unavailable (INVALID_DATA)" in format_signal(signal, 24000)
 
 
 @pytest.mark.asyncio
@@ -81,6 +91,7 @@ async def test_discord_invalid_bracket_does_not_advertise_executable_levels():
     signal = signal_with_bracket()
     signal.bracket.is_valid = False
     signal.bracket.rejection_reason = "MISSING_GREEKS"
+    signal.bracket.greeks = None
     signal.options_sizing_status = "INVALID_DATA"
     client = AsyncMock()
     client.post.return_value = MagicMock()
@@ -132,16 +143,16 @@ async def test_valid_discord_bracket_separates_limits_from_spot_levels(show_deta
         factory.return_value.__aenter__.return_value = client
         assert await send_discord(signal, 24000)
     fields = {field["name"]: field["value"] for field in client.post.call_args.kwargs["json"]["embeds"][0]["fields"]}
-    assert "100.50" in fields["🎯 Entry Limit"]
-    assert "LTP: ₹ 100.00" in fields["🎯 Entry Limit"]
+    assert "100.50" in fields["✅ Option Entry"]
+    assert "LTP: ₹ 100.00" in fields["✅ Option Entry"]
     assert "24018.00" in fields["🎯 Target 1"]
     assert "122.00" in fields["🎯 Target 2"]
     assert fields["🛑 Stop Loss"] == "₹ 95.50"
     assert fields["🛑 SL"] == "**23990.00** (Spot Ref)"
-    for name in ("⚡ Order Type", "📊 Option Greeks", "💰 Risk Budget"):
+    assert '⚡ Order Type' not in fields
+    for name in ("📊 Option Greeks", "💰 Risk Budget"):
         assert (name in fields) is show_details
     if show_details:
-        assert "PAPER simulation; live activation blocked" in fields["⚡ Order Type"]
         assert "Γ 0.0020" in fields["📊 Option Greeks"]
         assert "₹500" in fields["💰 Risk Budget"]
     assert len(fields) <= 25  # Discord embed field limit.
@@ -224,3 +235,51 @@ def test_signal_surfaces_iv_feed_warning_as_diagnostic_only():
     message = format_signal(signal, 24000)
     assert "IV_FEED_STALE" in message
     assert "diagnostic only" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('update_type', ['ATR_SL_UPDATED', 'ATR_SL_HIT'])
+@pytest.mark.parametrize('with_greeks', [True, False])
+async def test_atr_lifecycle_discord_shows_stop_movement_and_close_trigger(update_type, with_greeks):
+    trade = {
+        'direction': 'BULLISH', 'setup_type': 'FAILED_BREAKOUT',
+        'state': 'CLOSED' if update_type == 'ATR_SL_HIT' else 'T1_HIT',
+        'entry_price': 24000, 'stop_loss': 24015,
+        'market_context': {
+            'atr_trailing': {'previous_sl': 24010},
+            'options_sizing': {'entry_limit': 100, 'lot_size': 65,
+                               'greeks': {'delta': .5, 'gamma': .002} if with_greeks else {}},
+        },
+    }
+    client = AsyncMock()
+    client.post.return_value = MagicMock()
+    with patch('alerts.settings.discord_webhook_url', 'http://example.invalid'), patch('httpx.AsyncClient') as factory:
+        factory.return_value.__aenter__.return_value = client
+        await send_trade_update(trade, 24014, update_type)
+    description = client.post.call_args.kwargs['json']['embeds'][0]['description']
+    assert '24015.00' in description and '24010.00' in description
+    assert '5-minute ATR trailing' in description
+    if update_type == 'ATR_SL_UPDATED':
+        assert 'Estimated Option SL' in description
+        assert '107.72' in description if with_greeks else 'unavailable' in description
+        assert 'Estimated Option Exit' not in description
+    else:
+        assert '5-minute close crossed ATR Stop Loss' in description
+        assert 'not confirmed fills' in description
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('update_type', ['T1_HIT', 'ATR_SL_UPDATED', 'ATR_SL_HIT'])
+async def test_manual_lifecycle_without_option_quote_does_not_invent_zero_premium(update_type):
+    trade = {'direction': 'BEARISH', 'setup_type': 'TREND_CONTINUATION',
+             'state': 'T1_HIT', 'entry_price': 24000, 'stop_loss': 23990,
+             'market_context': {'options_sizing': {'entry_limit': 0, 'target_1': 0,
+                                                   'option_target': 0, 'greeks': None}}}
+    client = AsyncMock()
+    client.post.return_value = MagicMock()
+    with patch('alerts.settings.discord_webhook_url', 'http://example.invalid'), patch('httpx.AsyncClient') as factory:
+        factory.return_value.__aenter__.return_value = client
+        await send_trade_update(trade, 23980, update_type)
+    description = client.post.call_args.kwargs['json']['embeds'][0]['description']
+    assert '₹ unavailable' in description
+    assert '₹ 0.00' not in description

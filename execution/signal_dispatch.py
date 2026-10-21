@@ -59,6 +59,16 @@ class SignalDispatcher:
             except Exception:
                 logger.exception("Paper spot update failed for %s; will retry", correlation_id)
 
+    async def on_candles(self, candles):
+        """Persist completed-candle runner stops before waiting for option quotes."""
+        for correlation_id in tuple(self._signals):
+            try:
+                record = self.orders.on_candles(correlation_id, candles)
+                self._publish(record)
+                await self._sync(record)
+            except Exception:
+                logger.exception("Paper candle update failed for %s; will retry", correlation_id)
+
     def _publish(self, record):
         signal, _ = self._signals[record.correlation_id]
         previous = signal.market_context.get("execution", {})
@@ -73,6 +83,9 @@ class SignalDispatcher:
             "exited_quantity": record.exited_quantity,
             "realized_pnl": record.realized_pnl,
             "exit_reason": record.exit_reason,
+            "t1_hit": record.t1_hit,
+            "active_spot_sl": record.active_spot_sl,
+            "atr_last_bar": record.atr_last_bar,
         }
         signal.market_context["execution"] = execution
         for trade in self.positions.active_trades:

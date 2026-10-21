@@ -226,8 +226,6 @@ def build_option_bracket(signal: AresSignal, full_chain: list, capital: Optional
     bullish = option_type == 'CE'
     geometry = (signal.stop_loss < signal.trigger_price < signal.target_1 < signal.target_2
                 if bullish else signal.stop_loss > signal.trigger_price > signal.target_1 > signal.target_2)
-    if not geometry:
-        return replace(bracket, rejection_reason='INVALID_BRACKET_ORDERING')
     side = option_type.lower()
     ask, bid = row.get(f'{side}_ask'), row.get(f'{side}_bid')
     # A missing ask can use the documented LTP cap, but a crossed or malformed
@@ -257,20 +255,19 @@ def build_option_bracket(signal: AresSignal, full_chain: list, capital: Optional
                       spot_entry=signal.trigger_price, spot_target_1=signal.target_1,
                       spot_target_2=signal.target_2, reference_premium=premium,
                       expected_move_straddle=_straddle_expected_move(full_chain, spot, row['expiry_date']))
-    if not .05 <= sl < entry < t1 < t2:
-        return replace(bracket, rejection_reason='INVALID_BRACKET_ORDERING')
     # The theoretical gamma benefit may never enlarge allocation. Include the
     # entry premium uplift and adverse executable exit spread before sizing.
     risk_loss = max(abs(greeks.delta) * abs(spot - signal.stop_loss), entry - sl + spread)
     projected_t1 = premium + project_option_premium(signal.target_1 - spot, greeks, horizon / 375.0)
-    bracket = replace(bracket, risk_loss_pts=risk_loss, projected_target_1=projected_t1)
-    if not _finite(projected_t1) or projected_t1 - entry - spread < risk_loss:
-        return replace(bracket, rejection_reason='INSUFFICIENT_OPTION_RR')
+    bracket = replace(bracket, risk_loss_pts=risk_loss,
+                      projected_target_1=projected_t1 if _finite(projected_t1) else None)
     suggested = calculate_lots(calculate_risk_amount(balance, config.risk_per_trade_pct), risk_loss, lot_size)
     affordable = calculate_affordable_lots(balance, entry, lot_size)
     lots = max(0, min(suggested, affordable, int(cap)))
-    return replace(bracket, lots=lots, uncapped_suggested_lots=suggested,
-                   affordable_lots=affordable, is_valid=lots > 0,
+    bracket = replace(bracket, lots=lots, uncapped_suggested_lots=suggested, affordable_lots=affordable)
+    if not geometry or not .05 <= sl < entry < t1 < t2:
+        return replace(bracket, rejection_reason='INVALID_BRACKET_ORDERING')
+    return replace(bracket, is_valid=lots > 0,
                    rejection_reason=(None if lots > 0 else 'NO_AVAILABLE_CAPITAL' if not capital_valid
                                      else 'INSUFFICIENT_CAPITAL_OR_RISK_BUDGET'))
 
@@ -310,7 +307,7 @@ def option_sizing_summary(signal: AresSignal) -> str:
     if bracket is None:
         context = option_sizing_context(signal)
         return f"Option Sizing: {context['suggested_lots']} lots | {context['status']}"
-    if not bracket.is_valid and bracket.rejection_reason not in CAPITAL_SIZING_REJECTIONS:
+    if bracket.greeks is None:
         return f'Option sizing unavailable: {bracket.rejection_reason}'
     return (f'Option Sizing: {bracket.lots} lots | {bracket.strike} {bracket.option_type} | '
             f'Limit {bracket.entry_limit:.2f} | Emergency SL {bracket.catastrophic_opt_sl:.2f} | '
