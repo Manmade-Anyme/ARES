@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Remove option R:R rejection:** Delete the theta/spread feasibility check that returned `INSUFFICIENT_OPTION_RR`, so it no longer blocks option prices or capital-based suggested lots. Pricing formulas and other validation remain unchanged.
+
 - **Compact Discord option alerts:** Hide Order Type, Option Greeks and Risk Budget by default behind `discord_show_option_details`. Show the option Stop Loss as a single premium value, retaining the spot SL above. Console diagnostics remain detailed.
 
 - **TASK-20261019 completed-candle repair:** Feed detectors only newly completed current-session one-minute bars. Rebuild VWAP from unique completed provider history, including bars before startup, and preserve partial/final watch provenance. Duplicate and forming-only polls keep tick exit and order monitoring active without advancing strategy state. Friday strategy thresholds and execution rules remain unchanged.

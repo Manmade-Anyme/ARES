@@ -120,7 +120,7 @@ $$\text{RiskLossPts} = \max\left(P_0 - P(S_{SL}),\ |\Delta| \cdot |S_0 - S_{SL}|
 Let $\Delta t$ be the expected holding horizon in trading days (default intraday scalp horizon: $\Delta t = \frac{15\text{ min}}{375\text{ min}} \approx 0.04$ day):
 $$P_{\text{projected}}(S, \Delta t, \Delta \sigma) = P_0 + \Delta \cdot (S - S_0) + \frac{1}{2}\Gamma \cdot (S - S_0)^2 + \Theta \cdot \Delta t + \mathcal{V} \cdot \Delta \sigma$$
 - **Instantaneous Bracket Base**: For immediate limit entry and initial bracket construction, $\Delta t = 0$ and $\Delta \sigma = 0$ are used.
-- **Target Feasibility Gate**: $P_{\text{projected}}(S_{T1}, \Delta t_{\text{expected}}, 0)$ must yield a net risk-to-reward $R \ge 1.0$ after adverse spread allowances.
+- **Target Scenario Diagnostic**: The theta-adjusted T1 projection is retained as diagnostic data only. The `INSUFFICIENT_OPTION_RR` feasibility rejection has been removed; this scenario does not block pricing, lot suggestions or bracket validity.
 - **Informational Telemetry**: Daily theta rate is published to Discord/console alerts as informational reference only; it is never used to artificially penalize lot sizing.
 
 ### 3.5 Model-Free Expected Move & Straddle Sanity Check
@@ -131,7 +131,7 @@ $$\text{Expected Move}_{1\sigma} \approx \text{ATM Straddle Price} \times 1.25$$
 
 ### 3.6 Strict Risk Sizing & Capital Hard-Borders
 Let $C$ be the available balance returned from DhanHQ, and $r$ the configured risk fraction (`risk_per_trade_pct / 100.0`):
-1. **Capital Validity**: Capital affects lot allocation only. Calculate and display option entry, stop loss, T1 and T2 independently of account balance, subject to the existing quote, Greeks, ordering and feasibility checks. If $C \le 0$ or balance fetch fails without verified fallback, set `suggested_lots = 0`, `affordable_lots = 0`, attach reason `NO_AVAILABLE_CAPITAL`, and block execution while retaining the calculated prices. A positive balance that cannot fund the risk or premium also retains prices with zero final lots and reason `INSUFFICIENT_CAPITAL_OR_RISK_BUDGET`. `is_valid` continues to require positive final lots for execution; these allocation-only rejections do not hide valid prices in alerts or persisted summaries.
+1. **Capital Validity**: Capital affects lot allocation only. Calculate and display option entry, stop loss, T1 and T2 independently of account balance, subject to the existing quote, Greeks and ordering checks. If $C \le 0$ or balance fetch fails without verified fallback, set `suggested_lots = 0`, `affordable_lots = 0`, attach reason `NO_AVAILABLE_CAPITAL`, and block execution while retaining the calculated prices. A positive balance that cannot fund the risk or premium also retains prices with zero final lots and reason `INSUFFICIENT_CAPITAL_OR_RISK_BUDGET`. `is_valid` continues to require positive final lots for execution; these allocation-only rejections do not hide valid prices in alerts or persisted summaries.
 2. **Sizing Math**:
    $$B = C \times r$$
    $$\text{PerLotLoss} = \text{RiskLossPts} \times \text{lot\_size}$$
@@ -390,7 +390,7 @@ This section specifies the implemented scope and qualifies illustrative executio
 ### Calculation and persistence
 - `OIFetcher.fetch_chain()` preserves side-specific security IDs, expiry, underlying spot reference, bid/ask, IV and all four Greeks across the chain. Missing and nonfinite numeric data remain missing.
 - `build_option_bracket()` selects a complete current-expiry contract nearest absolute delta 0.50, validates direction and positive quotes, and projects the supplied spot SL/T1/T2 with signed Delta and Gamma. It does not change detector geometry.
-- Entry limits are rounded down when nearest-tick rounding would exceed the ask/slippage bound. Prices must remain strictly ordered after tick rounding. Risk sizing includes the worst permitted entry and adverse spread, with a linear-Delta loss floor. A 15-minute theta feasibility scenario gates target reward; it does not increase allocation. Vega is retained for scenario analysis, with zero IV change for the initial bracket.
+- Entry limits are rounded down when nearest-tick rounding would exceed the ask/slippage bound. Prices must remain strictly ordered after tick rounding. Risk sizing includes the worst permitted entry and adverse spread, with a linear-Delta loss floor. The 15-minute theta scenario is diagnostic only; there is no option R:R rejection and it does not change allocation. Vega is retained for scenario analysis, with zero IV change for the initial bracket.
 - Capital fetch failure has no unverified default-capital fallback. Invalid capital, missing quotes/Greeks, invalid order geometry or insufficient allocation produce a rejection and zero executable lots.
 - `market_context.options_sizing.final_lots` is the capped planned allocation. `uncapped_suggested_lots` retains the risk-only suggestion. Legacy `suggested_lots` represents the final allocation. Contract, Greeks, capital, lot size and levels persist in trade context; rejected signals retain the rejection reason in their signal audit reasons.
 - Expected-move diagnostics compare IV and ATM straddle estimates when both are available. A missing IV is not substituted into an executable bracket.

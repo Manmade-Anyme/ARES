@@ -10,7 +10,7 @@ Implement the active scope of ADR-176 on `feature/MANM-176-options-entry-exit-sl
 ## Acceptance criteria
 - Preserve side-specific broker identities, expiry, synchronized underlying quote, bid/ask and full Greeks for every option-chain strike.
 - Select the valid contract nearest absolute delta 0.50; reject missing/nonfinite quotes and unverified capital without sentinel values.
-- Build tick-rounded, strictly ordered Delta/Gamma brackets with theta feasibility, nonnegative capped sizing and risk measured from the worst allowed entry to the executable stop.
+- Build tick-rounded, strictly ordered Delta/Gamma brackets with diagnostic-only theta scenarios, nonnegative capped sizing and risk measured from the worst allowed entry to the executable stop.
 - Dispatch explicit simulated limit orders by default; a submission is never treated as a fill. Validate protection and reconcile partial fills and invalidation through the order manager.
 - Keep live broker calls behind an explicit adapter contract; tests never submit orders to an account.
 - Persist final lots separately from uncapped suggestions and retain rejection diagnostics. Alerts distinguish estimated option P&L from broker fills.

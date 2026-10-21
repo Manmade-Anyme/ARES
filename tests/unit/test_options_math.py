@@ -133,10 +133,17 @@ def test_entry_cap_and_spread_are_included_in_risk():
     assert bracket.risk_loss_pts >= 7.4
 
 
-def test_decay_feasibility_rejects_target_with_net_rr_under_one():
-    bracket = build_option_bracket(make_signal(), [make_row(ce_theta=-200)], 100000, TuningConfig())
-    assert not bracket.is_valid
-    assert bracket.rejection_reason == 'INSUFFICIENT_OPTION_RR'
+@pytest.mark.parametrize('direction', [Direction.BULLISH, Direction.BEARISH])
+@pytest.mark.parametrize('capital', [0, 100000])
+def test_theta_rr_does_not_reject_prices_or_lot_suggestion(direction, capital):
+    signal = make_signal(direction)
+    baseline = build_option_bracket(signal, [make_row()], capital, TuningConfig())
+    side = signal.option_type.lower()
+    bracket = build_option_bracket(signal, [make_row(**{f'{side}_theta': -200})], capital, TuningConfig())
+    assert bracket.projected_target_1 - bracket.entry_limit < bracket.risk_loss_pts
+    for field in ('entry_limit', 'catastrophic_opt_sl', 'target_1', 'target_2',
+                  'lots', 'is_valid', 'rejection_reason'):
+        assert getattr(bracket, field) == getattr(baseline, field)
 
 
 def test_low_premium_cannot_create_inverted_stop():
