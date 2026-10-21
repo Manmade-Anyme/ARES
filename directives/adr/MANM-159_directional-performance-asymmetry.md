@@ -12,6 +12,14 @@ The July-to-September direction reversal is consistent with market regime being 
 
 The user chose to keep this branch open and observe ML predictions and other live features for the next few days. The similar reported T1/score win rates (33.1% bearish, 31.1% bullish) make signal selection worth examining, but win rate alone cannot explain the PnL gap: winner and loser sizes also matter. Review both by direction and regime when work resumes.
 
+**Diagnostic Re-evaluation Update (2026-10-21):**
+Re-evaluated the full population in Supabase `trade_analytics` (359 closed trades total: 233 historical + 126 new trades between 2026-09-15 and 2026-10-16). Findings in `reports/debug/MANM-159_directional-asymmetry-re-evaluation.md`:
+1. **Bullish PnL Rebounded to Strong Profitability**: In the 126 new trades, Bullish trades gained **+452.85 points** (+6.38 pts/trade, 38.0% WR, PF 1.75). All-time Bullish PnL is now **+276.80 points**.
+2. **October Performance Inversion**: During October 2026 (Weeks 40–42, 71 trades), Bullish outgained Bearish **+399.95 pts vs +184.00 pts** (+9.75 vs +6.13 pts/trade), confirming that asymmetry was macro-regime driven rather than an intrinsic detector flaw.
+3. **Outlier Dependency**: 81.9% of new Bearish profits (+621.15 pts) came from a single 2-day macro waterfall on Sep 23–24. Outside that waterfall, Bullish outperformed Bearish 3:1 (+417.85 pts vs +137.00 pts).
+4. **Setup Health**: `EXHAUSTION_REVERSAL` is balanced and profitable in both directions (All-time: Bullish +186.45 pts, Bearish +227.75 pts). `FAILED_BREAKOUT` is universally toxic (-103.55 pts net across 24 trades).
+5. **Architectural Recommendation**: Retain symmetrical target geometry (avoid artificial T2=50 caps for Bullish) and focus pruning solely on `FAILED_BREAKOUT` and macro downtrend gating.
+
 ---
 
 ## 1. Executive Summary & Diagnostic Root Cause Analysis
