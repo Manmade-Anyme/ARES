@@ -131,7 +131,7 @@ class TestTickFeedLifecycle(unittest.TestCase):
 
         _, kwargs = mock_feed_cls.call_args
         instruments = mock_feed_cls.call_args.args[1] if len(mock_feed_cls.call_args.args) > 1 else kwargs.get("instruments")
-        self.assertIn((0, 13, 15), instruments)
+        self.assertIn((0, "13", 15), instruments)
 
 
 if __name__ == "__main__":
