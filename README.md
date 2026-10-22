@@ -3,515 +3,321 @@
 <div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
-![Pytest](https://img.shields.io/badge/Tests-359%20Passed-success?style=for-the-badge&logo=pytest&logoColor=white)
+![CI](https://github.com/Manmade-Anyme/ARES/actions/workflows/deploy.yml/badge.svg)
 ![Broker](https://img.shields.io/badge/Broker-DhanHQ%20v2-orange?style=for-the-badge)
 ![Database](https://img.shields.io/badge/Database-Supabase%20PostgreSQL-emerald?style=for-the-badge&logo=supabase&logoColor=white)
-![ML Engine](https://img.shields.io/badge/ML%20Engine-XGBoost%20v3.0-purple?style=for-the-badge&logo=xgboost&logoColor=white)
+![ML Engine](https://img.shields.io/badge/ML%20Engine-XGBoost%203.0.5-purple?style=for-the-badge)
 ![Deployment](https://img.shields.io/badge/Deployment-Fly.io%20%7C%20Docker-informational?style=for-the-badge&logo=docker&logoColor=white)
 
-**High-Performance, Asynchronous Algorithmic Trading Signal & Machine Learning System for NIFTY 50 Options Scalping**
+**Asynchronous NIFTY 50 spot-signal research, manual options references, and ML-assisted market analysis**
 
-[Architecture](#-high-level-architecture) • [Design Principles](#-design-principle--ares-is-a-spot-based-system) • [Detectors](#-detection-strategies--confidence-scoring) • [Option Math](#-option-sizing--delta-based-strike-selection) • [Position Manager](#-trade-management-position-manager) • [ML Module](#-machine-learning--prediction-pipeline) • [Setup Guide](#%EF%B8%8F-setup--deployment)
+[Recent Updates](#recent-updates) • [Architecture](#architecture) • [Detection](#detection-strategies-and-confidence) • [Options](#option-pricing-and-lot-suggestions) • [Trade Tracking](#trade-tracking-and-post-t1-atr) • [Predictions](#machine-learning-and-jev-predictions) • [Setup](#setup-and-local-execution) • [Deployment](#deployment)
 
 </div>
 
 ---
 
-## 📌 Executive Summary
+ARES evaluates completed one-minute NIFTY spot candles alongside open interest (OI), implied volatility (IV), and structural levels. It sends Discord signals, calculates option entry/SL/target references, and tracks the spot lifecycle in Supabase. XGBoost adds in-process probabilities; a separate TypeSafe Jev worker provides advisory assessments from persisted observations.
 
-**ARES** continuously monitors 1-minute price action, Option Interest (OI), and Implied Volatility (IV) to identify high-probability reversal and continuation setups in real-time. It pairs quantitative technical detectors with an in-process **XGBoost Machine Learning model** to enrich fired signals with forward probabilities, broadcasting alerts directly to **Discord** and persisting full market state snapshots to **Supabase** for automated weekly retraining.
+The current `main.py` signal path registers manual `SIGNAL_REFERENCE` trades. It submits no new paper or broker entry orders. Tracking continues independently of capital, suggested lots, or whether an option bracket is executable. Retained paper-execution APIs have separate observed-fill requirements, and new live order dispatch remains blocked.
 
----
+## Recent Updates
 
-## 🏗️ High-Level Architecture
+This README describes the source in this checkout through **22 October 2026**. Earlier [changelog](CHANGELOG.md) entries preserve their implementation-time status; runtime rollout evidence must be checked separately.
 
-ARES follows a strict **seven-layer decoupled architecture** designed for modularity, sub-second latency, and fault tolerance:
+| Update | Current behavior | Reference |
+|---|---|---|
+| Dhan WebSocket subscription | Sends the security ID as a string so the spot subscription can receive ticks for between-candle monitoring. | [PR #144](https://github.com/Manmade-Anyme/ARES/pull/144) |
+| Manual signals and ATR runners | Tracks persisted signals independently of lots; after T1, completed five-minute spot closes govern the ATR runner. Fixed T2 remains a reference. | [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
+| Uniform, compact Discord alerts | Shows available option entry, premium SL, T1/T2 and suggested lots without execution-status banners. Extra diagnostics default off. | [PR #142](https://github.com/Manmade-Anyme/ARES/pull/142), [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
+| Capital-independent option prices | Calculates prices even with unavailable, zero, or insufficient capital; capital controls lots. The option R:R rejection has been removed. | [PR #141](https://github.com/Manmade-Anyme/ARES/pull/141), [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
+| Completed-candle inputs | Evaluates each selected completed bar once, rebuilds full-session VWAP, and preserves risk monitoring on polls with no new candle. | [PR #140](https://github.com/Manmade-Anyme/ARES/pull/140), [input contract](docs/completed-candle-inputs.md) |
+| Greeks-based option references | Uses current-expiry ATM-biased contract selection, Delta/Gamma projections, tick rounding, and nonnegative capped sizing. | [MANM-176](docs/MANM-176-options-entry-exit-sl-greeks-limit-orders.md) |
+| Jev and ML reliability | Includes first-ready OI-wall assessments, shared-process supervision, confidence calibration, missing-data preservation, and audited training/promotion. TypeSafe SDK is constrained to `>=0.7.5,<0.8.0`; the default model remains `jev-1.13.0`. | [OI watch](docs/OI%20Wall%20Watch%20Jev.md), [SDK decision](directives/adr/TASK-258_update-jev-to-latest-version.md), [ML module](ml_signal/README.md) |
+
+## Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Ingestion ["1. 🧩 Ingestion Layer"]
-        PF["PriceFetcher\n(1-min OHLC, VWAP, Daily PDH/PDL)"]
-        OF["OIFetcher\n(Real-Time Option Chains & OI Walls)"]
-    end
-
-    subgraph Orchestration ["2. ⚙️ Orchestration Layer"]
-        AE["AresEngine\n(Rolling State Buffers, Priority Evaluation, Cooldowns)"]
-    end
-
-    subgraph Detection ["3. 🔬 Detection Layer (Short-Circuit Order)"]
-        D1["1. FailedBreakout (P1)"]
-        D2["2. OIWallRejection (P2)"]
-        D3["3. ExhaustionReversal (P3)"]
-        D4["4. TrendContinuation (P4)"]
-    end
-
-    subgraph ML ["4. 🧠 Machine Learning Layer"]
-        SP["SignalPredictor (In-Process Proxy Inference)"]
-        MC["MLCollector (50+ Market Features Snapshot)"]
-    end
-
-    subgraph Persistence ["5. 💾 Persistence Layer"]
-        SB[("Supabase PostgreSQL\n(ares_signals, active_trades, trade_analytics, ml_collection)")]
-    end
-
-    subgraph Broadcasting ["6. 📢 Broadcasting Layer"]
-        DC["Discord Webhooks\n(Rich Alerts & Live ML Probabilities)"]
-        CONSOLE["ANSI Terminal Output"]
-    end
-
-    subgraph Analysis ["7. 📊 Analysis Layer"]
-        BT["Backtest Engine & PineScript Exporter"]
-        ML_TRAIN["Automated Weekly ML Retraining (GitHub Actions)"]
-    end
-
-    PF & OF --> AE
-    AE --> D1 --> D2 --> D3 --> D4
-    D1 & D2 & D3 & D4 -->|Signal Fired| SP
-    AE -->|Cycle Snapshot| MC
-    SP --> DC & CONSOLE
-    SP & MC --> SB
-    SB --> BT & ML_TRAIN
+    REST["Dhan REST: completed bars and option chain"] --> ENGINE["AresEngine: priority detectors"]
+    WS["Dhan WebSocket: spot ticks"] --> PM["PositionManager: SL, T1 and ATR"]
+    ENGINE --> MAIN["Main: option references and signals"]
+    MAIN --> PM
+    MAIN --> COLLECT["MLCollector and signal storage"]
+    ENGINE --> WATCH["OI watch outbox"]
+    PM --> DB[("Supabase")]
+    COLLECT --> DB
+    WATCH --> DB
+    DB --> JEV["Independent Jev worker"]
+    JEV --> FORECAST["Discord predictions and watch updates"]
+    DB --> TRAIN["Offline training and calibration"]
+    TRAIN --> PREDICT["In-process SignalPredictor"]
+    PREDICT --> MAIN
+    MAIN --> ALERT["Discord signals and lifecycle updates"]
+    PM --> ALERT
 ```
 
-### Layer Breakdown
-
-1. **🧩 Ingestion Layer:** Asynchronous fetchers (`PriceFetcher`, `OIFetcher`) poll the DhanHQ API for 1-min candles, real-time Option Chains, and previous day OHLC levels.
-2. **⚙️ Orchestration Layer:** The `AresEngine` manages the evaluation pipeline, maintaining rolling state buffers (Volume, IV) and enforcing signal cooldowns.
-3. **🔬 Detection Layer:** A suite of specialized detectors (`FailedBreakout`, `OIWall`, `Exhaustion`, `TrendContinuation`) score market conditions against technical and structural levels.
-4. **🧠 Machine Learning Layer:** `MLCollector` logs 50+ intraday market features to `ml_collection` on every cycle, while an in-process `SignalPredictor` (TASK-196) enriches live Discord alerts with forward win probabilities. Automated weekly training (TASK-205) via GitHub Actions continuously updates the model.
-5. **💾 Persistence Layer:** All generated signals and **active trade states** are logged to **Supabase (PostgreSQL)** for post-session performance auditing and backtesting.
-6. **📢 Broadcasting Layer:** Signals are formatted into rich, scannable alerts and dispatched via **Discord Webhooks** and the local console.
-7. **📊 Analysis Layer:** A specialized `backtest/` suite allows for historical simulation and visual export of signals to TradingView via PineScript.
-
----
-
-> [!IMPORTANT]
-> ### 📐 Design Principle — ARES is a **Spot-Based** System
-> 
-> This is the single most important concept to understand before analyzing anything in this repository:
-> 
-> **Every decision is made on the spot price of the underlying** — NIFTY (Dhan `security_id` 13), or any other index or stock configured. Detection, confidence scoring, entry, stop-loss, targets, backtests, recorded P&L, and ML features are all computed strictly on the **spot chart**. `pnl_points` is, correctly and deliberately, **NIFTY spot points**.
-> 
-> **The options layer is derived reference, not the source of truth.** Strike selection, entry premium, option SL, and option target are convenience calculations projected from the spot levels via the selected contract's delta (see *Option Sizing* below). They exist so a spot signal can be acted on as an options trade. They are **not** what determines whether a trade won or lost.
-> 
-> **Key Design Consequences:**
-> - **Spot-points P&L on a multi-day carry is not a measurement error:** Positions are intentionally carried across sessions (TASK-170) — there is no end-of-day square-off and none is wanted. A carry judged in spot points is judged exactly as intended.
-> - **Exit premium is deliberately not recorded:** Entry premium is stored only as reference. Reconstructing true option P&L is explicitly out of scope, and the options layer may eventually be removed entirely.
-> - **Do not "fix" analysis to price trades in premium:** Any audit, report, or model that switches to premium is measuring something this system does not trade on.
-
----
-
-## 🎯 Detection Strategies & Confidence Scoring
-
-ARES evaluates four distinct market phenomena in strict **short-circuit priority order**, utilizing dynamic confidence scoring matrices:
-
-```text
- Priority 1 ──► 🚨 Failed Breakout      (Highest Conviction Reversals)
- Priority 2 ──► 🧱 OI Wall Rejection    (Structural Option Chain Defense)
- Priority 3 ──► 💥 Exhaustion Reversal  (Volume Climax & Doji Extremes)
- Priority 4 ──► 📈 Trend Continuation  (Momentum Breakout Resumption)
-```
-
----
-
-### 1. 🚨 Failed Breakout (Highest Priority)
-
-* **Logic:** Tracks "fake-outs" where price crosses a significant level (PDH/PDL fetched dynamically from Dhan Historical API or massive OI wall) but fails to hold.
-* **Dynamic Targets:** Automatically sets Profit Targets (T1/T2) at the next available structural support/resistance levels.
-* **Dynamic Scoring (4-Point Matrix):**
-  * `Closed Back`: Price returned past the level (Required gate, not scored).
-  * `Weak Volume`: Breakout candle volume < Rolling Average.
-  * `IV Crush`: Dropping Implied Volatility during the cross.
-  * `Active OI Growth`: Decisive open interest build (`breakout_writers_active_min_pct`: $\ge 10\%$ normal / $\ge 15\%$ expiry) confirming writer defense. Writers merely holding is reported as context but not scored.
-  * `Deep Close-Back`: Index closes back inside the level by $\ge 5.0$ points.
-* **Confidence Rating:** `breakout_failure_min_score` (default `2` of 4, TASK-184) fires `MEDIUM` (score 2) and `HIGH` (score $\ge 3$) confidence alerts.
-* **Direction:** Fully bidirectional (handles both Bullish and Bearish failures).
-
----
-
-### 2. 🧱 OI Wall Rejection (High Priority)
-
-* **Logic:** Identifies structural rejection at strikes with massive fresh Open Interest.
-* **Bias versus entry (TASK-073):** `OIWallDetector.update()` identifies the wall and tracks consecutive-snapshot persistence; it does not emit a trade. `OIWallEntryFilter` requires initial interaction, sufficient persistence and a later favourable excursion before `RETEST_READY`. A secondary re-test must occur on a later candle than that transition.
-* **Confirmation:** The extra post-retest confirmation phase was removed (MANM-184). A re-test emits immediately on candle close when it enters the wall-distance band, closes on the defended side, and moves in the trade direction (bullish PE: `close > open`; bearish CE: `close < open`, MANM-158). A contrary candle leaves the wall ready for a later re-test. No later follow-through candle or break of the re-test extreme is required. Wick rejection remains a confidence contributor, not a hard entry gate.
-* **Discord alerts:** The `RETEST_READY` watchlist heads-up is enabled in both trading profiles and says the wall is armed while price is still awaiting a pullback. A failed webhook delivery is retried on later evaluations while the wall remains ready; delivery is recorded only after Discord accepts it. The final OI-wall signal embed shows the recorded retest candle time and close, initial wall interaction, and favourable excursion when the telemetry contains them. The OI-wall detector and filter reset at the next candle date so a prior day's wall cannot suppress a new watchlist alert. Wall OI size and growth are observations, not proof of writer defense.
-* **Watch cancellation:** A delivered watch receives an **OI WALL WATCH CANCELLED** alert if its wall disappears, is replaced, breaches, fails the R:R gate, or carries into a new candle date. The message identifies the original wall and watch time, cancellation time/spot, and reason. Failed cancellations retry before fresh watch alerts; successful posts are acknowledged once in process memory. The engine retains the delivered watch through signal consumption until persistence and final Discord delivery succeed. Persistence failure or failed final signal delivery cancels the watch; if a trade may already be tracked, guidance says to check recorded signals and existing trades. Successful final signal delivery clears the watch without cancellation. See [watch cancellation lifecycle](docs/oi-wall-watch-cancellation.md) for restart limitations and the October 1 example.
-* **State isolation:** Changing wall identity clears interaction/re-test geometry before checking session-consumed keys. An emitted wall cannot fire again in that session. Cooldown/priority suppression requires a fresh re-test. Breach or R:R expiration retains `EXPIRED` and its reason for subsequent evaluations of that same active wall. A disappearing active wall emits one `EXPIRED` context before `NO_WALL`.
-* **Risk policy:** The existing engine retains detector priority, cooldown and R:R checks. Central per-type levels set the initial stop to **16 spot points**, T1 to **25 points**, and T2 to the nearest eligible structural level beyond T1 or the **40-point** fallback. This entry-filter change does not widen stops or alter position-management rules.
-* **Dynamic Scoring (4-Point Matrix):**
-  * `Wall Magnitude`: Size of the OI wall compared to thresholds.
-  * `Active OI Building`: Net positive intraday OI build-up at the wall.
-  * `Strike Penetration`: Extent to which price penetrated the strike before rejecting.
-  * `Intraday Wick Rejection`: Technical wick signature showing immediate rejection.
-* **Confidence Rating:** Sets confidence to `HIGH` if the score is $\ge 2$, otherwise `MEDIUM`.
-
-**Validation and replay waiver (2026-09-05):** The human directed that historical
-replay be skipped if other trade types lack a reusable historical replay; Project
-Manager confirmed the waiver for TASK-073. Existing candle studies/recorded-trade
-analyses are not complete engine/OI replay fixtures for the other detectors.
-The 18-trade requirement is **SKIPPED, not PASS**. The incomplete TASK-073 runner,
-fixture, runner-only tests and unsupported report were retired (recoverable from
-Git history). Unit and real-engine integration tests now validate the entry
-behavior, including both profiles and CE/PE directions; they do not establish
-profitability or avoided stop-outs. This waiver supersedes only the replay gate
-in the TASK-073 ADR/remediation plan. Review, QA, human merge approval and
-deployment controls remain required.
-
----
-
-### 3. 💥 Exhaustion Reversal (Medium Priority)
-
-* **Logic:** Catches "blow-off tops" or "panic bottoms" using volume/price divergence.
-* **Dynamic Targets:** Uses structural levels (PDH/PDL, option chain walls) to define exit zones, ensuring realistic profit booking.
-* **Triggers:** Triggers when a volume climax (extreme spike) coincides with a doji-like indecision candle at a local price extreme, often accompanied by an IV spike.
-* **Dynamic Scoring (4-Point Matrix):**
-  * `Extreme Volume Climax`: Climax candle volume $\ge 2.5\times$ rolling average.
-  * `Extreme Doji Body Ratio`: Tiny real body relative to wicks ($\le 0.3$).
-  * `Panic IV Spike`: Rapid IV expansion during the exhaustion candle.
-  * `Structural Level Testing`: Price actively testing a key horizontal level or wall.
-* **Confidence Rating:** Sets confidence to `HIGH` if the score is $\ge 2$, otherwise `MEDIUM`.
-
----
-
-### 4. 📈 Trend Continuation (Medium Priority, TASK-177)
-
-* **Logic:** Rides strong intraday momentum when price decisively breaks and holds above/below key structural levels with supporting volume and open interest expansion.
-* **Dynamic Targets:** Project T1/T2 targets along trend extension levels while enforcing structural SL protection at the breakout level.
-* **Confidence Rating:** Sets confidence to `HIGH` for strong multi-factor volume+OI confirmations, otherwise `MEDIUM`.
-
----
-
-## ⚖️ Option Sizing & Delta-Based Strike Selection
-
-ARES integrates dynamic options contract selection and risk-managed lot sizing (implemented in [`options_math.py`](file:///Users/manmadeanyme/Documents/Work/ARES/options_math.py)).
-
-> [!NOTE]
-> This layer is reference only. Everything below is projected *from* the spot levels via delta — it never feeds back into detection, scoring, or how a trade is judged. See *Design principle — ARES is a spot-based system* above.
-
-```text
- ┌──────────────────────┐    Delta Calculation    ┌──────────────────────────┐
- │ NIFTY Spot Signals   │ ──────────────────────► │ Delta ~ 0.45 Strike Scan │
- └──────────────────────┘                         └────────────┬─────────────┘
-                                                               │
- ┌──────────────────────┐    Risk & Capital       ┌────────────▼─────────────┐
- │ Dhan Available Funds │ ──────────────────────► │ Lot Size = min(Risk, Cap)│
- └──────────────────────┘                         └──────────────────────────┘
-```
-
-- **Delta-Based Strike Selection:** Scans the live option chain to select the contract (CE or PE) with an absolute delta closest to **0.45** (target range: `0.45` to `0.55`).
-- **Capital-Aware Ingress:** Queries the DhanHQ API dynamically for available trading balance (`availabelBalance` or `availableBalance`). If the API call fails, it falls back to configured default capital.
-- **Risk-Managed Lot Sizing:**
-  - Computes max risk amount based on user-defined percentage of available capital (`risk_per_trade_pct`).
-  - Translates index-based profit targets (T1) and stop-loss (SL) points into option premium movement using the selected option's delta:
-    ```text
-    Option Target / SL Price = LTP ± (Index Points × |Delta|)
-    ```
-  - Calculates suggested lots based on risk and affordable lots based on entry premium and lot size (default size `65` for Nifty).
-  - Suggests the lower of the two: `min(suggested_lots, affordable_lots)` to prevent over-allocation.
-- **Decoupled Formatting:** Option sizing details are persisted in Supabase under `market_context` / `reasons` and presented clearly in Discord alerts.
-
----
-
-## 🛡️ Trade Management (Position Manager)
-
-ARES actively tracks its signals using a persistent **Position Manager**:
-
-| Feature | Mechanism & Behavior |
+| Layer | Responsibility |
 |---|---|
-| **Deterministic Targets** | Ensures **Target 1 (T1)** is always the level closest to entry price. Structural levels within **20 points** of entry are filtered out. |
-| **Trailing Stops** | When price reaches Target 1 (T1), Stop Loss is automatically trailed to entry price (`STOPPED_OUT_AT_BE`). If that trailed stop is later hit, analytics preserve the actual entry-price exit fill while crediting the locked entry-to-T1 P&L. |
-| **Multi-Class Scoring** | Natively records point scores (TASK-198): `T2_HIT=2`, `T1_HIT=1`, `STOPPED_OUT_AT_BE=1`, `SL_HIT=0`. |
-| **Persistent State** | Active trades sync in real-time with Supabase (`active_trades`) and load into memory on startup for resilient failover. |
-| **Tracking IDs** | Every trade signal is assigned a 4-digit display code (e.g., `"0501"`) and linked by this code (`signal_id` as text) to `trade_analytics`. |
-| **Analytics Logging** | Detailed trade histories, market context, and OI data log to `trade_analytics` upon trade completion. |
-| **Discord Updates** | State changes (T1 hit, Trailed SL hit, T2 hit) trigger color-coded Discord alert updates via Webhooks. |
+| Ingestion | `PriceFetcher` retrieves one-minute OHLCV and daily PDH/PDL; `OIFetcher` retains option quotes, OI, IV and Greeks; `TickFeed` supplies spot LTP between REST polls. |
+| Orchestration and detection | `AresEngine` maintains rolling buffers, applies detector priority, setup geometry, confidence policy, R:R checks and cooldowns. |
+| Manual trade tracking | `PositionManager` records spot references, monitors initial SL/T1, applies completed-bar ATR trailing, and restores persisted trade context. |
+| Options and retained execution | `options_math.py` builds premium references and lot suggestions. `execution/` retains paper order monitoring and a tested broker adapter; main does not submit new entry orders. |
+| Persistence | `storage.py` maintains signals, trades, analytics and prediction audits; `MLCollector` records evaluated market snapshots. Canonical UUIDs link records across schema modes. |
+| Advisory predictions | XGBoost runs in-process. The independent `system_one` subprocess consumes saved signals and ready-watch observations for Jev assessments and durable delivery. |
+| Analysis | `backtest/`, offline ML training, calibration and SHAP reports support research. GitHub Actions runs tests, training and deployment. |
 
----
+### Completed candles and tick monitoring
 
-## 🧠 Machine Learning & Prediction Pipeline
+- Detectors receive the **latest newly completed current-session one-minute bar**. Forming, duplicate, prior-session and invalid completed history do not advance strategy state. Selection is latest-only; missed historical bars are not replayed into detector buffers after restart.
+- VWAP is rebuilt from all unique completed session bars returned by Dhan, including history before startup. Provider revisions replace earlier values rather than accumulating twice.
+- Main acknowledges a selected candle immediately before engine handoff, after external prerequisites succeed. Duplicate/forming-only polls continue protective monitoring without generating another candle snapshot.
+- WebSocket ticks support initial SL/T1 checks between REST polls. If the feed is inactive, no-new-candle polls request an independent fresh REST LTP. `TickFeed.is_active` indicates a feed object exists; it does not certify tick freshness.
+- An already-running session may make one bounded final-bar attempt during 15:30–15:31 IST for the completed 15:29 bar. Protective checks remain active; any final signal candidate is analysis-only, with no entry alert, sizing, or new trade registration.
 
-ARES features an integrated, offline-trained and in-process served **XGBoost Machine Learning pipeline**:
+See the [completed-candle input contract](docs/completed-candle-inputs.md) for acknowledgment, close-crossing, fallback and shutdown details.
 
-```text
-  ┌────────────────────────────────────────────────────────┐
-  │  Live Execution (main.py)                              │
-  │                                                        │
-  │  MLCollector ──────► Writes 50+ features to ml_collection
-  │  SignalPredictor ──► Adds prob % to Discord Alerts      │
-  └──────────────────────────┬─────────────────────────────┘
-                             │
-                             ▼
-  ┌────────────────────────────────────────────────────────┐
-  │  GitHub Actions Automated Workflow (.github/workflows) │
-  │                                                        │
-  │  Weekly Retraining (Sat 00:00Z) ──► Retrains XGBoost   │
-  │  Model Artifacts ────────────────► Stores v{n}.joblib  │
-  └────────────────────────────────────────────────────────┘
-```
+### Spot-based outcomes
 
-- **Feature Snapshot (`MLCollector`):** Captures 50+ technical, IV, OI, Greek, and structural features per cycle into Supabase `ml_collection`.
-- **In-Process Inference (`SignalPredictor`):** Uses the highest versioned lightweight XGBoost model (`v{n}.joblib`) inside `main.py` to add forward probabilities (e.g., `🤖 ML Prediction: 46%`) directly to Discord alerts (TASK-196) without database write latency.
-- **Timestamp Normalization (TASK-206):** Stores timestamps in normalized UTC (`+00:00`) using `storage.to_utc_iso`, guaranteeing 1:1 joinability with `ares_signals` and `trade_analytics`.
-- **Automated Retraining (TASK-205):** GitHub Actions workflow (`.github/workflows/ml_training.yml`) runs `ml_signal/train_offline.py` every Saturday, updating metrics reports (`reports/ml/`) and model binaries (`ml_signal/models/`).
+Detection, setup geometry, trade labels and `pnl_points` use **NIFTY spot points**. Option premiums are derived references and estimates; they do not redefine spot outcomes. Manual tracking does not establish an option fill or realized account P&L.
 
----
+Registered trades can carry across sessions without automatic end-of-day square-off. Initial stops remain until SL or T1; there is no timer-based break-even exit. Stored paper execution telemetry, where present, is separate from manual spot analytics.
 
-## 📊 Backtesting & Visualization
+## Detection Strategies and Confidence
 
-ARES includes a robust backtesting module to validate strategies against historical data:
-- **High-Fidelity Simulation:** Simulates trade execution using historical 1-minute OHLC data.
-- **PineScript Exporter:** Generates TradingView-compatible PineScript (v6) code. This allows traders to visually inspect every signal, entry, stop-loss, and target level directly on a TradingView chart.
-- **Performance Metrics:** Automatically calculates PnL, Win Rate, and Drawdown for the simulated period.
+The engine evaluates four detectors in short-circuit priority order. All signals remain subject to central setup geometry, R:R and cooldown checks. The startup-loaded calibration policy can downgrade an unsupported HIGH tier to MEDIUM; raw detector scores alone do not guarantee the emitted tier.
 
----
-
-## 🛠️ Tech Stack & Engineering Paradigms
-
-| Component | Technology | Usage & Purpose |
+| Priority | Detector | Entry logic and scoring |
 |---|---|---|
-| **Language** | Python 3.10+ | Asynchronous event loop (`asyncio`) for non-blocking execution |
-| **HTTP Client** | `httpx` | High-performance async API requests to DhanHQ |
-| **Data Models** | Dataclasses & Pydantic | O(1) state management & strict fail-fast settings validation |
-| **ML Engine** | `xgboost` & `scikit-learn` | Forward-probability classification & feature engineering |
-| **Broker API** | DhanHQ SDK v2 | Live intraday 1-min candles, option chains, and account balance |
-| **Database** | Supabase (PostgreSQL) | Persistence for signals, active trades, analytics, and ML snapshots |
-| **CI/CD & Hosting** | Fly.io & GitHub Actions | Automated Docker deployments & weekly ML retraining workflows |
-| **Testing** | `pytest` | 359 unit tests providing comprehensive coverage across all modules |
+| 1 | Failed Breakout | Requires a close back inside a crossed structural level. Scores weak breakout volume, falling IV, active OI growth and a deep close-back. Minimum score is 2 of 4: raw MEDIUM at 2, HIGH at 3 or more. |
+| 2 | OI Wall Rejection | Separates wall bias/persistence from entry. Requires interaction, a later favourable excursion, then a secondary retest on a later candle. A qualifying defended-side retest enters immediately on its close when bullish for PE support or bearish for CE resistance. Scores wall magnitude, OI growth, penetration and wick rejection; wick rejection is not a hard gate. |
+| 3 | Trend Continuation | Establishes a VWAP/previous-day-level regime, then looks for a pullback and confirmed momentum resumption. Controlled by `continuation_enabled`. |
+| 4 | Exhaustion Reversal | Requires volume climax and a doji-like small body after its history minimum. IV expansion, structural proximity and stronger volume/body conditions contribute to confidence. Raw HIGH requires at least two scored conditions. |
 
----
+### OI-wall watches and cancellation
 
-## 📂 Project Structure
+Both profiles enable the earlier `RETEST_READY` heads-up while waiting for a pullback. Failed direct watch delivery retries while the wall remains ready. Final OI-wall alerts include available retest time/close, original interaction and excursion telemetry. OI size and growth describe observations; they do not establish writer intent.
+
+A delivered watch is cancelled when its setup expires, is replaced, breaches, fails R:R, or crosses into a new session. Successful final signal persistence and delivery resolve it. Failures retain guidance about any trade that may already be tracked. The durable Jev watch path adds producer-run fencing and recovery; the direct fallback retains process-local retry limits. See [watch cancellation](docs/oi-wall-watch-cancellation.md) and [OI-wall Jev assessment](docs/OI%20Wall%20Watch%20Jev.md).
+
+The TASK-073 historical 18-trade replay gate was explicitly **skipped**, not passed. Unit and engine integration tests validate behavior; they do not establish profitability. The [replay remediation record](directives/adr/TASK-073_replay-evidence-remediation.md) preserves that scope.
+
+### Setup geometry
+
+`engine.apply_per_type_levels` applies the values in `config_profiles.py`. Both profiles currently share these spot-point defaults:
+
+| Setup | Initial SL | T1 | T2 fallback |
+|---|---:|---:|---:|
+| `EXHAUSTION_REVERSAL` | 10 | 18 | 40 |
+| `TREND_CONTINUATION` | 25 | 25 | 80 |
+| `OI_WALL_REJECTION` | 16 | 25 | 40 |
+| `FAILED_BREAKOUT` | 12 | 20 | 55 |
+
+T1 is a fixed per-setup distance. T2 selects the nearest eligible structural level beyond T1, or uses its fallback. T2 is displayed for reference; current post-T1 runners exit through ATR trailing.
+
+## Option Pricing and Lot Suggestions
+
+`options_math.py` derives an option bracket from the spot signal and the full chain:
+
+1. **Select a current-expiry contract:** Choose the correct CE/PE direction with complete quote/Greek inputs, absolute delta at least 0.45, and absolute delta closest to **0.50**. Preserve its broker security ID and expiry.
+2. **Project premium levels:** Use signed Delta and Gamma with the selected quote's underlying spot as the projection base:
+
+   ```text
+   projected premium = reference premium + delta × spot change
+                       + 0.5 × gamma × spot change²
+   ```
+
+   Entry limits account for the observed ask/slippage ceiling. Premium levels use ₹0.05 tick rounding and bracket-order validation. Theta/vega scenario helpers and expected-move diagnostics remain available; the former option theta/spread R:R rejection no longer gates prices or lots.
+3. **Size separately from pricing:** Fetch Dhan available funds, clamp unavailable/nonpositive capital to zero, and calculate the risk and affordable lot counts. Final suggested allocation is nonnegative and capped by risk, affordability and `options_max_lots_cap`. Defaults are **4%** risk, **65** units per lot and a **10-lot** cap in `config_profiles.py`; these are repository settings, not a live contract-specification lookup. The conservative risk denominator includes linear delta loss and executable spread/entry uplift so theoretical gamma benefit cannot inflate allocation.
+4. **Display manual references uniformly:** Available entry, SL, targets and lot suggestions remain visible even at zero lots or with an execution-ineligible bracket. Missing quote/Greek inputs are shown as unavailable. Option calculation or sizing failure does not suppress the spot signal's manual lifecycle.
+
+The current calculator does not substitute `default_capital` for a failed funds request. Prices and Greeks are persisted in signal/trade context for later reporting. Compact Discord presentation is the default; `discord_show_option_details=True` enables extra diagnostics while console output remains detailed.
+
+See [MANM-176 implementation and execution boundaries](docs/MANM-176-options-entry-exit-sl-greeks-limit-orders.md#7-implementation-contract-pr-136-and-pr-143-follow-up) for full pricing and retained paper-order contracts.
+
+## Trade Tracking and Post-T1 ATR
+
+| Phase | Current behavior |
+|---|---|
+| Registration | Persisted market-session signals register as manual `SIGNAL_REFERENCE` trades independently of capital/lots. Distinct nearby signals remain distinct; retries use a stable identity per canonical signal. |
+| Before T1 | Monitor the initial per-setup spot SL and T1 using spot ticks and completed-candle high/low where applicable. |
+| T1 | Mark `T1_HIT` and move the spot stop to entry. Spot analytics model a 50% T1 allocation; manual tracking makes no execution claim. |
+| ATR warmup | Keep entry/the locked stop while valid completed five-minute inputs accumulate. Use Wilder ATR(5), HHV/LLV(10) and multiplier 2.5. Missing bars and session changes reset calculation windows. |
+| Runner | Check each completed five-minute close against the **previously active stop before ratcheting**. Exit bullish/CE strictly below, bearish/PE strictly above. Equality and wicks do not exit a runner. Fixed T2 does not close it. |
+| Persistence | Store state, stop, previous stop, ATR and processed-bar watermark. Restore persisted option/execution/ATR context on startup; legacy T1 trades without a watermark resume prospectively. |
+
+The bullish candidate is `HHV(10) − 2.5 × ATR(5)`; the bearish candidate is `LLV(10) + 2.5 × ATR(5)`. Stops only tighten and retain the entry bound. A close-through exit uses the completed close, which can cross beyond the stop; the ratchet does not guarantee a fill at entry or at the stop.
+
+`ATR_SL_UPDATED` alerts report a tightened stop. `ATR_SL_HIT` reports the runner's completed-close exit. Spot P&L for that exit is the mean of the signed entry-to-T1 and entry-to-close movements. Scores remain `SL_HIT=0`, `T1_HIT`/`ATR_SL_HIT=1`, with legacy `STOPPED_OUT_AT_BE=1` and `T2_HIT=2` retained for historical records.
+
+Failed manual registrations retry on later market polls from a frozen original payload, followed by canonical ML linkage retries. This queue is process-local: it does not survive restart or reconstruct moves missed during an outage. Four-digit codes are for presentation; canonical signal/trade UUIDs provide durable linkage.
+
+Retained paper APIs require an observed executable ask for entry and bid for exit. Paper ATR exit intent remains pending without a bid, and its initial emergency premium floor remains active. Application startup restores reporting context but does not reconstruct pending orders or resume paper simulation. `OrderManager` blocks new live dispatch with `LIVE_RUNTIME_UNSUPPORTED` before broker submission.
+
+## Machine Learning and Jev Predictions
+
+### In-process XGBoost
+
+- `MLCollector` records technical, OI, IV, Greek, structural and detector context for evaluated candles, with `feature_version` metadata. Unobserved option data stays `NULL`/`NaN` rather than becoming fabricated zeroes.
+- `SignalPredictor` loads the highest numbered model artifact and enriches live signals. Validated calibration artifacts control probability scaling and the fail-safe HIGH-to-MEDIUM gate.
+- `PredictionLogger` asynchronously persists sanitized feature snapshots and signal/trade links to service-role-protected `ml_predictions`. Without service-role configuration, prediction audit persistence is disabled rather than attempted with an anon key.
+- Offline training separates market-movement and trade-outcome pipelines, uses purged chronological walk-forward evaluation and promotion checks, and emits calibration, missingness and SHAP diagnostics. Training does not automatically make every candidate the production model.
+- The Saturday workflow runs at **00:00 UTC / 05:30 IST**. It publishes metrics/artifacts and can post SHAP and an active-trading-day spot-P&L Sharpe diagnostic to Discord. That diagnostic is not a capital-return or after-cost Sharpe.
+
+See [ML usage and offline reports](ml_signal/README.md), [calibration design](docs/MANM-157-confidence-calibration-design.md) and [data retention/privacy](docs/data_retention_and_privacy.md).
+
+### Independent TypeSafe Jev worker
+
+`system_one.consumer` polls persisted signal-bound snapshots for advisory T1/SL/T2 and market-context questions. Claims, freshness gates, archived results and Discord delivery state are durable; slow webhook delivery is separated from fresh inference. Jev does not generate entry orders or replace detector logic.
+
+For the first `RETEST_READY` OI-wall watch, the worker can add a same-message closing-threshold probability, outlook, grounded evidence and assessment time from frozen first-ready context. Shared defaults in `OI_WATCH_JEV_CONFIG` are enabled, **25-point** minimum move, **8-second** wait and **60-second** maximum age. An unavailable assessment retains the base watch; this feature does not alter confirmed-trade questions or entry rules.
+
+`scripts/run_app_with_jev.sh` starts main and Jev together, generates shared watch-run metadata, supervises Jev restarts, and stops the child worker when main exits. Standalone launches lack coordinated watch metadata and use the documented fallback. See [OI-wall Jev lifecycle and rollout](docs/OI%20Wall%20Watch%20Jev.md).
+
+## Backtesting and Visualization
+
+`backtest/` provides historical spot-candle simulation, performance reports and a TradingView PineScript v6 exporter. Simulation results describe the implemented replay model; they do not establish current live option execution or validate every manual/ATR runtime path.
+
+## Project Structure
 
 ```text
-ares/
-├── config.py          # Strict Pydantic configuration & thresholds
-├── config_profiles.py # Performance configurations & SetupLevels defaults
-├── models.py          # Domain models (OHLCVCandle, AresSignal, OptionRow)
-├── options_math.py    # Option sizing and delta-based strike selection math
-├── fetchers/          # Ingestion Layer
-│   ├── price_fetcher.py   # DhanHQ minute data, VWAP logic & dynamic PDH/PDL via Dhan Historical Daily API
-│   ├── oi_fetcher.py      # DhanHQ Option Chain processing
-│   └── level_fetcher.py   # Dynamic level construction (PDH/PDL + OI walls)
-├── detectors/         # Detection Layer
-│   ├── breakout.py        # Stateful detector for Failed Breakouts
-│   ├── oi_wall.py         # Stateless structural rejection detector
-│   ├── exhaustion.py      # Volume history & price extreme tracker
-│   ├── continuation.py    # Trend Continuation detector (TASK-177)
-│   └── expiry_detector.py # Expiry day detection (Dhan API check/Tuesday fallback)
-├── ml_signal/         # Machine Learning Module
-│   ├── config.py      # ML parameters & thresholds
-│   ├── features.py    # 50+ feature extraction logic
-│   ├── collector.py   # In-process feature logger (MLCollector -> ml_collection)
-│   ├── predictor.py   # In-process runtime inference (SignalPredictor)
-│   ├── dataset.py     # Data preparation & preprocessing
-│   ├── labeling.py    # Multi-class outcome labeler
-│   ├── train_offline.py # Offline XGBoost training & metric exporter
-│   └── schema.sql     # Supabase ml_collection & ml_predictions definitions
-├── backtest/          # Analysis Layer
-│   ├── pinescript_exporter.py # Generates TradingView v6 visualization scripts
-│   ├── engine.py          # Historical simulation engine
-│   └── report.py          # Performance metrics & PDF/Markdown reporting
-├── engine.py          # The "Brain" — Orchestrates evaluation & priority
-├── position_manager.py # Persistent trade position & trailing stop manager
-├── alerts.py          # Formatting & Discord broadcasting
-├── storage.py         # Supabase persistence logic
-├── main.py            # Entry point, polling loop, and session gate
+ARES/
+├── main.py                 # Session loop, signal persistence and manual registration
+├── engine.py               # Detector priority, setup levels and quality gates
+├── config.py               # Environment credentials and settings facade
+├── config_profiles.py      # Expiry/non-expiry tuning and shared watch settings
+├── models.py               # Candles, signals, quotes, Greeks and brackets
+├── options_math.py         # Delta/Gamma references and lot suggestions
+├── atr_trailing.py         # Completed 5m aggregation and Wilder ATR bands
+├── position_manager.py     # Persistent manual spot lifecycle and ATR runner
+├── alerts.py               # Discord signals, watches and lifecycle messages
+├── storage.py              # Signal/trade persistence and prediction audits
+├── fetchers/               # REST candles/chain/levels and WebSocket ticks
+├── detectors/              # Four detectors, OI entry filter and expiry detection
+├── execution/              # Retained paper/order APIs and documentation generator
+├── ml_signal/              # Collection, inference, calibration and offline training
+├── system_one/             # Independent Jev context, inference and delivery
+├── oi_watch_outbox.py      # Durable ready-watch producer and lifecycle writes
+├── oi_watch_context.py     # Watch candle provenance and frozen observations
+├── backtest/               # Historical simulation and PineScript export
+├── schema.sql              # Core database tables and bridge trade-entry RPC
+├── migrations/             # Reviewed schema and lifecycle upgrades
+├── scripts/run_app_with_jev.sh
+├── docs/                   # Runtime contracts, implementation guides and research
+├── tests/                  # Unit, integration and regression contracts
+└── .github/workflows/      # CI/deploy, ML training and operational workflows
 ```
 
----
+## Setup and Local Execution
 
-## ⚙️ Setup & Deployment
+### 1. Python environment
 
-### 1. Environment & Profile Configuration
-
-ARES separates secrets and database connections (`.env` & `config.py`) from dynamic trading parameters (`config_profiles.py`):
-
-#### A. Environment Secrets (`.env`)
-Clone the repository and create `.env` for secrets and database connections:
+Use **Python 3.10** to match Docker and CI. Runtime dependencies include the Dhan SDK, Supabase client, pandas/NumPy, XGBoost `3.0.5` and TypeSafe SDK `>=0.7.5,<0.8.0`.
 
 ```bash
-# ==========================================
-# Discord Webhooks
-# ==========================================
-DISCORD_WEBHOOK_URL="your_discord_webhook"
-DISCORD_HEALTH_WEBHOOK_URL="your_health_webhook"  # Optional: For heartbeats and system alerts
-
-# ==========================================
-# Supabase Database Credentials
-# ==========================================
-SUPABASE_URL="your_supabase_url"
-SUPABASE_KEY="your_supabase_anon_key"
-SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_role_key"  # Required for Jev worker
-TYPESAFE_API_KEY="your_typesafe_key"  # Required for hosted Jev inference
+git clone https://github.com/Manmade-Anyme/ARES.git
+cd ARES
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
 ```
 
-#### B. Automated Dual-Profile Tuning (`config_profiles.py`)
-Trading parameters and detector thresholds are managed dynamically in Python profiles (`TuningConfig`), **automatically selected at engine startup** based on Expiry Day detection (`expiry_detector.py`):
-- **`NON_EXPIRY_CONFIG`**: Standard session parameters optimized for regular trading days.
-- **`EXPIRY_CONFIG`**: Tailored parameters with adjusted writer growth sensitivity, OI wall thresholds, and tighter SL/T1 tolerances for weekly expiry volatility.
+### 2. Credentials and profiles
 
-#### C. Per-Setup Geometry (`SetupLevels`)
-SL, T1, and T2 fallback points are defined centrally per setup type in `_PER_TYPE_LEVELS_DEFAULT` ([`config_profiles.py`](file:///Users/manmadeanyme/Documents/Work/ARES/config_profiles.py#L39-L44)):
+Populate `.env` from `.env.example`. Keep credentials outside source control.
 
-| Setup Type | Stop Loss (pts) | Target 1 (pts) | Target 2 Fallback (pts) |
-|---|:---:|:---:|:---:|
-| `EXHAUSTION_REVERSAL` | 10.0 | 18.0 | 40.0 |
-| `TREND_CONTINUATION` | 25.0 | 25.0 | 80.0 |
-| `OI_WALL_REJECTION` | 16.0 | 25.0 | 40.0 |
-| `FAILED_BREAKOUT` | 12.0 | 20.0 | 55.0 |
+| Variable | Type / default | Purpose |
+|---|---|---|
+| `DISCORD_WEBHOOK_URL` | String / empty | Signal, lifecycle and Jev/watch alert destination. |
+| `DISCORD_HEALTH_WEBHOOK_URL` | Optional string / unset | Heartbeats and operational/error alerts. |
+| `SUPABASE_URL` | String / empty | Database API URL; required for the engine and worker. |
+| `SUPABASE_KEY` | String / empty | Main engine persistence and Dhan credential lookup; permissions must match the deployed policies. |
+| `SUPABASE_SERVICE_ROLE_KEY` | String / empty | Required for Jev lifecycle tables/RPCs and ML prediction audit persistence. Backend only. |
+| `TYPESAFE_API_KEY` | String / unset | Required for hosted Jev inference. |
 
----
+Dhan credentials are loaded at startup from the existing Supabase `api_keys` row with `provider = 'DHAN'`, using its `client_id` and `access_token` fields. Provision that row through the existing credential-management process; adding Dhan variables to `.env` alone does not replace this lookup.
 
-### 2. Database Initialization
+Edit trading parameters in **`config_profiles.py`**. Expiry detection selects `NON_EXPIRY_CONFIG` or `EXPIRY_CONFIG` at startup; ready-watch Jev settings are shared separately in `OI_WATCH_JEV_CONFIG`. The default asset settings in `config.py` are security ID `"13"` and exchange segment `IDX_I`. `TYPESAFE_MODEL` is an optional worker environment override; its default is `jev-1.13.0`.
 
-Run the following schemas in your Supabase SQL Editor to initialize tables and migrations:
+### 3. Database provisioning
 
-```sql
-CREATE TABLE IF NOT EXISTS ares_signals (
-  id bigserial primary key,
-  setup_type text,
-  direction text,
-  confidence text,
-  trigger_price numeric,
-  spot_at_signal numeric,
-  stop_loss numeric,
-  target_1 numeric,
-  target_2 numeric,
-  strike integer,
-  option_type text,
-  reasons jsonb,
-  timestamp timestamptz,
-  created_at timestamptz default now()
-);
+Use the maintained SQL files instead of copying a partial schema from this README:
 
-CREATE INDEX IF NOT EXISTS idx_ares_signals_timestamp ON ares_signals (timestamp DESC);
+| File | Purpose |
+|---|---|
+| [schema.sql](schema.sql) | Core signals, active trades, analytics, prediction audit schema and bridge trade-entry RPC. |
+| [ml_signal/schema.sql](ml_signal/schema.sql) | ML collection and prediction tables. |
+| [migrations/](migrations/) | Existing-install upgrades for canonical identity, timestamps, feature versions and lifecycle RPCs. Review prerequisites for the target database. |
+| [TASK-210 migration](migrations/2026-10-01-task210-llm-predictions.sql) | Jev confirmed-signal jobs, predictions, delivery state and lifecycle RPCs. |
+| [TASK-211 migration](migrations/2026-10-08-task211-oi-watch-jev.sql) | Ready-watch storage, producer fencing, recovery and delivery RPCs. |
 
-CREATE TABLE IF NOT EXISTS active_trades (
-  id uuid primary key,
-  signal_id text,
-  setup_type text not null,
-  direction text not null,
-  entry_timestamp timestamptz not null,
-  entry_price numeric not null,
-  stop_loss numeric not null,
-  target_1 numeric not null,
-  target_2 numeric not null,
-  state text not null default 'OPEN',
-  exit_price numeric,
-  exit_type text,
-  exit_timestamp timestamptz,
-  pnl_points_override numeric,
-  added_time_ist text,
-  time_metrics_excluded boolean NOT NULL DEFAULT false,
-  created_at timestamptz default now(),
-  CONSTRAINT chk_active_trades_exit_chronology CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp),
-  CONSTRAINT chk_active_trades_closed_requires_exit CHECK (state NOT IN ('CLOSED', 'STOPPED_OUT') OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
-);
+For a new installation, start with the core and ML schemas, then review the upgrades required by the selected runtime. For an existing installation, apply the appropriate reviewed migrations rather than rerunning clean-install DDL. The default `signal_schema_mode` is **`bridge`**; the canonical-UUID cutover is a separate, guarded operation, not an instruction to bulk-run every migration.
 
-CREATE TABLE IF NOT EXISTS trade_analytics (
-  id uuid PRIMARY KEY,
-  signal_id text,
-  setup_type text NOT NULL,
-  direction text NOT NULL,
-  entry_timestamp timestamptz NOT NULL,
-  exit_timestamp timestamptz,
-  entry_price numeric NOT NULL,
-  exit_price numeric,
-  pnl_points numeric,
-  result_state text DEFAULT 'OPEN',
-  score integer,
-  market_context jsonb,
-  oi_data jsonb,
-  time_metrics_excluded boolean NOT NULL DEFAULT false,
-  created_at timestamptz DEFAULT now(),
-  CONSTRAINT chk_trade_analytics_exit_chronology CHECK (time_metrics_excluded OR exit_timestamp IS NULL OR exit_timestamp >= entry_timestamp),
-  CONSTRAINT chk_trade_analytics_closed_requires_exit CHECK (result_state = 'OPEN' OR exit_timestamp IS NOT NULL OR time_metrics_excluded = true)
-);
+The TASK-210 initial migration also requires a separately reviewed upgrade if an earlier version was already deployed. Jev and `ml_predictions` require backend service-role permissions. Preserve their service-role-only policies when provisioning access.
 
-CREATE INDEX IF NOT EXISTS idx_trade_analytics_entry ON trade_analytics (entry_timestamp DESC);
+### 4. Run locally
 
--- Note: See ml_signal/schema.sql for ml_collection and ml_predictions schemas.
--- Note: See migrations/ for idempotent database migrations (TASK-198, TASK-206).
-```
-
-#### Row Level Security (RLS) Note
-If using the Anon key, ensure RLS is disabled or permissive policies are added:
-
-```sql
-ALTER TABLE active_trades DISABLE ROW LEVEL SECURITY;
-ALTER TABLE ares_signals DISABLE ROW LEVEL SECURITY;
-ALTER TABLE trade_analytics DISABLE ROW LEVEL SECURITY;
-ALTER TABLE ml_collection DISABLE ROW LEVEL SECURITY;
-```
-
----
-
-### 3. Local Execution
-
-Start the monitoring trading engine locally:
-
-```bash
-python main.py
-```
-
-To run the independent Jev worker locally after provisioning its secrets and migration, export the secrets into the shell first. The worker reads environment variables directly and does not load `.env` itself:
+For main plus the coordinated Jev worker, export credentials first: the worker reads environment variables directly and does not load `.env` itself. Local session clocks must use IST, matching Fly's `TZ` setting.
 
 ```bash
 set -a
 source .env
 set +a
-python -m system_one.consumer
+export TZ=Asia/Kolkata
+sh scripts/run_app_with_jev.sh
 ```
 
----
-
-### 4. Running Unit Tests
-
-The test suite contains **359 unit tests** isolating API and database dependencies with mocks:
+To run only the signal engine:
 
 ```bash
-# Install developer dependencies
-pip install -r requirements-dev.txt
-
-# Run full test suite
-PYTHONPATH=. pytest
-
-# Run tests with coverage report
-PYTHONPATH=. pytest --cov=. tests/
+TZ=Asia/Kolkata python main.py
 ```
 
-> [!TIP]
-> Always use `PYTHONPATH=. pytest` to ensure repo root is properly included on `sys.path`.
+Main loads `.env` through Pydantic settings. Without the shared launcher metadata, ready-watch delivery follows the direct fallback described above.
 
----
+### 5. Tests and useful commands
 
-### 5. Deployment (Fly.io & GitHub Actions)
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest tests/ -q
+python -m pytest tests/ --cov=. --cov-branch --cov-report=term-missing
+```
 
-ARES is fully containerized with Docker and configured for **Fly.io**:
+Use `python -m pytest` from the repository root, as CI does. Test totals change with the suite; the linked CI workflow is the source for current results.
 
-1. **Secrets Setup:** Set environment secrets directly on Fly.io:
-   ```bash
-   fly secrets set SUPABASE_URL="your_url" SUPABASE_KEY="your_key" SUPABASE_SERVICE_ROLE_KEY="your_service_role_key" TYPESAFE_API_KEY="your_typesafe_key" DISCORD_WEBHOOK_URL="your_webhook"
-   ```
-   The `app` Machine runs both `main.py` and the Jev worker. `main.py` uses `SUPABASE_KEY`; Jev requires `SUPABASE_SERVICE_ROLE_KEY` for its RLS-protected prediction tables and lifecycle RPCs, plus `TYPESAFE_API_KEY` for hosted inference. It does not fall back to `SUPABASE_KEY`, which may be an anon key. Keep the service-role key in backend environment secrets; the placeholders are also in `.env.example` for local use.
+| Command | Purpose |
+|---|---|
+| `python main.py` | Main signal engine with manual reference tracking; use an IST process clock. |
+| `sh scripts/run_app_with_jev.sh` | Main plus supervised Jev with shared watch-run identity; export `.env` first. |
+| `python -m system_one.consumer` | Standalone confirmed-signal Jev worker; lacks coordinated ready-watch metadata. |
+| `python -m ml_signal.train_offline --help` | Offline training and promotion options; see ML dependency/setup instructions before training. |
+| `python -m ml_signal.backfill_labels` | Preview historical label/P&L reconciliation; report-only by default, reading `.env`. |
 
-   Before deploying Jev, apply the reviewed initial migration `migrations/2026-10-01-task210-llm-predictions.sql` to the intended Supabase database and provision these secrets. An already deployed earlier TASK-210 schema requires a separate upgrade. Jev posts follow-ups through `DISCORD_WEBHOOK_URL`.
+CI additionally enforces 100% statement/branch coverage for `system_one` and executes isolated ready-watch SQL lifecycle and PostgreSQL concurrency checks. These are specific gates, not a claim of whole-repository 100% coverage.
 
-   Fly starts one 1 GB `app` Machine through `scripts/run_app_with_jev.sh`, which runs `python main.py` and `python -m system_one.consumer` together. The existing weekday start/stop cron starts and stops both; no separate Jev Machine or Jev cron is required. See [lifecycle and scheduled execution](DEPLOYMENT.md#4-scaling-lifecycle--scheduled-execution).
-2. **Automated CI/CD:** Push to `main` triggers `.github/workflows/deploy.yml` to run unit tests and execute `fly deploy`.
-3. **Automated ML Retraining:** `.github/workflows/ml_training.yml` runs every Saturday at 00:00 UTC (05:30 IST), training XGBoost on `ml_collection` and attaching reports/artifacts to the run.
+## Deployment
 
----
+`fly.toml` configures one scheduled **1 GB shared-CPU `app` Machine in Singapore (`sin`)**, running `sh scripts/run_app_with_jev.sh`. Main and Jev share that Machine and its weekday start/stop schedule. There is no HTTP service; the configured restart policy is `never`, while the launcher supervises the Jev child during the app lifetime.
 
-## 🚀 Operational Bounds
+Provision runtime credentials on Fly, including the backend service-role and TypeSafe keys for Jev, and apply reviewed database migrations before enabling their features. Fly runtime secrets and GitHub Actions secrets are separate stores.
 
-- **Session Window:** Actively polls from **09:20 to 15:25 IST** (Standard NSE session window).
-- **Warmup State:** Requires **30 candles** (`CANDLE_BUFFER_SIZE`) to fill rolling volume/IV buffers before evaluating signals.
-- **Signal Cooldown:** Enforces a strict **5-minute cooldown** per setup type to eliminate choppy false positives.
-- **Zero Hardcoding:** All thresholds (volume ratios, IV drops, OI walls) are fully configurable via environment variables.
+The [deploy workflow](.github/workflows/deploy.yml) runs tests on PRs and `main`, then permits deployment only from `main`. It uses a runner-local Docker build and retries selected transient Fly deployment failures. Routine deployments should be scheduled outside market hours: restarting clears detector warmup state, although the next successful fetch rebuilds VWAP from session history.
 
----
+The [weekly ML workflow](.github/workflows/ml_training.yml) performs audited training and publishes promoted artifacts and associated reports. See [DEPLOYMENT.md](DEPLOYMENT.md) for bootstrap, secret stores and scheduler operations.
 
-## ⚠️ Disclaimer
+## Operational Bounds
 
-ARES is an algorithmic signaling and quantitative research tool designed for educational and informational purposes. It does **not** execute trades automatically. Options trading carries significant financial risk. Always forward-test in a paper-trading environment before deploying real capital.
+| Setting | Current default / behavior |
+|---|---|
+| Active market session | **09:15–15:30 IST**, with the bounded final-bar analysis described above. |
+| REST cadence | **60 seconds**; tick monitoring continues between polls. |
+| Candle history | Rolling buffer capacity is **30 fresh completed candles**. Readiness is detector-specific; there is no universal 30-bar entry gate. Startup history rebuilds VWAP but is not replayed into this buffer. |
+| Signal cooldown | **15 minutes** non-expiry / **20 minutes** expiry, across emitted signals; an initial SL exit clears the cooldown. |
+| ATR runner | Completed **5m** spot bars, Wilder **ATR(5)**, **HHV/LLV(10)**, multiplier **2.5**. |
+| Session carry | Registered trades persist across sessions; ATR inputs reset for a new session while the locked stop remains. |
+| Configuration | Trading thresholds in `config_profiles.py`; credentials in `.env` or backend environment secrets. |
+
+## Disclaimer
+
+ARES supports quantitative research and manual trading decisions. Option prices and model probabilities are estimates, and manual signal tracking does not record actual broker execution. Validate behavior and risk before using signals with real capital.

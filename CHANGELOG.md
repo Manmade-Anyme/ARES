@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-20261022 README refresh:** Reconcile the root README with recent changelog entries, the current source and dated Ares vault follow-ups. Document completed-candle/VWAP inputs, string-ID WebSocket ticks, capital-independent Delta/Gamma option references, manual signal registration, post-T1 five-minute ATR trailing, Jev watch supervision, ML calibration and canonical identity. Correct detector priority to place continuation before exhaustion and distinguish buffer capacity from detector readiness. Refresh configuration, setup, schema links and CI/deployment guidance; remove the stale test count and duplicated bootstrap SQL. Documentation only; no runtime or deployment change.
+
 - **TASK-20261022 Dhan tick subscription:** Send the WebSocket security ID as a string, as required by Dhan, so the connected spot feed receives live ticks for between-candle monitoring.
 
 - **PR #143 manual signal presentation:** Show calculated option entry, SL, targets and suggested lots uniformly, independent of execution eligibility. Remove suitability/rejection banners, paper-order types, planned execution allocations and per-status reference labels. Capital affects suggested lots; manual T1/ATR tracking remains independent. The earlier rejected-bracket presentation was superseded by the user's manual-only display requirement.
