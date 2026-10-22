@@ -1,6 +1,11 @@
-# ARES (Adaptive Reversal & Entry Signal) 🚀
-
 <div align="center">
+
+<a name="top"></a>
+<a name="ares-adaptive-reversal--entry-signal-"></a>
+
+# ⚡ ARES
+
+### Adaptive Reversal & Entry Signal
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
 ![CI](https://github.com/Manmade-Anyme/ARES/actions/workflows/deploy.yml/badge.svg)
@@ -11,6 +16,8 @@
 
 **Asynchronous NIFTY 50 spot-signal research, manual options references, and ML-assisted market analysis**
 
+<p><kbd>1m signals</kbd> &nbsp; <kbd>5m ATR</kbd> &nbsp; <kbd>Manual tracking</kbd> &nbsp; <kbd>XGBoost + Jev</kbd></p>
+
 [Recent Updates](#recent-updates) • [Architecture](#architecture) • [Detection](#detection-strategies-and-confidence) • [Options](#option-pricing-and-lot-suggestions) • [Trade Tracking](#trade-tracking-and-post-t1-atr) • [Predictions](#machine-learning-and-jev-predictions) • [Setup](#setup-and-local-execution) • [Deployment](#deployment)
 
 </div>
@@ -19,11 +26,17 @@
 
 ARES evaluates completed one-minute NIFTY spot candles alongside open interest (OI), implied volatility (IV), and structural levels. It sends Discord signals, calculates option entry/SL/target references, and tracks the spot lifecycle in Supabase. XGBoost adds in-process probabilities; a separate TypeSafe Jev worker provides advisory assessments from persisted observations.
 
-The current `main.py` signal path registers manual `SIGNAL_REFERENCE` trades. It submits no new paper or broker entry orders. Tracking continues independently of capital, suggested lots, or whether an option bracket is executable. Retained paper-execution APIs have separate observed-fill requirements, and new live order dispatch remains blocked.
+> [!IMPORTANT]
+> The current `main.py` signal path registers manual `SIGNAL_REFERENCE` trades. It submits no new paper or broker entry orders. Tracking continues independently of capital, suggested lots, or whether an option bracket is executable. Retained paper-execution APIs have separate observed-fill requirements, and new live order dispatch remains blocked.
 
-## Recent Updates
+<a name="recent-updates"></a>
+
+## 🆕 Recent Updates
 
 This README describes the source in this checkout through **22 October 2026**. Earlier [changelog](CHANGELOG.md) entries preserve their implementation-time status; runtime rollout evidence must be checked separately.
+
+<details>
+<summary><strong>View recent changes and linked PRs</strong></summary>
 
 | Update | Current behavior | Reference |
 |---|---|---|
@@ -35,7 +48,11 @@ This README describes the source in this checkout through **22 October 2026**. E
 | Greeks-based option references | Uses current-expiry ATM-biased contract selection, Delta/Gamma projections, tick rounding, and nonnegative capped sizing. | [MANM-176](docs/MANM-176-options-entry-exit-sl-greeks-limit-orders.md) |
 | Jev and ML reliability | Includes first-ready OI-wall assessments, shared-process supervision, confidence calibration, missing-data preservation, and audited training/promotion. TypeSafe SDK is constrained to `>=0.7.5,<0.8.0`; the default model remains `jev-1.13.0`. | [OI watch](docs/OI%20Wall%20Watch%20Jev.md), [SDK decision](directives/adr/TASK-258_update-jev-to-latest-version.md), [ML module](ml_signal/README.md) |
 
-## Architecture
+</details>
+
+<a name="architecture"></a>
+
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TD
@@ -55,6 +72,13 @@ flowchart TD
     PREDICT --> MAIN
     MAIN --> ALERT["Discord signals and lifecycle updates"]
     PM --> ALERT
+
+    classDef core fill:#16324f,stroke:#457b9d,color:#ffffff
+    classDef data fill:#e8eaf6,stroke:#8590ad,color:#1d2d44
+    classDef output fill:#e7f2ef,stroke:#82aaa1,color:#183e34
+    class ENGINE,MAIN,PM core
+    class DB,COLLECT,WATCH,PREDICT,JEV,TRAIN data
+    class FORECAST,ALERT output
 ```
 
 | Layer | Responsibility |
@@ -79,11 +103,14 @@ See the [completed-candle input contract](docs/completed-candle-inputs.md) for a
 
 ### Spot-based outcomes
 
-Detection, setup geometry, trade labels and `pnl_points` use **NIFTY spot points**. Option premiums are derived references and estimates; they do not redefine spot outcomes. Manual tracking does not establish an option fill or realized account P&L.
+> [!NOTE]
+> Detection, setup geometry, trade labels and `pnl_points` use **NIFTY spot points**. Option premiums are derived references and estimates; they do not redefine spot outcomes. Manual tracking does not establish an option fill or realized account P&L.
 
 Registered trades can carry across sessions without automatic end-of-day square-off. Initial stops remain until SL or T1; there is no timer-based break-even exit. Stored paper execution telemetry, where present, is separate from manual spot analytics.
 
-## Detection Strategies and Confidence
+<a name="detection-strategies-and-confidence"></a>
+
+## 🎯 Detection Strategies and Confidence
 
 The engine evaluates four detectors in short-circuit priority order. All signals remain subject to central setup geometry, R:R and cooldown checks. The startup-loaded calibration policy can downgrade an unsupported HIGH tier to MEDIUM; raw detector scores alone do not guarantee the emitted tier.
 
@@ -115,7 +142,9 @@ The TASK-073 historical 18-trade replay gate was explicitly **skipped**, not pas
 
 T1 is a fixed per-setup distance. T2 selects the nearest eligible structural level beyond T1, or uses its fallback. T2 is displayed for reference; current post-T1 runners exit through ATR trailing.
 
-## Option Pricing and Lot Suggestions
+<a name="option-pricing-and-lot-suggestions"></a>
+
+## ⚖️ Option Pricing and Lot Suggestions
 
 `options_math.py` derives an option bracket from the spot signal and the full chain:
 
@@ -135,7 +164,9 @@ The current calculator does not substitute `default_capital` for a failed funds 
 
 See [MANM-176 implementation and execution boundaries](docs/MANM-176-options-entry-exit-sl-greeks-limit-orders.md#7-implementation-contract-pr-136-and-pr-143-follow-up) for full pricing and retained paper-order contracts.
 
-## Trade Tracking and Post-T1 ATR
+<a name="trade-tracking-and-post-t1-atr"></a>
+
+## 🛡️ Trade Tracking and Post-T1 ATR
 
 | Phase | Current behavior |
 |---|---|
@@ -154,7 +185,9 @@ Failed manual registrations retry on later market polls from a frozen original p
 
 Retained paper APIs require an observed executable ask for entry and bid for exit. Paper ATR exit intent remains pending without a bid, and its initial emergency premium floor remains active. Application startup restores reporting context but does not reconstruct pending orders or resume paper simulation. `OrderManager` blocks new live dispatch with `LIVE_RUNTIME_UNSUPPORTED` before broker submission.
 
-## Machine Learning and Jev Predictions
+<a name="machine-learning-and-jev-predictions"></a>
+
+## 🧠 Machine Learning and Jev Predictions
 
 ### In-process XGBoost
 
@@ -174,11 +207,18 @@ For the first `RETEST_READY` OI-wall watch, the worker can add a same-message cl
 
 `scripts/run_app_with_jev.sh` starts main and Jev together, generates shared watch-run metadata, supervises Jev restarts, and stops the child worker when main exits. Standalone launches lack coordinated watch metadata and use the documented fallback. See [OI-wall Jev lifecycle and rollout](docs/OI%20Wall%20Watch%20Jev.md).
 
-## Backtesting and Visualization
+<a name="backtesting-and-visualization"></a>
+
+## 📊 Backtesting and Visualization
 
 `backtest/` provides historical spot-candle simulation, performance reports and a TradingView PineScript v6 exporter. Simulation results describe the implemented replay model; they do not establish current live option execution or validate every manual/ATR runtime path.
 
-## Project Structure
+<a name="project-structure"></a>
+
+## 🗂️ Project Structure
+
+<details>
+<summary><strong>Explore the repository</strong></summary>
 
 ```text
 ARES/
@@ -208,7 +248,11 @@ ARES/
 └── .github/workflows/      # CI/deploy, ML training and operational workflows
 ```
 
-## Setup and Local Execution
+</details>
+
+<a name="setup-and-local-execution"></a>
+
+## 🚀 Setup and Local Execution
 
 ### 1. Python environment
 
@@ -284,7 +328,8 @@ python -m pytest tests/ -q
 python -m pytest tests/ --cov=. --cov-branch --cov-report=term-missing
 ```
 
-Use `python -m pytest` from the repository root, as CI does. Test totals change with the suite; the linked CI workflow is the source for current results.
+> [!TIP]
+> Use `python -m pytest` from the repository root, as CI does. Test totals change with the suite; the linked CI workflow is the source for current results.
 
 | Command | Purpose |
 |---|---|
@@ -296,7 +341,9 @@ Use `python -m pytest` from the repository root, as CI does. Test totals change 
 
 CI additionally enforces 100% statement/branch coverage for `system_one` and executes isolated ready-watch SQL lifecycle and PostgreSQL concurrency checks. These are specific gates, not a claim of whole-repository 100% coverage.
 
-## Deployment
+<a name="deployment"></a>
+
+## ☁️ Deployment
 
 `fly.toml` configures one scheduled **1 GB shared-CPU `app` Machine in Singapore (`sin`)**, running `sh scripts/run_app_with_jev.sh`. Main and Jev share that Machine and its weekday start/stop schedule. There is no HTTP service; the configured restart policy is `never`, while the launcher supervises the Jev child during the app lifetime.
 
@@ -306,7 +353,9 @@ The [deploy workflow](.github/workflows/deploy.yml) runs tests on PRs and `main`
 
 The [weekly ML workflow](.github/workflows/ml_training.yml) performs audited training and publishes promoted artifacts and associated reports. See [DEPLOYMENT.md](DEPLOYMENT.md) for bootstrap, secret stores and scheduler operations.
 
-## Operational Bounds
+<a name="operational-bounds"></a>
+
+## ⏱️ Operational Bounds
 
 | Setting | Current default / behavior |
 |---|---|
@@ -318,6 +367,14 @@ The [weekly ML workflow](.github/workflows/ml_training.yml) performs audited tra
 | Session carry | Registered trades persist across sessions; ATR inputs reset for a new session while the locked stop remains. |
 | Configuration | Trading thresholds in `config_profiles.py`; credentials in `.env` or backend environment secrets. |
 
-## Disclaimer
+<a name="disclaimer"></a>
+
+## 📎 Disclaimer
 
 ARES supports quantitative research and manual trading decisions. Option prices and model probabilities are estimates, and manual signal tracking does not record actual broker execution. Validate behavior and risk before using signals with real capital.
+
+<div align="center">
+
+[↑ Back to top](#top)
+
+</div>
