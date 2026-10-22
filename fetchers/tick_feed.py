@@ -41,7 +41,7 @@ class TickFeed:
         should continue on REST-only exit monitoring in that case)."""
         try:
             context = DhanContext(settings.dhan_client_id, settings.dhan_access_token)
-            instruments = [(MarketFeed.IDX, int(settings.security_id), MarketFeed.Ticker)]
+            instruments = [(MarketFeed.IDX, str(settings.security_id), MarketFeed.Ticker)]
             feed = MarketFeed(context, instruments, on_ticks=self._on_ticks, on_error=self._on_error)
             feed.start()
             self._feed = feed

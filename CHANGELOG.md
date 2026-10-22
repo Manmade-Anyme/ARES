@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-20261022 Dhan tick subscription:** Send the WebSocket security ID as a string, as required by Dhan, so the connected spot feed receives live ticks for between-candle monitoring.
+
 - **PR #143 manual signal presentation:** Show calculated option entry, SL, targets and suggested lots uniformly, independent of execution eligibility. Remove suitability/rejection banners, paper-order types, planned execution allocations and per-status reference labels. Capital affects suggested lots; manual T1/ATR tracking remains independent. The earlier rejected-bracket presentation was superseded by the user's manual-only display requirement.
 
 - **PR #143 review fixes:** Preserve separate manual trades for distinct nearby signals, with stable per-signal retry identities. Store overflowed optional theta projections as null while retaining prices, lot suggestions and signal tracking. No signal filter or R:R gate is added.
