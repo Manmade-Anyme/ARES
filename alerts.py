@@ -199,7 +199,12 @@ async def send_discord(signal: AresSignal, spot: float) -> bool:
     if option_context.get("policy_version") == "option_atr_v1":
         # Keep the original signal/bracket card; enrollment was committed before
         # this initial delivery, so no duplicate lifecycle card is posted.
-        fields[0]["value"] = _lifecycle_event_time(signal.timestamp)
+        signal_time = signal.timestamp
+        # Live detector signals inherit PriceFetcher's naive exchange-local candle time.
+        # Normalize only this boundary; durable lifecycle events require an offset.
+        if isinstance(signal_time, datetime) and signal_time.tzinfo is None:
+            signal_time = signal_time.replace(tzinfo=ist)
+        fields[0]["value"] = _lifecycle_event_time(signal_time)
         contract = option_context.get("contract") or {}
         fields.append({
             "name": "🛡️ Card A — Reference lifecycle",

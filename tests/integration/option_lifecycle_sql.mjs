@@ -95,5 +95,29 @@ try {
     'weighted allocation PnL is available for crash repair');
   eq(Number((await q('SELECT pnl_points FROM public.trade_analytics')).rows[0].pnl_points), 12.5,
     'analytics weighted allocation PnL commits atomically');
+  await seed();
+  await transition(1, 'T1');
+  const silent = { update_type: null, alert_snapshot: null,
+    option_trailing: { phase: 'POST_T1', highest_milestone: 1, remaining_fraction: .5,
+      locked_option_sl: 127.15, last_processed_option_bar_end: '2026-10-23T05:00:00Z' } };
+  const watermark = await transition(2, 'watermark-0', silent);
+  eq(Object.keys(watermark.option_trailing.alert_events), ['T1'], 'watermark has no empty pending alert');
+  eq(watermark.option_trailing.last_processed_option_bar_end, '2026-10-23T05:00:00Z', 'watermark is still durably recorded');
+  eq((await transition(2, 'watermark-0', silent)).idempotent_skip, true, 'lost watermark response retries without a duplicate transition');
+  let rev = watermark.revision;
+  for (let i = 1; i <= 24; i++) {
+    const snapshot = i % 3 === 0 ? {} : i % 3 === 1 ? null : undefined;
+    const at = new Date(Date.UTC(2026, 9, 23, 5, i * 5)).toISOString();
+    const result = await transition(rev, `watermark-${i}`, { ...silent, alert_snapshot: snapshot,
+      option_trailing: { ...silent.option_trailing, last_processed_option_bar_end: at } });
+    rev = result.revision;
+    eq(Object.keys(result.option_trailing.alert_events), ['T1'], 'silent bars never grow the delivery outbox');
+  }
+  const raised = await transition(rev, 'raise-after-watermarks', {
+    option_trailing: { locked_option_sl: 150, last_non_alert_event_id: 'stale-client-marker' } });
+  eq(raised.option_trailing.last_non_alert_event_id, 'watermark-24', 'client snapshot cannot overwrite the server silent-transition marker');
+  eq(Object.keys(raised.option_trailing.alert_events), ['T1', 'raise-after-watermarks'], 'real stop raise still queues an immutable alert');
+  eq(raised.option_trailing.alert_events['raise-after-watermarks'].status, 'PENDING', 'real raise remains deliverable');
+  eq((await transition(rev - 1, 'watermark-24', silent)).idempotent_skip, true, 'alert commit cannot erase last silent transition retry marker');
   console.log(`Option lifecycle isolated PostgreSQL: ${checks} checks passed`);
 } finally { await db.close(); }

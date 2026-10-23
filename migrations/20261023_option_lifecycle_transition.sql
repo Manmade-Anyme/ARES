@@ -55,7 +55,7 @@ BEGIN
     v_events := COALESCE(v_old->'alert_events', '{}'::jsonb);
     -- A replay can carry the old revision after a successful commit whose
     -- response was lost. Its immutable event identity makes that safe.
-    IF v_events ? p_event_id THEN
+    IF v_events ? p_event_id OR v_old->>'last_non_alert_event_id' = p_event_id THEN
         RETURN pg_catalog.jsonb_build_object('success', true, 'idempotent_skip', true,
             'trade_id', p_trade_id, 'revision', v_rev, 'option_trailing', v_old,
             'active_state', v_active.state, 'result_state', v_analytics.result_state,
@@ -128,9 +128,19 @@ BEGIN
         RAISE EXCEPTION 'A source event exit timestamp is required';
     END IF;
 
-    v_events := pg_catalog.jsonb_set(v_events, ARRAY[p_event_id], pg_catalog.jsonb_build_object(
-        'status', 'PENDING', 'recorded_at', v_now, 'transition', p_transition->>'update_type',
-        'snapshot', COALESCE(p_transition->'alert_snapshot', '{}'::jsonb)));
+    -- Only deliverable snapshots belong in the outbox. Silent source-watermark
+    -- writes still need bounded retry identity after a lost commit response.
+    -- Keep that server-owned marker separate from pending/delivered alerts.
+    v_option := pg_catalog.jsonb_set(v_option, '{last_non_alert_event_id}',
+        COALESCE(v_old->'last_non_alert_event_id', 'null'::jsonb));
+    IF pg_catalog.jsonb_typeof(p_transition->'alert_snapshot') = 'object'
+       AND p_transition->'alert_snapshot' <> '{}'::jsonb THEN
+        v_events := pg_catalog.jsonb_set(v_events, ARRAY[p_event_id], pg_catalog.jsonb_build_object(
+            'status', 'PENDING', 'recorded_at', v_now, 'transition', p_transition->>'update_type',
+            'snapshot', p_transition->'alert_snapshot'));
+    ELSE
+        v_option := pg_catalog.jsonb_set(v_option, '{last_non_alert_event_id}', pg_catalog.to_jsonb(p_event_id));
+    END IF;
     v_option := pg_catalog.jsonb_set(v_option, '{revision}', pg_catalog.to_jsonb(v_rev + 1));
     v_option := pg_catalog.jsonb_set(v_option, '{alert_events}', v_events);
     v_context := pg_catalog.jsonb_set(v_context, '{option_trailing}', v_option);

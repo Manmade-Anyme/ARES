@@ -1,5 +1,6 @@
 """Immutable, event-time Discord contract for option reference lifecycle."""
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -86,9 +87,10 @@ async def test_sender_reports_transport_outcome_without_mutating_snapshot(error,
     assert snapshot == original
 
 
-def test_missing_event_timestamp_is_unavailable_and_closed_failure_stays_closed():
+@pytest.mark.parametrize("timestamp", [None, "2026-10-23T10:08:00", datetime(2026, 10, 23, 10, 8)])
+def test_missing_or_naive_event_timestamp_is_unavailable_and_closed_failure_stays_closed(timestamp):
     snapshot = event("PERSISTENCE_FAILED")
-    snapshot["event_time"] = None
+    snapshot["event_time"] = timestamp
     snapshot["option_trailing"]["phase"] = "CLOSED"
     description = render_option_lifecycle_event(snapshot)["embeds"][0]["description"]
     assert "Event time: unavailable" in description
@@ -97,14 +99,30 @@ def test_missing_event_timestamp_is_unavailable_and_closed_failure_stays_closed(
 
 
 @pytest.mark.asyncio
-async def test_initial_enrolled_signal_keeps_bracket_and_adds_card_a_protection():
+@pytest.mark.parametrize("signal_timezone", [None, timezone(timedelta(hours=5, minutes=30)), timezone.utc])
+async def test_initial_enrolled_signal_keeps_bracket_and_adds_card_a_protection(signal_timezone):
     from alerts import send_discord
+    from fetchers.price_fetcher import PriceFetcher
     from types import SimpleNamespace
     from models import AresSignal, Direction, SetupType
+    ist = timezone(timedelta(hours=5, minutes=30))
+    with patch("fetchers.price_fetcher.dhanhq"):
+        fetcher = PriceFetcher()
+    fetcher.dhan.intraday_minute_data.return_value = {"status": "success", "data": {
+        "timestamp": ["2026-10-23T04:38:00+00:00"],
+        "open": [24000.], "high": [24000.], "low": [24000.], "close": [24000.], "volume": [100],
+    }}
+    with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
+        clock.now.return_value = datetime(2026, 10, 23, 10, 9, tzinfo=ist)
+        candle = await fetcher.fetch_latest_candle()
+    assert candle.timestamp == datetime(2026, 10, 23, 10, 8)
+    signal_timestamp = candle.timestamp
+    if signal_timezone is not None:
+        signal_timestamp = signal_timestamp.replace(tzinfo=ist).astimezone(signal_timezone)
     signal = AresSignal(setup_type=SetupType.FAILED_BREAKOUT, direction=Direction.BULLISH,
                         trigger_price=24000, entry_zone=(23999, 24001), stop_loss=23990,
                         target_1=24018, target_2=24040, confidence="HIGH", reasons=["Confirmed"],
-                        timestamp=__import__('datetime').datetime.now(), strike_to_trade=24000, option_type="CE")
+                        timestamp=signal_timestamp, strike_to_trade=24000, option_type="CE")
     signal.bracket = SimpleNamespace(security_id="51333", expiry_date="2026-10-27", entry_limit=100.5,
         target_1=110., target_2=122., catastrophic_opt_sl=95.5, synthetic_spot_sl=23990,
         lots=2, greeks=SimpleNamespace(delta=.5, gamma=.002, theta=-15., vega=12., iv=12.5))
@@ -112,7 +130,6 @@ async def test_initial_enrolled_signal_keeps_bracket_and_adds_card_a_protection(
     signal.capital = 50000
     signal.risk_pct = 1
     signal.option_premium = 100.
-    signal.timestamp = __import__('datetime').datetime.fromisoformat('2026-10-23T10:08:00+05:30')
     signal.market_context['option_trailing'] = event('NEW_SIGNAL', 0)['option_trailing']
     client = AsyncMock()
     client.post.return_value = MagicMock()
@@ -122,6 +139,7 @@ async def test_initial_enrolled_signal_keeps_bracket_and_adds_card_a_protection(
     fields = client.post.call_args.kwargs['json']['embeds'][0]['fields']
     values = {field['name']: field['value'] for field in fields}
     assert values['🕒 Time'] == '23-Oct-2026 10:08:00 IST'
+    assert signal.timestamp == signal_timestamp
     assert 'Card A' in str(fields)
     for text in ('2026-10-27', '51333', 'index points', 'after index T1', 'Reference/model', '100.50', '110.00'):
         assert text in str(fields)

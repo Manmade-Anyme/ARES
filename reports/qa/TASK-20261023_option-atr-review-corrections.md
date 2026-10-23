@@ -60,3 +60,8 @@ CI installs the already used pinned PGlite dependency and executes this script a
 - Durable `SENDING`/`AMBIGUOUS` deliveries require reconciliation rather than a blind retry. Webhook delivery cannot honestly promise end-to-end exactly once.
 - Source-resolution replay ends at the committed fixture cutoff and does not prove live fills, chart parity, native PostgreSQL multi-process performance or production behavior.
 - PR CI runs against the pushed correction commit; see the PR checks for current status. No deployment claim follows from local tests or PR CI.
+
+
+## Subsequent PR comment follow-up
+
+The later timestamp/outbox fixes and the owner's explicit expiry-scope decision are verified in [the comment disposition report](TASK-20261023_pr147-comment-disposition.md). Its 1,880-test / 60-SQL-check results supersede the earlier test counts above for the follow-up commit; exact head and CI status remain in PR metadata.
