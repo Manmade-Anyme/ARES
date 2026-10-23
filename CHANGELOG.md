@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-20261023 T2 milestone alerts:** Report the first observed spot T2 touch through the existing trade-update card while the post-T1 ATR runner remains active. Persist the milestone in Supabase trade context for restart deduplication, handle inclusive tick/candle touches and same-observation T1 then T2, and label option targets as references. Preserve ATR math, stop/exit policy, execution quantities, outcome accounting, and legacy terminal `T2_HIT` records. No schema migration, historical backfill, or production deployment is included.
+
 - **TASK-20261022 README presentation:** Add a centered masthead, section icons, GitHub callouts, collapsible release/file-tree details and diagram colors while preserving the existing technical prose, code examples and navigation anchors. Presentation only; direct-to-main publication explicitly requested by the user.
 
 - **TASK-20261022 README refresh:** Reconcile the root README with recent changelog entries, the current source and dated Ares vault follow-ups. Document completed-candle/VWAP inputs, string-ID WebSocket ticks, capital-independent Delta/Gamma option references, manual signal registration, post-T1 five-minute ATR trailing, Jev watch supervision, ML calibration and canonical identity. Correct detector priority to place continuation before exhaustion and distinguish buffer capacity from detector readiness. Refresh configuration, setup, schema links and CI/deployment guidance; remove the stale test count and duplicated bootstrap SQL. Documentation only; no runtime or deployment change.

@@ -173,6 +173,7 @@ See [MANM-176 implementation and execution boundaries](docs/MANM-176-options-ent
 | Registration | Persisted market-session signals register as manual `SIGNAL_REFERENCE` trades independently of capital/lots. Distinct nearby signals remain distinct; retries use a stable identity per canonical signal. |
 | Before T1 | Monitor the initial per-setup spot SL and T1 using spot ticks and completed-candle high/low where applicable. |
 | T1 | Mark `T1_HIT` and move the spot stop to entry. Spot analytics model a 50% T1 allocation; manual tracking makes no execution claim. |
+| T2 touch | Send a `T2_TOUCHED` milestone update when spot first touches T2, including a tick or eligible completed-candle wick. The runner remains `T1_HIT` under ATR; the milestone does not book quantity or change its stop or outcome. If one observation reaches both targets, report T1 before T2. |
 | ATR warmup | Keep entry/the locked stop while valid completed five-minute inputs accumulate. Use Wilder ATR(5), HHV/LLV(10) and multiplier 2.5. Missing bars and session changes reset calculation windows. |
 | Runner | Check each completed five-minute close against the **previously active stop before ratcheting**. Exit bullish/CE strictly below, bearish/PE strictly above. Equality and wicks do not exit a runner. Fixed T2 does not close it. |
 | Persistence | Store state, stop, previous stop, ATR and processed-bar watermark. Restore persisted option/execution/ATR context on startup; legacy T1 trades without a watermark resume prospectively. |
@@ -180,6 +181,8 @@ See [MANM-176 implementation and execution boundaries](docs/MANM-176-options-ent
 The bullish candidate is `HHV(10) − 2.5 × ATR(5)`; the bearish candidate is `LLV(10) + 2.5 × ATR(5)`. Stops only tighten and retain the entry bound. A close-through exit uses the completed close, which can cross beyond the stop; the ratchet does not guarantee a fill at entry or at the stop.
 
 `ATR_SL_UPDATED` alerts report a tightened stop. `ATR_SL_HIT` reports the runner's completed-close exit. Spot P&L for that exit is the mean of the signed entry-to-T1 and entry-to-close movements. Scores remain `SL_HIT=0`, `T1_HIT`/`ATR_SL_HIT=1`, with legacy `STOPPED_OUT_AT_BE=1` and `T2_HIT=2` retained for historical records.
+
+`T2_TOUCHED` is a notification milestone, separate from historical terminal `T2_HIT` outcomes. Its observed touch time and target spot level persist in `trade_analytics.market_context.target_milestones.t2` and restore with trade context after restart, suppressing repeated notifications from ticks or candle polling. The update identifies the active ATR runner and current stop. Any option T2 value is a reference, not evidence of a premium touch or a fill. Existing runners record the first eligible touch observed by the updated monitor; this change does not backfill earlier touches or send historical alerts. Discord delivery retains the existing best-effort trade-update semantics.
 
 Failed manual registrations retry on later market polls from a frozen original payload, followed by canonical ML linkage retries. This queue is process-local: it does not survive restart or reconstruct moves missed during an outage. Four-digit codes are for presentation; canonical signal/trade UUIDs provide durable linkage.
 

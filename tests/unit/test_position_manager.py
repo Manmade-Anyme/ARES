@@ -386,7 +386,8 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
         mock_send_trade_update.reset_mock()
         await pm.update_trades(23890.0)
         self.assertEqual(trade_t2["state"], "T1_HIT")
-        mock_send_trade_update.assert_called_with(trade_t2, 23950.0, "T1_HIT")
+        self.assertEqual([call.args[2] for call in mock_send_trade_update.call_args_list], ["T1_HIT", "T2_TOUCHED"])
+        mock_send_trade_update.assert_called_with(trade_t2, 23900.0, "T2_TOUCHED")
 
     @patch('position_manager.send_trade_update')
     @patch('position_manager.settings')
@@ -646,7 +647,9 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(trade["state"], "T1_HIT")
         self.assertIn(("trade-intrabar", "T1_HIT"), events)
-        mock_alert.assert_called_with(trade, 24050.0, "T1_HIT")
+        self.assertIn(("trade-intrabar", "T2_TOUCHED"), events)
+        mock_alert.assert_any_call(trade, 24050.0, "T1_HIT")
+        mock_alert.assert_called_with(trade, 24100.0, "T2_TOUCHED")
         mock_log_exit.assert_not_called()
 
     @patch('position_manager.send_trade_update')
@@ -669,7 +672,9 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(trade["state"], "T1_HIT")
         self.assertIn(("trade-intrabar", "T1_HIT"), events)
-        mock_alert.assert_called_with(trade, 24180.0, "T1_HIT")
+        self.assertIn(("trade-intrabar", "T2_TOUCHED"), events)
+        mock_alert.assert_any_call(trade, 24180.0, "T1_HIT")
+        mock_alert.assert_called_with(trade, 24130.0, "T2_TOUCHED")
         mock_log_exit.assert_not_called()
 
     @patch('position_manager.send_trade_update')
@@ -684,7 +689,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
             await _flush_trade_writes(pm)
 
         self.assertEqual(trade["state"], "T1_HIT")
-        mock_alert.assert_not_called()
+        mock_alert.assert_called_once_with(trade, 24100.0, "T2_TOUCHED")
         mock_log_exit.assert_not_called()
 
     @patch('position_manager.send_trade_update')
@@ -860,6 +865,284 @@ def _atr_minutes(start_minute, count, sign=1, close=35, low=30, high=40):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sign", [1, -1])
+@pytest.mark.parametrize("wick", [False, True])
+async def test_t2_touch_is_inclusive_persisted_once_and_leaves_runner_active(atr_position_manager, sign, wick):
+    pm, client, alert = atr_position_manager
+    atr = {"last_bar": "2099-01-01T09:15:00+05:30", "atr": 10}
+    trade = _atr_trade(sign, state="T1_HIT", stop_loss=24000,
+                       market_context={"atr_trailing": atr.copy()})
+    pm.active_trades = [trade]
+    touched = datetime(2099, 1, 1, 9, 20, tzinfo=timezone.utc)
+    spot = 24000 + sign * (70 if wick else 100)
+    kwargs = {"candle_timestamp": touched}
+    if wick:
+        kwargs.update(candle_high=max(spot, trade["target_2"]), candle_low=min(spot, trade["target_2"]))
+    assert await pm.update_trades(spot, **kwargs) == [(trade["id"], "T2_TOUCHED")]
+    await _flush_trade_writes(pm)
+    marker = {"touched_at": touched.isoformat(), "target_spot": trade["target_2"]}
+    assert trade["market_context"]["target_milestones"]["t2"] == marker
+    assert trade["state"] == "T1_HIT" and trade["stop_loss"] == 24000
+    assert trade["market_context"]["atr_trailing"] == atr
+    persisted = [call.args[0]["market_context"] for call in client.update_mock.call_args_list
+                 if "market_context" in call.args[0]]
+    assert persisted[-1]["target_milestones"]["t2"] == marker
+    assert await pm.update_trades(spot, **kwargs) == []
+    await _flush_trade_writes(pm)
+    alert.assert_called_once_with(trade, trade["target_2"], "T2_TOUCHED")
+    pm.analytics.log_exit.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sign", [1, -1])
+async def test_same_sample_t1_then_t2_preserves_active_accounting(atr_position_manager, sign):
+    pm, _, alert = atr_position_manager
+    trade = _atr_trade(sign)
+    pm.active_trades = [trade]
+    events = await pm.update_trades(trade["target_2"])
+    await _flush_trade_writes(pm)
+    assert events == [(trade["id"], "T1_HIT"), (trade["id"], "T2_TOUCHED")]
+    assert [call.args[2] for call in alert.call_args_list] == ["T1_HIT", "T2_TOUCHED"]
+    assert trade["state"] == "T1_HIT" and trade["stop_loss"] == trade["entry_price"]
+    assert "exit_price" not in trade and "pnl_points" not in trade
+    pm.analytics.log_exit.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sign", [1, -1])
+async def test_t2_rejects_pre_entry_wicks_and_closed_trades(atr_position_manager, sign):
+    pm, _, alert = atr_position_manager
+    entry = datetime(2099, 1, 1, 9, 20, 30, tzinfo=timezone.utc)
+    trade = _atr_trade(sign, state="T1_HIT", stop_loss=24000, entry_timestamp=entry.isoformat(),
+                       market_context={"tracking_mode": "SIGNAL_REFERENCE"})
+    closed = _atr_trade(sign, id="closed", state="CLOSED")
+    pm.active_trades = [trade, closed]
+    # Fully pre-entry candle cannot produce a touch, even its close.
+    assert await pm.update_trades(trade["target_2"], candle_timestamp=entry - timedelta(minutes=2)) == []
+    # Entry-minute wicks cannot produce a retroactive touch.
+    assert await pm.update_trades(24000, candle_high=24100, candle_low=23900,
+                                  candle_timestamp=entry.replace(second=0)) == []
+    alert.assert_not_called()
+    assert "target_milestones" not in trade["market_context"]
+    assert await pm.update_trades(trade["target_2"], candle_timestamp=entry + timedelta(minutes=1)) == [
+        (trade["id"], "T2_TOUCHED")]
+    await _flush_trade_writes(pm)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing_row", "empty_update", "exception"])
+async def test_t2_persistence_failure_recovers_without_repeated_alert_after_close(atr_position_manager, failure):
+    pm, client, alert = atr_position_manager
+    trade = _atr_trade(state="T1_HIT", stop_loss=24000)
+    pm.active_trades = [trade]
+    selected = client.select_mock.return_value.eq.return_value.execute.return_value
+    updated = client.update_mock.return_value.eq.return_value.execute
+    existing = {"source": "kept", "execution": {"mode": "PAPER"},
+                "atr_trailing": {"last_bar": "2099-01-01T09:15:00+05:30"},
+                "target_milestones": {"other": {"kept": True}}}
+    selected.data = [] if failure == "missing_row" else [{"market_context": existing}]
+    updated.return_value.data = [] if failure == "empty_update" else [{"id": trade["id"]}]
+    if failure == "exception":
+        updated.side_effect = RuntimeError("temporary persistence outage")
+    await pm.update_trades(trade["target_2"])
+    await _flush_trade_writes(pm)
+    original_marker = trade["market_context"]["target_milestones"]["t2"].copy()
+    # Monitoring retries a failed milestone even if runner has closed meanwhile.
+    trade["state"] = "CLOSED"
+    selected.data = [{"market_context": existing}]
+    updated.return_value.data = [{"id": trade["id"]}]
+    updated.side_effect = None
+    assert await pm.update_trades(24000) == []
+    await _flush_trade_writes(pm)
+    context = client.update_mock.call_args.args[0]["market_context"]
+    assert context == {**existing, "target_milestones": {"other": {"kept": True}, "t2": original_marker}}
+    writes = client.update_mock.call_count
+    await pm.update_trades(24110)
+    await _flush_trade_writes(pm)
+    assert client.update_mock.call_count == writes
+    alert.assert_called_once_with(trade, trade["target_2"], "T2_TOUCHED")
+    pm.analytics.log_exit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_t2_marker_restored_from_analytics_deduplicates_restart(atr_position_manager):
+    pm, client, alert = atr_position_manager
+    trade = _atr_trade(state="T1_HIT", stop_loss=24000)
+    marker = {"touched_at": "2099-01-01T09:20:00+00:00", "target_spot": 24100}
+    client.execute_mock.return_value.data = [trade]
+    client.select_mock.return_value.in_.return_value.execute.return_value.data = [{
+        "id": trade["id"], "result_state": "OPEN",
+        "market_context": {"target_milestones": {"t2": marker}},
+    }]
+    pm._initialize_db()
+    assert pm.active_trades[0]["market_context"]["target_milestones"]["t2"] == marker
+    assert await pm.update_trades(24110) == []
+    alert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_t2_queued_write_uses_deep_snapshot_and_deduplicates_pending_observations(atr_position_manager):
+    pm, client, alert = atr_position_manager
+    trade = _atr_trade(state="T1_HIT", stop_loss=24000)
+    pm.active_trades = [trade]
+    writes = []
+    pm._queue_trade_write = lambda trade_id, write: writes.append(write)
+    await pm.update_trades(24100)
+    original = trade["market_context"]["target_milestones"]["t2"].copy()
+    assert await pm.update_trades(24110) == []
+    trade["market_context"]["target_milestones"]["t2"]["target_spot"] = 99999
+    writes[0]()
+    context = client.update_mock.call_args.args[0]["market_context"]
+    assert context["target_milestones"]["t2"] == original
+    assert context["target_milestones"]["t2"] is not trade["market_context"]["target_milestones"]["t2"]
+    alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_terminal_atr_writer_recovers_failed_t2_marker_without_extra_exit_accounting(atr_position_manager):
+    pm, client, alert = atr_position_manager
+    trade = _atr_trade(state="T1_HIT", stop_loss=24000, market_context={
+        "atr_trailing": {"last_bar": "2099-01-01T09:15:00+05:30"},
+    })
+    pm.active_trades = [trade]
+    selected = client.select_mock.return_value.eq.return_value.execute.return_value
+    selected.data = []
+    await pm.update_trades(24100)
+    await _flush_trade_writes(pm)
+    marker = trade["market_context"]["target_milestones"]["t2"].copy()
+    selected.data = [{"market_context": {"source": "retained"}}]
+    assert await pm.update_atr_trailing(_atr_minutes(0, 5, close=-1, low=-5, high=5)) == [(trade["id"], "ATR_SL_HIT")]
+    await _flush_trade_writes(pm)
+    contexts = [call.args[0]["market_context"] for call in client.update_mock.call_args_list
+                if "market_context" in call.args[0]]
+    assert contexts[-1]["target_milestones"]["t2"] == marker
+    assert contexts[-1]["atr_trailing"]["state"] == "CLOSED"
+    assert contexts[-1]["source"] == "retained"
+    assert not pm._pending_target_milestones
+    pm.analytics.log_exit.assert_called_once()
+    assert [call.args[2] for call in alert.call_args_list] == ["T2_TOUCHED", "ATR_SL_HIT"]
+
+
+@pytest.mark.asyncio
+async def test_t2_alert_exception_keeps_persisted_milestone_and_runner(atr_position_manager):
+    pm, _, alert = atr_position_manager
+    trade = _atr_trade(state="T1_HIT", stop_loss=24000)
+    pm.active_trades = [trade]
+    alert.side_effect = RuntimeError("Discord unavailable")
+    assert await pm.update_trades(24100) == [(trade["id"], "T2_TOUCHED")]
+    await _flush_trade_writes(pm)
+    assert await pm.update_trades(24110) == []
+    assert trade["state"] == "T1_HIT"
+    assert not pm._pending_target_milestones
+    alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_pending_t2_write_in_flight_does_not_enqueue_again(atr_position_manager):
+    pm, _, alert = atr_position_manager
+    trade = _atr_trade(state="T1_HIT", stop_loss=24000)
+    pm.active_trades = [trade]
+    gate = asyncio.Event()
+    pm._trade_writes[trade["id"]] = asyncio.create_task(gate.wait())
+    await pm.update_trades(24100)
+    pending = pm._trade_writes[trade["id"]]
+    assert await pm.update_trades(24110) == []
+    assert pm._trade_writes[trade["id"]] is pending
+    gate.set()
+    await _flush_trade_writes(pm)
+    alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sign", [1, -1])
+async def test_completed_atr_before_latest_candle_reports_t2_then_exit(atr_position_manager, sign):
+    pm, client, alert = atr_position_manager
+    trade = _atr_trade(sign, state="T1_HIT", stop_loss=24000, market_context={
+        "atr_trailing": {"last_bar": "2099-01-01T09:15:00+05:30"},
+    })
+    pm.active_trades = [trade]
+    candles = _atr_minutes(0, 5, sign, close=-1, low=-5, high=5)
+    candles[2]["high" if sign == 1 else "low"] = trade["target_2"]
+    # main processes ATR history before its regular latest-minute update.
+    assert await pm.update_atr_trailing([None, {"timestamp": "bad"}, *candles]) == [
+        (trade["id"], "T2_TOUCHED"), (trade["id"], "ATR_SL_HIT"),
+    ]
+    assert await pm.update_trades(candles[-1]["close"], candle_high=candles[-1]["high"],
+                                  candle_low=candles[-1]["low"], candle_timestamp=candles[-1]["timestamp"]) == []
+    await _flush_trade_writes(pm)
+    assert [call.args[2] for call in alert.call_args_list] == ["T2_TOUCHED", "ATR_SL_HIT"]
+    marker = trade["market_context"]["target_milestones"]["t2"]
+    assert marker["touched_at"] == "2099-01-01T03:47:00+00:00"
+    assert trade["state"] == "CLOSED" and trade["stop_loss"] == 24000
+    pm.analytics.log_exit.assert_called_once_with(
+        trade["id"], 24000 - sign, "ATR_SL_HIT", exit_timestamp="2099-01-01T03:50:00+00:00",
+        pnl_points_override=24.5,
+    )
+    contexts = [call.args[0]["market_context"] for call in client.update_mock.call_args_list
+                if "market_context" in call.args[0]]
+    assert contexts[-1]["target_milestones"]["t2"] == marker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sign", [1, -1])
+async def test_atr_history_before_activation_and_replayed_bars_cannot_create_t2(atr_position_manager, sign):
+    pm, _, alert = atr_position_manager
+    candles = _atr_minutes(0, 10, sign, close=35, low=30, high=40)
+    candles[2]["high" if sign == 1 else "low"] = 24000 + sign * 100
+    trade = _atr_trade(sign, state="T1_HIT", stop_loss=24000, market_context={
+        "atr_trailing": {"last_bar": "2099-01-01T09:20:00+05:30"},
+    })
+    pm.active_trades = [trade]
+    assert await pm.update_atr_trailing(candles) == []
+    assert await pm.update_atr_trailing(candles) == []
+    await _flush_trade_writes(pm)
+    assert "target_milestones" not in trade["market_context"]
+    alert.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sign", [1, -1])
+async def test_tick_t1_activation_within_exit_minute_keeps_t2_touch(atr_position_manager, sign):
+    pm, _, alert = atr_position_manager
+    trade = _atr_trade(sign, state="T1_HIT", stop_loss=24000,
+                       entry_timestamp="2099-01-01T09:10:00+05:30",
+                       market_context={"tracking_mode": "SIGNAL_REFERENCE",
+                                       "atr_trailing": {"last_bar": "2099-01-01T09:19:05+05:30"}})
+    pm.active_trades = [trade]
+    candles = _atr_minutes(0, 5, sign, close=-1, low=-5, high=5)
+    candles[-1]["high" if sign == 1 else "low"] = trade["target_2"]
+    assert await pm.update_atr_trailing(candles) == [
+        (trade["id"], "T2_TOUCHED"), (trade["id"], "ATR_SL_HIT"),
+    ]
+    await _flush_trade_writes(pm)
+    assert [call.args[2] for call in alert.call_args_list] == ["T2_TOUCHED", "ATR_SL_HIT"]
+    pm.analytics.log_exit.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sign", [1, -1])
+async def test_atr_source_entry_minute_wick_and_invalid_revision_cannot_create_t2(atr_position_manager, sign):
+    pm, _, alert = atr_position_manager
+    trade = _atr_trade(sign, state="T1_HIT", stop_loss=24000,
+                       entry_timestamp="2099-01-01T09:19:05+05:30", market_context={
+                           "tracking_mode": "SIGNAL_REFERENCE",
+                           "atr_trailing": {"last_bar": "2099-01-01T09:19:05+05:30"},
+                       })
+    pm.active_trades = [trade]
+    candles = _atr_minutes(0, 5, sign, close=35, low=30, high=40)
+    candles[-1]["high" if sign == 1 else "low"] = trade["target_2"]
+    # Its wick may predate entry; its close is below T2.
+    assert await pm.update_atr_trailing(candles) == []
+    await _flush_trade_writes(pm)
+    assert "target_milestones" not in trade["market_context"]
+    # A malformed final revision invalidates the whole ATR bar and its touch.
+    trade["market_context"]["atr_trailing"]["last_bar"] = "2099-01-01T09:15:00+05:30"
+    candles += [None, {"timestamp": "bad"}, {**candles[-1], "complete": False}]
+    assert await pm.update_atr_trailing(candles) == []
+    alert.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sign", [1, -1])
 async def test_atr_real_candles_ratchet_ignore_wicks_and_exit_completed_close(atr_position_manager, sign):
     pm, client, alert = atr_position_manager
     trade = _atr_trade(sign)
@@ -889,6 +1172,8 @@ async def test_atr_real_candles_ratchet_ignore_wicks_and_exit_completed_close(at
     # A tick through the active stop and a high/low wick through it cannot exit.
     await pm.update_trades(24000 - sign * 20, candle_high=24150, candle_low=23850)
     assert trade["state"] == "T1_HIT"
+    alert.assert_called_once_with(trade, trade["target_2"], "T2_TOUCHED")
+    alert.reset_mock()
     candles += _atr_minutes(50, 5, sign, close=25, low=-10, high=40)
     assert await pm.update_atr_trailing(candles) == []
     assert trade["stop_loss"] == 24000 + sign * 15  # Wider ATR never loosens the stop.
@@ -985,7 +1270,9 @@ async def test_atr_uses_previous_stop_then_ratchets_for_next_close(atr_position_
     # The large wick lifts the candidate beyond this close. It becomes the
     # active stop for the next bar; it cannot retroactively close this bar.
     candles += _atr_minutes(50, 5, sign, close=35, low=30, high=120)
-    assert await pm.update_atr_trailing(candles) == [(trade["id"], "ATR_SL_UPDATED")]
+    assert await pm.update_atr_trailing(candles) == [
+        (trade["id"], "T2_TOUCHED"), (trade["id"], "ATR_SL_UPDATED"),
+    ]
     assert trade["state"] == "T1_HIT"
     assert sign * (trade["stop_loss"] - (24000 + sign * 35)) > 0
     candles += _atr_minutes(55, 5, sign, close=35, low=30, high=40)

@@ -476,6 +476,8 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
         return "5-minute close crossed ATR Stop Loss. Runner exit triggered."
     if update_type == "T2_HIT":
         return "Target 2 Reached! Trade Closed with Full Profit."
+    if update_type == "T2_TOUCHED":
+        return "Target 2 touched! ATR runner remains active."
     if update_type == "STOPPED_OUT_AT_BE":
         return "Trailing Stop Loss Hit at Entry. T1 Profit Locked; Trade Closed."
     if update_type == "SL_HIT":
@@ -492,6 +494,9 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
     if not sizing:
         return ""
+    if update_type == "T2_TOUCHED":
+        return (f"\n🎯 **Option T2 reference**: ₹ {_number(sizing.get('target_2'))}. "
+                "Reference only; not an observed premium touch or executed exit.")
     entry = sizing.get("entry_limit") or sizing.get("premium") or None
     lot_size = sizing.get("lot_size", settings.nifty_lot_size)
     t1 = sizing.get("target_1") or sizing.get("option_target") or None
@@ -566,6 +571,16 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     if update_type in {"ATR_SL_UPDATED", "ATR_SL_HIT"}:
         atr = (trade.get("market_context") or {}).get("atr_trailing") or {}
         description += f"\n🛑 **Previous SL**: {_number(atr.get('previous_sl', trade['stop_loss']))}\n📐 **Method**: 5-minute ATR trailing"
+    if update_type == "T2_TOUCHED":
+        marker = ((trade.get("market_context") or {}).get("target_milestones") or {}).get("t2") or {}
+        touched_at = marker.get("touched_at")
+        try:
+            touch_time = datetime.fromisoformat(touched_at.replace("Z", "+00:00")).astimezone(ist).strftime("%d-%b-%Y %H:%M:%S IST")
+        except (AttributeError, TypeError, ValueError):
+            touch_time = "unavailable"
+        description += (f"\n🎯 **Spot T2**: {_number(marker.get('target_spot', trade.get('target_2')))}"
+                        f"\n🕒 **Touch Time**: {touch_time}"
+                        "\n🏃 **Runner**: Active under ATR; no exit or additional booking.")
     description += _option_lifecycle_estimate(trade, spot, update_type)
 
     payload = {

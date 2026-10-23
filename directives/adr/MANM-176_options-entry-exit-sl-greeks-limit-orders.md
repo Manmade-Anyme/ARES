@@ -205,6 +205,7 @@ PR #143 implements the previously deferred roadmap. This documents branch behavi
   $$\mathrm{PEStop}_t=\min(\mathrm{Entry},\mathrm{PreviousStop},\mathrm{PECandidate}_t)$$
   Stops are reported at two-decimal spot precision. During warmup or after a data gap, retain entry/the already locked stop until a channel candidate is available. Stops never loosen. A newly tightened stop cannot retrospectively exit the same candle.
 - **Runner policy**: Fixed T2 remains a displayed reference; it no longer automatically exits post-T1 runners. Multi-session carry remains permitted. A new session resets ATR inputs while the previously locked trade stop remains active.
+- **T2 milestone (TASK-20261023)**: The first eligible tick or completed-candle wick touching spot T2 emits `T2_TOUCHED` while the trade remains an active `T1_HIT` runner. The touch is inclusive in either direction. A sample reaching both targets emits T1 before T2. The milestone's observed touch timestamp and target spot price persist under `trade_analytics.market_context.target_milestones.t2`, restore on restart, and suppress repeated monitoring alerts. It does not close the trade, move its stop, book quantity, or change analytics outcomes. Existing runners are monitored prospectively; no historical touch is backfilled by deployment.
 - **Persistence**: `market_context.atr_trailing` stores the processed-bar watermark, previous stop and ATR in `trade_analytics`, alongside the active state/stop. Startup restores the saved stop and watermark. Legacy T1 trades without a watermark anchor to the latest completed bar and resume prospectively, avoiding historical replay exits. ATR metadata and paper telemetry share the per-trade context lock to preserve each other's JSON keys.
 - **Manual/reference signals**: Main tracks every emitted, persisted signal as `SIGNAL_REFERENCE`, independently of capital, suggested lots or bracket execution validity. It does not dispatch new paper or broker orders at signal entry. Spot T1/ATR updates therefore remain available at zero capital or with a rejected execution plan; tracking makes no fill assertion.
 - **Paper execution**: An ATR close-through creates an exit intent for remaining quantity. The actual paper exit still requires a subsequently observed executable option bid. The initial emergency premium stop remains active; it is not replaced with a fabricated or dynamically projected premium stop. New live orders remain blocked.
@@ -325,6 +326,10 @@ Enrich spot lifecycle alerts with explicitly labelled option premium estimates. 
   - `⚡ Action`: `Target 1 Hit (spot); partial-booking estimate`
   - `💰 Estimated Option Exit`: `₹ {t1_option_price:.2f} (+₹ {pnl_per_lot:.2f} / lot)`
   - `🛡️ SL Status`: `Trailed to Break-Even (Spot {entry_price:.2f} / Option ₹{entry_premium:.2f})`
+- **`T2_TOUCHED` Update**:
+  - Report spot T2 reached, observed touch time, entry, current stop, and the runner's active ATR status in the existing trade-update card.
+  - Option T2 remains a reference. Do not label this event as a trade closure, option exit, observed premium touch, or realized P&L.
+  - Persist milestone metadata using the ordered per-trade writer and context lock, preserving ATR/execution keys. Discord delivery remains best-effort; exactly-once webhook delivery is not claimed.
 - **`ATR_SL_UPDATED` Update**:
   - `⚡ Action`: `ATR trailing stop tightened.`
   - Show current and previous spot SL, the 5-minute ATR method and an estimated option SL when stored pricing data supports it. No update is sent when the stop does not tighten.
