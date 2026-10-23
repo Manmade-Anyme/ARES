@@ -18,6 +18,10 @@ class Secrets(BaseSettings):
     supabase_service_role_key: str = ""
     signal_schema_mode: str = "bridge"
 
+    # Candidate policy stays inactive until chart parity and schema sign-off.
+    option_atr_enabled: bool = False
+    option_atr_parity_version: str = ""
+
     model_config = SettingsConfigDict(
         env_file='.env', env_file_encoding='utf-8', extra='ignore'
     )

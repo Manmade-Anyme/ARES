@@ -67,7 +67,7 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 
 
 def parse_option_candle(
-    raw: Dict[str, Any],
+    raw: Union[Dict[str, Any], OptionCandle],
     *,
     observed_at: Optional[datetime] = None,
     expected_security_id: Optional[str] = None,
@@ -77,6 +77,11 @@ def parse_option_candle(
 
     Rejects malformed OHLC, forming/uncompleted candles, and mismatched contracts.
     """
+    if isinstance(raw, OptionCandle):
+        raw = {"start_time": raw.start_time, "end_time": raw.end_time,
+               "open": raw.open, "high": raw.high, "low": raw.low,
+               "close": raw.close, "volume": raw.volume,
+               "security_id": raw.security_id, "complete": raw.complete}
     if not isinstance(raw, dict):
         return None
 
@@ -87,7 +92,7 @@ def parse_option_candle(
             return None
 
     # Timestamp extraction and normalization
-    raw_ts = raw.get("timestamp") or raw.get("start_Time") or raw.get("start_time")
+    raw_ts = raw.get("timestamp") or raw.get("start_Time") or raw.get("start_time") or raw.get("start")
     if raw_ts is None:
         return None
     try:
@@ -102,6 +107,23 @@ def parse_option_candle(
 
     # Derive explicit candle end
     end_dt = start_dt + timedelta(minutes=timeframe_minutes)
+
+    if timeframe_minutes not in (1, 5):
+        return None
+    if (start_dt.second or start_dt.microsecond
+            or start_dt.minute % timeframe_minutes
+            or not time(9, 15) <= start_dt.time() < time(15, 30)
+            or end_dt.time() > time(15, 30)):
+        return None
+    explicit_end = raw.get("end_time") or raw.get("end")
+    if explicit_end is not None:
+        try:
+            supplied_end = parse_candle_timestamp(explicit_end)
+            supplied_end = supplied_end.replace(tzinfo=IST) if supplied_end.tzinfo is None else supplied_end.astimezone(IST)
+            if supplied_end != end_dt:
+                return None
+        except (ValueError, TypeError, OverflowError, OSError):
+            return None
 
     # Completion validation against observation time
     if observed_at is not None:
@@ -144,7 +166,7 @@ def parse_option_candle(
 
 
 def load_option_candles(
-    candles: Sequence[Dict[str, Any]],
+    candles: Sequence[Union[Dict[str, Any], OptionCandle]],
     *,
     observed_at: Optional[datetime] = None,
     expected_security_id: Optional[str] = None,
@@ -192,33 +214,14 @@ def aggregate_minute_candles_to_5m(
 
     valid_minutes: Dict[datetime, Dict[str, float]] = {}
     for row in minute_candles:
-        if not isinstance(row, dict):
-            continue
-        if row.get("complete") is False:
-            continue
-        cand_sec_id = row.get("security_id")
-        if cand_sec_id is not None and expected_security_id is not None:
-            if str(cand_sec_id).strip() != str(expected_security_id).strip():
-                continue
-        raw_ts = row.get("timestamp") or row.get("start_Time") or row.get("start_time")
-        if raw_ts is None:
-            continue
-        try:
-            dt = parse_candle_timestamp(raw_ts)
-        except (ValueError, TypeError, OverflowError, OSError):
-            continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=IST)
-        else:
-            dt = dt.astimezone(IST)
-
-        if not all(_is_valid_price(row.get(k)) for k in ("open", "high", "low", "close")):
-            continue
-        o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
-        if h < max(o, l, c) or l > min(o, c):
-            continue
-        vol = max(0.0, _to_float(row.get("volume", 0.0)))
-        valid_minutes[dt] = {"open": o, "high": h, "low": l, "close": c, "volume": vol}
+        parsed = parse_option_candle(row, observed_at=observed_at,
+                                     expected_security_id=expected_security_id,
+                                     timeframe_minutes=1)
+        if parsed is not None:
+            valid_minutes[parsed.start_time] = {
+                "open": parsed.open, "high": parsed.high, "low": parsed.low,
+                "close": parsed.close, "volume": parsed.volume,
+            }
 
     # Group into 5-minute buckets
     buckets: Dict[datetime, List[Dict[str, float]]] = {}
@@ -264,3 +267,31 @@ def aggregate_minute_candles_to_5m(
 
 
 aggregate_to_5min = aggregate_minute_candles_to_5m
+
+
+def contiguous_option_candles(candles: Sequence[OptionCandle]) -> List[OptionCandle]:
+    """Return the continuous prefix; a missing in-session bar blocks advancement.
+
+    A full exchange close to next observed session open carries indicator state.
+    Missing tail/head bars across sessions also require backfill. Holiday dates do
+    not reset the indicator or require synthetic zero-volume candles.
+    """
+    contiguous: List[OptionCandle] = []
+    for bar in sorted(candles, key=lambda value: value.start_time):
+        if contiguous:
+            previous = contiguous[-1]
+            overnight = (bar.start_time.date() > previous.start_time.date()
+                         and previous.end_time.time() == time(15, 30)
+                         and bar.start_time.time() == time(9, 15))
+            if bar.start_time != previous.end_time and not overnight:
+                break
+        contiguous.append(bar)
+    return contiguous
+
+
+def expected_completed_option_bar_end(observed_at: datetime) -> Optional[datetime]:
+    """Latest expected session bar close; outside session there is no outage clock."""
+    now = observed_at.replace(tzinfo=IST) if observed_at.tzinfo is None else observed_at.astimezone(IST)
+    if now.weekday() >= 5 or not time(9, 20) <= now.time() <= time(15, 30, 59):
+        return None
+    return now.replace(minute=now.minute // 5 * 5, second=0, microsecond=0)

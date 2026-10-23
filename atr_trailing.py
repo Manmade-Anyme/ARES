@@ -13,7 +13,7 @@ from math import isfinite
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from oi_watch_context import parse_candle_timestamp
-from options_candles import OptionCandle, load_option_candles
+from options_candles import OptionCandle, contiguous_option_candles, load_option_candles
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -57,11 +57,8 @@ def calculate_option_atr_bars(
     if not candles:
         return []
 
-    # Ensure candles are OptionCandle objects
-    if isinstance(candles[0], OptionCandle):
-        sorted_bars: List[OptionCandle] = sorted(candles, key=lambda b: b.start_time)
-    else:
-        sorted_bars = load_option_candles(candles)
+    # Revalidate dataclass input too: callers cannot bypass completion/geometry.
+    sorted_bars = contiguous_option_candles(load_option_candles(candles))
 
     output: List[OptionATRBar] = []
     ranges: List[float] = []
@@ -120,9 +117,9 @@ def calculate_option_atr_bars(
                 low=l,
                 close=cl,
                 volume=bar.volume,
-                atr=round(atr, 6) if atr is not None else None,
-                raw_line=round(raw_line, 6) if raw_line is not None else None,
-                formula2_line=round(f2_line, 6) if f2_line is not None else None,
+                atr=atr,
+                raw_line=raw_line,
+                formula2_line=f2_line,
                 ready=ready,
             )
         )

@@ -1,6 +1,6 @@
 # ADR-20261023: Pinned Option-Premium ATR Trailing, Milestone Accounting, Transactional Persistence, and Discord Alerts
 
-- **Status**: Proposed / In Review
+- **Status**: Implemented correction; local verification in QA report; parity activation pending
 - **Date**: 2026-10-23
 - **Task ID**: TASK-20261023
 - **Author**: Software Architect Agent
@@ -76,13 +76,15 @@ Every trade retains a single canonical `trade_id` across its lifecycle:
   $$\text{raw\_line}_i = \max_{k=0..9} \left( \text{High}_{i-k} - 2.5 \times \text{ATR5}_{i-k} \right)$$
 - **Formula 2 (Legacy Alternative)**:
   $$\text{raw\_line}_i = \left( \max_{k=0..9} \text{High}_{i-k} \right) - 2.5 \times \text{ATR5}_i$$
-- **Parity Gate**: Formula 1 aligns with TradingView's classic `ATR TS` / Ceyhun Pine implementation. Multi-session warmup history explains fractional differences (e.g., ₹0.57) observed when indicators are seeded intraday vs continuously. Live production activation remains gated until parity against Dia's chart feed is formally verified.
+- **Parity Gate**: Formula 1 is a candidate drawn from a public Ceyhun-style implementation; exact Dia script/feed parity remains unverified. A multi-session candidate still differed by about ₹0.57. Production defaults `option_atr_enabled=False`, `option_atr_parity_version=""`; both enabled and exact version `option_atr_v1` are required before tagging new signals. Disabled policy continues the previously approved monitor. No automatic deployment activation.
 
 ---
 
 ## 4. Canonical State & Database Persistence
 
 ### 4.1 Versioned Context Schema (`trade_analytics.market_context.option_trailing`)
+Illustrative current-session candidate snapshot; values are not chart-parity sign-off or a production-state claim. Source milestone times in replay are candle observation boundaries, not reconstructed intrabar fill times.
+
 ```json
 {
   "policy_version": "option_atr_v1",
@@ -108,9 +110,9 @@ Every trade retains a single canonical `trade_id` across its lifecycle:
   "multiplier": 2.5,
   "atr_eligible": true,
   "protection_mode": "ATR",
-  "raw_line": 148.15,
-  "locked_option_sl": 148.15,
-  "previous_locked_option_sl": 131.63,
+  "raw_line": 139.1913444961637,
+  "locked_option_sl": 148.15455043953523,
+  "previous_locked_option_sl": 127.12953209599999,
   "stop_effective_at": "2026-10-23T11:00:00+05:30",
   "last_processed_option_bar_end": "2026-10-23T11:55:00+05:30",
   "indicator_source_version": "tv_atr_ts_v1",
@@ -132,7 +134,7 @@ Postgres RPC or atomic SQL transaction ensuring:
 1. Row lock via `SELECT FOR UPDATE` on `active_trades` and `trade_analytics`.
 2. Revision checking: rejects stale updates where `current_revision != expected_revision`.
 3. Event deduplication: `event_id` idempotency prevents duplicate allocation booking.
-4. Deep JSON merge of `market_context.option_trailing` preserving sizing, Greeks, and execution telemetry.
+4. Replace canonical option lifecycle state while preserving unrelated `market_context` sizing, Greeks and execution telemetry; merge durable alert acknowledgements from committed state, never stale client snapshots.
 5. Atomic update of `active_trades` and `trade_analytics`.
 
 ---
@@ -166,5 +168,14 @@ Messages are constructed from immutable event snapshots:
 
 1. **Indicator Parity Evidence**: Detailed report comparing Formula 1 vs Formula 2 with frozen fixtures.
 2. **Deterministic Replay**: Complete chronological replay reports for #1950 (multi-milestone lifecycle) and #3935 (pre-T1 SL exit).
-3. **Automated Test Matrix**: 100% line and branch coverage across all new modules and modified methods.
+3. **Automated Test Matrix**: Meaningful public-interface regression tests cover each correction in the acceptance matrix; report measured coverage and residual gaps without claiming unmeasured 100% coverage.
 4. **Migration & Rollout Safety**: Idempotent SQL migration script and migration preview query for any open database records.
+
+
+## 8. PR #147 review correction contract
+
+The user's explicit implementation authorization covers these corrections on the existing PR branch; no second approval cycle is required for the same scope. The [implementation specification](../../docs/TASK-20261023_option-atr-trailing-lifecycle.md) defines immutable Discord event snapshots and the R1–R14 acceptance matrix.
+
+Transitions persist atomically before recorded-score alerts; revision ownership and a durable event outbox survive restart. Do not substitute separate REST updates when the RPC fails. Durable acknowledgement distinguishes `DELIVERED`, definite `FAILED`, and `AMBIGUOUS` submission; an ambiguous webhook timeout must not be blindly retried. A database-failure operational warning explicitly says recording is pending and omits a recorded score.
+
+Preserve full floating-point candidate/stop values for comparison and persistence; format two decimal places only for human display. Check each completed close against its previously effective stop before raising the stop for the next candle. Raw indicator declines never lower the locked stop. Existing-trade correction remains preview-only until separately approved; closed history and old Discord messages remain intact.

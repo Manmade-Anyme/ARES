@@ -1219,7 +1219,7 @@ def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, dict]:
     while True:
         batch = (
             supabase.table("trade_analytics")
-            .select("id,exit_timestamp,entry_timestamp,time_metrics_excluded")
+            .select("id,exit_timestamp,entry_timestamp,time_metrics_excluded,market_context,result_state,pnl_points")
             .order("exit_timestamp")
             .range(start, start + page - 1)
             .execute()
@@ -1233,6 +1233,11 @@ def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, dict]:
                     "entry_timestamp": trade.get("entry_timestamp"),
                     "time_metrics_excluded": trade.get("time_metrics_excluded", False)
                 }
+                option_state = (trade.get("market_context") or {}).get("option_trailing")
+                if option_state and option_state.get("policy_version") == "option_atr_v1":
+                    exits[str(trade_id)]["option_trailing"] = option_state
+                    exits[str(trade_id)]["result_state"] = trade.get("result_state")
+                    exits[str(trade_id)]["trade_pnl"] = trade.get("pnl_points")
         if len(batch) < page:
             break
         start += page

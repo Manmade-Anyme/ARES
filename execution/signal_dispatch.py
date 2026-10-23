@@ -63,6 +63,13 @@ class SignalDispatcher:
         """Persist completed-candle runner stops before waiting for option quotes."""
         for correlation_id in tuple(self._signals):
             try:
+                signal, _ = self._signals[correlation_id]
+                policy = (signal.market_context.get("option_trailing") or {}).get("policy_version")
+                for trade in self.positions.active_trades:
+                    if str(trade.get("signal_uuid")) == str(signal.id):
+                        policy = ((trade.get("market_context") or {}).get("option_trailing") or {}).get("policy_version", policy)
+                if policy == "option_atr_v1":
+                    continue
                 record = self.orders.on_candles(correlation_id, candles)
                 self._publish(record)
                 await self._sync(record)

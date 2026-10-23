@@ -1,7 +1,7 @@
 # TASK-20261023: Option-Premium ATR Trailing, Milestone Accounting, and Discord Alerts
 
 **Date:** 2026-10-23
-**Status:** in-progress
+**Status:** correction implementation complete; production activation disabled
 **Assigned to:** PM / Architect / Code Generator / QA / PR Reviewer
 **Supersedes:** `TASK-20261023-t2-milestone` (cancelled T2-only alert implementation)
 
@@ -61,3 +61,8 @@ Replace post-T1 spot-based ATR trailing with option-premium ATR trailing on comp
    - Offline replay of #1950 (demonstrating T1, T2, ATR line, locked stops, allocations, scores, and rendered Discord messages).
    - Offline replay of #3935 (demonstrating pre-T1 index SL exit unchanged).
    - Delivery package: PR URL, base/head SHA, migration preview, parity report, and replay evidence. No direct merge or deployment.
+
+
+## PR #147 correction acceptance
+
+The implementation must satisfy the R1–R14 matrix and complete Cards A–L in [the detailed specification](../docs/TASK-20261023_option-atr-trailing-lifecycle.md). Parity remains unresolved, so new-policy tagging requires `option_atr_enabled=True` and exact `option_atr_parity_version="option_atr_v1"`; defaults preserve the existing approved lifecycle. Deliver tests and measured results, not inferred completion. Existing-trade migration is preview-only. This correction task does not authorize production SQL application, activation, deployment, restarts, broker orders, Discord test messages or PR merge.

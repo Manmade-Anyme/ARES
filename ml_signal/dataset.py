@@ -353,10 +353,15 @@ def build_real_outcome_frame(
     
     for r in rows:
         outcome = r.get("trade_outcome")
+        option_state = r.get("option_trailing") or (r.get("market_context") or {}).get("option_trailing")
+        if option_state and option_state.get("policy_version") == "option_atr_v1":
+            # Joined analytics outrank stale ml_collection terminal telemetry.
+            outcome = r.get("result_state", outcome)
         if not outcome:
             continue
-            
-        label = classify_ares_outcome(outcome, t1_is_win=t1_is_win)
+        label = classify_ares_outcome(
+            outcome, t1_is_win=t1_is_win, option_trailing=option_state,
+        )
         if label is not None:
             valid_rows.append(r)
             labels.append(label)

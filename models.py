@@ -338,6 +338,9 @@ class OptionTrailingExit:
     option_stop: Optional[float] = None
     index_price: Optional[float] = None
     index_price_at: Optional[str] = None
+    exited_fraction: Optional[float] = None
+    candle_start: Optional[str] = None
+    candle_end: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -348,6 +351,9 @@ class OptionTrailingExit:
             "option_stop": self.option_stop,
             "index_price": self.index_price,
             "index_price_at": self.index_price_at,
+            "exited_fraction": self.exited_fraction,
+            "candle_start": self.candle_start,
+            "candle_end": self.candle_end,
         }
 
 
@@ -382,6 +388,14 @@ class OptionTrailingContext:
     exit: Optional[OptionTrailingExit] = None
     event_history: List[Dict[str, Any]] = field(default_factory=list)
     alert_events: Dict[str, Any] = field(default_factory=dict)
+    activated_at: Optional[str] = None
+    indicator_history_from: Optional[str] = None
+    source_candle: Optional[Dict[str, Any]] = None
+    monitoring_detail: Optional[str] = None
+    last_index_event_at: Optional[str] = None
+    last_index_mark: Optional[Dict[str, Any]] = None
+    pending_index_observations: List[Dict[str, Any]] = field(default_factory=list)
+    observed_index_guard_exit: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -414,6 +428,14 @@ class OptionTrailingContext:
             "exit": self.exit.to_dict() if self.exit else None,
             "event_history": self.event_history,
             "alert_events": self.alert_events,
+            "activated_at": self.activated_at,
+            "indicator_history_from": self.indicator_history_from,
+            "source_candle": self.source_candle,
+            "monitoring_detail": self.monitoring_detail,
+            "last_index_event_at": self.last_index_event_at,
+            "last_index_mark": self.last_index_mark,
+            "pending_index_observations": self.pending_index_observations,
+            "observed_index_guard_exit": self.observed_index_guard_exit,
         }
 
     @classmethod
@@ -441,6 +463,9 @@ class OptionTrailingContext:
                 option_stop=exit_data.get("option_stop"),
                 index_price=exit_data.get("index_price"),
                 index_price_at=exit_data.get("index_price_at"),
+                exited_fraction=exit_data.get("exited_fraction"),
+                candle_start=exit_data.get("candle_start"),
+                candle_end=exit_data.get("candle_end"),
             )
         return cls(
             policy_version=data.get("policy_version", "option_atr_v1"),
@@ -472,4 +497,12 @@ class OptionTrailingContext:
             exit=exit_obj,
             event_history=list(data.get("event_history") or []),
             alert_events=data.get("alert_events") or {},
+            activated_at=data.get("activated_at"),
+            indicator_history_from=data.get("indicator_history_from"),
+            source_candle=data.get("source_candle"),
+            monitoring_detail=data.get("monitoring_detail"),
+            last_index_event_at=data.get("last_index_event_at"),
+            last_index_mark=data.get("last_index_mark"),
+            pending_index_observations=list(data.get("pending_index_observations") or []),
+            observed_index_guard_exit=data.get("observed_index_guard_exit"),
         )

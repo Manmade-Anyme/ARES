@@ -2,6 +2,7 @@
 Validates the full test matrix specified in TASK-20261023.
 """
 import pytest
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,7 @@ from alerts import (
     send_persistence_alert,
 )
 from storage import AnalyticsLogger
+from tests.unit.test_option_lifecycle_commit_boundary import Ledger
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -58,7 +60,7 @@ def _mock_trade_from_signal(signal: AresSignal, trade_id="trade-1950", spot=2255
     contract = OptionTrailingContract(
         security_id="51333",
         exchange_segment="NSE_FNO",
-        expiry="2026-10-29",
+        expiry="2026-10-27",
         strike=signal.strike_to_trade,
         option_type=signal.option_type,
     )
@@ -94,8 +96,15 @@ def _mock_trade_from_signal(signal: AresSignal, trade_id="trade-1950", spot=2255
 
 
 def _make_pm():
-    pm = PositionManager()
+    pm = object.__new__(PositionManager)
     pm.is_initialized = True
+    pm.active_trades = []
+    pm._trade_writes = {}
+    pm._context_locks = {}
+    pm.analytics = Ledger()
+    # These isolated index lifecycle cases explicitly assume the premium clock
+    # is caught up; outage ordering is exercised through real source histories.
+    pm._option_available_until = defaultdict(lambda: datetime(2099,1,1,tzinfo=IST))
     return pm
 
 
@@ -112,8 +121,7 @@ async def test_pre_t1_index_sl_hit_closes_100_percent_score_0():
     pm.active_trades = [trade]
 
     # Index SL for BEARISH trade is 22577.10. Spot touches 22580.00
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition") as mock_rpc, \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_trades(spot_price=22580.00)
         assert ("trade-1950", "SL_HIT") in events
         assert trade["state"] == "CLOSED"
@@ -133,8 +141,7 @@ async def test_index_t1_reached_books_50_percent_score_1_moves_sl_to_entry():
     pm.active_trades = [trade]
 
     # BEARISH target_1 is 22527.10. Spot touches 22525.00
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition") as mock_rpc, \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_trades(spot_price=22525.00)
         assert ("trade-1950", "T1_HIT") in events
         assert trade["state"] == "T1_HIT"
@@ -156,20 +163,18 @@ async def test_dual_protection_index_entry_exit_between_t1_and_t2():
     pm.active_trades = [trade]
 
     # Reach T1
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition"), \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         await pm.update_trades(spot_price=22525.00)
 
     # Spot rallies back to entry (22552.10)
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition"), \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_trades(spot_price=22553.00)
         assert ("trade-1950", "STOPPED_OUT_AT_BE") in events
         assert trade["state"] == "CLOSED"
         opt = trade["market_context"]["option_trailing"]
         assert opt["phase"] == "CLOSED"
         assert opt["highest_milestone"] == 1
-        assert opt["booked_fraction"] == 1.0
+        assert opt["booked_fraction"] == 0.5
         assert opt["remaining_fraction"] == 0.0
 
 
@@ -182,13 +187,11 @@ async def test_index_t2_reached_books_cumulative_80_percent_score_2_disables_ind
     pm.active_trades = [trade]
 
     # Reach T1 first
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition"), \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         await pm.update_trades(spot_price=22525.00)
 
     # BEARISH target_2 is 22472.10. Spot touches 22470.00
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition"), \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_trades(spot_price=22470.00)
         assert ("trade-1950", "T2_HIT") in events
         assert trade["state"] == "T2_REACHED"
@@ -212,8 +215,7 @@ async def test_same_candle_t1_and_t2_hit_applies_both_in_order():
     pm.active_trades = [trade]
 
     # Candle touches 22470 (which is beyond both T1 22527 and T2 22472)
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition"), \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_trades(spot_price=22470.00, candle_low=22470.00, candle_high=22550.00)
         assert events == [("trade-1950", "T1_HIT"), ("trade-1950", "T2_HIT")]
         assert trade["state"] == "T2_REACHED"
@@ -257,8 +259,7 @@ async def test_option_atr_exit_requires_completed_close_strictly_below_stop():
         complete=True,
     )
 
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition"), \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_option_atr_trailing([candle_wick])
         assert trade["state"] == "T1_HIT"  # Still open!
         assert len(events) == 0
@@ -275,8 +276,7 @@ async def test_option_atr_exit_requires_completed_close_strictly_below_stop():
         security_id="51333",
         complete=True,
     )
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition"), \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_option_atr_trailing([candle_equal])
         assert trade["state"] == "T1_HIT"
 
@@ -292,8 +292,7 @@ async def test_option_atr_exit_requires_completed_close_strictly_below_stop():
         security_id="51333",
         complete=True,
     )
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition"), \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_option_atr_trailing([candle_exit])
         assert ("trade-1950", "ATR_SL_HIT") in events
         assert trade["state"] == "CLOSED"
@@ -332,13 +331,12 @@ async def test_post_t2_runner_exit_retains_score_2():
         complete=True,
     )
 
-    with patch.object(pm.analytics, "apply_option_lifecycle_transition"), \
-         patch("position_manager.send_trade_update", new=AsyncMock()):
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_option_atr_trailing([candle_runner_exit])
         assert ("trade-1950", "ATR_SL_HIT") in events
         assert trade["state"] == "CLOSED"
         assert opt["highest_milestone"] == 2  # Score 2 retained!
-        assert opt["booked_fraction"] == 1.0
+        assert opt["booked_fraction"] == 0.8
         assert opt["remaining_fraction"] == 0.0
 
 
@@ -346,62 +344,23 @@ async def test_post_t2_runner_exit_retains_score_2():
 # 3. Transactional Persistence & Deduplication Tests
 # ==============================================================================
 
-def test_storage_apply_option_lifecycle_transition_fallback():
-    """Tests client-side fallback of apply_option_lifecycle_transition with revision & score retention."""
-    logger = AnalyticsLogger()
-    mock_supabase = MagicMock()
-    logger.supabase = mock_supabase
-
-    state = {
-        "market_context": {
-            "option_trailing": {
-                "policy_version": "option_atr_v1",
-                "revision": 1,
-                "phase": "PRE_T1",
-                "highest_milestone": 0,
-                "remaining_fraction": 1.0,
-                "alert_events": {},
-            }
-        },
-        "score": None,
-        "result_state": "OPEN",
-    }
-    
-    mock_supabase.table().select().eq().execute.side_effect = lambda: MagicMock(data=[state])
-    def do_update(payload):
-        state.update(payload)
-        return MagicMock(eq=lambda *a, **k: MagicMock(execute=lambda: MagicMock(data=[state])))
-    mock_supabase.table().update.side_effect = do_update
-    mock_supabase.rpc.side_effect = Exception("RPC not in test mock")
-
-    # Transition to T1
-    payload = {
-        "active_state": "T1_HIT",
-        "stop_loss": 22552.10,
-        "score": 1,
-        "update_type": "T1_HIT",
-        "option_trailing": {
-            "phase": "POST_T1",
-            "highest_milestone": 1,
-            "booked_fraction": 0.5,
-            "remaining_fraction": 0.5,
-        }
-    }
-    event_id = "test-trade:POST_T1:1:T1_HIT"
-    res = logger.apply_option_lifecycle_transition("test-trade", 1, event_id, payload)
-    assert res["success"] is True
-    assert res["revision"] == 2
-    assert res["result_state"] == "OPEN"
-    assert res["score"] == 1
-
-    # Idempotent re-submission should skip
-    res_dup = logger.apply_option_lifecycle_transition("test-trade", 2, event_id, payload)
-    assert res_dup["idempotent_skip"] is True
+def test_storage_lifecycle_rpc_failure_never_falls_back_to_partial_writes():
+    """A failed transaction must not bypass atomicity with client table writes."""
+    logger = object.__new__(AnalyticsLogger)
+    logger.supabase = MagicMock()
+    logger._option_backend_configured = True
+    logger.supabase.rpc.side_effect = PermissionError("backend role required")
+    with pytest.raises(PermissionError, match="backend role"):
+        logger.apply_option_lifecycle_transition("test-trade", 1, "event-1", {
+            "active_state": "T1_HIT", "score": 1,
+            "option_trailing": {"phase": "POST_T1", "highest_milestone": 1},
+        })
+    logger.supabase.table.assert_not_called()
 
 
 def test_startup_reconciliation_keeps_active_runner_open():
     """Startup reconciliation does not treat T2_REACHED or open milestone score as terminal."""
-    pm = PositionManager()
+    pm = _make_pm()
     mock_supabase = MagicMock()
     pm.supabase = mock_supabase
 
@@ -479,42 +438,13 @@ def test_trade_update_action_texts():
 
 
 @pytest.mark.asyncio
-async def test_discord_alert_deduplication():
-    """Verifies duplicate alert events are suppressed via alert_events state."""
-    trade = {
-        "id": "trade-dedup",
-        "display_id": "1950",
-        "setup_type": "OI_WALL_REJECTION",
-        "direction": "BEARISH",
-        "entry_price": 22552.10,
-        "stop_loss": 22552.10,
-        "state": "T1_HIT",
-        "market_context": {
-            "option_trailing": {
-                "policy_version": "option_atr_v1",
-                "revision": 2,
-                "phase": "POST_T1",
-                "alert_events": {},
-            }
-        }
-    }
-
-    with patch("alerts.settings") as mock_settings, \
-         patch("httpx.AsyncClient") as mock_http_client:
-        mock_settings.discord_webhook_url = "http://mock-webhook"
-        mock_client = AsyncMock()
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_client.post.return_value = mock_resp
-        mock_http_client.return_value.__aenter__.return_value = mock_client
-
-        # First alert dispatch: posts to webhook
-        await send_trade_update(trade, 22525.00, "T1_HIT")
-        assert mock_client.post.call_count == 1
-        event_key = "trade-dedup:POST_T1:2:T1_HIT"
-        assert trade["market_context"]["option_trailing"]["alert_events"][event_key]["status"] == "DELIVERED"
-
-        # Duplicate alert dispatch: skipped!
-        mock_client.reset_mock()
-        await send_trade_update(trade, 22525.00, "T1_HIT")
-        assert mock_client.post.call_count == 0
+async def test_discord_alert_deduplication(monkeypatch):
+    """A committed delivery acknowledgement survives lifecycle delivery retries."""
+    from tests.unit.test_option_lifecycle_commit_boundary import make_pm
+    pm, trade, sender = make_pm(monkeypatch)
+    await pm.update_trades(22525)
+    assert sender.await_count == 1
+    assert any(event["status"] == "DELIVERED" for event in
+               trade["market_context"]["option_trailing"]["alert_events"].values())
+    await pm.retry_option_lifecycle_writes()
+    assert sender.await_count == 1
