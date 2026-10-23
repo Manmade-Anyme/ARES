@@ -7,10 +7,11 @@ from supabase import create_client, Client
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from options_math import option_sizing_context, option_sizing_summary
-from models import AresSignal, ATMStrikes
+from models import AresSignal, ATMStrikes, OptionTrailingContract, OptionTrailingContext, OptionTrailingExit
 from config import settings
 from alerts import send_trade_update
-from atr_trailing import completed_atr_bars
+from atr_trailing import completed_atr_bars, calculate_option_atr_bars, ratchet_option_stop
+from options_candles import aggregate_to_5min, Candle5m
 from oi_watch_context import parse_candle_timestamp
 from storage import AnalyticsLogger
 
@@ -93,8 +94,8 @@ class PositionManager:
             # twice after restart.
             try:
                 terminal_states = {
-                    "CLOSED", "T2_HIT", "SL_HIT", "STOPPED_OUT",
-                    "STOPPED_OUT_AT_BE", "ATR_SL_HIT",
+                    "CLOSED", "SL_HIT", "STOPPED_OUT",
+                    "STOPPED_OUT_AT_BE", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT",
                 }
                 active_ids = [
                     record["id"] for record in records
@@ -103,7 +104,7 @@ class PositionManager:
                 ]
                 if active_ids:
                     analytics_rows = self.supabase.table("trade_analytics").select(
-                        "id,result_state,exit_price,exit_timestamp,pnl_points,market_context"
+                        "id,result_state,exit_price,exit_timestamp,pnl_points,market_context,score"
                     ).in_("id", active_ids).execute().data
                     analytics_by_id = {
                         str(row["id"]): row
@@ -129,9 +130,25 @@ class PositionManager:
                         if atr.get("state") == "T1_HIT":
                             record["state"] = "T1_HIT"
                             record["stop_loss"] = atr["stop_loss"]
-                        if analytics_row.get("result_state") not in terminal_states:
+
+                        opt_trailing = record.get("market_context", {}).get("option_trailing") or {}
+                        if opt_trailing.get("policy_version") == "option_atr_v1":
+                            phase = opt_trailing.get("phase")
+                            if phase == "POST_T2":
+                                record["state"] = "T2_REACHED"
+                            elif phase == "POST_T1":
+                                record["state"] = "T1_HIT"
+                                record["stop_loss"] = record["entry_price"]
+
+                        # A trade remains active while result_state is OPEN (e.g. milestones T1, T2 reached)
+                        if analytics_row.get("result_state") == "OPEN":
                             continue
-                        final_state = analytics_row["result_state"]
+
+                        final_state = analytics_row.get("result_state")
+                        if final_state not in terminal_states and not (
+                            final_state == "T2_HIT" and opt_trailing.get("policy_version") != "option_atr_v1"
+                        ):
+                            continue
                         update_data = {
                             "state": "STOPPED_OUT" if final_state == "STOPPED_OUT" else "CLOSED",
                             "exit_type": final_state,
@@ -231,6 +248,34 @@ class PositionManager:
                 **option_sizing_context(signal),
                 **market_context.get("options_sizing", {}),
             }
+
+        # Initialize Option Trailing lifecycle context (TASK-20261023)
+        if getattr(signal, "strike_to_trade", None) and getattr(signal, "option_type", None):
+            opt_sizing = market_context.get("options_sizing") or {}
+            sec_id = opt_sizing.get("security_id") or getattr(signal, "security_id", "") or str(signal.strike_to_trade)
+            expiry_str = opt_sizing.get("expiry") or getattr(signal, "expiry", "")
+            contract = OptionTrailingContract(
+                security_id=str(sec_id),
+                exchange_segment="NSE_FNO",
+                expiry=str(expiry_str),
+                strike=int(signal.strike_to_trade),
+                option_type=str(signal.option_type),
+            )
+            opt_trailing_ctx = OptionTrailingContext(
+                policy_version="option_atr_v1",
+                revision=1,
+                contract=contract,
+                phase="PRE_T1",
+                highest_milestone=0,
+                booked_fraction=0.0,
+                remaining_fraction=1.0,
+                original_option_sl=float(signal.option_sl) if getattr(signal, "option_sl", None) is not None else None,
+                original_option_entry=float(signal.option_premium) if getattr(signal, "option_premium", None) is not None else None,
+                index_guard_enabled=True,
+                index_guard_stop=float(spot),
+            )
+            market_context["option_trailing"] = opt_trailing_ctx.to_dict()
+
         if getattr(signal, "oi_wall_context", None) is not None:
             market_context["oi_wall"] = signal.oi_wall_context
 
@@ -437,34 +482,108 @@ class PositionManager:
                     # cannot close the newly filled paper position retroactively.
                     trade_high = trade_low = spot_price
 
-            # After T1 only a completed five-minute close can exit the runner.
-            if trade["state"] == "T1_HIT":
+            # Post-T2, runner is governed exclusively by option ATR (index SL disabled)
+            if trade["state"] == "T2_REACHED":
                 continue
+
             sign = 1 if direction == "BULLISH" else -1
-            target_hit = trade_high >= trade["target_1"] if sign == 1 else trade_low <= trade["target_1"]
+            opt_ctx = (trade.get("market_context") or {}).get("option_trailing")
+            is_option_atr = opt_ctx is not None and opt_ctx.get("policy_version") == "option_atr_v1"
+
+            # Post-T1 touch evaluations
+            if trade["state"] == "T1_HIT":
+                if not is_option_atr:
+                    continue  # Legacy spot ATR handles post-T1 exits on completed 5m bars
+
+                # Dual protection between T1 and T2: check T2 touch and index entry BE touch
+                # Target-first resolution if a single bar touches both
+                target_2_hit = trade_high >= trade["target_2"] if sign == 1 else trade_low <= trade["target_2"]
+                be_hit = trade_low <= trade["entry_price"] if sign == 1 else trade_high >= trade["entry_price"]
+
+                if target_2_hit:
+                    trade["state"] = "T2_REACHED"
+                    opt_ctx["phase"] = "POST_T2"
+                    opt_ctx["highest_milestone"] = 2
+                    opt_ctx["t2_at"] = event_ts
+                    opt_ctx["booked_fraction"] = 0.8
+                    opt_ctx["remaining_fraction"] = 0.2
+                    opt_ctx["index_guard_enabled"] = False
+                    if opt_ctx.get("locked_option_sl") is None:
+                        opt_ctx["locked_option_sl"] = opt_ctx.get("original_option_sl")
+                        opt_ctx["protection_mode"] = "ORIGINAL_OPTION_SL_FLOOR"
+                    update_type = "T2_HIT"
+                    event_price = trade["target_2"]
+                    events.append((trade["id"], update_type))
+                    await self._record_trade_update(trade, event_price, update_type, event_ts)
+                elif be_hit:
+                    trade["state"] = "CLOSED"
+                    opt_ctx["phase"] = "CLOSED"
+                    opt_ctx["booked_fraction"] = 1.0
+                    opt_ctx["remaining_fraction"] = 0.0
+                    update_type = "STOPPED_OUT_AT_BE"
+                    event_price = trade["entry_price"]
+                    events.append((trade["id"], update_type))
+                    await self._record_trade_update(trade, event_price, update_type, event_ts)
+                continue
+
+            # Pre-T1 touch evaluations (trade state == "OPEN")
+            target_1_hit = trade_high >= trade["target_1"] if sign == 1 else trade_low <= trade["target_1"]
+            target_2_hit = trade_high >= trade["target_2"] if sign == 1 else trade_low <= trade["target_2"]
             stop_hit = trade_low <= trade["stop_loss"] if sign == 1 else trade_high >= trade["stop_loss"]
-            if target_hit:
+
+            if target_1_hit:
                 trade["state"] = "T1_HIT"
                 trade["stop_loss"] = trade["entry_price"]
-                # A completed source minute is known only at its end. Never
-                # apply an earlier five-minute close to a newly activated runner.
                 activated = (parse_candle_timestamp(candle_timestamp) + timedelta(minutes=1)
                              if candle_timestamp else datetime.now(timezone.utc))
                 trade.setdefault("market_context", {})["atr_trailing"] = {
                     "last_bar": activated.isoformat(),
                 }
-                state_changed = True
+                if is_option_atr:
+                    opt_ctx["phase"] = "POST_T1"
+                    opt_ctx["highest_milestone"] = 1
+                    opt_ctx["t1_at"] = event_ts
+                    opt_ctx["booked_fraction"] = 0.5
+                    opt_ctx["remaining_fraction"] = 0.5
+                    opt_ctx["index_guard_enabled"] = True
+                    opt_ctx["index_guard_stop"] = trade["entry_price"]
+
                 update_type = "T1_HIT"
                 event_price = trade["target_1"]
-            elif stop_hit:
-                trade["state"] = "CLOSED"
-                state_changed = True
-                update_type = "SL_HIT"
-                event_price = trade["stop_loss"]
-
-            if state_changed:
                 events.append((trade["id"], update_type))
                 await self._record_trade_update(trade, event_price, update_type, event_ts)
+
+                # Target-first: If single index observation established both T1 and T2, apply T1 then T2 exactly once
+                if target_2_hit and is_option_atr:
+                    trade["state"] = "T2_REACHED"
+                    opt_ctx["phase"] = "POST_T2"
+                    opt_ctx["highest_milestone"] = 2
+                    opt_ctx["t2_at"] = event_ts
+                    opt_ctx["booked_fraction"] = 0.8
+                    opt_ctx["remaining_fraction"] = 0.2
+                    opt_ctx["index_guard_enabled"] = False
+                    if opt_ctx.get("locked_option_sl") is None:
+                        opt_ctx["locked_option_sl"] = opt_ctx.get("original_option_sl")
+                        opt_ctx["protection_mode"] = "ORIGINAL_OPTION_SL_FLOOR"
+                    update_type_t2 = "T2_HIT"
+                    event_price_t2 = trade["target_2"]
+                    events.append((trade["id"], update_type_t2))
+                    await self._record_trade_update(trade, event_price_t2, update_type_t2, event_ts)
+                continue
+
+            elif stop_hit:
+                trade["state"] = "CLOSED"
+                if is_option_atr:
+                    opt_ctx["phase"] = "CLOSED"
+                    opt_ctx["highest_milestone"] = 0
+                    opt_ctx["booked_fraction"] = 0.0
+                    opt_ctx["remaining_fraction"] = 0.0
+
+                update_type = "SL_HIT"
+                event_price = trade["stop_loss"]
+                events.append((trade["id"], update_type))
+                await self._record_trade_update(trade, event_price, update_type, event_ts)
+                continue
 
         return events
 
@@ -490,7 +609,35 @@ class PositionManager:
             atr.update(state=trade["state"], stop_loss=trade["stop_loss"])
         atr_snapshot = deepcopy(atr)
 
-        def _update(t_id=trade["id"], data=update_data, snapshot=atr_snapshot):
+        opt_trailing = trade.get("market_context", {}).get("option_trailing")
+        opt_snapshot = deepcopy(opt_trailing) if opt_trailing else None
+
+        def _update(t_id=trade["id"], data=update_data, snapshot=atr_snapshot, opt_snap=opt_snapshot):
+            if opt_snap and opt_snap.get("policy_version") == "option_atr_v1":
+                current_rev = opt_snap.get("revision", 1)
+                highest_milestone = opt_snap.get("highest_milestone", 0)
+                event_id = f"{t_id}:{opt_snap.get('phase')}:{current_rev}:{update_type}" if update_type else None
+                transition_payload = {
+                    "active_state": data.get("state"),
+                    "stop_loss": data.get("stop_loss"),
+                    "score": highest_milestone,
+                    "exit_reason": data.get("exit_type") if data.get("state") in ["CLOSED", "STOPPED_OUT"] else None,
+                    "exit_price": data.get("exit_price"),
+                    "exit_timestamp": data.get("exit_timestamp"),
+                    "pnl_points": data.get("pnl_points_override"),
+                    "update_type": update_type,
+                    "option_trailing": opt_snap,
+                }
+                res = self.analytics.apply_option_lifecycle_transition(
+                    t_id,
+                    current_rev,
+                    event_id,
+                    transition_payload,
+                )
+                if res and res.get("revision"):
+                    opt_snap["revision"] = res["revision"]
+                return
+
             terminal = data["state"] in ["CLOSED", "STOPPED_OUT"]
             if terminal:
                 self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
@@ -511,18 +658,20 @@ class PositionManager:
             final_state=update_type,
             pnl_override=pnl_points_override,
             exit_ts=event_ts,
+            score_ovr=(opt_snapshot.get("highest_milestone") if opt_snapshot else None),
         ):
             try:
+                kwargs = {"exit_timestamp": exit_ts}
                 if pnl_override is not None:
-                    self.analytics.log_exit(
-                        t_id,
-                        exit_price,
-                        final_state,
-                        exit_timestamp=exit_ts,
-                        pnl_points_override=pnl_override,
-                    )
-                else:
-                    self.analytics.log_exit(t_id, exit_price, final_state, exit_timestamp=exit_ts)
+                    kwargs["pnl_points_override"] = pnl_override
+                if score_ovr is not None:
+                    kwargs["score_override"] = score_ovr
+                self.analytics.log_exit(
+                    t_id,
+                    exit_price,
+                    final_state,
+                    **kwargs,
+                )
             except Exception as e:
                 print(f"Failed to log trade exit to Analytics: {e}")
 
@@ -561,6 +710,9 @@ class PositionManager:
         if not bars:
             return events
         for trade in self.active_trades:
+            # Skip trades governed by option premium ATR trailing
+            if trade.get("market_context", {}).get("option_trailing", {}).get("policy_version") == "option_atr_v1":
+                continue
             if trade["state"] != "T1_HIT":
                 continue
             context = trade.setdefault("market_context", {})
@@ -600,4 +752,209 @@ class PositionManager:
                     events.append((trade["id"], update_type))
                 if trade["state"] == "CLOSED":
                     break
+        return events
+
+    async def update_option_atr_trailing(
+        self,
+        candles: Any,
+        current_time: Optional[datetime] = None,
+    ) -> List[Tuple[str, str]]:
+        """
+        Processes completed 5-minute option candles for pinned option contracts.
+        Chronologically evaluates active stop exit strictly before ratcheting stop upward.
+        """
+        events: List[Tuple[str, str]] = []
+        if not candles:
+            return events
+
+        for trade in self.active_trades:
+            if trade["state"] in ["CLOSED", "STOPPED_OUT"]:
+                continue
+            context = trade.setdefault("market_context", {})
+            opt_ctx = context.get("option_trailing")
+            if not opt_ctx or opt_ctx.get("policy_version") != "option_atr_v1":
+                continue
+            phase = opt_ctx.get("phase")
+            if phase not in ["POST_T1", "POST_T2"]:
+                continue
+
+            contract = opt_ctx.get("contract") or {}
+            sec_id = str(contract.get("security_id", ""))
+            strike = contract.get("strike")
+            opt_type = contract.get("option_type")
+
+            # Extract raw candles for this contract
+            raw_bars = []
+            if isinstance(candles, dict):
+                raw_bars = (
+                    candles.get(sec_id)
+                    or candles.get(str(sec_id))
+                    or candles.get(strike)
+                    or candles.get(str(strike))
+                    or []
+                )
+            elif isinstance(candles, list):
+                if candles and isinstance(candles[0], (dict, Candle5m)):
+                    if isinstance(candles[0], Candle5m):
+                        raw_bars = [c for c in candles if not sec_id or str(getattr(c, "security_id", "")) == sec_id]
+                    elif "security_id" in candles[0] or "strike" in candles[0]:
+                        raw_bars = [
+                            c for c in candles
+                            if (sec_id and str(c.get("security_id")) == sec_id)
+                            or (c.get("strike") == strike and c.get("option_type") == opt_type)
+                        ]
+                    else:
+                        raw_bars = candles
+                else:
+                    raw_bars = candles
+
+            if not raw_bars:
+                continue
+
+            # Convert to completed Candle5m instances
+            five_min_bars: List[Candle5m] = []
+            if isinstance(raw_bars[0], Candle5m):
+                five_min_bars = raw_bars
+            elif isinstance(raw_bars[0], dict) and "start" in raw_bars[0] and "end" in raw_bars[0]:
+                start_dt = datetime.fromisoformat(str(raw_bars[0]["start"]).replace("Z", "+00:00"))
+                end_dt = datetime.fromisoformat(str(raw_bars[0]["end"]).replace("Z", "+00:00"))
+                if (end_dt - start_dt).total_seconds() <= 120:
+                    five_min_bars = aggregate_to_5min(raw_bars)
+                else:
+                    five_min_bars = [
+                        Candle5m(
+                            start=datetime.fromisoformat(str(c["start"]).replace("Z", "+00:00")),
+                            end=datetime.fromisoformat(str(c["end"]).replace("Z", "+00:00")),
+                            open=float(c["open"]),
+                            high=float(c["high"]),
+                            low=float(c["low"]),
+                            close=float(c["close"]),
+                            volume=float(c.get("volume", 0)),
+                            security_id=str(c.get("security_id", sec_id)),
+                        )
+                        for c in raw_bars
+                    ]
+            else:
+                five_min_bars = aggregate_to_5min(raw_bars)
+
+            if not five_min_bars:
+                continue
+
+            if current_time:
+                five_min_bars = [b for b in five_min_bars if b.end <= current_time]
+            if not five_min_bars:
+                continue
+
+            # Calculate ATR indicator bars continuously
+            atr_bars = calculate_option_atr_bars(five_min_bars)
+            if not atr_bars:
+                continue
+
+            last_bar_end = opt_ctx.get("last_processed_option_bar_end")
+            t1_at = opt_ctx.get("t1_at")
+            if last_bar_end:
+                cutoff = datetime.fromisoformat(last_bar_end.replace("Z", "+00:00"))
+            elif t1_at:
+                cutoff = datetime.fromisoformat(t1_at.replace("Z", "+00:00"))
+            else:
+                cutoff = None
+
+            unseen_bars = []
+            for b in atr_bars:
+                end_str = getattr(b, "end_time", None) or getattr(b, "timestamp", None) or (b.get("end_time") or b.get("timestamp") if isinstance(b, dict) else "")
+                b_end = datetime.fromisoformat(str(end_str).replace("Z", "+00:00"))
+                if cutoff is None or b_end > cutoff:
+                    unseen_bars.append((b, b_end))
+
+            unseen_bars.sort(key=lambda x: x[1])
+
+            for bar, b_end in unseen_bars:
+                bar_end_iso = b_end.isoformat()
+                current_phase = opt_ctx.get("phase")
+                if current_phase not in ["POST_T1", "POST_T2"]:
+                    break
+
+                orig_sl = opt_ctx.get("original_option_sl")
+                locked_sl = opt_ctx.get("locked_option_sl")
+
+                # Active stop for this candle before evaluating it
+                active_stop = locked_sl
+                if active_stop is None and current_phase == "POST_T2":
+                    active_stop = orig_sl
+
+                bar_close = float(getattr(bar, "close", None) if not isinstance(bar, dict) else bar["close"])
+
+                # 1. Exit Comparison (strictly below active stop)
+                if active_stop is not None and bar_close < active_stop:
+                    trade["state"] = "CLOSED"
+                    opt_ctx["phase"] = "CLOSED"
+                    opt_ctx["booked_fraction"] = 1.0
+                    opt_ctx["remaining_fraction"] = 0.0
+
+                    if current_phase == "POST_T1":
+                        update_type = "ATR_SL_HIT"
+                    else:
+                        update_type = "ATR_SL_HIT" if opt_ctx.get("protection_mode") == "ATR" else "OPTION_SL_FLOOR_HIT"
+
+                    opt_ctx["exit"] = {
+                        "reason": update_type,
+                        "event_at": bar_end_iso,
+                        "detected_at": datetime.now(timezone.utc).isoformat(),
+                        "option_close": bar_close,
+                        "option_stop": active_stop,
+                    }
+                    opt_ctx["last_processed_option_bar_end"] = bar_end_iso
+
+                    events.append((trade["id"], update_type))
+                    await self._record_trade_update(
+                        trade,
+                        event_price=trade.get("stop_loss", 0.0),
+                        update_type=update_type,
+                        event_ts=bar_end_iso,
+                    )
+                    break
+
+                # 2. Ratchet Evaluation
+                raw_line = getattr(bar, "raw_line", None) if not isinstance(bar, dict) else bar.get("raw_line")
+                opt_ctx["raw_line"] = raw_line
+                prot_mode = opt_ctx.get("protection_mode", "NONE")
+
+                new_locked, mode, increased = ratchet_option_stop(
+                    current_stop=locked_sl,
+                    new_raw_line=raw_line,
+                    original_option_sl=float(orig_sl or 0.0),
+                    protection_mode=prot_mode,
+                )
+
+                stop_changed = increased
+                update_type = None
+                if increased:
+                    if locked_sl is None or prot_mode == "NONE":
+                        update_type = "ATR_ACTIVE"
+                    else:
+                        update_type = "OPTION_SL_RATCHETED"
+                    opt_ctx["previous_locked_option_sl"] = locked_sl
+                    opt_ctx["locked_option_sl"] = new_locked
+                    opt_ctx["protection_mode"] = mode
+                    opt_ctx["atr_eligible"] = (mode == "ATR")
+                    opt_ctx["stop_effective_at"] = bar_end_iso
+
+                opt_ctx["last_processed_option_bar_end"] = bar_end_iso
+
+                if stop_changed and update_type:
+                    events.append((trade["id"], update_type))
+                    await self._record_trade_update(
+                        trade,
+                        event_price=trade.get("stop_loss", 0.0),
+                        update_type=update_type,
+                        event_ts=bar_end_iso,
+                    )
+                else:
+                    await self._record_trade_update(
+                        trade,
+                        event_price=trade.get("stop_loss", 0.0),
+                        update_type=None,
+                        event_ts=bar_end_iso,
+                    )
+
         return events

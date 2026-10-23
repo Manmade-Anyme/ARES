@@ -257,6 +257,7 @@ class AnalyticsLogger:
         final_state: str,
         exit_timestamp: str | None = None,
         pnl_points_override: float | None = None,
+        score_override: int | None = None,
     ) -> None:
         """
         Updates an existing entry in 'trade_analytics' with exit details.
@@ -265,16 +266,18 @@ class AnalyticsLogger:
             trade_id: The unique UUID of the trade.
             exit_price: The spot price at exit.
             final_state: The final state of the trade (e.g., SL_HIT, T1_HIT).
+            exit_timestamp: Optional exit timestamp ISO string.
             pnl_points_override: Optional P&L points to persist instead of
                 calculating from the fill price. Used for BE stops after T1,
                 where the fill remains at entry but T1 profit was locked.
+            score_override: Optional milestone score override (e.g., 2 for runner exits).
         """
         def _update():
             mode = settings.signal_schema_mode
             if mode == "bridge":
-                fields = "entry_price,direction,signal_id,signal_uuid,setup_type,entry_timestamp"
+                fields = "entry_price,direction,signal_id,signal_uuid,setup_type,entry_timestamp,score"
             else:
-                fields = "entry_price,direction,signal_id,setup_type,entry_timestamp"
+                fields = "entry_price,direction,signal_id,setup_type,entry_timestamp,score"
                 
             import time
             for _ in range(3):
@@ -318,12 +321,17 @@ class AnalyticsLogger:
             pnl = round(pnl, 2)
             
             score = None
-            if final_state == "T2_HIT":
+            if score_override is not None:
+                score = score_override
+            elif final_state == "T2_HIT":
                 score = 2
-            elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT"):
-                score = 1
+            elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"):
+                prior_score = record.get("score")
+                score = prior_score if (prior_score is not None and prior_score >= 2) else 1
             elif final_state in ("SL_HIT", "STOPPED_OUT"):
                 score = 0
+            else:
+                score = record.get("score")
 
             update_data = {
                 "exit_timestamp": event_ts,
@@ -418,6 +426,129 @@ class AnalyticsLogger:
                 print(f"Failed to log trade analytics exit: {e}")  # pragma: no cover
         except Exception as e:  # pragma: no cover
             print(f"Failed to log trade analytics exit: {e}")  # pragma: no cover
+
+    def apply_option_lifecycle_transition(
+        self,
+        trade_id: str,
+        expected_revision: Optional[int],
+        event_id: Optional[str],
+        transition_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Atomically applies an option trailing lifecycle transition to trade_analytics
+        and active_trades tables.
+        Uses PostgreSQL RPC apply_option_lifecycle_transition when available,
+        with client-side fallback for test and offline environments.
+        """
+        try:
+            rpc_res = self.supabase.rpc(
+                "apply_option_lifecycle_transition",
+                {
+                    "p_trade_id": str(trade_id),
+                    "p_expected_revision": int(expected_revision) if expected_revision is not None else None,
+                    "p_event_id": str(event_id) if event_id else None,
+                    "p_transition": transition_payload,
+                }
+            ).execute()
+            if rpc_res and getattr(rpc_res, "data", None):
+                return rpc_res.data
+        except Exception:
+            # Fallback to direct client-side update if RPC is missing or fails (e.g. mock test client)
+            pass
+
+        try:
+            res = self.supabase.table("trade_analytics").select("market_context,score,result_state").eq("id", str(trade_id)).execute()
+            if not res.data:
+                raise RuntimeError(f"Trade {trade_id} not found in trade_analytics")
+            analytics_row = res.data[0]
+            market_context = dict(analytics_row.get("market_context") or {})
+            opt_ctx = dict(market_context.get("option_trailing") or {})
+
+            # Check idempotency
+            alert_events = dict(opt_ctx.get("alert_events") or {})
+            if event_id and event_id in alert_events:
+                return {
+                    "success": True,
+                    "idempotent_skip": True,
+                    "trade_id": str(trade_id),
+                    "revision": opt_ctx.get("revision", 1),
+                    "phase": opt_ctx.get("phase"),
+                }
+
+            current_rev = int(opt_ctx.get("revision", 1))
+            if expected_revision is not None and current_rev != expected_revision:
+                raise ValueError(f"Revision conflict for trade {trade_id}: expected {expected_revision}, found {current_rev}")
+
+            new_rev = current_rev + 1
+            payload_opt = transition_payload.get("option_trailing") or {}
+            opt_ctx.update(payload_opt)
+            opt_ctx["revision"] = new_rev
+
+            if event_id:
+                alert_events[event_id] = {
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "transition": transition_payload.get("update_type"),
+                }
+                opt_ctx["alert_events"] = alert_events
+
+            market_context["option_trailing"] = opt_ctx
+            remaining_fraction = float(opt_ctx.get("remaining_fraction", 0.0))
+            new_score = transition_payload.get("score")
+            if new_score is None:
+                new_score = analytics_row.get("score")
+
+            exit_reason = transition_payload.get("exit_reason")
+            if remaining_fraction > 0.0:
+                result_state = "OPEN"
+            else:
+                result_state = exit_reason or "CLOSED"
+
+            new_state = transition_payload.get("active_state")
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            active_update = {}
+            if new_state:
+                active_update["state"] = new_state
+            if "stop_loss" in transition_payload and transition_payload["stop_loss"] is not None:
+                active_update["stop_loss"] = float(transition_payload["stop_loss"])
+            if remaining_fraction == 0.0:
+                if "exit_price" in transition_payload and transition_payload["exit_price"] is not None:
+                    active_update["exit_price"] = float(transition_payload["exit_price"])
+                active_update["exit_type"] = result_state
+                active_update["exit_timestamp"] = transition_payload.get("exit_timestamp") or now_iso
+            if active_update:
+                try:
+                    self.supabase.table("active_trades").update(active_update).eq("id", str(trade_id)).execute()
+                except Exception as e:
+                    print(f"Fallback active_trades update failed: {e}")
+
+            analytics_update = {
+                "market_context": market_context,
+                "result_state": result_state,
+            }
+            if new_score is not None:
+                analytics_update["score"] = new_score
+            if remaining_fraction == 0.0:
+                if "exit_price" in transition_payload and transition_payload["exit_price"] is not None:
+                    analytics_update["exit_price"] = float(transition_payload["exit_price"])
+                analytics_update["exit_timestamp"] = transition_payload.get("exit_timestamp") or now_iso
+                if "pnl_points" in transition_payload and transition_payload["pnl_points"] is not None:
+                    analytics_update["pnl_points"] = float(transition_payload["pnl_points"])
+
+            self.supabase.table("trade_analytics").update(analytics_update).eq("id", str(trade_id)).execute()
+
+            return {
+                "success": True,
+                "trade_id": str(trade_id),
+                "revision": new_rev,
+                "active_state": new_state,
+                "result_state": result_state,
+                "score": new_score,
+                "remaining_fraction": remaining_fraction,
+            }
+        except Exception as e:
+            print(f"AnalyticsLogger.apply_option_lifecycle_transition failed: {e}")
+            raise
 
 
 def load_dhan_credentials_from_supabase() -> None:

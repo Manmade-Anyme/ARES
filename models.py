@@ -309,3 +309,167 @@ class OIWallEntryDecision:
     retest_timestamp: Optional[datetime]
     rejection_reason: Optional[str]
     reference_price: Optional[float]
+
+
+@dataclass
+class OptionTrailingContract:
+    security_id: str
+    exchange_segment: str
+    expiry: str
+    strike: int
+    option_type: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "security_id": self.security_id,
+            "exchange_segment": self.exchange_segment,
+            "expiry": self.expiry,
+            "strike": self.strike,
+            "option_type": self.option_type,
+        }
+
+
+@dataclass
+class OptionTrailingExit:
+    reason: str
+    event_at: str
+    detected_at: str
+    option_close: Optional[float] = None
+    option_stop: Optional[float] = None
+    index_price: Optional[float] = None
+    index_price_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "reason": self.reason,
+            "event_at": self.event_at,
+            "detected_at": self.detected_at,
+            "option_close": self.option_close,
+            "option_stop": self.option_stop,
+            "index_price": self.index_price,
+            "index_price_at": self.index_price_at,
+        }
+
+
+@dataclass
+class OptionTrailingContext:
+    policy_version: str = "option_atr_v1"
+    revision: int = 1
+    contract: Optional[OptionTrailingContract] = None
+    phase: str = "PRE_T1"                     # PRE_T1 | POST_T1 | POST_T2 | CLOSED
+    highest_milestone: int = 0               # 0 | 1 | 2
+    t1_at: Optional[str] = None
+    t2_at: Optional[str] = None
+    booked_fraction: float = 0.0
+    remaining_fraction: float = 1.0
+    original_option_sl: Optional[float] = None
+    original_option_entry: Optional[float] = None
+    index_guard_enabled: bool = True
+    index_guard_stop: Optional[float] = None
+    atr_period: int = 5
+    hhv_period: int = 10
+    multiplier: float = 2.5
+    atr_eligible: bool = False
+    protection_mode: str = "NONE"             # NONE | ATR | ORIGINAL_OPTION_SL_FLOOR
+    raw_line: Optional[float] = None
+    locked_option_sl: Optional[float] = None
+    previous_locked_option_sl: Optional[float] = None
+    stop_effective_at: Optional[str] = None
+    last_processed_option_bar_end: Optional[str] = None
+    indicator_source_version: str = "tv_atr_ts_v1"
+    monitoring_status: str = "ACTIVE"         # ACTIVE | UNAVAILABLE | RESTORED | CLOSED
+    last_valid_option_bar_end: Optional[str] = None
+    exit: Optional[OptionTrailingExit] = None
+    event_history: List[Dict[str, Any]] = field(default_factory=list)
+    alert_events: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "policy_version": self.policy_version,
+            "revision": self.revision,
+            "contract": self.contract.to_dict() if self.contract else None,
+            "phase": self.phase,
+            "highest_milestone": self.highest_milestone,
+            "t1_at": self.t1_at,
+            "t2_at": self.t2_at,
+            "booked_fraction": self.booked_fraction,
+            "remaining_fraction": self.remaining_fraction,
+            "original_option_sl": self.original_option_sl,
+            "original_option_entry": self.original_option_entry,
+            "index_guard_enabled": self.index_guard_enabled,
+            "index_guard_stop": self.index_guard_stop,
+            "atr_period": self.atr_period,
+            "hhv_period": self.hhv_period,
+            "multiplier": self.multiplier,
+            "atr_eligible": self.atr_eligible,
+            "protection_mode": self.protection_mode,
+            "raw_line": self.raw_line,
+            "locked_option_sl": self.locked_option_sl,
+            "previous_locked_option_sl": self.previous_locked_option_sl,
+            "stop_effective_at": self.stop_effective_at,
+            "last_processed_option_bar_end": self.last_processed_option_bar_end,
+            "indicator_source_version": self.indicator_source_version,
+            "monitoring_status": self.monitoring_status,
+            "last_valid_option_bar_end": self.last_valid_option_bar_end,
+            "exit": self.exit.to_dict() if self.exit else None,
+            "event_history": self.event_history,
+            "alert_events": self.alert_events,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "OptionTrailingContext":
+        if not data or not isinstance(data, dict):
+            return cls()
+        contract_data = data.get("contract")
+        contract = None
+        if isinstance(contract_data, dict):
+            contract = OptionTrailingContract(
+                security_id=str(contract_data.get("security_id", "")),
+                exchange_segment=str(contract_data.get("exchange_segment", "NSE_FNO")),
+                expiry=str(contract_data.get("expiry", "")),
+                strike=int(contract_data.get("strike", 0)),
+                option_type=str(contract_data.get("option_type", "")),
+            )
+        exit_data = data.get("exit")
+        exit_obj = None
+        if isinstance(exit_data, dict):
+            exit_obj = OptionTrailingExit(
+                reason=str(exit_data.get("reason", "")),
+                event_at=str(exit_data.get("event_at", "")),
+                detected_at=str(exit_data.get("detected_at", "")),
+                option_close=exit_data.get("option_close"),
+                option_stop=exit_data.get("option_stop"),
+                index_price=exit_data.get("index_price"),
+                index_price_at=exit_data.get("index_price_at"),
+            )
+        return cls(
+            policy_version=data.get("policy_version", "option_atr_v1"),
+            revision=int(data.get("revision", 1)),
+            contract=contract,
+            phase=data.get("phase", "PRE_T1"),
+            highest_milestone=int(data.get("highest_milestone", 0)),
+            t1_at=data.get("t1_at"),
+            t2_at=data.get("t2_at"),
+            booked_fraction=float(data.get("booked_fraction", 0.0)),
+            remaining_fraction=float(data.get("remaining_fraction", 1.0)),
+            original_option_sl=data.get("original_option_sl"),
+            original_option_entry=data.get("original_option_entry"),
+            index_guard_enabled=bool(data.get("index_guard_enabled", True)),
+            index_guard_stop=data.get("index_guard_stop"),
+            atr_period=int(data.get("atr_period", 5)),
+            hhv_period=int(data.get("hhv_period", 10)),
+            multiplier=float(data.get("multiplier", 2.5)),
+            atr_eligible=bool(data.get("atr_eligible", False)),
+            protection_mode=data.get("protection_mode", "NONE"),
+            raw_line=data.get("raw_line"),
+            locked_option_sl=data.get("locked_option_sl"),
+            previous_locked_option_sl=data.get("previous_locked_option_sl"),
+            stop_effective_at=data.get("stop_effective_at"),
+            last_processed_option_bar_end=data.get("last_processed_option_bar_end"),
+            indicator_source_version=data.get("indicator_source_version", "tv_atr_ts_v1"),
+            monitoring_status=data.get("monitoring_status", "ACTIVE"),
+            last_valid_option_bar_end=data.get("last_valid_option_bar_end"),
+            exit=exit_obj,
+            event_history=list(data.get("event_history") or []),
+            alert_events=data.get("alert_events") or {},
+        )

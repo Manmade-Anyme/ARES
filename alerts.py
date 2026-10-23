@@ -468,27 +468,81 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
     break-even exit. The final fallback means a state added to position_manager
     in future degrades to a readable line instead of a blank one.
     """
+    opt_ctx = (trade.get("market_context") or {}).get("option_trailing")
+    is_option_atr = opt_ctx is not None and opt_ctx.get("policy_version") == "option_atr_v1"
+
     if update_type == "T1_HIT":
+        if is_option_atr:
+            return "Target 1 Reached! 50% model-booked (Score: 1). Stop Loss moved to Entry."
         return "Target 1 Reached! Stop Loss trailed to Entry."
-    if update_type == "ATR_SL_UPDATED":
+    if update_type in ("T2_HIT", "T2_REACHED"):
+        if is_option_atr:
+            return "Target 2 Reached! Cumulative 80% model-booked (Score: 2). 20% Runner active."
+        return "Target 2 Reached! Trade Closed with Full Profit."
+    if update_type == "ATR_ACTIVE":
+        return "Option ATR Protection Activated."
+    if update_type in ("OPTION_SL_RATCHETED", "ATR_SL_UPDATED"):
+        if is_option_atr:
+            return "Option ATR Stop Loss Tightened."
         return "ATR trailing stop tightened."
     if update_type == "ATR_SL_HIT":
+        if is_option_atr:
+            if opt_ctx.get("highest_milestone", 0) >= 2 or opt_ctx.get("phase") == "POST_T2":
+                return "Option Stop Loss Hit on 5-Minute Close. Final 20% Runner Closed (Score: 2 retained)."
+            return "Completed 5-minute close crossed Option ATR Stop. Remaining 50% Closed (Score: 1 retained)."
         return "5-minute close crossed ATR Stop Loss. Runner exit triggered."
-    if update_type == "T2_HIT":
-        return "Target 2 Reached! Trade Closed with Full Profit."
+    if update_type == "OPTION_SL_FLOOR_HIT":
+        return "Option SL Floor Hit on 5-Minute Close. Final 20% Runner Closed (Score: 2 retained)."
     if update_type == "STOPPED_OUT_AT_BE":
+        if is_option_atr:
+            return "Trailing Stop Loss Hit at Entry. Remaining 50% Closed (Score: 1 retained)."
         return "Trailing Stop Loss Hit at Entry. T1 Profit Locked; Trade Closed."
     if update_type == "SL_HIT":
         # Pre-TASK-198 rows can still reach here with a trailed stop; keep
         # reporting those as the break-even exit they were.
         if trade.get("state") == "T1_HIT" or trade.get("stop_loss") == trade.get("entry_price"):
             return "Trailing Stop Loss Hit at Entry. Trade Closed."
+        if is_option_atr:
+            return "Index Stop Loss Hit before T1. 100% Closed (Score: 0)."
         return "Stop Loss Hit. Trade Closed."
+    if update_type == "MONITORING_UNAVAILABLE":
+        return "Option candle data feed delayed (> 60s past candle close). Retaining last locked stop."
+    if update_type == "MONITORING_RESTORED":
+        return "Option candle data feed restored. Resuming chronological processing."
+    if update_type == "PERSISTENCE_FAILURE":
+        return "Database persistence failure. Memory state active; unconfirmed in database."
     return f"Trade Closed ({update_type})."
 
 
 def _option_lifecycle_estimate(trade, spot, update_type):
     """Project option lifecycle outcomes without mislabelling spot events as fills."""
+    opt_ctx = (trade.get("market_context") or {}).get("option_trailing")
+    if opt_ctx and opt_ctx.get("policy_version") == "option_atr_v1":
+        contract = opt_ctx.get("contract") or {}
+        locked_sl = opt_ctx.get("locked_option_sl")
+        orig_sl = opt_ctx.get("original_option_sl")
+        raw_line = opt_ctx.get("raw_line")
+        mode = opt_ctx.get("protection_mode", "NONE")
+        booked = opt_ctx.get("booked_fraction", 0.0) * 100
+        rem = opt_ctx.get("remaining_fraction", 1.0) * 100
+        score = opt_ctx.get("highest_milestone", 0)
+
+        lines = [
+            f"\n📊 **Milestone**: Booked {booked:.0f}% | Remaining {rem:.0f}% | Score: {score}"
+        ]
+        if locked_sl is not None:
+            lines.append(f"🛡️ **Active Option SL**: ₹ {locked_sl:.2f} ({mode})")
+        elif orig_sl is not None:
+            raw_str = f" (raw: ₹ {raw_line:.2f})" if raw_line is not None else ""
+            lines.append(f"🛡️ **Option SL Floor**: ₹ {orig_sl:.2f}{raw_str} [Inactive until raw > floor]")
+
+        if contract:
+            sec_id = contract.get("security_id", "")
+            lines.append(f"📋 **Pinned Contract**: {contract.get('strike')} {contract.get('option_type')} (Sec ID: {sec_id})")
+
+        lines.append("⚠️ **Notice**: Reference tracking model. Spot break-even does not guarantee option break-even.")
+        return "\n" + "\n".join(lines)
+
     sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
     if not sizing:
         return ""
@@ -498,7 +552,7 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     exit_price = None
     if update_type == "T1_HIT":
         exit_price = t1
-    elif update_type == "T2_HIT":
+    elif update_type in ("T2_HIT", "T2_REACHED"):
         exit_price = sizing.get("target_2")
     elif update_type == "STOPPED_OUT_AT_BE":
         exit_price = entry
@@ -514,7 +568,7 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     pnl_per_lot = None
     if all(_number(value) != "unavailable" for value in (entry, exit_price, lot_size)) and float(lot_size) > 0:
         pnl_per_lot = (float(exit_price) - float(entry)) * float(lot_size)
-    if update_type == "ATR_SL_UPDATED":
+    if update_type in ("ATR_SL_UPDATED", "OPTION_SL_RATCHETED"):
         greeks = sizing.get("greeks") or {}
         values = (entry, greeks.get("delta"), greeks.get("gamma"), trade.get("stop_loss"), trade.get("entry_price"))
         option_sl = None
@@ -544,6 +598,15 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     if not settings.discord_webhook_url:
         return
 
+    # Check alert deduplication if option_trailing is present
+    opt_trailing = (trade.get("market_context") or {}).get("option_trailing")
+    event_key = None
+    if opt_trailing and isinstance(opt_trailing.get("alert_events"), dict):
+        current_rev = opt_trailing.get("revision", 1)
+        event_key = f"{trade.get('id')}:{opt_trailing.get('phase')}:{current_rev}:{update_type}"
+        if opt_trailing["alert_events"].get(event_key, {}).get("status") == "DELIVERED":
+            return
+
     # Color code based on direction
     is_bullish = trade.get("direction") == "BULLISH"
     color = 3066993 if is_bullish else 15158332  # Green or Red
@@ -563,7 +626,9 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
 🛑 **New SL**  : **{trade['stop_loss']:.2f}**
 ⭐ **Status**  : **{trade['state']}**
 """
-    if update_type in {"ATR_SL_UPDATED", "ATR_SL_HIT"}:
+    if update_type in {"ATR_SL_UPDATED", "ATR_SL_HIT"} and not (
+        opt_trailing and opt_trailing.get("policy_version") == "option_atr_v1"
+    ):
         atr = (trade.get("market_context") or {}).get("atr_trailing") or {}
         description += f"\n🛑 **Previous SL**: {_number(atr.get('previous_sl', trade['stop_loss']))}\n📐 **Method**: 5-minute ATR trailing"
     description += _option_lifecycle_estimate(trade, spot, update_type)
@@ -582,5 +647,28 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
         try:
             response = await client.post(settings.discord_webhook_url, json=payload)
             response.raise_for_status()
+            if opt_trailing and event_key and isinstance(opt_trailing.get("alert_events"), dict):
+                opt_trailing["alert_events"][event_key] = {
+                    "status": "DELIVERED",
+                    "delivered_at": datetime.now(timezone.utc).isoformat(),
+                    "update_type": update_type,
+                }
         except Exception as e:
+            if opt_trailing and event_key and isinstance(opt_trailing.get("alert_events"), dict):
+                opt_trailing["alert_events"][event_key] = {
+                    "status": "FAILED",
+                    "failed_at": datetime.now(timezone.utc).isoformat(),
+                    "error": str(e),
+                    "update_type": update_type,
+                }
             print(f"[-] Discord trade update alert failed: {type(e).__name__} - {e}")
+
+
+async def send_monitoring_alert(trade: dict, spot: float, status: str, detail: str = "") -> None:
+    """Sends Card J or Card K monitoring alert."""
+    await send_trade_update(trade, spot, f"MONITORING_{status}")
+
+
+async def send_persistence_alert(trade: dict, spot: float, error_msg: str) -> None:
+    """Sends Card L persistence failure alert."""
+    await send_trade_update(trade, spot, "PERSISTENCE_FAILURE")
