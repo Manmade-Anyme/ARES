@@ -50,6 +50,65 @@ def carried_runner(trade):
     return opt
 
 
+@pytest.mark.parametrize('ingestion', ['market', 'premium_then_index'])
+@pytest.mark.parametrize('missing_close', [120, 200])
+@pytest.mark.asyncio
+async def test_truncated_history_queues_t2_until_missing_option_close_is_recovered(monkeypatch, ingestion, missing_close):
+    pm, trade, sender = make_pm(monkeypatch)
+    trade.update(state='T1_HIT', stop_loss=trade['entry_price'])
+    opt = trade['market_context']['option_trailing']
+    opt.update(phase='POST_T1', highest_milestone=1, booked_fraction=.5, remaining_fraction=.5,
+               t1_at='2026-10-23T10:09:00+05:30', locked_option_sl=127, protection_mode='ATR',
+               last_processed_option_bar_end='2026-10-23T10:50:00+05:30')
+    end = datetime(2026, 10, 23, 11, tzinfo=IST)
+    truncated = OptionCandle(end-timedelta(minutes=5), end, 200, 201, 199, 200, 1, '51333')
+    touch_at = end+timedelta(minutes=1)
+    index = {'timestamp': end.isoformat(), 'open': 22520, 'high': 22520,
+             'low': 22470, 'close': 22470, 'complete': True}
+    if ingestion == 'market':
+        await pm.update_option_market_events([index], {'51333': [truncated]}, current_time=touch_at)
+    else:
+        await pm.update_option_atr_trailing({'51333': [truncated]}, current_time=touch_at)
+        await pm.update_trades(22470, event_time=touch_at)
+    assert trade['state'] == 'T1_HIT'
+    assert opt['highest_milestone'] == 1
+    assert datetime.fromisoformat(opt['last_processed_option_bar_end']) == end-timedelta(minutes=10)
+    assert opt['pending_index_observations']
+    assert not [call for call in sender.call_args_list if call.args[0]['update_type'] == 'T2_HIT']
+
+    missing = OptionCandle(end-timedelta(minutes=10), end-timedelta(minutes=5),
+                          200, 201, min(199, missing_close-1), missing_close, 1, '51333')
+    await pm.update_option_market_events([], {'51333': [missing, truncated]}, current_time=touch_at)
+    if missing_close < 127:
+        assert trade['state'] == 'CLOSED'
+        assert pm.analytics.rows[-1]['score'] == 1
+        assert opt['exit']['reason'] == 'ATR_SL_HIT'
+        assert datetime.fromisoformat(opt['exit']['event_at']) == missing.end
+        assert opt['exit']['exited_fraction'] == .5
+        assert not [call for call in sender.call_args_list if call.args[0]['update_type'] == 'T2_HIT']
+    else:
+        assert trade['state'] == 'T2_REACHED'
+        assert pm.analytics.rows[-1]['score'] == 2
+        assert opt['remaining_fraction'] == .2
+    assert opt['pending_index_observations'] == []
+
+
+@pytest.mark.parametrize('watermark,start', [
+    ('2026-10-23T10:50:00+05:30', '2026-10-23T10:50:00+05:30'),
+    ('2026-10-22T15:30:00+05:30', '2026-10-23T09:15:00+05:30'),
+])
+@pytest.mark.asyncio
+async def test_adjacent_restored_history_remains_eligible_across_session_boundary(monkeypatch, watermark, start):
+    pm, trade, _ = make_pm(monkeypatch)
+    opt = carried_runner(trade)
+    opt['last_processed_option_bar_end'] = watermark
+    begin = datetime.fromisoformat(start)
+    bar = OptionCandle(begin, begin+timedelta(minutes=5), 200, 201, 199, 200, 1, '51333')
+    await pm.update_option_market_events([], {'51333': [bar]}, current_time=bar.end)
+    assert trade['state'] == 'T1_HIT'
+    assert datetime.fromisoformat(opt['last_processed_option_bar_end']) == bar.end
+
+
 @pytest.mark.asyncio
 async def test_unknown_weekday_session_does_not_invent_holiday_outage(monkeypatch):
     pm,trade,sender=make_pm(monkeypatch)

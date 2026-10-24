@@ -52,6 +52,76 @@ def exit_bar(close):
 
 
 @pytest.mark.parametrize('retry_after_outage', [False, True])
+@pytest.mark.parametrize('earlier_option_exit', [False, True])
+@pytest.mark.asyncio
+async def test_pending_index_guard_rebases_onto_stronger_stop_and_survives_restart(
+    monkeypatch, retry_after_outage, earlier_option_exit,
+):
+    pm, trade, sender = make_pm(monkeypatch)
+    option = post_t1(trade, stop=127)
+    guard_at = datetime(2026, 10, 23, 10, 56, tzinfo=IST)
+    committed_observation = {
+        'event_at': (guard_at + timedelta(minutes=1)).isoformat(),
+        'price': 22554, 'high': 22554, 'low': 22554,
+        'touches_t2': False, 'touches_guard': True, 'candle_timestamp': None,
+    }
+    committed_guard = {'event_at': committed_observation['event_at'],
+                       'index_price': trade['entry_price'], 'status': 'AWAITING_OPTION_BACKFILL'}
+    pm.analytics = ConflictLedger({**option, 'locked_option_sl': 150,
+        'pending_index_observations': [committed_observation],
+        'observed_index_guard_exit': committed_guard})
+    pm.analytics.fail = retry_after_outage
+    pm._option_available_until = {}
+    await pm.update_trades(22553, event_time=guard_at)
+    if retry_after_outage:
+        assert len(pm.analytics.rows) == 1
+        queued_id = pm._option_pending[trade['id']][0][0]
+        # A later live observation must survive the earlier queued rebase.
+        await pm.update_trades(22555, event_time=guard_at+timedelta(minutes=2))
+        pm.analytics.fail = False
+        await pm.retry_option_lifecycle_writes()
+        assert queued_id in pm.analytics.events
+
+    assert pm.analytics.conflicts == 1
+    durable = deepcopy(pm.analytics.rows[-1]['option_trailing'])
+    for context in (option, durable):
+        assert context['locked_option_sl'] == 150
+        expected = [guard_at, datetime.fromisoformat(committed_observation['event_at'])]
+        if retry_after_outage:
+            expected.append(guard_at+timedelta(minutes=2))
+        assert [datetime.fromisoformat(item['event_at']) for item in context['pending_index_observations']] == expected
+        assert datetime.fromisoformat(context['observed_index_guard_exit']['event_at']) == guard_at
+        assert context['observed_index_guard_exit']['status'] == 'AWAITING_OPTION_BACKFILL'
+    assert pm.analytics.rows[-1]['alert_snapshot'] is None
+    assert durable['alert_events'] == {}
+    assert not [call for call in sender.call_args_list if call.args[0]['update_type'] != 'PERSISTENCE_FAILED']
+    assert trade['state'] == 'T1_HIT'
+
+    restarted, restored_trade, restored_sender = make_pm(monkeypatch)
+    restored_trade.update(state='T1_HIT', stop_loss=restored_trade['entry_price'])
+    restored_trade['market_context']['option_trailing'] = durable
+    restarted.analytics = pm.analytics
+    restarted._option_available_until = {}
+    await restarted.update_option_market_events([], {}, current_time=guard_at)
+    assert restored_trade['state'] == 'T1_HIT'
+    assert durable['observed_index_guard_exit']['status'] == 'AWAITING_OPTION_BACKFILL'
+
+    start = datetime(2026, 10, 23, 9, 15, tzinfo=IST)
+    bars = [OptionCandle(start+timedelta(minutes=5*i), start+timedelta(minutes=5*(i+1)),
+                        200, 201, 199, 200, 1, '51333') for i in range(20)]
+    if earlier_option_exit:
+        bars[-1] = exit_bar(140)
+    await restarted.update_option_market_events([], {'51333': bars}, current_time=guard_at+timedelta(minutes=2))
+    assert restored_trade['state'] == 'CLOSED'
+    assert durable['highest_milestone'] == pm.analytics.rows[-1]['score'] == 1
+    assert pm.analytics.rows[-1]['exit_reason'] == ('ATR_SL_HIT' if earlier_option_exit else 'STOPPED_OUT_AT_BE')
+    assert datetime.fromisoformat(durable['exit']['event_at']) == (bars[-1].end if earlier_option_exit else guard_at)
+    exits = [call.args[0] for call in restored_sender.call_args_list
+             if call.args[0]['update_type'] in {'ATR_SL_HIT', 'STOPPED_OUT_AT_BE'}]
+    assert len(exits) == 1
+
+
+@pytest.mark.parametrize('retry_after_outage', [False, True])
 @pytest.mark.asyncio
 async def test_newer_t2_rebases_onto_higher_committed_stop(monkeypatch, retry_after_outage):
     pm, trade, sender = make_pm(monkeypatch)
@@ -96,6 +166,72 @@ async def test_newer_t2_rebases_onto_higher_committed_stop(monkeypatch, retry_af
     assert pm.analytics.rows[-1]['score'] == 2
     assert option['exit']['option_stop'] == 150
     assert option['exit']['exited_fraction'] == .2
+
+
+@pytest.mark.asyncio
+async def test_later_queued_raise_cannot_erase_earlier_committed_guard_on_restart(monkeypatch):
+    pm, trade, _ = make_pm(monkeypatch)
+    option = post_t1(trade, stop=127)
+    remote_at = datetime(2026, 10, 23, 11, 1, tzinfo=IST)
+    local_at = remote_at+timedelta(minutes=1)
+    remote = {'event_at': remote_at.isoformat(), 'price': 22553, 'high': 22553, 'low': 22553,
+              'touches_t2': False, 'touches_guard': True, 'candle_timestamp': None}
+    pm.analytics = ConflictLedger({**option, 'locked_option_sl': 150,
+        'pending_index_observations': [remote], 'observed_index_guard_exit': {
+            'event_at': remote_at.isoformat(), 'index_price': trade['entry_price'],
+            'status': 'AWAITING_OPTION_BACKFILL'}})
+    pm.analytics.fail = True
+    pm._option_available_until = {}
+    await pm.update_trades(22554, event_time=local_at)
+    start = datetime(2026, 10, 23, 9, 15, tzinfo=IST)
+    bars = [OptionCandle(start+timedelta(minutes=5*i), start+timedelta(minutes=5*(i+1)),
+                        200, 201, 199, 200, 1, '51333') for i in range(20)]
+    await pm.update_option_market_events([], {'51333': bars}, current_time=local_at+timedelta(minutes=1))
+    assert option['locked_option_sl'] == 196
+    pm.analytics.fail = False
+    await pm.retry_option_lifecycle_writes()
+    durable = deepcopy(pm.analytics.rows[-1]['option_trailing'])
+    assert [datetime.fromisoformat(item['event_at']) for item in durable['pending_index_observations']] == [remote_at, local_at]
+    assert datetime.fromisoformat(durable['observed_index_guard_exit']['event_at']) == remote_at
+    assert durable['locked_option_sl'] == 196
+
+    restarted, restored_trade, _ = make_pm(monkeypatch)
+    restored_trade.update(state='T1_HIT', stop_loss=restored_trade['entry_price'])
+    restored_trade['market_context']['option_trailing'] = durable
+    restarted.analytics = pm.analytics
+    end = bars[-1].end+timedelta(minutes=5)
+    bars.append(OptionCandle(end-timedelta(minutes=5), end, 200, 201, 199, 200, 1, '51333'))
+    await restarted.update_option_market_events([], {'51333': bars}, current_time=local_at+timedelta(minutes=1))
+    assert restored_trade['state'] == 'CLOSED'
+    assert durable['exit']['reason'] == 'STOPPED_OUT_AT_BE'
+    assert datetime.fromisoformat(durable['exit']['event_at']) == remote_at
+    assert pm.analytics.rows[-1]['score'] == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_guard_rebase_does_not_restore_journal_into_observed_closed_trade(monkeypatch):
+    pm, trade, _ = make_pm(monkeypatch)
+    option = post_t1(trade, stop=127)
+    pm.analytics = ConflictLedger({**option, 'locked_option_sl': 150})
+    pm.analytics.fail = True
+    pm._option_available_until = {}
+    guard_at = datetime(2026, 10, 23, 11, 1, tzinfo=IST)
+    await pm.update_trades(22553, event_time=guard_at)
+    start = datetime(2026, 10, 23, 9, 15, tzinfo=IST)
+    bars = [OptionCandle(start+timedelta(minutes=5*i), start+timedelta(minutes=5*(i+1)),
+                        200, 201, 199, 200, 1, '51333') for i in range(20)]
+    bars[-1] = exit_bar(120)
+    await pm.update_option_market_events([], {'51333': bars}, current_time=guard_at)
+    assert trade['state'] == 'CLOSED'
+    pm.analytics.fail = False
+    await pm.retry_option_lifecycle_writes()
+    assert trade['state'] == 'CLOSED'
+    assert option['pending_index_observations'] == []
+    assert pm.analytics.rows[-1]['active_state'] == 'CLOSED'
+    assert pm.analytics.rows[-1]['option_trailing']['pending_index_observations'] == []
+    assert pm.analytics.rows[-1]['score'] == 1
+    assert option['exit']['reason'] == 'ATR_SL_HIT'
+    assert datetime.fromisoformat(option['exit']['event_at']) == bars[-1].end
 
 
 @pytest.mark.asyncio

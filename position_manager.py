@@ -981,9 +981,10 @@ class PositionManager:
                                             opt.update({key: candidate[key] for key in ("phase", "highest_milestone", "booked_fraction", "remaining_fraction", "index_guard_enabled", "index_guard_stop", "locked_option_sl", "protection_mode") if key in candidate})
                                             trade["state"] = queued["active_state"]
                                             kept.append((queued_id, queued))
-                                        elif older_stop and candidate.get("highest_milestone", 0) > persisted_opt.get("highest_milestone", 0):
+                                        elif older_stop and (candidate.get("highest_milestone", 0) > persisted_opt.get("highest_milestone", 0)
+                                                or (not older_phase and (candidate.get("pending_index_observations") or candidate.get("observed_index_guard_exit")))):
                                             # Milestone progress and stop strength are independent:
-                                            # retain a new T2 touch with the already committed protection.
+                                            # retain new touches/backfill guards with committed protection.
                                             candidate["locked_option_sl"] = persisted_opt["locked_option_sl"]
                                             candidate["protection_mode"] = persisted_opt.get("protection_mode", candidate.get("protection_mode"))
                                             alert = queued.get("alert_snapshot")
@@ -999,6 +1000,36 @@ class PositionManager:
                                             kept.append((queued_id, queued))
                                     for _, kept_payload in kept:
                                         candidate = kept_payload["option_trailing"]
+                                        if candidate.get("phase") == persisted_opt.get("phase") == "POST_T1":
+                                            # Preserve both writers' deferred sources in every queued
+                                            # snapshot, including later raises and silent watermarks.
+                                            # CLOSED/T2 transitions have consumed these observations.
+                                            contexts = [candidate]
+                                            if opt.get("phase") == "POST_T1":
+                                                contexts.append(opt)
+                                            for context in contexts:
+                                                observations = deepcopy(persisted_opt.get("pending_index_observations") or [])
+                                                if context is opt:
+                                                    observations = deepcopy(candidate.get("pending_index_observations") or observations)
+                                                for observation in context.get("pending_index_observations") or []:
+                                                    if observation not in observations:
+                                                        observations.append(deepcopy(observation))
+                                                observations.sort(key=lambda item: parse_candle_timestamp(item["event_at"]))
+                                                context["pending_index_observations"] = observations
+                                                guards = [guard for guard in (context.get("observed_index_guard_exit"),
+                                                          candidate.get("observed_index_guard_exit"),
+                                                          persisted_opt.get("observed_index_guard_exit")) if guard]
+                                                guards.extend({"event_at": observation["event_at"], "index_price": trade["entry_price"],
+                                                               "status": "AWAITING_OPTION_BACKFILL"}
+                                                              for observation in observations if observation.get("touches_guard"))
+                                                if guards:
+                                                    context["observed_index_guard_exit"] = deepcopy(min(guards,
+                                                        key=lambda guard: parse_candle_timestamp(guard["event_at"])))
+                                            alert = kept_payload.get("alert_snapshot")
+                                            if alert:
+                                                alert["option_trailing"] = deepcopy(candidate)
+                                                alert["option_trailing"].pop("alert_events", None)
+                                                alert["trade"]["market_context"]["option_trailing"] = deepcopy(alert["option_trailing"])
                                         for field in ("last_processed_option_bar_end", "last_valid_option_bar_end", "last_index_event_at"):
                                             committed_at = persisted_opt.get(field)
                                             if committed_at and (not candidate.get(field) or parse_candle_timestamp(candidate[field]) < parse_candle_timestamp(committed_at)):
@@ -1124,6 +1155,17 @@ class PositionManager:
                 normalized = [bar for bar in normalized if bar.start_time.date().isoformat() >= history_from]
             contiguous = contiguous_option_candles(normalized)
             bars = calculate_option_atr_bars(contiguous)
+            # Validate against this trade's durable progress before publishing
+            # availability or caching history used to release index observations.
+            if bars and opt.get("last_processed_option_bar_end"):
+                from options_candles import OptionCandle
+                cutoff = parse_candle_timestamp(opt["last_processed_option_bar_end"])
+                first = next((bar for bar in bars if parse_candle_timestamp(bar.end_time) > cutoff), None)
+                if first and not any(parse_candle_timestamp(bar.end_time) == cutoff for bar in bars):
+                    probe = [OptionCandle(cutoff-timedelta(minutes=5), cutoff, 1,1,1,1,0),
+                             OptionCandle(parse_candle_timestamp(first.start_time), parse_candle_timestamp(first.end_time),1,1,1,1,0)]
+                    if len(contiguous_option_candles(probe)) != 2:
+                        bars = []
             result[trade["id"]] = bars
             # Keep previously confirmed history through a transient outage.
             if bars:
@@ -1147,16 +1189,6 @@ class PositionManager:
             if phase not in {"POST_T1", "POST_T2"}:
                 continue
             cutoff = parse_candle_timestamp(opt.get("last_processed_option_bar_end") or opt["t1_at"])
-            # Restarts cannot silently skip beyond their durable watermark.
-            if bars and opt.get("last_processed_option_bar_end"):
-                from options_candles import OptionCandle
-                previous = cutoff
-                first = next((bar for bar in bars if parse_candle_timestamp(bar.end_time) > cutoff), None)
-                if first and not any(parse_candle_timestamp(bar.end_time) == cutoff for bar in bars):
-                    probe = [OptionCandle(previous-timedelta(minutes=5), previous, 1,1,1,1,0),
-                             OptionCandle(parse_candle_timestamp(first.start_time), parse_candle_timestamp(first.end_time),1,1,1,1,0)]
-                    if len(contiguous_option_candles(probe)) != 2:
-                        bars = []
             if opt.get("locked_option_sl") is None:
                 self._seed_option_stop(trade, parse_candle_timestamp(opt["t1_at"]))
             for bar in bars:
