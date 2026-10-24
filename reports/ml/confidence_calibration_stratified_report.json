@@ -1,0 +1,696 @@
+{
+  "by_setup": {
+    "EXHAUSTION_REVERSAL": {
+      "sample_size": 28,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 0,
+          "win_rate": null,
+          "mean_expectancy": null
+        },
+        "MEDIUM": {
+          "sample_size": 28,
+          "win_rate": 0.35714285714285715,
+          "mean_expectancy": 5.457142857142857
+        }
+      },
+      "significance": {
+        "high_count": 0,
+        "medium_count": 28,
+        "high_win_rate": 0.0,
+        "medium_win_rate": 0.35714285714285715,
+        "high_expectancy": 0.0,
+        "medium_expectancy": 5.457142857142857,
+        "win_rate_diff": -0.35714285714285715,
+        "expectancy_diff": -5.457142857142857,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INVERTED"
+      },
+      "brier": {
+        "brier_score": 0.23264939435301793,
+        "reliability": 0.007781669485293073,
+        "resolution": 0.004724111866969009,
+        "uncertainty": 0.22959183673469385,
+        "base_rate": 0.35714285714285715,
+        "within_bin_variance": 2.2892397148751938e-05,
+        "within_bin_covariance": -0.0008367171157868832
+      },
+      "calibration": {
+        "bin_centers": [
+          0.3333333333333333,
+          0.4172265288544359
+        ],
+        "bin_accuracies": [
+          0.0,
+          0.37037037037037035
+        ],
+        "bin_confidences": [
+          0.3333333333333333,
+          0.4172265288544359
+        ],
+        "bin_counts": [
+          1,
+          27
+        ],
+        "ece": 0.05708748615725368,
+        "mce": 0.3333333333333333
+      }
+    },
+    "FAILED_BREAKOUT": {
+      "sample_size": 4,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 0,
+          "win_rate": null,
+          "mean_expectancy": null
+        },
+        "MEDIUM": {
+          "sample_size": 4,
+          "win_rate": 0.0,
+          "mean_expectancy": -12.0
+        }
+      },
+      "significance": {
+        "high_count": 0,
+        "medium_count": 4,
+        "high_win_rate": 0.0,
+        "medium_win_rate": 0.0,
+        "high_expectancy": 0.0,
+        "medium_expectancy": -12.0,
+        "win_rate_diff": 0.0,
+        "expectancy_diff": 12.0,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INSIGNIFICANT"
+      },
+      "brier": {
+        "brier_score": 0.1752298539751217,
+        "reliability": 0.1752298539751217,
+        "resolution": 0.0,
+        "uncertainty": 0.0,
+        "base_rate": 0.0,
+        "within_bin_variance": 0.0,
+        "within_bin_covariance": 0.0
+      },
+      "calibration": {
+        "bin_centers": [
+          0.4186046511627907
+        ],
+        "bin_accuracies": [
+          0.0
+        ],
+        "bin_confidences": [
+          0.4186046511627907
+        ],
+        "bin_counts": [
+          4
+        ],
+        "ece": 0.4186046511627907,
+        "mce": 0.4186046511627907
+      }
+    },
+    "OI_WALL_REJECTION": {
+      "sample_size": 2,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 0,
+          "win_rate": null,
+          "mean_expectancy": null
+        },
+        "MEDIUM": {
+          "sample_size": 2,
+          "win_rate": 1.0,
+          "mean_expectancy": 49.975
+        }
+      },
+      "significance": {
+        "high_count": 0,
+        "medium_count": 2,
+        "high_win_rate": 0.0,
+        "medium_win_rate": 1.0,
+        "high_expectancy": 0.0,
+        "medium_expectancy": 49.975,
+        "win_rate_diff": -1.0,
+        "expectancy_diff": -49.975,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INVERTED"
+      },
+      "brier": {
+        "brier_score": 0.3380205516495402,
+        "reliability": 0.3380205516495402,
+        "resolution": 0.0,
+        "uncertainty": 0.0,
+        "base_rate": 1.0,
+        "within_bin_variance": 0.0,
+        "within_bin_covariance": 0.0
+      },
+      "calibration": {
+        "bin_centers": [
+          0.4186046511627907
+        ],
+        "bin_accuracies": [
+          1.0
+        ],
+        "bin_confidences": [
+          0.4186046511627907
+        ],
+        "bin_counts": [
+          2
+        ],
+        "ece": 0.5813953488372092,
+        "mce": 0.5813953488372092
+      }
+    },
+    "TREND_CONTINUATION": {
+      "sample_size": 21,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 15,
+          "win_rate": 0.6,
+          "mean_expectancy": 11.116666666666667
+        },
+        "MEDIUM": {
+          "sample_size": 6,
+          "win_rate": 0.16666666666666666,
+          "mean_expectancy": -16.666666666666668
+        }
+      },
+      "significance": {
+        "high_count": 15,
+        "medium_count": 6,
+        "high_win_rate": 0.6,
+        "medium_win_rate": 0.16666666666666666,
+        "high_expectancy": 11.116666666666667,
+        "medium_expectancy": -16.666666666666668,
+        "win_rate_diff": 0.43333333333333335,
+        "expectancy_diff": 27.783333333333335,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INSIGNIFICANT"
+      },
+      "brier": {
+        "brier_score": 0.24897072920869562,
+        "reliability": 0.010875491113457581,
+        "resolution": 0.011337868480725623,
+        "uncertainty": 0.2494331065759637,
+        "base_rate": 0.47619047619047616,
+        "within_bin_variance": 1.5658399649746322e-05,
+        "within_bin_covariance": 0.0004429678848283499
+      },
+      "calibration": {
+        "bin_centers": [
+          0.3333333333333333,
+          0.41767441860465115
+        ],
+        "bin_accuracies": [
+          0.0,
+          0.5
+        ],
+        "bin_confidences": [
+          0.3333333333333333,
+          0.41767441860465115
+        ],
+        "bin_counts": [
+          1,
+          20
+        ],
+        "ece": 0.09427833148763382,
+        "mce": 0.3333333333333333
+      }
+    }
+  },
+  "by_direction": {
+    "BEARISH": {
+      "sample_size": 23,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 8,
+          "win_rate": 0.5,
+          "mean_expectancy": 4.59375
+        },
+        "MEDIUM": {
+          "sample_size": 15,
+          "win_rate": 0.4,
+          "mean_expectancy": -2.066666666666667
+        }
+      },
+      "significance": {
+        "high_count": 8,
+        "medium_count": 15,
+        "high_win_rate": 0.5,
+        "medium_win_rate": 0.4,
+        "high_expectancy": 4.59375,
+        "medium_expectancy": -2.066666666666667,
+        "win_rate_diff": 0.09999999999999998,
+        "expectancy_diff": 6.660416666666666,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INSIGNIFICANT"
+      },
+      "brier": {
+        "brier_score": 0.24168196413781565,
+        "reliability": 0.013938692916283617,
+        "resolution": 0.018003420649923486,
+        "uncertainty": 0.2457466918714556,
+        "base_rate": 0.43478260869565216,
+        "within_bin_variance": 3.869810439754239e-05,
+        "within_bin_covariance": -0.00046222735808175663
+      },
+      "calibration": {
+        "bin_centers": [
+          0.3333333333333333,
+          0.41594684385382064
+        ],
+        "bin_accuracies": [
+          0.0,
+          0.47619047619047616
+        ],
+        "bin_confidences": [
+          0.3333333333333333,
+          0.41594684385382064
+        ],
+        "bin_counts": [
+          2,
+          21
+        ],
+        "ece": 0.08399056285810577,
+        "mce": 0.3333333333333333
+      }
+    },
+    "BULLISH": {
+      "sample_size": 32,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 7,
+          "win_rate": 0.7142857142857143,
+          "mean_expectancy": 18.571428571428573
+        },
+        "MEDIUM": {
+          "sample_size": 25,
+          "win_rate": 0.28,
+          "mean_expectancy": 5.4300000000000015
+        }
+      },
+      "significance": {
+        "high_count": 7,
+        "medium_count": 25,
+        "high_win_rate": 0.7142857142857143,
+        "medium_win_rate": 0.28,
+        "high_expectancy": 18.571428571428573,
+        "medium_expectancy": 5.4300000000000015,
+        "win_rate_diff": 0.4342857142857143,
+        "expectancy_diff": 13.141428571428571,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INSIGNIFICANT"
+      },
+      "brier": {
+        "brier_score": 0.23627636560302862,
+        "reliability": 0.001901365603028666,
+        "resolution": 0.0,
+        "uncertainty": 0.234375,
+        "base_rate": 0.375,
+        "within_bin_variance": 0.0,
+        "within_bin_covariance": 0.0
+      },
+      "calibration": {
+        "bin_centers": [
+          0.4186046511627907
+        ],
+        "bin_accuracies": [
+          0.375
+        ],
+        "bin_confidences": [
+          0.4186046511627907
+        ],
+        "bin_counts": [
+          32
+        ],
+        "ece": 0.04360465116279072,
+        "mce": 0.04360465116279072
+      }
+    }
+  },
+  "by_volatility_regime": {
+    "HIGH_IV": {
+      "sample_size": 27,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 8,
+          "win_rate": 0.625,
+          "mean_expectancy": 10.84375
+        },
+        "MEDIUM": {
+          "sample_size": 19,
+          "win_rate": 0.2631578947368421,
+          "mean_expectancy": -1.4236842105263157
+        }
+      },
+      "significance": {
+        "high_count": 8,
+        "medium_count": 19,
+        "high_win_rate": 0.625,
+        "medium_win_rate": 0.2631578947368421,
+        "high_expectancy": 10.84375,
+        "medium_expectancy": -1.4236842105263157,
+        "win_rate_diff": 0.3618421052631579,
+        "expectancy_diff": 12.267434210526316,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INSIGNIFICANT"
+      },
+      "brier": {
+        "brier_score": 0.23314793671142445,
+        "reliability": 0.005227708791196566,
+        "resolution": 0.0052759312018571276,
+        "uncertainty": 0.23319615912208505,
+        "base_rate": 0.37037037037037035,
+        "within_bin_variance": 2.9673587291299632e-33,
+        "within_bin_covariance": -2.2825836377922794e-34
+      },
+      "calibration": {
+        "bin_centers": [
+          0.3333333333333333,
+          0.4186046511627908
+        ],
+        "bin_accuracies": [
+          0.0,
+          0.38461538461538464
+        ],
+        "bin_confidences": [
+          0.3333333333333333,
+          0.4186046511627908
+        ],
+        "bin_counts": [
+          1,
+          26
+        ],
+        "ece": 0.045076083835773814,
+        "mce": 0.3333333333333333
+      }
+    },
+    "LOW_IV": {
+      "sample_size": 28,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 7,
+          "win_rate": 0.5714285714285714,
+          "mean_expectancy": 11.428571428571429
+        },
+        "MEDIUM": {
+          "sample_size": 21,
+          "win_rate": 0.38095238095238093,
+          "mean_expectancy": 6.276190476190477
+        }
+      },
+      "significance": {
+        "high_count": 7,
+        "medium_count": 21,
+        "high_win_rate": 0.5714285714285714,
+        "medium_win_rate": 0.38095238095238093,
+        "high_expectancy": 11.428571428571429,
+        "medium_expectancy": 6.276190476190477,
+        "win_rate_diff": 0.19047619047619047,
+        "expectancy_diff": 5.152380952380952,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INSIGNIFICANT"
+      },
+      "brier": {
+        "brier_score": 0.24373337797350778,
+        "reliability": 0.005638139878269673,
+        "resolution": 0.006802721088435374,
+        "uncertainty": 0.24489795918367344,
+        "base_rate": 0.42857142857142855,
+        "within_bin_variance": 3.296505189420278e-05,
+        "within_bin_covariance": -0.0004429678848283499
+      },
+      "calibration": {
+        "bin_centers": [
+          0.3333333333333333,
+          0.41653746770025846
+        ],
+        "bin_accuracies": [
+          0.0,
+          0.4444444444444444
+        ],
+        "bin_confidences": [
+          0.3333333333333333,
+          0.41653746770025846
+        ],
+        "bin_counts": [
+          1,
+          27
+        ],
+        "ece": 0.03881506090808408,
+        "mce": 0.3333333333333333
+      }
+    }
+  },
+  "by_time_of_day": {
+    "09:15-10:30": {
+      "sample_size": 10,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 3,
+          "win_rate": 1.0,
+          "mean_expectancy": 64.05
+        },
+        "MEDIUM": {
+          "sample_size": 7,
+          "win_rate": 0.42857142857142855,
+          "mean_expectancy": 9.992857142857144
+        }
+      },
+      "significance": {
+        "high_count": 3,
+        "medium_count": 7,
+        "high_win_rate": 1.0,
+        "medium_win_rate": 0.42857142857142855,
+        "high_expectancy": 64.05,
+        "medium_expectancy": 9.992857142857144,
+        "win_rate_diff": 0.5714285714285714,
+        "expectancy_diff": 54.05714285714285,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INSIGNIFICANT"
+      },
+      "brier": {
+        "brier_score": 0.27290427257977273,
+        "reliability": 0.03290427257977283,
+        "resolution": 0.0,
+        "uncertainty": 0.24,
+        "base_rate": 0.6,
+        "within_bin_variance": 0.0,
+        "within_bin_covariance": 0.0
+      },
+      "calibration": {
+        "bin_centers": [
+          0.4186046511627907
+        ],
+        "bin_accuracies": [
+          0.6
+        ],
+        "bin_confidences": [
+          0.4186046511627907
+        ],
+        "bin_counts": [
+          10
+        ],
+        "ece": 0.18139534883720926,
+        "mce": 0.18139534883720926
+      }
+    },
+    "10:30-13:30": {
+      "sample_size": 27,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 7,
+          "win_rate": 0.2857142857142857,
+          "mean_expectancy": -10.714285714285714
+        },
+        "MEDIUM": {
+          "sample_size": 20,
+          "win_rate": 0.25,
+          "mean_expectancy": -5.25
+        }
+      },
+      "significance": {
+        "high_count": 7,
+        "medium_count": 20,
+        "high_win_rate": 0.2857142857142857,
+        "medium_win_rate": 0.25,
+        "high_expectancy": -10.714285714285714,
+        "medium_expectancy": -5.25,
+        "win_rate_diff": 0.0357142857142857,
+        "expectancy_diff": -5.4642857142857135,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INVERTED"
+      },
+      "brier": {
+        "brier_score": 0.2176848346453538,
+        "reliability": 0.025640938897754418,
+        "resolution": 0.0,
+        "uncertainty": 0.19204389574759942,
+        "base_rate": 0.25925925925925924,
+        "within_bin_variance": 2.3740263709816828e-05,
+        "within_bin_covariance": -0.00033177018534469
+      },
+      "calibration": {
+        "bin_centers": [
+          0.4172265288544359
+        ],
+        "bin_accuracies": [
+          0.25925925925925924
+        ],
+        "bin_confidences": [
+          0.4172265288544359
+        ],
+        "bin_counts": [
+          27
+        ],
+        "ece": 0.15796726959517665,
+        "mce": 0.15796726959517665
+      }
+    },
+    "13:30-15:30": {
+      "sample_size": 18,
+      "by_tier": {
+        "HIGH": {
+          "sample_size": 5,
+          "win_rate": 0.8,
+          "mean_expectancy": 9.92
+        },
+        "MEDIUM": {
+          "sample_size": 13,
+          "win_rate": 0.38461538461538464,
+          "mean_expectancy": 10.753846153846155
+        }
+      },
+      "significance": {
+        "high_count": 5,
+        "medium_count": 13,
+        "high_win_rate": 0.8,
+        "medium_win_rate": 0.38461538461538464,
+        "high_expectancy": 9.92,
+        "medium_expectancy": 10.753846153846155,
+        "win_rate_diff": 0.4153846153846154,
+        "expectancy_diff": -0.8338461538461548,
+        "fisher_p_value": 1.0,
+        "mann_whitney_p_value": 1.0,
+        "is_statistically_superior": false,
+        "verdict": "INVERTED"
+      },
+      "brier": {
+        "brier_score": 0.2507219785135775,
+        "reliability": 0.03197197851357756,
+        "resolution": 0.03125,
+        "uncertainty": 0.25,
+        "base_rate": 0.5,
+        "within_bin_variance": 1.8027762754642147e-05,
+        "within_bin_covariance": -0.00045219638242894054
+      },
+      "calibration": {
+        "bin_centers": [
+          0.3333333333333333,
+          0.41744186046511633
+        ],
+        "bin_accuracies": [
+          0.0,
+          0.5625
+        ],
+        "bin_confidences": [
+          0.3333333333333333,
+          0.41744186046511633
+        ],
+        "bin_counts": [
+          2,
+          16
+        ],
+        "ece": 0.1659776055124892,
+        "mce": 0.3333333333333333
+      }
+    }
+  },
+  "overall": {
+    "sample_size": 55,
+    "by_tier": {
+      "HIGH": {
+        "sample_size": 15,
+        "win_rate": 0.6,
+        "mean_expectancy": 11.116666666666667
+      },
+      "MEDIUM": {
+        "sample_size": 40,
+        "win_rate": 0.325,
+        "mean_expectancy": 2.6187500000000004
+      }
+    },
+    "significance": {
+      "high_count": 15,
+      "medium_count": 40,
+      "high_win_rate": 0.6,
+      "medium_win_rate": 0.325,
+      "high_expectancy": 11.116666666666667,
+      "medium_expectancy": 2.6187500000000004,
+      "win_rate_diff": 0.27499999999999997,
+      "expectancy_diff": 8.497916666666667,
+      "fisher_p_value": 1.0,
+      "mann_whitney_p_value": 1.0,
+      "is_statistically_superior": false,
+      "verdict": "INSIGNIFICANT"
+    },
+    "brier": {
+      "brier_score": 0.23853688862666686,
+      "reliability": 0.0045746244757234895,
+      "resolution": 0.006037735849056604,
+      "uncertainty": 0.24,
+      "base_rate": 0.4,
+      "within_bin_variance": 1.781130591196205e-05,
+      "within_bin_covariance": -0.00025529538473812276
+    },
+    "calibration": {
+      "bin_centers": [
+        0.3333333333333333,
+        0.417551557700746
+      ],
+      "bin_accuracies": [
+        0.0,
+        0.41509433962264153
+      ],
+      "bin_confidences": [
+        0.3333333333333333,
+        0.417551557700746
+      ],
+      "bin_counts": [
+        2,
+        53
+      ],
+      "ece": 0.014489076814658228,
+      "mce": 0.3333333333333333
+    }
+  },
+  "overall_brier": {
+    "brier_score": 0.23853688862666686,
+    "reliability": 0.0045746244757234895,
+    "resolution": 0.006037735849056604,
+    "uncertainty": 0.24,
+    "base_rate": 0.4,
+    "within_bin_variance": 1.781130591196205e-05,
+    "within_bin_covariance": -0.00025529538473812276
+  },
+  "overall_ece": 0.014489076814658228
+}

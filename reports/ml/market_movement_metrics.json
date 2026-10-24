@@ -1,0 +1,101 @@
+{
+  "validation_method": "walk_forward_purged",
+  "evaluable_folds": 4,
+  "degenerate_folds": 0,
+  "leakage_guard_passed": true,
+  "fold_results": [
+    {
+      "fold": 1,
+      "train_start": "2026-08-03T08:44:09.272220+00:00",
+      "train_end": "2026-08-25T07:28:27.047732+00:00",
+      "test_start": "2026-08-25T07:43:30.905261+00:00",
+      "test_end": "2026-09-15T05:09:45.258088+00:00",
+      "n_train": 1913,
+      "n_test": 1918,
+      "train_class_counts": {
+        "negative": 1093,
+        "positive": 820
+      },
+      "test_class_counts": {
+        "negative": 1045,
+        "positive": 873
+      },
+      "train_positive_rate": 0.42864610559330896,
+      "test_positive_rate": 0.4551616266944734,
+      "auc": 0.587066541705717,
+      "brier": 0.2593003809452057,
+      "degenerate": false
+    },
+    {
+      "fold": 2,
+      "train_start": "2026-08-03T08:44:09.272220+00:00",
+      "train_end": "2026-09-15T04:55:41.813104+00:00",
+      "test_start": "2026-09-15T05:10:45.496578+00:00",
+      "test_end": "2026-09-30T05:45:07.282340+00:00",
+      "n_train": 3829,
+      "n_test": 1918,
+      "train_class_counts": {
+        "negative": 2136,
+        "positive": 1693
+      },
+      "test_class_counts": {
+        "negative": 938,
+        "positive": 980
+      },
+      "train_positive_rate": 0.44215199791068166,
+      "test_positive_rate": 0.5109489051094891,
+      "auc": 0.5749912971585223,
+      "brier": 0.25858423113822937,
+      "degenerate": false
+    },
+    {
+      "fold": 3,
+      "train_start": "2026-08-03T08:44:09.272220+00:00",
+      "train_end": "2026-09-30T05:31:01.781943+00:00",
+      "test_start": "2026-09-30T05:46:09.666135+00:00",
+      "test_end": "2026-10-13T07:39:42.569179+00:00",
+      "n_train": 5743,
+      "n_test": 1918,
+      "train_class_counts": {
+        "negative": 3075,
+        "positive": 2668
+      },
+      "test_class_counts": {
+        "negative": 712,
+        "positive": 1206
+      },
+      "train_positive_rate": 0.4645655580706948,
+      "test_positive_rate": 0.6287799791449427,
+      "auc": 0.5429919689939814,
+      "brier": 0.25099241733551025,
+      "degenerate": false
+    },
+    {
+      "fold": 4,
+      "train_start": "2026-08-03T08:44:09.272220+00:00",
+      "train_end": "2026-10-13T07:25:38.785984+00:00",
+      "test_start": "2026-10-13T07:42:43.340195+00:00",
+      "test_end": "2026-10-23T09:58:28.199961+00:00",
+      "n_train": 7666,
+      "n_test": 1919,
+      "train_class_counts": {
+        "negative": 3786,
+        "positive": 3880
+      },
+      "test_class_counts": {
+        "negative": 591,
+        "positive": 1328
+      },
+      "train_positive_rate": 0.506130967910253,
+      "test_positive_rate": 0.6920270974465867,
+      "auc": 0.6132920004892667,
+      "brier": 0.21742776036262512,
+      "degenerate": false
+    }
+  ],
+  "mean_auc": 0.5795854520868718,
+  "min_fold_auc": 0.5429919689939814,
+  "brier_score": 0.2465723986135038,
+  "ci_95_lower": 0.5331729215802975,
+  "ci_95_upper": 0.6259979825934462
+}

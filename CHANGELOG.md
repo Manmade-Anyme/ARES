@@ -4,6 +4,15 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-20261024 ML prediction pipeline audit and shadow evaluation:**
+  - Audited ML prediction pipeline, feature extraction, Sharpe calculations, and out-of-fold validation against 301 live trades (3 Aug – 23 Oct 2026).
+  - Reproduced reported weekly ML metrics: Sharpe 3.181493 (56 active days, 301 trades, 1334.05 spot P&L points) and walk-forward test AUC ~0.4501 (95% CI: [0.394, 0.505], demonstrating sample starvation noise on N=151 evaluated trades rather than an inverted signal).
+  - Fixed feature direction alignment bug: added `dist_to_target_wall`, `dist_to_stop_wall`, `aligned_net_delta`, and `aligns_direction` to evaluate support/resistance and delta relative to trade direction (Bullish vs Bearish) in both training and live inference (`predict_from_raw`).
+  - Purged temporal schema artifacts (`greek__has_net_delta`, `structure__*`, `greek__*`) from feature selection to prevent non-market artifact bias.
+  - Documented negative transfer of Stage 1 `market_movement_prob` (r = -0.094) where macro volatility expansion harms tight stop execution in Stage 2.
+  - Retained production model `v10.joblib` as active after candidate failed rigorous promotion gate (mean AUC 0.4496 < 0.55, Brier 0.2604 > 0.23); saved candidate as `v11_unpromoted.joblib` with rejection audit log (`v11_rejection_audit.json`).
+  - Added shadow evaluation metadata, baseline comparison, and rollback tracking. Preserved zero-network execution and offline `--cache-dir` support.
+
 - **TASK-20261022 README presentation:** Add a centered masthead, section icons, GitHub callouts, collapsible release/file-tree details and diagram colors while preserving the existing technical prose, code examples and navigation anchors. Presentation only; direct-to-main publication explicitly requested by the user.
 
 - **TASK-20261022 README refresh:** Reconcile the root README with recent changelog entries, the current source and dated Ares vault follow-ups. Document completed-candle/VWAP inputs, string-ID WebSocket ticks, capital-independent Delta/Gamma option references, manual signal registration, post-T1 five-minute ATR trailing, Jev watch supervision, ML calibration and canonical identity. Correct detector priority to place continuation before exhaustion and distinguish buffer capacity from detector readiness. Refresh configuration, setup, schema links and CI/deployment guidance; remove the stale test count and duplicated bootstrap SQL. Documentation only; no runtime or deployment change.

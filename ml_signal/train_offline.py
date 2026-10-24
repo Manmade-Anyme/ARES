@@ -1418,6 +1418,7 @@ def main(argv=None) -> None:
     parser.add_argument("--hybrid", action="store_true", default=True)
     parser.add_argument("--no-hybrid", action="store_false", dest="hybrid")
     parser.add_argument("--metrics-path", type=str, default=os.environ.get("METRICS_PATH", "reports/ml/task183_offline_metrics.json"))
+    parser.add_argument("--cache-dir", type=str, default=os.environ.get("ML_DATA_CACHE_DIR"), help="Path to cached JSON data")
     args = parser.parse_args(argv)
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1439,17 +1440,27 @@ def main(argv=None) -> None:
         except Exception:
             pass
 
-    if not url or not key:
+    cache_path = args.cache_dir
+    if cache_path and os.path.isdir(cache_path) and os.path.exists(os.path.join(cache_path, "ml_collection.json")):
+        print(f"[*] Reading from local cache at {cache_path}...")
+        with open(os.path.join(cache_path, "ml_collection.json")) as f:
+            rows = json.load(f)
+        exit_timestamps = {}
+        ta_path = os.path.join(cache_path, "trade_analytics.json")
+        if os.path.exists(ta_path):
+            with open(ta_path) as f:
+                trades = json.load(f)
+            exit_timestamps = {str(item.get("trade_id") or item.get("id")): item for item in trades}
+    elif not url or not key:
         print("[-] SUPABASE_URL / SUPABASE_KEY not available. Aborting.")
         return
+    else:
+        from supabase import create_client
+        supabase = create_client(url, key)
 
-    from supabase import create_client
-    supabase = create_client(url, key)
-
-    config = DEFAULT_CONFIG
-    print("[*] Reading ml_collection (read-only)...")
-    rows = _fetch_ml_collection(supabase)
-    exit_timestamps = _fetch_trade_exit_timestamps(supabase)
+        print("[*] Reading ml_collection (read-only)...")
+        rows = _fetch_ml_collection(supabase)
+        exit_timestamps = _fetch_trade_exit_timestamps(supabase)
     for row in rows:
         trade_id = row.get("trade_id")
         if trade_id and str(trade_id) in exit_timestamps:
@@ -1462,13 +1473,14 @@ def main(argv=None) -> None:
             row["entry_timestamp"] = None
             row["time_metrics_excluded"] = False
 
-    from ml_signal.predictor import get_next_model_version_and_path
+    from ml_signal.predictor import get_next_model_version_and_path, discover_latest_model
     models_dir = os.path.join(repo, "ml_signal", "models")
     save_path, next_version = get_next_model_version_and_path(models_dir)
     # Rejected runs reuse the version. Invalidate its prior explanations before
     # any pipeline/refit can fail, including failures before the report guard.
     _clear_versioned_shap_artifacts(repo, next_version)
 
+    config = DEFAULT_CONFIG
     stage1_model, stage2_model = None, None
     runtime_calibrator = None
     market_df = None
@@ -1503,6 +1515,8 @@ def main(argv=None) -> None:
             shap_feature_cols = [
                 c for c in feature_columns(market_df)
                 if not c.startswith("detector_scores__")
+                and not c.startswith("structure__")
+                and not c.startswith("greek__")
             ]
             if stage1_model is not None and len(market_df) > 1:
                 market_train_df, market_eval_df = _reserved_refit_split(
@@ -1617,7 +1631,12 @@ def main(argv=None) -> None:
                 if refit_reason:
                     print(f"[!] Skipping final refit: {refit_reason}")
                 if not refit_reason and args.hybrid:
-                    stage1_feat_cols = [c for c in feature_columns(market_df) if not c.startswith("detector_scores__")]
+                    stage1_feat_cols = [
+                        c for c in feature_columns(market_df)
+                        if not c.startswith("detector_scores__")
+                        and not c.startswith("structure__")
+                        and not c.startswith("greek__")
+                    ]
 
                     # Generate historical transfer probabilities with the same
                     # resolution purge and embargo used by the final Stage 1.
@@ -1643,8 +1662,8 @@ def main(argv=None) -> None:
                         test_trades = trade_df.iloc[test_idx]
                         market_probs.iloc[test_idx] = fold_model.predict_proba(test_trades.reindex(columns=stage1_feat_cols))[:, 1]
                     
-                    # Preserve the chronological fallback for unscored early rows.
-                    market_probs = market_probs.ffill().fillna(0.5)
+                    # Preserve the chronological fallback for unscored early rows with backward-fill then forward-fill.
+                    market_probs = market_probs.bfill().ffill().fillna(0.5)
                     trade_df["meta_features__market_movement_prob"] = market_probs
                     # Splits are independent frames: refresh after augmentation
                     # so Stage 2 sees the generated probabilities, never stale input.
@@ -1659,16 +1678,19 @@ def main(argv=None) -> None:
                     
                 if not refit_reason:
                     feat_cols2 = ["meta_features__market_movement_prob"] if args.hybrid else []
-                    feat_cols2 += [
-                        c for c in [
-                            "structure_features__dist_to_nearest_support",
-                            "structure_features__dist_to_nearest_resistance",
-                            "oi_features__pcr_oi",
-                            "candle_features__body_pct",
-                            "iv_features__iv_level",
-                            "greek_features__net_delta"
-                        ] if c in trade_df.columns
+                    target_candidates = [
+                        "structure_features__dist_to_target_wall",
+                        "structure_features__dist_to_stop_wall",
+                        "structure_features__dist_to_nearest_support",
+                        "structure_features__dist_to_nearest_resistance",
+                        "oi_features__pcr_oi",
+                        "candle_features__body_pct",
+                        "iv_features__iv_level",
+                        "greek_features__net_delta",
+                        "greek_features__aligned_net_delta",
+                        "candle_features__aligns_direction",
                     ]
+                    feat_cols2 += [c for c in target_candidates if c in trade_df.columns]
 
                     stage2_model = xgb.XGBClassifier(
                         n_estimators=50,
@@ -1749,13 +1771,31 @@ def main(argv=None) -> None:
         # prior version's artifacts so rejected runs cannot publish stale SHAP.
         _clear_versioned_shap_artifacts(repo, next_version)
 
-    # Write summary metrics
+    # Write summary metrics with shadow evaluation and baseline tracking
+    discovered_active_path, discovered_active_ver = discover_latest_model(models_dir)
+    unfiltered_win_rate = (
+        float(trade_df["label"].mean())
+        if "trade_df" in locals() and trade_df is not None and not trade_df.empty and "label" in trade_df
+        else None
+    )
     summary = {
         "model_version": next_version,
+        "active_production_version": discovered_active_ver,
+        "candidate_model_path": save_path if "save_path" in locals() else None,
         "auc_roc": final_metrics.get("mean_auc", 0.0),
         "promoted": promoted,
         "leakage_guard_passed": leakage_guard_passed,
-        "gate_reasons": gate_error.reasons if gate_error else []
+        "gate_reasons": gate_error.reasons if gate_error else [],
+        "shadow_evaluation": {
+            "status": "evaluated_unpromoted" if not promoted else "promoted",
+            "active_production_model": discovered_active_ver,
+            "candidate_version": next_version,
+            "promotion_gate_passed": promoted,
+            "unfiltered_baseline_pnl": sharpe_metrics.get("sharpe_total_pnl_points"),
+            "unfiltered_baseline_sharpe": sharpe_metrics.get("sharpe_annualized"),
+            "unfiltered_baseline_win_rate": unfiltered_win_rate,
+            "rollback_target": discovered_active_ver,
+        }
     }
     summary.update(final_metrics)
     summary.update(sharpe_metrics)

@@ -1,0 +1,90 @@
+{
+  "version": "v11",
+  "reasons": [
+    "Requires at least 4 evaluable folds, got 3.",
+    "Mean AUC must be >= 0.55, got 0.4705577005577006.",
+    "Lower 95% CI must be > 0.50, got 0.2869368523100985.",
+    "Min fold AUC must be >= 0.40, got 0.38738738738738737.",
+    "Brier score must be <= 0.23, got 0.25308770813994647."
+  ],
+  "metrics": {
+    "validation_method": "walk_forward_purged",
+    "evaluable_folds": 3,
+    "degenerate_folds": 0,
+    "leakage_guard_passed": true,
+    "fold_results": [
+      {
+        "fold": 2,
+        "train_start": "2026-08-03T08:35:06.933948+00:00",
+        "train_end": "2026-08-31T04:15:30.616409+00:00",
+        "test_start": "2026-08-31T06:13:03.052225+00:00",
+        "test_end": "2026-09-17T05:32:58.783745+00:00",
+        "n_train": 120,
+        "n_test": 60,
+        "train_class_counts": {
+          "negative": 82,
+          "positive": 38
+        },
+        "test_class_counts": {
+          "negative": 40,
+          "positive": 20
+        },
+        "train_positive_rate": 0.31666666666666665,
+        "test_positive_rate": 0.3333333333333333,
+        "auc": 0.5287499999999999,
+        "brier": 0.2224631905555725,
+        "degenerate": false
+      },
+      {
+        "fold": 3,
+        "train_start": "2026-08-03T08:35:06.933948+00:00",
+        "train_end": "2026-09-17T05:32:58.783745+00:00",
+        "test_start": "2026-09-17T06:16:12.294670+00:00",
+        "test_end": "2026-09-29T09:30:16.878917+00:00",
+        "n_train": 180,
+        "n_test": 60,
+        "train_class_counts": {
+          "negative": 122,
+          "positive": 58
+        },
+        "test_class_counts": {
+          "negative": 32,
+          "positive": 28
+        },
+        "train_positive_rate": 0.32222222222222224,
+        "test_positive_rate": 0.4666666666666667,
+        "auc": 0.4955357142857143,
+        "brier": 0.28215083479881287,
+        "degenerate": false
+      },
+      {
+        "fold": 4,
+        "train_start": "2026-08-03T08:35:06.933948+00:00",
+        "train_end": "2026-09-29T09:30:16.878917+00:00",
+        "test_start": "2026-09-30T05:45:07.282340+00:00",
+        "test_end": "2026-10-23T09:33:19.321143+00:00",
+        "n_train": 240,
+        "n_test": 61,
+        "train_class_counts": {
+          "negative": 154,
+          "positive": 86
+        },
+        "test_class_counts": {
+          "negative": 37,
+          "positive": 24
+        },
+        "train_positive_rate": 0.35833333333333334,
+        "test_positive_rate": 0.39344262295081966,
+        "auc": 0.38738738738738737,
+        "brier": 0.25462350249290466,
+        "degenerate": false
+      }
+    ],
+    "mean_auc": 0.4705577005577006,
+    "min_fold_auc": 0.38738738738738737,
+    "brier_score": 0.25308770813994647,
+    "ci_95_lower": 0.2869368523100985,
+    "ci_95_upper": 0.6541785488053027,
+    "provisional_sample_size": true
+  }
+}
