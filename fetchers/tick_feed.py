@@ -1,4 +1,6 @@
 import threading
+from datetime import datetime, timezone
+from math import isfinite
 from typing import Optional
 
 from dhanhq import DhanContext, MarketFeed
@@ -21,15 +23,22 @@ class TickFeed:
     def __init__(self):
         self._lock = threading.Lock()
         self._latest_price: Optional[float] = None
+        self._latest_received_at: Optional[datetime] = None
         self._feed: Optional[MarketFeed] = None
 
     def _on_ticks(self, feed, data) -> None:
         try:
             if isinstance(data, dict) and data.get("LTP") is not None:
+                if isinstance(data["LTP"], bool):
+                    return
                 price = float(data["LTP"])
+                if not isfinite(price) or price <= 0:
+                    return
+                received_at = datetime.now(timezone.utc)
                 with self._lock:
                     self._latest_price = price
-        except (TypeError, ValueError):
+                    self._latest_received_at = received_at
+        except (TypeError, ValueError, OverflowError):
             pass
 
     def _on_error(self, feed, error) -> None:
@@ -62,6 +71,23 @@ class TickFeed:
     def get_latest_price(self) -> Optional[float]:
         with self._lock:
             return self._latest_price
+
+    def get_latest_observation(self, max_age_seconds: float = 5) -> Optional[tuple[float, datetime]]:
+        """Return a recent valid index LTP with its local UTC receipt time.
+
+        Receipt time is the observation timestamp, never an invented exchange
+        event time. A stale feed must not advance the new option lifecycle.
+        """
+        if isinstance(max_age_seconds, bool) or not isfinite(max_age_seconds) or max_age_seconds < 0:
+            return None
+        with self._lock:
+            price, received_at = self._latest_price, self._latest_received_at
+        if price is None or received_at is None:
+            return None
+        age = (datetime.now(timezone.utc) - received_at).total_seconds()
+        if not 0 <= age <= max_age_seconds:
+            return None
+        return price, received_at
 
     @property
     def is_active(self) -> bool:

@@ -1,0 +1,121 @@
+# PR #147 comment disposition
+
+Reviewed head: `a30ad6feadc1ca4637a39ccfe64027c223133d2d`.
+Scope: address review feedback against the owner's agreed option ATR lifecycle; no production changes.
+
+| Review comment | Relationship to agreed needs | Disposition |
+|---|---|---|
+| 4358075113: production option-candle wiring | The final 20% must actually receive premium protection after T2. | Already fixed in a30ad6f; verified real monitor/replay path; replied and resolved. |
+| 4358075126: committed revisions | T1/T2 scores and OPEN runner state must remain consistent in Supabase. | Already fixed in a30ad6f; serial/recovery regressions verified; replied and resolved. |
+| 4358075131: complete pinned contract | ATR must use the exact option without changing bracket or suggested lots. | Already fixed in a30ad6f; metadata/gate tests verified; replied and resolved. |
+| 4358075138: fabricated index exit/PnL | Option close evidence cannot be substituted with an index stop price. | Already fixed in a30ad6f; nullable marks and allocation-weighted PnL verified; replied and resolved. |
+| 4362614355: empty watermark outbox entries | Internal bar progress should not create undeliverable Discord events. | Fixed: only nonempty snapshots enter outbox; bounded silent retry identity stays server-owned. |
+| 4362614362: Card A naive live timestamp | Discord must show the actual known IST signal time. | Fixed only at the initial card's live-candle boundary; aware conversions and strict durable event timestamps preserved. |
+| 4362614346: auto-close at expiry | Adds an exit trigger and settlement/valuation policy beyond the agreed SL/ATR rules. | Owner explicitly deferred: “Keep agreed exits; handle expiry separately.” Not implemented or claimed fixed. Known boundary documented. |
+
+## Validation
+
+- TDD SQL regression failed on an empty `watermark-0` PENDING entry before the fix; the migration now passes **60 actual isolated PostgreSQL checks**. Twenty-four silent bars do not grow the outbox; null/missing/empty snapshots stay silent, real raises still queue, lost-response retry is idempotent, and stale client JSON cannot replace the server marker.
+- Card A regression used `PriceFetcher.fetch_latest_candle`'s actual naive IST output. Initial red run: one failure (`Time: unavailable`). Focused alert/pricing/candle validation: **138 passed** after the narrow fix.
+- Full frozen-code Python suite: **1,880 passed, 45 subtests passed**, 100.69 seconds, Python 3.14.6. Twelve existing dependency/deprecation warnings; no failures or skips.
+- Production statement coverage: **89.07%** (8889/9980); branch coverage: **84.16%** (2949/3504). Both remain above the prior reviewed baseline and default pipeline thresholds; repository 100% target remains unmet.
+- Independent agent reviewed the SQL implementation and caller retry contract: no blocking finding. Root reviewed Card A/source timezone behavior and all prior comment evidence.
+- `git diff --check` and changed-source compilation passed.
+- Correction commit and CI status are recorded in PR metadata after push. CI must be checked against that exact pushed head.
+
+No initial pricing, lot sizing, risk calculation, milestone fractions, SL/ATR exit rules, production activation, migration application, deployment or broker order changed in this follow-up. No live test messages were sent; only explicitly requested GitHub review replies were posted.
+
+## Cloud-task follow-up: newer T2 versus stronger committed stop
+
+Follow-up starting head: `f958e838acb7038337fb7d7802354ec4b2a26f38`. The cloud task [reported a fix](https://github.com/Manmade-Anyme/ARES/pull/147#issuecomment-6374383435) under commit `ba7706e`, but that commit was unavailable from the ARES repository during recovery. This follow-up recreates the scoped fix locally on the existing PR branch; it does not claim to recover or cherry-pick the unpublished cloud commit.
+
+The finding relates directly to the agreed lifecycle: a revision conflict must not discard an observed T2 touch because a concurrent T1 context already has a higher locked stop. The correction retains the T2 event, score 2, 80% model-booked allocation, 20% remaining runner and disabled index guard, while carrying forward the stronger committed stop and protection mode into live state and the immutable T2 alert. Original event identity remains stable for retry deduplication.
+
+Validation at documentation handoff:
+
+- Focused conflict/recovery suite after the additional QA correction: **13 passed**, as reported by the implementing agent.
+- New public-lifecycle regression covers direct conflict recovery and an initial persistence outage followed by retry. Both cases require one committed T2 alert, matching persisted/live/snapshot state, no T2 delivery before successful commit, stable retry identity and a later runner close against the recovered stop with score 2 retained.
+- Independent QA found that initially rebasing the earlier T2 event to ₹150 could lower a live ₹196 stop established by a later queued candle. The correction now raises live protection only. An additional public-lifecycle regression keeps the immutable T2 event at ₹150, drains the later raise to ₹196, and verifies that a subsequent completed ₹180 close exits the remaining 20% against ₹196 while retaining score 2.
+- A queued silent-watermark regression verifies that T2 recovery still advances the later completed-bar watermark without an empty alert snapshot or duplicate T2 alert; the stronger ₹150 stop, score 2 and runner state remain consistent.
+- Clean final full Python suite: **1,884 passed, 45 subtests passed**, 108.69 seconds, Python 3.14.6. Twelve existing dependency/deprecation warnings; no failures or skips.
+- Changed production coverage: **all 11 added executable lines and all 6 added branch arcs covered** in the isolated final report (`/tmp/ares-pr147-final-recovery-coverage.json`). This is coverage of the new recovery branch, not a claim of repository-wide 100% coverage; the broad repository target remains unmet.
+- Independent final review reported no findings and confirmed the 13 focused tests passed. Final QA confirmed the frozen-source test result and full added-line/branch coverage; its approval is limited to this correction. Pushed-head CI remains pending; PR delivery metadata must identify the exact pushed commit and CI run. The earlier validation section remains the historical result for the prior follow-up.
+
+Scope remains limited to the existing conflict-recovery contract. Expiry handling, activation/parity sign-off, production changes, merge and broker actions remain outside this correction.
+
+## Follow-up on head `6a2d69b`: canonical training metadata and cooldown events
+
+| Review comment | Relationship to agreed needs | Local correction |
+|---|---|---|
+| [4366412916: offline CLI discards canonical option outcomes](https://github.com/Manmade-Anyme/ARES/pull/147#discussion_r4366412916) | Terminal trades must train from the retained highest milestone, while a score-1/2 OPEN runner must never become a final label. | Carry the already-fetched canonical metadata into each matching snapshot row through `row.update(metadata)`, instead of retaining only the three timestamp-related fields. Existing version-aware dataset classification receives `option_trailing`, `result_state` and nullable `trade_pnl` sourced from `trade_analytics.pnl_points`; the pipeline later exposes `pnl_points`. Legacy labeling stays unchanged. |
+| [4366412920: completed-candle option exit loses cooldown reset](https://github.com/Manmade-Anyme/ARES/pull/147#discussion_r4366412920) | The new premium-monitoring path must preserve existing re-entry behavior when the original index SL closes a reference. | Pass the signal engine through every production completed-monitor caller and consume returned lifecycle events. Clear cooldown only for the existing initial `SL_HIT` event; target, break-even, ATR and option-floor events do not gain a reset trigger. |
+
+Validation at documentation handoff:
+
+- Runtime-adjacent suite: **78 passed**, as reported by the implementing agent. Ten new cases cover four normal monitoring paths using the real PositionManager and AresEngine, plus target/BE/ATR/floor/empty-event negatives. The four paths are normal candle fetch, final candle fetch, tick wait and fallback polling. A separate existing provider-failure test checks independent protection; it does not establish cooldown-reset behavior under that failure.
+- ML-focused suite: **123 passed**, as reported by the implementing agent. The new regression runs the actual training CLI through canonical metadata fetching and the real trade-outcome preparation pipeline. It covers terminal milestone 0/1/2 trades with missing snapshot outcomes, null P&L, an OPEN runner with stale T2 telemetry, and unchanged legacy outcomes.
+- Clean final full Python suite: **1,895 passed, 45 subtests passed**, 99.59 seconds, Python 3.14.6. Twelve existing dependency/deprecation warnings; no failures or skips.
+- Changed production coverage: **all 6 added executable lines and both added branch arcs covered** in the final isolated report (`/tmp/ares-pr147-two-comments-coverage.json`). The repository-wide 100% target remains unmet; this result applies to the added production behavior.
+- Independent final review reported no findings across 19 tests. QA passed all 11 added test cases and confirmed the frozen-source full-suite result and added-line/branch coverage. Hosted CI remains pending and must be linked to the exact pushed head in PR delivery metadata. These local results do not claim a trained/promoted model or a production release. Earlier sections remain historical validation for their respective follow-ups.
+
+These corrections preserve the agreed index Entry/SL/T1/T2, Greeks calculations, suggested lots, milestone allocations and exit criteria. Expiry policy, chart-parity approval, activation, production migration, deployment, merge and broker actions remain outside scope.
+
+Delivery for the preceding two-comment follow-up: commit `a2c39e0`, [CI run 40075582022](https://github.com/Manmade-Anyme/ARES/actions/runs/40075582022) passed; comments 4366412916 and 4366412920 were resolved. This is historical verification of that pushed head.
+
+## Follow-up on head `a2c39e0`: premium-gap ordering and pending guard recovery
+
+| Review comment | Relationship to agreed needs | Local correction |
+|---|---|---|
+| [4366443429: availability publishes history beyond a durable gap](https://github.com/Manmade-Anyme/ARES/pull/147#discussion_r4366443429) | After T1, an earlier option stop close-through must be processed before a later index T2 touch; a truncated history cannot prematurely increase the recorded score or booked allocation. | Move the existing durable-watermark continuity check into common option-history preparation before its result can be cached, published as available, or admitted to the replay timeline. Preserve the existing adjacent/overnight continuity policy. |
+| [4366443434: stronger-stop conflict discards pending guard evidence](https://github.com/Manmade-Anyme/ARES/pull/147#discussion_r4366443434) | The post-T1 index-entry guard and its pending source evidence must survive an option-data outage and revision repair until earlier premium events can be reconciled. | Retain same-phase pending observations and unresolved guard evidence while rebasing onto the stronger committed stop. Merge persisted/pending sources by event time into every kept POST_T1 payload, including later stop raises and silent watermarks, and preserve the earliest guard marker. Keep the live same-phase journal without restoring consumed evidence into CLOSED/T2 contexts. This retains evidence rather than adding an exit trigger. |
+
+Validation at documentation handoff:
+
+- Six new public continuity cases cover combined market replay and premium-then-index polling, each with a missing earlier close of ₹120 or ₹200 against a ₹127 stop, plus adjacent and overnight controls. The four missing-bar cases failed before moving the check and passed afterward, as reported by the implementing agent. The ₹120 recovery must close 50% at score 1 before T2; the ₹200 recovery allows T2 only after backfill.
+- Source-validation, committed-write, runtime and incident-replay suites: **54 passed**, as reported by the implementing agent.
+- Four pending-guard regressions reproduced the loss before the correction. They cover immediate conflict or an initial database outage, concurrent guard sources, later live observations, durable-context restart and backfill choosing an earlier premium stop or the first index guard; the final score remains 1.
+- Independent QA caught a later queued stop-raise/watermark snapshot erasing the earlier committed guard after the first rebase. The common POST_T1 merge now preserves both writers' journal in every retained snapshot. A public partial-backfill/raise/retry/restart regression verifies the durable 11:01 guard survives a local 11:02 touch and a later ₹196 stop raise, then closes at 11:01 after backfill. Another case verifies an earlier observed premium closure remains CLOSED without resurrecting pending guards.
+- Final focused continuity/conflict/lifecycle/runtime/incident suite: **84 passed**. Clean final full suite: **1,907 passed, 45 subtests passed**, 75.87 seconds on Python 3.14.6; twelve existing dependency/deprecation warnings, no failures or skips.
+- Final isolated coverage (`/tmp/ares-pr147-ordering-final-coverage.json`) covers **all 31 added/moved executable lines and all 24 branch arcs from added source lines** in the production diff. The repository-wide 100% target remains unmet. Compilation and diff checks passed.
+- Independent frozen-source QA and four-axis review cleared the scoped correction with no remaining actionable finding. Exact-head hosted CI remains pending and must be recorded in PR delivery metadata. Earlier results above apply to their recorded heads and do not establish validation for this follow-up.
+
+This follow-up restores existing continuity, durable-evidence and chronology guarantees. Initial index and option bracket prices, Greeks pricing, suggested lots, allocation fractions, exit criteria, expiry handling and activation rules remain unchanged. No production actions are included.
+
+Delivery for the preceding ordering follow-up: commit `aa7f0d7`, [CI run 40093778359](https://github.com/Manmade-Anyme/ARES/actions/runs/40093778359) passed; comments 4366443429 and 4366443434 were resolved. This is historical verification of that pushed head.
+
+## Follow-up on head `aa7f0d7`: clear consumed T2 guards through JSON merge
+
+| Review comment | Relationship to agreed needs | Local correction |
+|---|---|---|
+| [4367114290: omitted guard key survives T2 persistence](https://github.com/Manmade-Anyme/ARES/pull/147#discussion_r4367114290) | T2 disables index protection and leaves the final 20% managed by option protection. A consumed backfill guard must not return after restart or conflict repair and suppress valid runner stop-raise messages. | Replace key removal with explicit `None` in both T2 transitions. JSON null overwrites the prior marker through the existing RPC's `v_old || new_context` merge. When an older stop raise rebases onto POST_T2, carry the committed guard marker and consumed observation list into the rebased payload and live state alongside phase/allocation. The optional typed field, SQL function and approved exit rules remain unchanged. |
+
+Validation at documentation handoff:
+
+- Two public lifecycle regressions failed before the correction and passed after it. A JSON-merge-faithful ledger reproduces omission-preserving persistence while the real PositionManager queues an observation touching both T2 and the guard, reconciles backfill with T2 first, persists an explicit guard null, restores POST_T2 and delivers a later `OPTION_SL_RATCHETED` card. The second case checks explicit null when one observation reaches T1 and T2.
+- A third public regression reproduced guard resurrection when an older POST_T1 stop raise rebased onto a committed POST_T2 context. The repair now carries the committed guard null and consumed observation list into the rebased transaction, live context and delivered raise snapshot, preserving the higher stop without restoring obsolete guard evidence.
+- QA identified two additional public failure cases: repairing an earlier raise could reopen a live reference already observed closed, and retaining a committed T2 score on an ATR exit could leave a stale 50% exited fraction. ATR and index-BE parameter cases now retain the observed CLOSED state; the allowed ATR terminal repair persists score 2, 80% booked and 20% exited consistently in live/transaction/alert evidence. The index-BE conflict remains queued for the existing reconciliation path instead of reopening the reference or inventing an accepted exit.
+- Final focused lifecycle/recovery suite: **51 passed**, confirmed by QA after all five added public cases. The initial two-path correction passed 48 tests before the three additional rebase/terminal cases.
+- The unchanged lifecycle migration passed **66 actual isolated PostgreSQL/PGlite checks**, including six added assertions for an existing persisted guard, explicit-null overwrite, reloaded context, immutable T2 snapshot and a subsequent merge retaining null.
+- Clean frozen full Python suite: **1,912 passed, 45 subtests passed**, 75.42 seconds on Python 3.14.6. Twelve existing dependency/deprecation warnings; no failures or skips.
+- Final isolated coverage (`/tmp/ares-pr147-guard-clear-frozen-coverage.json`) covers **all 7 added executable production lines and both added branch arcs**. This is full coverage of the production diff; the repository-wide 100% target remains unmet.
+- Independent final PR review confirmed all 51 focused tests passed and reported no findings. Final QA confirmed the frozen full-suite result, added-line/branch coverage and scoped correction without findings. Exact-head hosted CI remains pending and must be recorded with the pushed commit in PR delivery metadata. Earlier validation sections remain historical results for their recorded heads.
+
+This correction uses the existing optional guard field, phase-rebase path and SQL merge contract. It preserves the approved highest-milestone scoring policy, including canonical score 2 during the allowed terminal recovery described above. Initial index/option bracket prices, Greeks calculation, suggested lots, policy allocation fractions, exit criteria, activation gate and expiry policy remain unchanged. No schema migration change or production action is included.
+
+## Follow-up on head `472d4a5`: pin the actual Wilder warmup seed
+
+| Review comment | Relationship to agreed needs | Local correction |
+|---|---|---|
+| [4367157655: truncated warmup prefix silently reseeds ATR](https://github.com/Manmade-Anyme/ARES/pull/147#discussion_r4367157655) | The option stop must rise only from the agreed continuous ATR calculation. A shortened provider response must not recalculate Wilder smoothing from a different start and manufacture a higher stop or false exit. | Add optional `indicator_seed_start` to the existing typed option context. Pin the first accepted source start, or use the first confirmed cached bar for an unanchored in-process trade. Reject a response missing that seed before ATR calculation/cache/availability, including one that still contains the durable watermark, and ignore extra candles before the pinned start. Persist the anchor through existing lifecycle context writes and serialization. |
+
+Validation at documentation handoff:
+
+- Five new public regressions failed before the correction and passed afterward, as reported by the implementing agent. They cover combined market replay and direct premium monitoring, in-process cache fallback and typed restart, rejection of a truncated prefix despite a retained durable watermark, holding the prior stop/watermark instead of a false ₹193 close-through, and resumption after the original prefix returns. A pre-T1 case verifies typed seed round-trip and unchanged calculation when additional earlier candles appear.
+- Cache-derived seed adoption copies the trusted anchor into the context before rejecting a missing prefix, allowing existing outage/context writes to retain that anchor durably.
+- Scoped QA passed **56 targeted tests** in 1.39 seconds across seed, source-validation, T2-guard and conflict recovery. After the cache-anchor adoption follow-up, QA reran all **5 seed cases**, passing in 0.16 seconds; the implementing agent independently passed those five in 0.21 seconds. Changed-source compilation and diff checks passed.
+- Final root verification after the refinement: the same **56 targeted tests passed** in 1.40 seconds; diff checks remained clean.
+- Independent review passed the five seed cases without an actionable finding before the final one-line cache-anchor adoption refinement; scoped QA validated that refinement with the seed rerun above.
+- Separately, QA manually traced pending-T2 gating through direct premium-then-index polling and combined replay. With the original ₹185.22 stop, a missing 11:00 premium close of ₹180 and a later 11:01 T2 touch retain T1/score 1 with the index observation pending and no premium availability. Complete backfill closes at the earlier 11:00 ATR event without a false T2 card. These are manual trace checks, not additional committed tests.
+- Scoped QA passed for this correction. Per the user's explicit instruction, validation remains targeted: no full-suite run, CI/CD check or CI polling was performed or claimed. Earlier full-suite and hosted-CI statements remain historical evidence for their recorded heads.
+
+The change adds no ATR algorithm, setting, database schema, exit trigger or activation policy. Initial pricing, Greeks values, suggested lots, milestone allocations, stop ratcheting and expiry scope remain unchanged. For an old unanchored persisted trade without a confirmed in-process cache, the original seed cannot be recovered from the new field; no retroactive historical-parity guarantee is claimed. No production action is included.
