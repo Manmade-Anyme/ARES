@@ -47,6 +47,9 @@ class TradeOutcomePipeline:
             "exit_timestamp",
             "entry_timestamp",
             "time_metrics_excluded",
+            "option_trailing",
+            "result_state",
+            "trade_pnl",
         )
         for source_row in rows:
             row = source_row.copy()

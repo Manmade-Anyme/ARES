@@ -1,0 +1,87 @@
+{
+  "scope": "Recorded-source counterfactual, explicit injected ledger; no broker fills, no prior-session chart-parity proof",
+  "incidents": {
+    "1950": {
+      "trade_id": "efbd19ae-b4d2-5e7a-a610-74251d2b3218",
+      "contract": {
+        "security_id": "51333",
+        "exchange_segment": "NSE_FNO",
+        "expiry": "2026-10-27",
+        "strike": 22550,
+        "option_type": "PE"
+      },
+      "registered_at": "2026-10-23T10:08:38+05:30",
+      "fixture_until": "2026-10-23T11:56:27.300515+05:30",
+      "final_state": "T2_REACHED",
+      "highest_milestone": 2,
+      "remaining_fraction": 0.2,
+      "events": [
+        {
+          "event": "T1_HIT",
+          "event_time": "2026-10-23T04:40:00+00:00",
+          "score": 1,
+          "active_state": "T1_HIT",
+          "locked_option_sl": null,
+          "remaining_fraction": 0.5
+        },
+        {
+          "event": "T2_HIT",
+          "event_time": "2026-10-23T04:46:00+00:00",
+          "score": 2,
+          "active_state": "T2_REACHED",
+          "locked_option_sl": 123.65,
+          "remaining_fraction": 0.2
+        },
+        {
+          "event": "ATR_ACTIVE",
+          "event_time": "2026-10-23T10:25:00+05:30",
+          "score": 2,
+          "active_state": "T2_REACHED",
+          "locked_option_sl": 127.12953209599999,
+          "remaining_fraction": 0.2
+        },
+        {
+          "event": "OPTION_SL_RATCHETED",
+          "event_time": "2026-10-23T10:55:00+05:30",
+          "score": 2,
+          "active_state": "T2_REACHED",
+          "locked_option_sl": 131.63068804941906,
+          "remaining_fraction": 0.2
+        },
+        {
+          "event": "OPTION_SL_RATCHETED",
+          "event_time": "2026-10-23T11:00:00+05:30",
+          "score": 2,
+          "active_state": "T2_REACHED",
+          "locked_option_sl": 148.15455043953523,
+          "remaining_fraction": 0.2
+        }
+      ]
+    },
+    "3935": {
+      "trade_id": "6a977c96-0648-5e06-9ea2-d6730d794929",
+      "contract": {
+        "security_id": "51331",
+        "exchange_segment": "NSE_FNO",
+        "expiry": "2026-10-27",
+        "strike": 22500,
+        "option_type": "PE"
+      },
+      "registered_at": "2026-10-23T11:05:58+05:30",
+      "fixture_until": "2026-10-23T11:56:27.300515+05:30",
+      "final_state": "CLOSED",
+      "highest_milestone": 0,
+      "remaining_fraction": 0.0,
+      "events": [
+        {
+          "event": "SL_HIT",
+          "event_time": "2026-10-23T05:40:00+00:00",
+          "score": 0,
+          "active_state": "CLOSED",
+          "locked_option_sl": null,
+          "remaining_fraction": 0.0
+        }
+      ]
+    }
+  }
+}

@@ -151,9 +151,10 @@ class AnalyticsLogger:
         """
         Initialize the Supabase client using credentials from settings.
         """
+        service_key = getattr(settings, "supabase_service_role_key", "")
+        self._option_backend_configured = bool(service_key)
         self.supabase: Client = create_client(
-            settings.supabase_url,
-            settings.supabase_key
+            settings.supabase_url, service_key or settings.supabase_key,
         )
         self._entry_futures = {}
 
@@ -257,6 +258,7 @@ class AnalyticsLogger:
         final_state: str,
         exit_timestamp: str | None = None,
         pnl_points_override: float | None = None,
+        score_override: int | None = None,
     ) -> None:
         """
         Updates an existing entry in 'trade_analytics' with exit details.
@@ -265,16 +267,18 @@ class AnalyticsLogger:
             trade_id: The unique UUID of the trade.
             exit_price: The spot price at exit.
             final_state: The final state of the trade (e.g., SL_HIT, T1_HIT).
+            exit_timestamp: Optional exit timestamp ISO string.
             pnl_points_override: Optional P&L points to persist instead of
                 calculating from the fill price. Used for BE stops after T1,
                 where the fill remains at entry but T1 profit was locked.
+            score_override: Optional milestone score override (e.g., 2 for runner exits).
         """
         def _update():
             mode = settings.signal_schema_mode
             if mode == "bridge":
-                fields = "entry_price,direction,signal_id,signal_uuid,setup_type,entry_timestamp"
+                fields = "entry_price,direction,signal_id,signal_uuid,setup_type,entry_timestamp,score"
             else:
-                fields = "entry_price,direction,signal_id,setup_type,entry_timestamp"
+                fields = "entry_price,direction,signal_id,setup_type,entry_timestamp,score"
                 
             import time
             for _ in range(3):
@@ -318,12 +322,17 @@ class AnalyticsLogger:
             pnl = round(pnl, 2)
             
             score = None
-            if final_state == "T2_HIT":
+            if score_override is not None:
+                score = score_override
+            elif final_state == "T2_HIT":
                 score = 2
-            elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT"):
-                score = 1
+            elif final_state in ("T1_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"):
+                prior_score = record.get("score")
+                score = prior_score if (prior_score is not None and prior_score >= 2) else 1
             elif final_state in ("SL_HIT", "STOPPED_OUT"):
                 score = 0
+            else:
+                score = record.get("score")
 
             update_data = {
                 "exit_timestamp": event_ts,
@@ -418,6 +427,74 @@ class AnalyticsLogger:
                 print(f"Failed to log trade analytics exit: {e}")  # pragma: no cover
         except Exception as e:  # pragma: no cover
             print(f"Failed to log trade analytics exit: {e}")  # pragma: no cover
+
+    def apply_option_lifecycle_transition(
+        self,
+        trade_id: str,
+        expected_revision: int,
+        event_id: str,
+        transition_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Commit through the backend-only transaction, or propagate failure.
+
+        Offline tests inject a client implementing the same RPC contract. Never
+        substitute independent table writes for a missing or failed migration.
+        """
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ValueError("expected_revision must be a positive integer")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("event_id must identify a stable source event")
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
+        response = self.supabase.rpc(
+            "apply_option_lifecycle_transition",
+            {
+                "p_trade_id": str(trade_id),
+                "p_expected_revision": expected_revision,
+                "p_event_id": event_id,
+                "p_transition": transition_payload,
+            },
+        ).execute()
+        result = getattr(response, "data", None)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise RuntimeError("Option lifecycle transaction did not confirm a commit")
+        return result
+
+    def acknowledge_option_lifecycle_alert(
+        self, trade_id: str, event_id: str, status: str, detail: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Persist transport outcome without advancing lifecycle revision."""
+        if status not in {"SENDING", "DELIVERED", "FAILED", "AMBIGUOUS", "SUPPRESSED"}:
+            raise ValueError("Unsupported lifecycle alert acknowledgement")
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
+        response = self.supabase.rpc(
+            "acknowledge_option_lifecycle_alert",
+            {"p_trade_id": str(trade_id), "p_event_id": event_id,
+             "p_status": status, "p_detail": detail},
+        ).execute()
+        result = getattr(response, "data", None)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise RuntimeError("Option alert acknowledgement did not confirm a commit")
+        return result
+
+    def get_option_lifecycle_state(self, trade_id: str) -> Dict[str, Any]:
+        """Read committed canonical state after a revision conflict or restart."""
+        analytics = self.supabase.table("trade_analytics").select(
+            "market_context,result_state,score,exit_price,pnl_points,exit_timestamp"
+        ).eq("id", str(trade_id)).execute()
+        active = self.supabase.table("active_trades").select(
+            "state,stop_loss"
+        ).eq("id", str(trade_id)).execute()
+        if not analytics.data or not active.data:
+            raise RuntimeError(f"Missing lifecycle rows for trade {trade_id}")
+        row = analytics.data[0]
+        return {"option_trailing": (row.get("market_context") or {}).get("option_trailing"),
+                "active_state": active.data[0]["state"],
+                "stop_loss": active.data[0]["stop_loss"],
+                "result_state": row.get("result_state"), "score": row.get("score"),
+                "exit_price": row.get("exit_price"), "pnl_points": row.get("pnl_points"),
+                "exit_timestamp": row.get("exit_timestamp")}
 
 
 def load_dhan_credentials_from_supabase() -> None:

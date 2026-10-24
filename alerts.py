@@ -195,6 +195,32 @@ async def send_discord(signal: AresSignal, spot: float) -> bool:
         fields.append({"name": "🛑 Option SL", "value": f"**₹ {_number(signal.option_sl)}**", "inline": True})
         fields.append({"name": "🎯 Option Target", "value": f"**₹ {_number(signal.option_target)}**", "inline": True})
 
+    option_context = (getattr(signal, "market_context", None) or {}).get("option_trailing") or {}
+    if option_context.get("policy_version") == "option_atr_v1":
+        # Keep the original signal/bracket card; enrollment was committed before
+        # this initial delivery, so no duplicate lifecycle card is posted.
+        signal_time = signal.timestamp
+        # Live detector signals inherit PriceFetcher's naive exchange-local candle time.
+        # Normalize only this boundary; durable lifecycle events require an offset.
+        if isinstance(signal_time, datetime) and signal_time.tzinfo is None:
+            signal_time = signal_time.replace(tzinfo=ist)
+        fields[0]["value"] = _lifecycle_event_time(signal_time)
+        contract = option_context.get("contract") or {}
+        fields.append({
+            "name": "🛡️ Card A — Reference lifecycle",
+            "value": (
+                f"Pinned {contract.get('strike', 'unavailable')} {contract.get('option_type', 'unavailable')} | "
+                f"Expiry {contract.get('expiry', 'unavailable')} | Security ID {contract.get('security_id', 'unavailable')}\n"
+                f"Trade ID {getattr(signal, 'trade_id', None) or 'unavailable'} | Phase PRE_T1 / OPEN.\n"
+                f"Targets model-booked 0% | Remaining active 100% | Risk status {getattr(signal, 'options_sizing_status', 'unavailable')}.\n"
+                f"Original index guard: {_number(signal.stop_loss)} index points.\n"
+                "Option ATR begins after index T1; stop uses completed option 5m closes.\n"
+                "Reference/model tracking; allocations and candle closes are not broker fills. "
+                "Index break-even does not guarantee option break-even."
+            ),
+            "inline": False,
+        })
+
     # ML Prediction
     if hasattr(signal, "ml_prediction") and signal.ml_prediction:
         prob = int(signal.ml_prediction.get("probability", 0) * 100)
@@ -468,27 +494,58 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
     break-even exit. The final fallback means a state added to position_manager
     in future degrades to a readable line instead of a blank one.
     """
+    opt_ctx = (trade.get("market_context") or {}).get("option_trailing")
+    is_option_atr = opt_ctx is not None and opt_ctx.get("policy_version") == "option_atr_v1"
+
     if update_type == "T1_HIT":
+        if is_option_atr:
+            return "Target 1 Reached! 50% model-booked (Score: 1). Stop Loss moved to Entry."
         return "Target 1 Reached! Stop Loss trailed to Entry."
-    if update_type == "ATR_SL_UPDATED":
+    if update_type in ("T2_HIT", "T2_REACHED"):
+        if is_option_atr:
+            return "Target 2 Reached! Cumulative 80% model-booked (Score: 2). 20% Runner active."
+        return "Target 2 Reached! Trade Closed with Full Profit."
+    if update_type == "ATR_ACTIVE":
+        return "Option ATR Protection Activated."
+    if update_type in ("OPTION_SL_RATCHETED", "ATR_SL_UPDATED"):
+        if is_option_atr:
+            return "Option ATR Stop Loss Tightened."
         return "ATR trailing stop tightened."
     if update_type == "ATR_SL_HIT":
+        if is_option_atr:
+            if opt_ctx.get("highest_milestone", 0) >= 2 or opt_ctx.get("phase") == "POST_T2":
+                return "Option Stop Loss Hit on 5-Minute Close. Final 20% Runner Closed (Score: 2 retained)."
+            return "Completed 5-minute close crossed Option ATR Stop. Remaining 50% Closed (Score: 1 retained)."
         return "5-minute close crossed ATR Stop Loss. Runner exit triggered."
-    if update_type == "T2_HIT":
-        return "Target 2 Reached! Trade Closed with Full Profit."
+    if update_type == "OPTION_SL_FLOOR_HIT":
+        return "Option SL Floor Hit on 5-Minute Close. Final 20% Runner Closed (Score: 2 retained)."
     if update_type == "STOPPED_OUT_AT_BE":
+        if is_option_atr:
+            return "Trailing Stop Loss Hit at Entry. Remaining 50% Closed (Score: 1 retained)."
         return "Trailing Stop Loss Hit at Entry. T1 Profit Locked; Trade Closed."
     if update_type == "SL_HIT":
         # Pre-TASK-198 rows can still reach here with a trailed stop; keep
         # reporting those as the break-even exit they were.
         if trade.get("state") == "T1_HIT" or trade.get("stop_loss") == trade.get("entry_price"):
             return "Trailing Stop Loss Hit at Entry. Trade Closed."
+        if is_option_atr:
+            return "Index Stop Loss Hit before T1. 100% Closed (Score: 0)."
         return "Stop Loss Hit. Trade Closed."
+    if update_type == "MONITORING_UNAVAILABLE":
+        return "Option candle data feed delayed (> 60s past candle close). Retaining last locked stop."
+    if update_type == "MONITORING_RESTORED":
+        return "Option candle data feed restored. Resuming chronological processing."
+    if update_type == "PERSISTENCE_FAILURE":
+        return "Database persistence failure. Memory state active; unconfirmed in database."
     return f"Trade Closed ({update_type})."
 
 
 def _option_lifecycle_estimate(trade, spot, update_type):
     """Project option lifecycle outcomes without mislabelling spot events as fills."""
+    opt_ctx = (trade.get("market_context") or {}).get("option_trailing")
+    if opt_ctx and opt_ctx.get("policy_version") == "option_atr_v1":
+        raise RuntimeError("Versioned lifecycle alerts require persisted immutable event snapshots")
+
     sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
     if not sizing:
         return ""
@@ -498,7 +555,7 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     exit_price = None
     if update_type == "T1_HIT":
         exit_price = t1
-    elif update_type == "T2_HIT":
+    elif update_type in ("T2_HIT", "T2_REACHED"):
         exit_price = sizing.get("target_2")
     elif update_type == "STOPPED_OUT_AT_BE":
         exit_price = entry
@@ -514,7 +571,7 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     pnl_per_lot = None
     if all(_number(value) != "unavailable" for value in (entry, exit_price, lot_size)) and float(lot_size) > 0:
         pnl_per_lot = (float(exit_price) - float(entry)) * float(lot_size)
-    if update_type == "ATR_SL_UPDATED":
+    if update_type in ("ATR_SL_UPDATED", "OPTION_SL_RATCHETED"):
         greeks = sizing.get("greeks") or {}
         values = (entry, greeks.get("delta"), greeks.get("gamma"), trade.get("stop_loss"), trade.get("entry_price"))
         option_sl = None
@@ -537,12 +594,153 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     return text
 
 
+def _lifecycle_event_time(value):
+    """Never substitute detection/wall time for a historical event timestamp."""
+    try:
+        timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            return "unavailable"
+        return timestamp.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%d-%b-%Y %H:%M:%S IST")
+    except (ValueError, TypeError):
+        return "unavailable"
+
+
+def render_option_lifecycle_event(event: dict) -> dict:
+    """Render an immutable, committed lifecycle snapshot (or explicit DB warning).
+
+    Durable ownership, acknowledgements and retries belong to PositionManager's
+    persisted outbox. Rendering never reads mutable live trade state.
+    """
+    trade = event.get("trade") or {}
+    context = event.get("option_trailing") or (trade.get("market_context") or {}).get("option_trailing") or {}
+    contract = context.get("contract") or {}
+    kind = event.get("type") or event.get("update_type")
+    milestone = int(context.get("highest_milestone") or 0)
+    phase = context.get("phase", "unavailable")
+    exit_info = context.get("exit") or {}
+    candle = event.get("candle") or {}
+    persistence_failed = kind in {"PERSISTENCE_FAILURE", "PERSISTENCE_FAILED"}
+    terminal = kind in {"SL_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}
+    cards = {
+        "NEW_SIGNAL": ("A", "New reference signal"),
+        "T1_HIT": ("B", "T1 reached — 50% model-booked"),
+        "ATR_ACTIVE": ("C", "Option ATR protection activated"),
+        "OPTION_SL_RATCHETED": ("D", "Option SL raised"),
+        "ATR_SL_UPDATED": ("D", "Option SL raised"),
+        "T2_HIT": ("E", "T2 reached — 80% model-booked, 20% runner active"),
+        "T2_REACHED": ("E", "T2 reached — 80% model-booked, 20% runner active"),
+        "SL_HIT": ("F", "Initial index SL hit — reference closed"),
+        "STOPPED_OUT_AT_BE": ("G", "Index entry protection hit — reference closed"),
+        "ATR_SL_HIT": ("I" if milestone >= 2 else "H", "Option ATR close-through — reference closed"),
+        "OPTION_SL_FLOOR_HIT": ("I", "Original option SL floor close-through — reference closed"),
+        "MONITORING_UNAVAILABLE": ("J", "Option monitoring unavailable"),
+        "MONITORING_RESTORED": ("K", "Option monitoring restored"),
+        "PERSISTENCE_FAILURE": ("L", "Observed event — database pending"),
+        "PERSISTENCE_FAILED": ("L", "Observed event — database pending"),
+    }
+    if kind not in cards:
+        raise ValueError(f"Unsupported option lifecycle event: {kind}")
+    card, action = cards[kind]
+    display_id = trade.get("display_id") or trade.get("signal_id") or trade.get("id", "unavailable")
+    target_booked = .8 if milestone >= 2 else .5 if milestone == 1 else 0.
+    remaining = context.get("remaining_fraction", 1. - target_booked)
+    lines = [
+        f"Event time: {_lifecycle_event_time(event.get('event_time') or exit_info.get('event_at'))}",
+        f"Trade ID: {trade.get('id', 'unavailable')} | Event ID: {event.get('event_id') or event.get('id', 'unavailable')}",
+        f"Contract: {contract.get('strike', 'unavailable')} {contract.get('option_type', 'unavailable')} | Expiry {contract.get('expiry', 'unavailable')} | {contract.get('exchange_segment', 'unavailable')} | Security ID {contract.get('security_id', 'unavailable')}",
+        f"Phase: {phase} | Lifecycle: {'CLOSED' if terminal or phase == 'CLOSED' else 'OPEN'}",
+        f"Index mark (points): {_number(event.get('index_price'))}",
+        f"Targets model-booked: {target_booked * 100:.0f}% | Remaining active: {float(remaining) * 100:.0f}%",
+    ]
+    if terminal:
+        lines.append(f"Remainder closed: {(1. - target_booked) * 100:.0f}%")
+    if persistence_failed:
+        lines += ["Database pending: observed state is protected in memory; recording is unconfirmed.",
+                  f"Observed event detail: {event.get('detail') or 'unavailable'}"]
+    elif kind != "NEW_SIGNAL":
+        lines.append(f"Score: {milestone}{' retained' if terminal else ' recorded'}")
+    guard_enabled = context.get("index_guard_enabled", milestone < 2)
+    if terminal or milestone >= 2 or not guard_enabled:
+        lines.append("Index guard: disabled")
+    else:
+        guard_stop = context.get("index_guard_stop")
+        if guard_stop is None:
+            guard_stop = trade.get("entry_price") if milestone else trade.get("stop_loss")
+        lines.append(f"Index guard: active at {_number(guard_stop)} index points")
+    original_sl = context.get("original_option_sl")
+    locked_sl = context.get("locked_option_sl")
+    mode = context.get("protection_mode", "NONE")
+    lines.append(f"Original option SL: ₹ {_number(original_sl)} premium")
+    if locked_sl is not None and mode != "NONE":
+        lines.append(f"{'Last locked' if terminal else 'Active'} option SL: ₹ {_number(locked_sl)} premium ({mode})")
+    elif milestone >= 2:
+        lines.append(f"Active option SL: ₹ {_number(original_sl)} premium (ORIGINAL_OPTION_SL_FLOOR)")
+    else:
+        lines.append("Option ATR: inactive before T1" if milestone == 0 else "Option ATR: waiting for confirmed raw line strictly above original option SL")
+    if kind == "NEW_SIGNAL":
+        sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
+        lines += [
+            f"Index entry / SL / T1 / T2 (points): {_number(trade.get('entry_price'))} / {_number(trade.get('stop_loss'))} / {_number(trade.get('target_1'))} / {_number(trade.get('target_2'))}",
+            f"Option entry / SL / T1 / T2 (₹ premium, Greeks bracket): {_number(context.get('original_option_entry'))} / {_number(original_sl)} / {_number(sizing.get('target_1'))} / {_number(sizing.get('target_2'))}",
+            f"Suggested lots: {_number(sizing.get('final_lots', sizing.get('lots', sizing.get('suggested_lots'))), '.0f')} | Risk status: {sizing.get('status', trade.get('options_sizing_status', 'unavailable'))}",
+            "Option ATR begins after index T1; original index SL protects until then.",
+        ]
+    if kind in {"T2_HIT", "T2_REACHED"}:
+        lines.append("Additional target allocation: 30% of original; cumulative 80%. Final 20% remains OPEN.")
+    if kind == "T1_HIT":
+        lines.append("Index SL moved to entry; option ATR protects remaining 50% when eligible.")
+    if kind in {"OPTION_SL_RATCHETED", "ATR_SL_UPDATED"}:
+        previous = event.get("previous_stop", context.get("previous_locked_option_sl"))
+        lines.append(f"Option SL raised: ₹ {_number(previous)} → ₹ {_number(locked_sl)} premium")
+    if kind in {"ATR_ACTIVE", "OPTION_SL_RATCHETED", "ATR_SL_UPDATED", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
+        start = candle.get("start_time") or candle.get("start") or exit_info.get("candle_start")
+        end = candle.get("end_time") or candle.get("end") or exit_info.get("candle_end") or context.get("last_processed_option_bar_end")
+        lines.append(f"Source completed 5m candle: {_lifecycle_event_time(start)} → {_lifecycle_event_time(end)}")
+        lines.append("Exit rule: completed option 5m close strictly below previously active SL; wick/equality ignored.")
+    if kind in {"ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
+        stop = exit_info.get("option_stop", event.get("previous_stop", locked_sl))
+        close = exit_info.get("option_close", candle.get("close"))
+        lines.append(f"Confirmed option close: ₹ {_number(close)} premium | Previously active SL: ₹ {_number(stop)} premium")
+    if kind in {"MONITORING_UNAVAILABLE", "MONITORING_RESTORED"}:
+        lines += [f"Monitoring detail: {event.get('detail') or 'unavailable'}",
+                  f"Last valid option candle end: {_lifecycle_event_time(context.get('last_valid_option_bar_end'))}",
+                  "Last locked stop retained; missing candles must be recovered before chronological processing resumes."]
+    lines.append("Reference/model tracking; allocations and candle closes are not broker fills. Index break-even does not guarantee option break-even.")
+    return {"embeds": [{"title": f"#{display_id} · Card {card} · {action}",
+                         "color": 15158332 if terminal or persistence_failed else 3066993,
+                         "description": "\n".join(lines)}]}
+
+
+async def send_option_lifecycle_event(event: dict) -> str:
+    """Send once; caller durably acknowledges transport outcome.
+
+    Timeouts after connection/write may have delivered. Such outcomes require
+    reconciliation, never an automatic retry pretending webhook dedup exists.
+    """
+    if not settings.discord_webhook_url:
+        return "FAILED"
+    payload = render_option_lifecycle_event(event)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(settings.discord_webhook_url, json=payload)
+            response.raise_for_status()
+        return "DELIVERED"
+    except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout, httpx.HTTPStatusError):
+        return "FAILED"
+    except (httpx.TimeoutException, httpx.TransportError):
+        return "AMBIGUOUS"
+
+
 async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     """
     Sends an alert when an active trade state changes using embeds (e.g., T1 Hit, Trailing Stop triggered, SL Hit).
     """
     if not settings.discord_webhook_url:
         return
+
+    opt_trailing = (trade.get("market_context") or {}).get("option_trailing")
+    if opt_trailing and opt_trailing.get("policy_version") == "option_atr_v1":
+        raise RuntimeError("Versioned lifecycle alerts require persisted immutable event snapshots")
 
     # Color code based on direction
     is_bullish = trade.get("direction") == "BULLISH"
@@ -563,7 +761,9 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
 🛑 **New SL**  : **{trade['stop_loss']:.2f}**
 ⭐ **Status**  : **{trade['state']}**
 """
-    if update_type in {"ATR_SL_UPDATED", "ATR_SL_HIT"}:
+    if update_type in {"ATR_SL_UPDATED", "ATR_SL_HIT"} and not (
+        opt_trailing and opt_trailing.get("policy_version") == "option_atr_v1"
+    ):
         atr = (trade.get("market_context") or {}).get("atr_trailing") or {}
         description += f"\n🛑 **Previous SL**: {_number(atr.get('previous_sl', trade['stop_loss']))}\n📐 **Method**: 5-minute ATR trailing"
     description += _option_lifecycle_estimate(trade, spot, update_type)
@@ -584,3 +784,13 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
             response.raise_for_status()
         except Exception as e:
             print(f"[-] Discord trade update alert failed: {type(e).__name__} - {e}")
+
+
+async def send_monitoring_alert(trade: dict, spot: float, status: str, detail: str = "") -> None:
+    """Sends Card J or Card K monitoring alert."""
+    await send_trade_update(trade, spot, f"MONITORING_{status}")
+
+
+async def send_persistence_alert(trade: dict, spot: float, error_msg: str) -> None:
+    """Sends Card L persistence failure alert."""
+    await send_trade_update(trade, spot, "PERSISTENCE_FAILURE")

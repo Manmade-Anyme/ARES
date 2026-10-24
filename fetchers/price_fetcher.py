@@ -236,6 +236,64 @@ class PriceFetcher:
             self.acknowledge_candle(candle)
         return candle
 
+    async def fetch_option_candles(self, contract: dict, *, observed_at=None):
+        """Fetch native completed 5m history for the exact pinned NSE option.
+
+        History includes prior sessions for continuous Wilder warmup. Fetches
+        reload source history each poll; an empty/failed response is retried
+        so a missing bar is backfilled before the indicator can advance.
+        """
+        from options_candles import contiguous_option_candles, expected_completed_option_bar_end, load_option_candles
+
+        now = observed_at or datetime.now(IST)
+        now = now.replace(tzinfo=IST) if now.tzinfo is None else now.astimezone(IST)
+        security_id = str(contract.get("security_id") or "").strip()
+        exchange = contract.get("exchange_segment") or contract.get("exchange")
+        expiry = contract.get("expiry_date") or contract.get("expiry")
+        if (not security_id.isdigit() or exchange != "NSE_FNO" or not expiry
+                or contract.get("option_type") not in ("CE", "PE")
+                or not contract.get("strike")):
+            raise ValueError("Option history requires a complete pinned NSE_FNO contract")
+        # Include enough calendar days to cross weekends and exchange holidays.
+        from_date = contract.get("history_from") or (now.date() - timedelta(days=10)).isoformat()
+        datetime.strptime(from_date, "%Y-%m-%d")
+        to_date = now.date().isoformat()
+        expected_end = expected_completed_option_bar_end(now)
+        cache_key = (security_id, exchange, str(expiry), contract["strike"], contract["option_type"], from_date, expected_end)
+        cache = getattr(self, "_option_candle_cache", {})
+        if cache_key in cache:
+            return cache[cache_key]
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, lambda: self.dhan.intraday_minute_data(
+            security_id, exchange, "OPTIDX", from_date, to_date, interval=5,
+        ))
+        if not isinstance(response, dict) or response.get("status") != "success":
+            raise ValueError("Pinned option history request failed")
+        data = response.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("Pinned option history response is malformed")
+        time_key = "start_Time" if "start_Time" in data else "timestamp"
+        keys = (time_key, "open", "high", "low", "close", "volume")
+        if any(not isinstance(data.get(key), (list, tuple)) for key in keys):
+            raise ValueError("Pinned option history arrays are missing")
+        count = len(data[time_key])
+        if any(len(data[key]) != count for key in keys):
+            raise ValueError("Pinned option history arrays have unequal lengths")
+        rows = [{"timestamp": data[time_key][i], "security_id": security_id,
+                 **{key: data[key][i] for key in keys[1:]}} for i in range(count)]
+        # The response has no per-row identity: bind it to this exact request,
+        # never to a strike lookup or the nearest expiry from an option chain.
+        bars = load_option_candles(rows, expected_security_id=security_id, observed_at=now)
+        # Cache only healthy, current histories. Gaps/empty/late responses retry
+        # on the next tick; advancing an indicator over missing data is unsafe.
+        if (bars and len(contiguous_option_candles(bars)) == len(bars)
+                and expected_end is not None and bars[-1].end_time >= expected_end):
+            # Bound retention to the latest request per pinned contract.
+            cache = {key: value for key, value in cache.items() if key[0] != security_id}
+            cache[cache_key] = bars
+            self._option_candle_cache = cache
+        return bars
+
     async def fetch_previous_day_ohlc(self) -> Tuple[float, float]:
         """
         Fetch the previous trading day's high and low for the target asset
