@@ -981,6 +981,20 @@ class PositionManager:
                                             opt.update({key: candidate[key] for key in ("phase", "highest_milestone", "booked_fraction", "remaining_fraction", "index_guard_enabled", "index_guard_stop", "locked_option_sl", "protection_mode") if key in candidate})
                                             trade["state"] = queued["active_state"]
                                             kept.append((queued_id, queued))
+                                        elif older_stop and candidate.get("highest_milestone", 0) > persisted_opt.get("highest_milestone", 0):
+                                            # Milestone progress and stop strength are independent:
+                                            # retain a new T2 touch with the already committed protection.
+                                            candidate["locked_option_sl"] = persisted_opt["locked_option_sl"]
+                                            candidate["protection_mode"] = persisted_opt.get("protection_mode", candidate.get("protection_mode"))
+                                            alert = queued.get("alert_snapshot")
+                                            if alert:
+                                                alert["option_trailing"] = deepcopy(candidate)
+                                                alert["option_trailing"].pop("alert_events", None)
+                                                alert["trade"]["market_context"]["option_trailing"] = deepcopy(alert["option_trailing"])
+                                            # Later queued bars may already have raised live protection.
+                                            if opt.get("locked_option_sl") is None or candidate["locked_option_sl"] > opt["locked_option_sl"]:
+                                                opt.update({key: candidate[key] for key in ("locked_option_sl", "protection_mode")})
+                                            kept.append((queued_id, queued))
                                         elif not older_phase and not older_stop:
                                             kept.append((queued_id, queued))
                                     for _, kept_payload in kept:

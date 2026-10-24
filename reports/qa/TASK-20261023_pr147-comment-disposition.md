@@ -24,3 +24,21 @@ Scope: address review feedback against the owner's agreed option ATR lifecycle; 
 - Correction commit and CI status are recorded in PR metadata after push. CI must be checked against that exact pushed head.
 
 No initial pricing, lot sizing, risk calculation, milestone fractions, SL/ATR exit rules, production activation, migration application, deployment or broker order changed in this follow-up. No live test messages were sent; only explicitly requested GitHub review replies were posted.
+
+## Cloud-task follow-up: newer T2 versus stronger committed stop
+
+Follow-up starting head: `f958e838acb7038337fb7d7802354ec4b2a26f38`. The cloud task [reported a fix](https://github.com/Manmade-Anyme/ARES/pull/147#issuecomment-6374383435) under commit `ba7706e`, but that commit was unavailable from the ARES repository during recovery. This follow-up recreates the scoped fix locally on the existing PR branch; it does not claim to recover or cherry-pick the unpublished cloud commit.
+
+The finding relates directly to the agreed lifecycle: a revision conflict must not discard an observed T2 touch because a concurrent T1 context already has a higher locked stop. The correction retains the T2 event, score 2, 80% model-booked allocation, 20% remaining runner and disabled index guard, while carrying forward the stronger committed stop and protection mode into live state and the immutable T2 alert. Original event identity remains stable for retry deduplication.
+
+Validation at documentation handoff:
+
+- Focused conflict/recovery suite after the additional QA correction: **13 passed**, as reported by the implementing agent.
+- New public-lifecycle regression covers direct conflict recovery and an initial persistence outage followed by retry. Both cases require one committed T2 alert, matching persisted/live/snapshot state, no T2 delivery before successful commit, stable retry identity and a later runner close against the recovered stop with score 2 retained.
+- Independent QA found that initially rebasing the earlier T2 event to ₹150 could lower a live ₹196 stop established by a later queued candle. The correction now raises live protection only. An additional public-lifecycle regression keeps the immutable T2 event at ₹150, drains the later raise to ₹196, and verifies that a subsequent completed ₹180 close exits the remaining 20% against ₹196 while retaining score 2.
+- A queued silent-watermark regression verifies that T2 recovery still advances the later completed-bar watermark without an empty alert snapshot or duplicate T2 alert; the stronger ₹150 stop, score 2 and runner state remain consistent.
+- Clean final full Python suite: **1,884 passed, 45 subtests passed**, 108.69 seconds, Python 3.14.6. Twelve existing dependency/deprecation warnings; no failures or skips.
+- Changed production coverage: **all 11 added executable lines and all 6 added branch arcs covered** in the isolated final report (`/tmp/ares-pr147-final-recovery-coverage.json`). This is coverage of the new recovery branch, not a claim of repository-wide 100% coverage; the broad repository target remains unmet.
+- Independent final review reported no findings and confirmed the 13 focused tests passed. Final QA confirmed the frozen-source test result and full added-line/branch coverage; its approval is limited to this correction. Pushed-head CI remains pending; PR delivery metadata must identify the exact pushed commit and CI run. The earlier validation section remains the historical result for the prior follow-up.
+
+Scope remains limited to the existing conflict-recovery contract. Expiry handling, activation/parity sign-off, production changes, merge and broker actions remain outside this correction.

@@ -120,6 +120,8 @@ During a premium-data gap, pending index source observations are retained durabl
 
 `apply_option_lifecycle_transition` must atomically commit revision, canonical option context, active state, analytics score/result and immutable alert snapshots. Never fall back to separate REST writes. Persisted score 1/2 while a runner remains OPEN must not become a final ML training label. A terminal event retains the highest milestone; weighted index model P&L uses 50% T1, additional 30% T2 when reached, and the remainder's observed contemporaneous index mark, or remains unavailable when a required mark is missing. Option stop/close stays in premium fields; no inferred index exit price or broker fill.
 
+Revision recovery treats milestone progress and stop strength independently. When a queued T2 observation advances beyond the persisted T1 milestone but carries a lower stop, retain the T2 observation and rebase it onto the stronger persisted stop and its protection mode. The T2 transaction's context and immutable alert snapshot must agree on score 2, 80% model-booked allocation, 20% remaining, disabled index guard and the stronger stop. Keep the original event identity so retries cannot duplicate the T2 event; send the milestone alert only after its transaction succeeds. Later queued candles may already have raised the live stop above that T2 snapshot: replaying the earlier event must not lower live protection. For example, T2 can retain its rebased ₹150 stop while a later queued raise preserves the live ₹196 runner stop; a subsequent completed close at ₹180 exits against ₹196 with score 2 retained.
+
 SQL execution belongs only to the approved backend role, with fixed schema resolution, revision/idempotency checks, terminal-state and monotonic protection validation. Existing open-trade migration must first produce a read-only preview with source evidence. Production migration, existing-trade correction, activation, deployment, restart and Discord replay remain separate authorized operations.
 
 ## 6. PR #147 correction acceptance matrix
@@ -128,7 +130,7 @@ SQL execution belongs only to the approved backend role, with fixed schema resol
 |---|---|
 | R1 runtime wiring | Production entrypoint obtains pinned option candles, invokes new monitor, and processes missed index/option observations chronologically. |
 | R2 activation gate | Defaults and missing/mismatched parity version preserve legacy behavior; explicitly signed-off test policy enables option lifecycle. |
-| R3 revision ownership | T1 → T2 → repeated stop raises advance committed/live revisions; event IDs remain unique; conflicts cannot claim success. |
+| R3 revision ownership | T1 → T2 → repeated stop raises advance committed/live revisions; a stronger persisted stop cannot discard a newer T2 milestone; merged state/alert agree; event IDs remain unique; conflicts cannot claim success. |
 | R4 atomic persistence | RPC failure never falls back to partial REST state; both tables agree after successful transition. |
 | R5 durable Discord delivery | No recorded event sent before commit; restart restores pending snapshots; ack is durable; uncertain submission not blindly retried. |
 | R6 T1 seed | Pre-T1 completed historical line initializes protection immediately; the next eligible close can exit against that seeded stop. |

@@ -51,6 +51,107 @@ def exit_bar(close):
     return OptionCandle(end-timedelta(minutes=5), end, 200, 201, close-1, close, 1, '51333')
 
 
+@pytest.mark.parametrize('retry_after_outage', [False, True])
+@pytest.mark.asyncio
+async def test_newer_t2_rebases_onto_higher_committed_stop(monkeypatch, retry_after_outage):
+    pm, trade, sender = make_pm(monkeypatch)
+    option = post_t1(trade, stop=127)
+    pm.analytics = ConflictLedger({**option, 'locked_option_sl': 150})
+    pm.analytics.fail = retry_after_outage
+    t2_at = datetime(2026, 10, 23, 10, 51, tzinfo=IST)
+    await pm.update_trades(22470, event_time=t2_at)
+    if retry_after_outage:
+        assert len(pm.analytics.rows) == 1
+        assert not [call for call in sender.call_args_list if call.args[0]['update_type'] == 'T2_HIT']
+        queued_id = pm._option_pending[trade['id']][0][0]
+        pm.analytics.fail = False
+        await pm.retry_option_lifecycle_writes()
+        assert queued_id in pm.analytics.events
+
+    committed = pm.analytics.rows[-1]
+    assert committed['active_state'] == trade['state'] == 'T2_REACHED'
+    assert committed['score'] == option['highest_milestone'] == 2
+    for context in (committed['option_trailing'], option):
+        assert context['phase'] == 'POST_T2'
+        assert context['booked_fraction'] == .8
+        assert context['remaining_fraction'] == .2
+        assert context['index_guard_enabled'] is False
+        assert context['locked_option_sl'] == 150
+        assert datetime.fromisoformat(context['t2_at']) == t2_at
+    alerts = [call.args[0] for call in sender.call_args_list if call.args[0]['update_type'] == 'T2_HIT']
+    assert len(alerts) == 1
+    assert alerts[0] == committed['alert_snapshot']
+    for context in (alerts[0]['option_trailing'], alerts[0]['trade']['market_context']['option_trailing']):
+        assert context['locked_option_sl'] == 150
+        assert context['highest_milestone'] == 2
+        assert context['remaining_fraction'] == .2
+    assert pm._option_pending[trade['id']] == []
+    await pm.retry_option_lifecycle_writes()
+    assert len(pm.analytics.events) == 1
+
+    # The surviving runner must use the recovered stop on its next completed bar.
+    bar = exit_bar(140)
+    await pm.update_option_atr_trailing({'51333': [bar]}, current_time=bar.end)
+    assert trade['state'] == 'CLOSED'
+    assert pm.analytics.rows[-1]['score'] == 2
+    assert option['exit']['option_stop'] == 150
+    assert option['exit']['exited_fraction'] == .2
+
+
+@pytest.mark.asyncio
+async def test_t2_rebase_preserves_later_queued_raise_in_live_runner(monkeypatch):
+    pm, trade, sender = make_pm(monkeypatch)
+    option = post_t1(trade, stop=127)
+    pm.analytics = ConflictLedger({**option, 'locked_option_sl': 150})
+    pm.analytics.fail = True
+    await pm.update_trades(22470, event_time=datetime(2026, 10, 23, 10, 51, tzinfo=IST))
+    start = datetime(2026, 10, 23, 9, 15, tzinfo=IST)
+    bars = [OptionCandle(start+timedelta(minutes=5*i), start+timedelta(minutes=5*(i+1)),
+                        200, 201, 199, 200, 1, '51333') for i in range(20)]
+    await pm.update_option_atr_trailing({'51333': bars}, current_time=bars[-1].end)
+    assert option['locked_option_sl'] == 196
+    pm.analytics.fail = False
+    await pm.retry_option_lifecycle_writes()
+    assert option['locked_option_sl'] == pm.analytics.rows[-1]['option_trailing']['locked_option_sl'] == 196
+    assert trade['state'] == 'T2_REACHED'
+    assert pm._option_pending[trade['id']] == []
+    t2_alert = next(call.args[0] for call in sender.call_args_list if call.args[0]['update_type'] == 'T2_HIT')
+    assert t2_alert['option_trailing']['locked_option_sl'] == 150
+    end = bars[-1].end + timedelta(minutes=5)
+    close = OptionCandle(end-timedelta(minutes=5), end, 200, 201, 179, 180, 1, '51333')
+    await pm.update_option_atr_trailing({'51333': bars + [close]}, current_time=end)
+    assert trade['state'] == 'CLOSED'
+    assert option['exit']['option_stop'] == 196
+    assert option['exit']['exited_fraction'] == .2
+    assert pm.analytics.rows[-1]['score'] == 2
+
+
+@pytest.mark.asyncio
+async def test_t2_rebase_keeps_silent_watermark_without_duplicate_alert(monkeypatch):
+    pm, trade, sender = make_pm(monkeypatch)
+    option = post_t1(trade, stop=127)
+    pm.analytics = ConflictLedger({**option, 'locked_option_sl': 150})
+    pm.analytics.fail = True
+    await pm.update_trades(22470, event_time=datetime(2026, 10, 23, 10, 51, tzinfo=IST))
+    end = datetime(2026, 10, 23, 10, 55, tzinfo=IST)
+    bar = OptionCandle(end-timedelta(minutes=5), end, 200, 201, 199, 200, 1, '51333')
+    await pm.update_option_atr_trailing({'51333': [bar]}, current_time=end)
+    pm.analytics.fail = False
+    await pm.retry_option_lifecycle_writes()
+    committed = pm.analytics.rows[-1]
+    assert trade['state'] == committed['active_state'] == 'T2_REACHED'
+    assert committed['score'] == 2
+    assert option['locked_option_sl'] == committed['option_trailing']['locked_option_sl'] == 150
+    assert datetime.fromisoformat(committed['option_trailing']['last_processed_option_bar_end']) == end
+    assert committed['alert_snapshot'] is None
+    assert len(committed['option_trailing']['alert_events']) == 1
+    alerts = [call.args[0] for call in sender.call_args_list if call.args[0]['update_type'] == 'T2_HIT']
+    assert len(alerts) == 1
+    assert alerts[0]['option_trailing']['remaining_fraction'] == .2
+    assert alerts[0]['option_trailing']['index_guard_enabled'] is False
+    assert pm._option_pending[trade['id']] == []
+
+
 @pytest.mark.asyncio
 async def test_terminal_observation_survives_conflict_with_higher_committed_stop(monkeypatch):
     pm, trade, _ = make_pm(monkeypatch)

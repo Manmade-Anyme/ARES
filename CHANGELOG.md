@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #147 cloud-task fix recreation:** Preserve a newly observed T2 milestone when revision recovery reloads a stronger committed option stop. Keep score 2, 80% model-booked allocation, the 20% runner and disabled index guard while rebasing the T2 alert onto the higher stop. Preserve any still-higher live stop established by later queued candles. This recreates the cloud task's reported fix on the PR branch; it does not recover its unpublished commit.
+
 - **PR #147 comment follow-up:** Interpret live detector signals' naive candle timestamps as IST when rendering the initial enrolled signal card. Preserve offset-aware conversion and retain `unavailable` for ambiguous naive durable lifecycle event times; prices, sizing and legacy signal cards remain unchanged. Silent watermark transitions no longer accumulate empty pending alerts; a bounded server-owned retry marker preserves serialized retry safety. Expiry closure remains a separate policy decision, per the owner.
 
 - **TASK-20261023 / PR #147 option lifecycle corrections:** Add gated pinned-option five-minute ATR reference tracking and milestone accounting (50% T1, additional 30% T2, 20% runner), immutable event-time Discord Cards A–L, atomic state/outbox persistence and regression coverage. Preserve initial index levels, Greeks pricing and suggested lots. Keep full stop precision with two-decimal display, distinct index/premium units, and target bookings separate from stopped remainder. Candidate chart parity remains unresolved; activation defaults off. Migration/production changes remain unapplied; runtime verification and historical replay evidence are reported in the task delivery notes.
