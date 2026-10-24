@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #147 offline-label and cooldown review fixes:** Retain canonical option lifecycle state and P&L when joining offline training rows, so completed option trades remain eligible even when snapshot outcome telemetry is missing and open runners remain excluded despite stale target labels. Restore the existing initial `SL_HIT` cooldown reset when completed-candle option monitoring detects that exit across normal polling, tick waits, fallback polling and session finalization. Milestone, break-even, ATR and floor events do not gain a new cooldown reset.
+
 - **PR #147 cloud-task fix recreation:** Preserve a newly observed T2 milestone when revision recovery reloads a stronger committed option stop. Keep score 2, 80% model-booked allocation, the 20% runner and disabled index guard while rebasing the T2 alert onto the higher stop. Preserve any still-higher live stop established by later queued candles. This recreates the cloud task's reported fix on the PR branch; it does not recover its unpublished commit.
 
 - **PR #147 comment follow-up:** Interpret live detector signals' naive candle timestamps as IST when rendering the initial enrolled signal card. Preserve offset-aware conversion and retain `unavailable` for ambiguous naive durable lifecycle event times; prices, sizing and legacy signal cards remain unchanged. Silent watermark transitions no longer accumulate empty pending alerts; a bounded server-owned retry marker preserves serialized retry safety. Expiry closure remains a separate policy decision, per the owner.

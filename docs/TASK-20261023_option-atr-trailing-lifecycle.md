@@ -120,6 +120,10 @@ During a premium-data gap, pending index source observations are retained durabl
 
 `apply_option_lifecycle_transition` must atomically commit revision, canonical option context, active state, analytics score/result and immutable alert snapshots. Never fall back to separate REST writes. Persisted score 1/2 while a runner remains OPEN must not become a final ML training label. A terminal event retains the highest milestone; weighted index model P&L uses 50% T1, additional 30% T2 when reached, and the remainder's observed contemporaneous index mark, or remains unavailable when a required mark is missing. Option stop/close stays in premium fields; no inferred index exit price or broker fill.
 
+The offline training entrypoint must carry the fetched canonical `option_trailing`, `result_state` and `trade_pnl` metadata into each matching snapshot row alongside entry/exit timestamps and time-metric exclusions. Canonical `trade_pnl` comes from `trade_analytics.pnl_points`; the dataset pipeline later exposes `pnl_points`. A terminal versioned option trade with no remaining allocation is eligible for the existing milestone-based classifier even if `ml_collection.trade_outcome` is missing. An open runner remains ineligible when snapshot telemetry incorrectly reports a completed target. Preserve unknown canonical P&L as null and retain existing unversioned legacy labeling behavior; joining metadata does not retrain, promote or deploy a model by itself.
+
+Completed-candle option monitoring must propagate an initial index `SL_HIT` event to the existing signal-engine cooldown reset. Every production path that invokes that monitor supplies the engine, including normal candle fetches, session finalization, tick waits and fallback polling; index-provider failure must not discard an independently detected protective exit. This preserves the existing re-entry behavior after an initial stop-out. T1, T2, break-even, ATR, option-floor and empty event results do not introduce additional cooldown-reset triggers.
+
 Revision recovery treats milestone progress and stop strength independently. When a queued T2 observation advances beyond the persisted T1 milestone but carries a lower stop, retain the T2 observation and rebase it onto the stronger persisted stop and its protection mode. The T2 transaction's context and immutable alert snapshot must agree on score 2, 80% model-booked allocation, 20% remaining, disabled index guard and the stronger stop. Keep the original event identity so retries cannot duplicate the T2 event; send the milestone alert only after its transaction succeeds. Later queued candles may already have raised the live stop above that T2 snapshot: replaying the earlier event must not lower live protection. For example, T2 can retain its rebased ₹150 stop while a later queued raise preserves the live ₹196 runner stop; a subsequent completed close at ₹180 exits against ₹196 with score 2 retained.
 
 SQL execution belongs only to the approved backend role, with fixed schema resolution, revision/idempotency checks, terminal-state and monotonic protection validation. Existing open-trade migration must first produce a read-only preview with source evidence. Production migration, existing-trade correction, activation, deployment, restart and Discord replay remain separate authorized operations.
@@ -128,7 +132,7 @@ SQL execution belongs only to the approved backend role, with fixed schema resol
 
 | Review finding | Required regression evidence |
 |---|---|
-| R1 runtime wiring | Production entrypoint obtains pinned option candles, invokes new monitor, and processes missed index/option observations chronologically. |
+| R1 runtime wiring | Production entrypoint obtains pinned option candles, invokes new monitor, processes missed index/option observations chronologically, and retains the existing initial `SL_HIT` cooldown reset across monitor callers. |
 | R2 activation gate | Defaults and missing/mismatched parity version preserve legacy behavior; explicitly signed-off test policy enables option lifecycle. |
 | R3 revision ownership | T1 → T2 → repeated stop raises advance committed/live revisions; a stronger persisted stop cannot discard a newer T2 milestone; merged state/alert agree; event IDs remain unique; conflicts cannot claim success. |
 | R4 atomic persistence | RPC failure never falls back to partial REST state; both tables agree after successful transition. |
@@ -141,7 +145,7 @@ SQL execution belongs only to the approved backend role, with fixed schema resol
 | R11 gaps/monitoring | Same-session gap freezes processing; recovery chronological; one market-hours stale warning, no overnight outage spam. |
 | R12 Cards A–L | Pure immutable snapshot rendering tests exact event time, contract expiry, units, allocation/exit evidence and all three transport outcomes. |
 | R13 incident replay | Genuine #1950/#3935 contract metadata and source chronology; no inserted bars forcing desired closure; missing historical evidence disclosed. |
-| R14 ML/recovery | Open runners excluded; floor and ATR terminal reasons retain highest milestone; unversioned legacy outcomes preserved. |
+| R14 ML/recovery | Offline CLI preserves fetched canonical option outcome metadata; open runners excluded despite stale snapshot targets; terminal rows with missing snapshot outcomes label from the highest milestone; nullable P&L and unversioned legacy outcomes preserved. |
 
 Report executed checks and measured results in the final delivery. Candidate arithmetic fixtures, synthetic lifecycle tests and real incident replays are separate evidence types. Current-day-only fixtures do not establish prior-session chart parity. No test result or production state is assumed from documentation.
 

@@ -161,7 +161,7 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
         option_policy = _has_option_policy_trades(position_manager)
         if price_fetcher is not None and option_policy:
             await _monitor_completed_atr(price_fetcher.watch_candles, position_manager,
-                                         dispatcher, price_fetcher=price_fetcher)
+                                         dispatcher, price_fetcher=price_fetcher, engine=engine)
         tick_kwargs = {}
         if option_policy:
             from datetime import datetime as real_datetime
@@ -221,7 +221,7 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
     """Keep exits and pending orders live without replaying a detector candle."""
     if _has_option_policy_trades(position_manager):
         await _monitor_completed_atr(price_fetcher.watch_candles, position_manager,
-                                     dispatcher, price_fetcher=price_fetcher)
+                                     dispatcher, price_fetcher=price_fetcher, engine=engine)
     spot = await price_fetcher.fetch_latest_spot()
     # Risk checks must survive an independent option-chain outage.
     try:
@@ -258,7 +258,7 @@ async def _retry_reference_entries(position_manager):
         logger.warning("Reference registration retry failed: %s", exc)
 
 
-async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price_fetcher=None, current_time=None):
+async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price_fetcher=None, current_time=None, engine=None):
     """Run independent protection paths, including polls with no new index bar.
 
     Option history is contract-pinned and independent of chain availability.
@@ -289,7 +289,9 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                     histories[security_id] = []
                     logger.warning("Pinned option history unavailable for %s: %s", security_id, exc)
             try:
-                await position_manager.update_option_market_events(candles, histories, current_time=now)
+                events = await position_manager.update_option_market_events(candles, histories, current_time=now)
+                if engine is not None and any(event == "SL_HIT" for _, event in events):
+                    engine.clear_cooldown()
             except Exception as exc:
                 logger.warning("Option lifecycle monitoring failed: %s", exc)
     monitors = [position_manager.update_atr_trailing]
@@ -302,7 +304,7 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
             logger.warning("Completed ATR monitoring failed: %s", exc)
 
 
-async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatcher, *, finalizing=False):
+async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatcher, *, finalizing=False, engine=None):
     """Index provider failure must not suppress an independent premium stop."""
     candle = None
     try:
@@ -313,7 +315,7 @@ async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatc
         if candle is not None or _has_option_policy_trades(position_manager):
             await _monitor_completed_atr(
                 price_fetcher.watch_candles, position_manager, dispatcher,
-                price_fetcher=price_fetcher,
+                price_fetcher=price_fetcher, engine=engine,
             )
 
 
@@ -547,7 +549,7 @@ async def run():
                 # Fetch latest price candle
                 if finalizing:
                     candle = await _fetch_candle_with_protection(
-                        price_fetcher, position_manager, order_dispatcher, finalizing=True,
+                        price_fetcher, position_manager, order_dispatcher, finalizing=True, engine=engine,
                     )
                     if (candle is None or candle.timestamp.date() != now.date()
                             or candle.timestamp.time() != time(15, 29)):
@@ -566,7 +568,7 @@ async def run():
                         logger.warning("Final candle exit check failed: %s", exc)
                 else:
                     candle = await _fetch_candle_with_protection(
-                        price_fetcher, position_manager, order_dispatcher,
+                        price_fetcher, position_manager, order_dispatcher, engine=engine,
                     )
                 if candle is None:
                     if not tick_feed.is_active:

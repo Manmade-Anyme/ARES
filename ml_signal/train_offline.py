@@ -1459,9 +1459,9 @@ def main(argv=None) -> None:
         trade_id = row.get("trade_id")
         if trade_id and str(trade_id) in exit_timestamps:
             metadata = exit_timestamps[str(trade_id)]
-            row["exit_timestamp"] = metadata["exit_timestamp"]
-            row["entry_timestamp"] = metadata["entry_timestamp"]
-            row["time_metrics_excluded"] = metadata["time_metrics_excluded"]
+            # Keep canonical option lifecycle state/P&L with the timestamps;
+            # ml_collection may still have missing or stale outcome telemetry.
+            row.update(metadata)
         else:
             row["exit_timestamp"] = None
             row["entry_timestamp"] = None

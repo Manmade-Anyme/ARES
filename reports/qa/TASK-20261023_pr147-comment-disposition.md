@@ -42,3 +42,20 @@ Validation at documentation handoff:
 - Independent final review reported no findings and confirmed the 13 focused tests passed. Final QA confirmed the frozen-source test result and full added-line/branch coverage; its approval is limited to this correction. Pushed-head CI remains pending; PR delivery metadata must identify the exact pushed commit and CI run. The earlier validation section remains the historical result for the prior follow-up.
 
 Scope remains limited to the existing conflict-recovery contract. Expiry handling, activation/parity sign-off, production changes, merge and broker actions remain outside this correction.
+
+## Follow-up on head `6a2d69b`: canonical training metadata and cooldown events
+
+| Review comment | Relationship to agreed needs | Local correction |
+|---|---|---|
+| [4366412916: offline CLI discards canonical option outcomes](https://github.com/Manmade-Anyme/ARES/pull/147#discussion_r4366412916) | Terminal trades must train from the retained highest milestone, while a score-1/2 OPEN runner must never become a final label. | Carry the already-fetched canonical metadata into each matching snapshot row through `row.update(metadata)`, instead of retaining only the three timestamp-related fields. Existing version-aware dataset classification receives `option_trailing`, `result_state` and nullable `trade_pnl` sourced from `trade_analytics.pnl_points`; the pipeline later exposes `pnl_points`. Legacy labeling stays unchanged. |
+| [4366412920: completed-candle option exit loses cooldown reset](https://github.com/Manmade-Anyme/ARES/pull/147#discussion_r4366412920) | The new premium-monitoring path must preserve existing re-entry behavior when the original index SL closes a reference. | Pass the signal engine through every production completed-monitor caller and consume returned lifecycle events. Clear cooldown only for the existing initial `SL_HIT` event; target, break-even, ATR and option-floor events do not gain a reset trigger. |
+
+Validation at documentation handoff:
+
+- Runtime-adjacent suite: **78 passed**, as reported by the implementing agent. Ten new cases cover four normal monitoring paths using the real PositionManager and AresEngine, plus target/BE/ATR/floor/empty-event negatives. The four paths are normal candle fetch, final candle fetch, tick wait and fallback polling. A separate existing provider-failure test checks independent protection; it does not establish cooldown-reset behavior under that failure.
+- ML-focused suite: **123 passed**, as reported by the implementing agent. The new regression runs the actual training CLI through canonical metadata fetching and the real trade-outcome preparation pipeline. It covers terminal milestone 0/1/2 trades with missing snapshot outcomes, null P&L, an OPEN runner with stale T2 telemetry, and unchanged legacy outcomes.
+- Clean final full Python suite: **1,895 passed, 45 subtests passed**, 99.59 seconds, Python 3.14.6. Twelve existing dependency/deprecation warnings; no failures or skips.
+- Changed production coverage: **all 6 added executable lines and both added branch arcs covered** in the final isolated report (`/tmp/ares-pr147-two-comments-coverage.json`). The repository-wide 100% target remains unmet; this result applies to the added production behavior.
+- Independent final review reported no findings across 19 tests. QA passed all 11 added test cases and confirmed the frozen-source full-suite result and added-line/branch coverage. Hosted CI remains pending and must be linked to the exact pushed head in PR delivery metadata. These local results do not claim a trained/promoted model or a production release. Earlier sections remain historical validation for their respective follow-ups.
+
+These corrections preserve the agreed index Entry/SL/T1/T2, Greeks calculations, suggested lots, milestone allocations and exit criteria. Expiry policy, chart-parity approval, activation, production migration, deployment, merge and broker actions remain outside scope.
