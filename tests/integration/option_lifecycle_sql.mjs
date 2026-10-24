@@ -119,5 +119,28 @@ try {
   eq(Object.keys(raised.option_trailing.alert_events), ['T1', 'raise-after-watermarks'], 'real stop raise still queues an immutable alert');
   eq(raised.option_trailing.alert_events['raise-after-watermarks'].status, 'PENDING', 'real raise remains deliverable');
   eq((await transition(rev - 1, 'watermark-24', silent)).idempotent_skip, true, 'alert commit cannot erase last silent transition retry marker');
+  await seed();
+  const pendingGuard = { event_at: '2026-10-23T05:26:00Z', index_price: 22552.1,
+    status: 'AWAITING_OPTION_BACKFILL' };
+  const guarded = await transition(1, 'guard-before-T2', { option_trailing: {
+    phase: 'POST_T1', highest_milestone: 1, remaining_fraction: .5, locked_option_sl: 127.15,
+    observed_index_guard_exit: pendingGuard } });
+  eq(guarded.option_trailing.observed_index_guard_exit, pendingGuard, 'unresolved guard remains durable before T2');
+  const t2Context = { phase: 'POST_T2', highest_milestone: 2, remaining_fraction: .2,
+    locked_option_sl: 150, index_guard_enabled: false, observed_index_guard_exit: null };
+  const consumed = await transition(2, 'T2-consumes-guard', { active_state: 'T2_REACHED', score: 2,
+    option_trailing: t2Context,
+    alert_snapshot: { update_type: 'T2_HIT', option_trailing: t2Context } });
+  eq(consumed.option_trailing.observed_index_guard_exit, null, 'explicit null clears the old guard through jsonb merge');
+  const reloaded = (await q('SELECT market_context FROM public.trade_analytics WHERE id=$1', [id]))
+    .rows[0].market_context.option_trailing;
+  eq(Object.hasOwn(reloaded, 'observed_index_guard_exit'), true, 'database restart context retains the explicit clear');
+  eq([reloaded.phase, reloaded.remaining_fraction, reloaded.index_guard_enabled,
+      reloaded.observed_index_guard_exit], ['POST_T2', .2, false, null], 'reloaded runner has no unresolved index guard');
+  eq(reloaded.alert_events['T2-consumes-guard'].snapshot.option_trailing.observed_index_guard_exit, null,
+    'immutable T2 alert also records consumed guard');
+  const postT2Raise = await transition(3, 'raise-after-T2-clear', { active_state: 'T2_REACHED', score: 2,
+    option_trailing: { locked_option_sl: 160 } });
+  eq(postT2Raise.option_trailing.observed_index_guard_exit, null, 'later jsonb merge cannot resurrect the consumed guard');
   console.log(`Option lifecycle isolated PostgreSQL: ${checks} checks passed`);
 } finally { await db.close(); }

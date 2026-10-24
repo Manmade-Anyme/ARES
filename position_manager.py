@@ -575,7 +575,7 @@ class PositionManager:
                     opt_ctx["booked_fraction"] = 0.8
                     opt_ctx["remaining_fraction"] = 0.2
                     opt_ctx["index_guard_enabled"] = False
-                    opt_ctx.pop("observed_index_guard_exit", None)
+                    opt_ctx["observed_index_guard_exit"] = None
                     if opt_ctx.get("locked_option_sl") is None:
                         opt_ctx["locked_option_sl"] = opt_ctx.get("original_option_sl")
                         opt_ctx["protection_mode"] = "ORIGINAL_OPTION_SL_FLOOR"
@@ -634,7 +634,7 @@ class PositionManager:
                     opt_ctx["booked_fraction"] = 0.8
                     opt_ctx["remaining_fraction"] = 0.2
                     opt_ctx["index_guard_enabled"] = False
-                    opt_ctx.pop("observed_index_guard_exit", None)
+                    opt_ctx["observed_index_guard_exit"] = None
                     if opt_ctx.get("locked_option_sl") is None:
                         opt_ctx["locked_option_sl"] = opt_ctx.get("original_option_sl")
                         opt_ctx["protection_mode"] = "ORIGINAL_OPTION_SL_FLOOR"
@@ -941,6 +941,7 @@ class PositionManager:
                                                 raise RuntimeError("Observed index exit conflicts with committed T2; reconciliation required")
                                             for field in ("highest_milestone", "booked_fraction"):
                                                 candidate[field] = max(candidate.get(field) or 0, persisted_opt.get(field) or 0)
+                                            candidate["exit"]["exited_fraction"] = round(1.0 - candidate["booked_fraction"], 10)
                                             committed_stop = persisted_opt.get("locked_option_sl")
                                             observed_stop = candidate.get("locked_option_sl")
                                             if committed_stop is not None and (observed_stop is None or committed_stop > observed_stop):
@@ -956,13 +957,14 @@ class PositionManager:
                                                 alert["option_trailing"] = deepcopy(candidate)
                                                 alert["option_trailing"].pop("alert_events", None)
                                                 alert["trade"]["market_context"]["option_trailing"] = deepcopy(alert["option_trailing"])
-                                            opt.update({key: candidate[key] for key in ("highest_milestone", "booked_fraction", "locked_option_sl", "protection_mode") if key in candidate})
+                                            opt.update({key: candidate[key] for key in ("highest_milestone", "booked_fraction", "locked_option_sl", "protection_mode", "exit") if key in candidate})
                                             kept.append((queued_id, queued))
                                         elif older_phase and candidate.get("locked_option_sl") is not None and (
                                                 persisted_opt.get("locked_option_sl") is None or candidate["locked_option_sl"] > persisted_opt["locked_option_sl"]):
                                             # A later database milestone must not erase a newer observed raise.
                                             for field in ("phase", "highest_milestone", "booked_fraction", "remaining_fraction",
-                                                          "index_guard_enabled", "index_guard_stop", "t1_at", "t2_at"):
+                                                          "index_guard_enabled", "index_guard_stop", "t1_at", "t2_at",
+                                                          "observed_index_guard_exit", "pending_index_observations"):
                                                 if field in persisted_opt:
                                                     candidate[field] = persisted_opt[field]
                                             queued["active_state"] = persisted.get("active_state")
@@ -978,8 +980,9 @@ class PositionManager:
                                                 alert["previous_stop"] = persisted_opt.get("locked_option_sl")
                                                 alert["trade"]["state"] = queued["active_state"]
                                                 alert["trade"]["market_context"]["option_trailing"] = deepcopy(alert["option_trailing"])
-                                            opt.update({key: candidate[key] for key in ("phase", "highest_milestone", "booked_fraction", "remaining_fraction", "index_guard_enabled", "index_guard_stop", "locked_option_sl", "protection_mode") if key in candidate})
-                                            trade["state"] = queued["active_state"]
+                                            if trade.get("state") not in {"CLOSED", "STOPPED_OUT"}:
+                                                opt.update({key: candidate[key] for key in ("phase", "highest_milestone", "booked_fraction", "remaining_fraction", "index_guard_enabled", "index_guard_stop", "locked_option_sl", "protection_mode", "observed_index_guard_exit", "pending_index_observations") if key in candidate})
+                                                trade["state"] = queued["active_state"]
                                             kept.append((queued_id, queued))
                                         elif older_stop and (candidate.get("highest_milestone", 0) > persisted_opt.get("highest_milestone", 0)
                                                 or (not older_phase and (candidate.get("pending_index_observations") or candidate.get("observed_index_guard_exit")))):

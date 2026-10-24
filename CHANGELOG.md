@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #147 durable T2 guard clear:** Write an explicit null for the consumed index-guard marker in both T2 transition paths. Preserve the committed guard clear and consumed observation list when an older stop raise rebases onto POST_T2. Preserve an already observed closed state and align terminal modeled exit allocation with retained target bookings during conflict repair. The existing JSON merge now clears the persisted marker, so restarting a valid 20% option runner does not restore an obsolete backfill guard or suppress later stop-raise alerts. No database schema or exit-policy change is required.
+
 - **PR #147 premium-gap ordering and guard recovery:** Validate option history against the durable processed-bar watermark before publishing availability, caching it or releasing pending index events. A truncated history cannot advance T2 ahead of an earlier missing option close. Preserve same-phase pending index observations and the earliest unresolved guard marker during stronger-stop revision recovery, while retaining the higher option stop for chronological backfill.
 
 - **PR #147 offline-label and cooldown review fixes:** Retain canonical option lifecycle state and P&L when joining offline training rows, so completed option trades remain eligible even when snapshot outcome telemetry is missing and open runners remain excluded despite stale target labels. Restore the existing initial `SL_HIT` cooldown reset when completed-candle option monitoring detects that exit across normal polling, tick waits, fallback polling and session finalization. Milestone, break-even, ATR and floor events do not gain a new cooldown reset.
