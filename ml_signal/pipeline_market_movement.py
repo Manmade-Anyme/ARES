@@ -33,18 +33,33 @@ class MarketMovementPipeline:
             
         assert_chronological_integrity(df)
         
-        # Strictly exclude detector_scores
-        feat_cols = feature_columns(df)
-        feat_cols = [c for c in feat_cols if not c.startswith("detector_scores__")]
+        # Strictly exclude detector_scores and schema metadata artifacts
+        feat_cols = [
+            c for c in feature_columns(df)
+            if not c.startswith("detector_scores__")
+            and not c.startswith("structure__")
+            and not c.startswith("greek__")
+        ]
         assert_no_outcome_leakage(feat_cols)
         
         return df
 
-    def run_walk_forward(self, df: pd.DataFrame, n_splits: int = 5) -> Tuple[object, Dict[str, Any]]:
+    def run_walk_forward(
+        self,
+        df: pd.DataFrame,
+        n_splits: int = 5,
+        feat_cols: Optional[List[str]] = None,
+    ) -> Tuple[object, Dict[str, Any]]:
         if df.empty:
             return None, {}
             
-        feat_cols = [c for c in feature_columns(df) if not c.startswith("detector_scores__")]
+        if feat_cols is None:
+            feat_cols = [
+                c for c in feature_columns(df)
+                if not c.startswith("detector_scores__")
+                and not c.startswith("structure__")
+                and not c.startswith("greek__")
+            ]
         
         cv = WalkForwardPurgedCV(
             n_splits=n_splits,

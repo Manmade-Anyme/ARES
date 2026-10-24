@@ -83,6 +83,34 @@ class TradeOutcomePipeline:
         # Map resolution_timestamp
         df["resolution_timestamp"] = df["exit_timestamp"]
         
+        # Direction-aligned structural and greek features to prevent Long vs Short feature inversion
+        is_bull = df.get("signal_direction") == "BULLISH"
+        if "structure_features__dist_to_nearest_resistance" in df.columns and "structure_features__dist_to_nearest_support" in df.columns:
+            df["structure_features__dist_to_target_wall"] = np.where(
+                is_bull,
+                df["structure_features__dist_to_nearest_resistance"],
+                df["structure_features__dist_to_nearest_support"]
+            )
+            df["structure_features__dist_to_stop_wall"] = np.where(
+                is_bull,
+                df["structure_features__dist_to_nearest_support"],
+                df["structure_features__dist_to_nearest_resistance"]
+            )
+        
+        if "greek_features__net_delta" in df.columns:
+            df["greek_features__aligned_net_delta"] = np.where(
+                is_bull,
+                df["greek_features__net_delta"],
+                -df["greek_features__net_delta"]
+            )
+            
+        if "candle_features__is_bullish" in df.columns:
+            df["candle_features__aligns_direction"] = np.where(
+                is_bull,
+                df["candle_features__is_bullish"],
+                1.0 - df["candle_features__is_bullish"]
+            )
+        
         df = deduplicate_snapshots(df, strategy="trade")
         df = df.sort_values("timestamp")
         assert_chronological_integrity(df)
@@ -114,7 +142,12 @@ class TradeOutcomePipeline:
         stage1_pipeline = MarketMovementPipeline(self.config)
         stage1_feat_cols = []
         if market_snapshots_df is not None and not market_snapshots_df.empty:
-            stage1_feat_cols = [c for c in feature_columns(market_snapshots_df) if not c.startswith("detector_scores__")]
+            stage1_feat_cols = [
+                c for c in feature_columns(market_snapshots_df)
+                if not c.startswith("detector_scores__")
+                and not c.startswith("structure__")
+                and not c.startswith("greek__")
+            ]
             
         for train_idx, test_idx, fold_info in cv.split(df, timestamp_col="timestamp", resolution_col="resolution_timestamp"):
             train_df = df.iloc[train_idx].copy()
@@ -138,8 +171,8 @@ class TradeOutcomePipeline:
                 if market_snapshots_df is not None and not market_snapshots_df.empty:
                     # Outer test rows scoring:
                     test_start = fold_info["test_start"]
-                    # snapshots strictly resolved before test_start
-                    valid_snaps = market_snapshots_df[market_snapshots_df["resolution_timestamp"] < test_start]
+                    from ml_signal.train_offline import _purge_before_evaluation
+                    valid_snaps = _purge_before_evaluation(market_snapshots_df, test_start, pd.Timedelta(minutes=15))
                     if len(valid_snaps) > 0 and valid_snaps["label"].nunique() > 1:
                         model_s1 = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
                         model_s1.fit(valid_snaps[stage1_feat_cols], valid_snaps["label"])
@@ -148,35 +181,41 @@ class TradeOutcomePipeline:
                         test_df["meta_features__market_movement_prob"] = 0.5
                         
                     # Outer train rows scoring (inner OOF):
-                    train_probs = []
-                    for _, row in train_df.iterrows():
-                        entry_ts = row["timestamp"]
-                        inner_snaps = market_snapshots_df[market_snapshots_df["resolution_timestamp"] < entry_ts]
-                        if len(inner_snaps) > 0 and inner_snaps["label"].nunique() > 1:
-                            model_inner = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
-                            model_inner.fit(inner_snaps[stage1_feat_cols], inner_snaps["label"])
-                            prob = model_inner.predict_proba(pd.DataFrame([pd.DataFrame([row]).reindex(columns=stage1_feat_cols).iloc[0]]))[:, 1][0]
-                        else:
-                            prob = 0.5
-                        train_probs.append(prob)
-                    train_df["meta_features__market_movement_prob"] = train_probs
+                    from sklearn.model_selection import TimeSeriesSplit
+                    inner_splits = min(4, max(2, len(train_df) // 25))
+                    train_probs = pd.Series(index=train_df.index, dtype=float)
+                    if inner_splits >= 2:
+                        inner_cv = TimeSeriesSplit(n_splits=inner_splits)
+                        for _, sub_test_idx in inner_cv.split(train_df):
+                            sub_test_start = train_df.iloc[sub_test_idx]["timestamp"].min()
+                            inner_snaps = _purge_before_evaluation(market_snapshots_df, sub_test_start, pd.Timedelta(minutes=15))
+                            if len(inner_snaps) >= 50 and inner_snaps["label"].nunique() > 1:
+                                model_inner = xgb.XGBClassifier(n_estimators=50, max_depth=3, random_state=42)
+                                model_inner.fit(inner_snaps[stage1_feat_cols], inner_snaps["label"])
+                                test_trades = train_df.iloc[sub_test_idx]
+                                train_probs.iloc[sub_test_idx] = model_inner.predict_proba(test_trades.reindex(columns=stage1_feat_cols))[:, 1]
+                    train_probs = train_probs.ffill().fillna(0.5)
+                    train_df["meta_features__market_movement_prob"] = train_probs.values
                 else:
                     test_df["meta_features__market_movement_prob"] = 0.5
                     train_df["meta_features__market_movement_prob"] = 0.5
 
             # Stage 2 training
             feat_cols2 = ["meta_features__market_movement_prob"] if self.use_hybrid_transfer else []
-            # Add canonical structural features
-            feat_cols2 += [
-                c for c in [
-                    "structure_features__dist_to_nearest_support",
-                    "structure_features__dist_to_nearest_resistance",
-                    "oi_features__pcr_oi",
-                    "candle_features__body_pct",
-                    "iv_features__iv_level",
-                    "greek_features__net_delta"
-                ] if c in df.columns
+            # Add canonical and direction-aligned structural features
+            target_candidates = [
+                "structure_features__dist_to_target_wall",
+                "structure_features__dist_to_stop_wall",
+                "structure_features__dist_to_nearest_support",
+                "structure_features__dist_to_nearest_resistance",
+                "oi_features__pcr_oi",
+                "candle_features__body_pct",
+                "iv_features__iv_level",
+                "greek_features__net_delta",
+                "greek_features__aligned_net_delta",
+                "candle_features__aligns_direction",
             ]
+            feat_cols2 += [c for c in target_candidates if c in df.columns]
             
             X_train = train_df[feat_cols2]
             y_train = train_df["label"]

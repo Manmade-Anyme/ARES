@@ -566,7 +566,8 @@ async def run():
                                 pdh=pdh,
                                 pdl=pdl,
                                 dte=days_to_expiry(expiry_date),
-                                is_expiry=is_expiry
+                                is_expiry=is_expiry,
+                                direction=signal.direction.value
                             )
                             _attach_ml_prediction_to_signal(signal, ml_pred)
                         except Exception as pred_err:

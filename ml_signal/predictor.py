@@ -190,6 +190,7 @@ class SignalPredictor:
         pdl: Optional[float] = None,
         dte: Optional[int] = None,
         is_expiry: bool = False,
+        direction: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build the feature vector from a raw market snapshot and score it."""
         features = build_feature_vector(
@@ -211,6 +212,26 @@ class SignalPredictor:
             is_expiry=is_expiry,
             config=self.config,
         )
+
+        # Populate direction-aligned features if direction is provided
+        if direction is not None:
+            is_bull = str(direction).upper() == "BULLISH"
+            dist_res = features.get("structure_features__dist_to_nearest_resistance")
+            dist_sup = features.get("structure_features__dist_to_nearest_support")
+            features["structure_features__dist_to_target_wall"] = dist_res if is_bull else dist_sup
+            features["structure_features__dist_to_stop_wall"] = dist_sup if is_bull else dist_res
+
+            net_delta = features.get("greek_features__net_delta")
+            if net_delta is not None:
+                features["greek_features__aligned_net_delta"] = net_delta if is_bull else -net_delta
+            else:
+                features["greek_features__aligned_net_delta"] = None
+
+            is_bull_c = features.get("candle_features__is_bullish")
+            if is_bull_c is not None:
+                features["candle_features__aligns_direction"] = 1.0 if (is_bull == bool(is_bull_c)) else 0.0
+            else:
+                features["candle_features__aligns_direction"] = None
 
         if isinstance(self.model, HybridPredictorBundle):
             # Stage 1
