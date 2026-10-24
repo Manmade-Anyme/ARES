@@ -1212,9 +1212,32 @@ def _fetch_ml_collection(supabase, page: int = 1000) -> List[dict]:
     return rows
 
 
+def _normalize_trade_analytics_records(trades: Sequence[dict]) -> Dict[str, dict]:
+    """Normalize raw trade_analytics records into exit and outcome metadata."""
+    exits: Dict[str, dict] = {}
+    for trade in trades:
+        trade_id = trade.get("id") if trade.get("id") is not None else trade.get("trade_id")
+        if trade_id is not None:
+            meta = {
+                "exit_timestamp": trade.get("exit_timestamp"),
+                "entry_timestamp": trade.get("entry_timestamp"),
+                "time_metrics_excluded": trade.get("time_metrics_excluded", False),
+            }
+            option_state = (trade.get("market_context") or {}).get("option_trailing") or trade.get("option_trailing")
+            if option_state and option_state.get("policy_version") == "option_atr_v1":
+                meta["option_trailing"] = option_state
+                meta["result_state"] = trade.get("result_state")
+                pnl = trade.get("pnl_points")
+                if pnl is None and "trade_pnl" in trade:
+                    pnl = trade.get("trade_pnl")
+                meta["trade_pnl"] = pnl
+            exits[str(trade_id)] = meta
+    return exits
+
+
 def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, dict]:
     """Read completed trade exit timestamps keyed by the ml_collection trade id."""
-    exits: Dict[str, dict] = {}
+    all_trades: List[dict] = []
     start = 0
     while True:
         batch = (
@@ -1225,23 +1248,11 @@ def _fetch_trade_exit_timestamps(supabase, page: int = 1000) -> Dict[str, dict]:
             .execute()
             .data or []
         )
-        for trade in batch:
-            trade_id = trade.get("id")
-            if trade_id is not None:
-                exits[str(trade_id)] = {
-                    "exit_timestamp": trade.get("exit_timestamp"),
-                    "entry_timestamp": trade.get("entry_timestamp"),
-                    "time_metrics_excluded": trade.get("time_metrics_excluded", False)
-                }
-                option_state = (trade.get("market_context") or {}).get("option_trailing")
-                if option_state and option_state.get("policy_version") == "option_atr_v1":
-                    exits[str(trade_id)]["option_trailing"] = option_state
-                    exits[str(trade_id)]["result_state"] = trade.get("result_state")
-                    exits[str(trade_id)]["trade_pnl"] = trade.get("pnl_points")
+        all_trades.extend(batch)
         if len(batch) < page:
             break
         start += page
-    return exits
+    return _normalize_trade_analytics_records(all_trades)
 
 
 def _write_walk_forward_calibration_artifacts(
@@ -1455,7 +1466,7 @@ def main(argv=None) -> None:
         if os.path.exists(ta_path):
             with open(ta_path) as f:
                 trades = json.load(f)
-            exit_timestamps = {str(item.get("trade_id") or item.get("id")): item for item in trades}
+            exit_timestamps = _normalize_trade_analytics_records(trades)
     elif not url or not key:
         print("[-] SUPABASE_URL / SUPABASE_KEY not available. Aborting.")
         return

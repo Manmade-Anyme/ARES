@@ -375,4 +375,96 @@ def test_train_offline_rollback_target_retains_prior_production_model_on_promoti
     assert summary["shadow_evaluation"]["rollback_target"] == "v10"
 
 
+def test_cached_trade_analytics_normalization_matches_live_fetch(tmp_path, monkeypatch):
+    """Verify raw cached trade_analytics records are normalized identically to live Supabase."""
+    from ml_signal.train_offline import _normalize_trade_analytics_records
+    import json
+
+    records = [
+        {
+            "id": "trade-option-1",
+            "entry_timestamp": "2026-10-23T04:30:00Z",
+            "exit_timestamp": "2026-10-23T05:30:00Z",
+            "time_metrics_excluded": False,
+            "result_state": "SL_HIT",
+            "pnl_points": -5.0,
+            "market_context": {
+                "option_trailing": {
+                    "policy_version": "option_atr_v1",
+                    "highest_milestone": 0,
+                    "remaining_fraction": 0,
+                }
+            },
+        },
+        {
+            "id": "trade-legacy-1",
+            "entry_timestamp": "2026-08-05T04:30:00Z",
+            "exit_timestamp": "2026-08-05T05:30:00Z",
+            "time_metrics_excluded": False,
+            "result_state": "T1_HIT",
+            "pnl_points": 25.0,
+            "market_context": {},
+        },
+    ]
+
+    normalized = _normalize_trade_analytics_records(records)
+    assert normalized["trade-option-1"]["trade_pnl"] == -5.0
+    assert normalized["trade-option-1"]["result_state"] == "SL_HIT"
+    assert "option_trailing" in normalized["trade-option-1"]
+    assert "trade_pnl" not in normalized["trade-legacy-1"]
+
+    # Test full cache-dir ingestion through main()
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    ml_collection_file = cache_dir / "ml_collection.json"
+    trade_analytics_file = cache_dir / "trade_analytics.json"
+
+    ml_rows = [{
+        "trade_id": "trade-option-1",
+        "timestamp": "2026-10-23T04:35:00Z",
+        "trade_outcome": "T2_HIT",
+        "trade_pnl": 10.0,  # Deliberately stale snapshot P&L (+10)
+        "raw_candle": {"close": 24000.0, "open": 23990.0, "high": 24010.0, "low": 23980.0, "volume": 100},
+        "candle_features": {"body_pct": 0.1, "range_pct": 0.2},
+    }]
+    ml_collection_file.write_text(json.dumps(ml_rows))
+    trade_analytics_file.write_text(json.dumps(records))
+
+    captured_rows = []
+    class DummyPipeline:
+        def __init__(self, *args, **kwargs):
+            self.oof_predictions = None
+            self.oof_mask = None
+        def prepare_dataset(self, rows, exit_timestamps=None):
+            captured_rows.extend(rows)
+            return pd.DataFrame()
+        def run_walk_forward(self, trade_df, market_snapshots_df=None, n_splits=5):
+            return None, {"mean_auc": None, "leakage_guard_passed": True}
+
+    from ml_signal import train_offline
+    monkeypatch.setattr(train_offline, "TradeOutcomePipeline", DummyPipeline)
+    monkeypatch.setattr(
+        "ml_signal.predictor.get_next_model_version_and_path",
+        lambda d: (str(tmp_path / "v12.joblib"), "v12"),
+    )
+    monkeypatch.setattr(
+        "ml_signal.predictor.discover_latest_model",
+        lambda d: (str(tmp_path / "v10.joblib"), "v10"),
+    )
+
+    train_offline.main([
+        "--pipeline", "trade_outcomes",
+        "--cache-dir", str(cache_dir),
+        "--no-hybrid",
+        "--no-promote",
+        "--metrics-path", str(tmp_path / "metrics.json"),
+    ])
+
+    assert len(captured_rows) == 1
+    # Canonical trade_analytics pnl_points (-5.0) must override stale ml_collection trade_pnl (10.0)
+    assert captured_rows[0]["trade_pnl"] == -5.0
+    assert captured_rows[0]["result_state"] == "SL_HIT"
+
+
+
 
