@@ -13,6 +13,7 @@ All notable changes to the ARES trading system will be documented in this file.
   - Retained production model `v10.joblib` as active after candidate failed rigorous promotion gate (mean AUC 0.4496 < 0.55, Brier 0.2604 > 0.23); saved candidate as `v11_unpromoted.joblib` with rejection audit log (`v11_rejection_audit.json`).
   - Added shadow evaluation metadata, baseline comparison, and rollback tracking. Preserved zero-network execution and offline `--cache-dir` support.
   - Normalized cached trade analytics records (`pnl_points` to `trade_pnl`, `result_state`, and `option_trailing`) in `train_offline.py` so offline `--cache-dir` ingestion matches live Supabase joins.
+  - Fixed missing `Sequence` typing import in `train_offline.py` to prevent `NameError` during eager annotation evaluation on Python <= 3.13.
 
 - **PR #147 test history continuity:** Supply cumulative historical bars in the strict-close ATR lifecycle test so subsequent evaluations preserve the pinned Wilder warmup seed and verify candle-close exits against active stops.
 

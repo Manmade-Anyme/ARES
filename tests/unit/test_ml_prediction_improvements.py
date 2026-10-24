@@ -407,6 +407,10 @@ def test_cached_trade_analytics_normalization_matches_live_fetch(tmp_path, monke
         },
     ]
 
+    import typing
+    hints = typing.get_type_hints(_normalize_trade_analytics_records)
+    assert "trades" in hints
+
     normalized = _normalize_trade_analytics_records(records)
     assert normalized["trade-option-1"]["trade_pnl"] == -5.0
     assert normalized["trade-option-1"]["result_state"] == "SL_HIT"
