@@ -1476,6 +1476,7 @@ def main(argv=None) -> None:
     from ml_signal.predictor import get_next_model_version_and_path, discover_latest_model
     models_dir = os.path.join(repo, "ml_signal", "models")
     save_path, next_version = get_next_model_version_and_path(models_dir)
+    prior_active_path, prior_active_ver = discover_latest_model(models_dir)
     # Rejected runs reuse the version. Invalidate its prior explanations before
     # any pipeline/refit can fail, including failures before the report guard.
     _clear_versioned_shap_artifacts(repo, next_version)
@@ -1794,7 +1795,7 @@ def main(argv=None) -> None:
             "unfiltered_baseline_pnl": sharpe_metrics.get("sharpe_total_pnl_points"),
             "unfiltered_baseline_sharpe": sharpe_metrics.get("sharpe_annualized"),
             "unfiltered_baseline_win_rate": unfiltered_win_rate,
-            "rollback_target": discovered_active_ver,
+            "rollback_target": prior_active_ver,
         }
     }
     summary.update(final_metrics)

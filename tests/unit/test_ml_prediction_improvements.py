@@ -267,3 +267,112 @@ def test_transfer_probability_fallback_is_causal():
     assert causal_series.iloc[3] == 0.90
 
 
+@pytest.mark.asyncio
+async def test_signal_consumer_passes_direction_to_predict_from_raw(monkeypatch):
+    """Verify SignalConsumer extracts direction from signal and passes it to predict_from_raw."""
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock, patch
+    from ml_signal.signal_consumer import SignalConsumer
+
+    consumer = SignalConsumer()
+    consumer._init_supabase = MagicMock()
+    consumer.predictor.load_model = MagicMock()
+    consumer.predictor.predict_from_raw = MagicMock(return_value={
+        "probability": 0.75,
+        "confidence_tier": "HIGH",
+    })
+    consumer.fetch_new_signals = AsyncMock(return_value=[{
+        "id": "sig-001",
+        "display_id": "1",
+        "setup_type": "TREND_CONTINUATION",
+        "direction": "BEARISH",
+        "market_context": {"open": 24000.0, "high": 24010.0, "low": 23990.0},
+        "spot_at_signal": 24000.0,
+    }])
+    consumer.log_prediction = AsyncMock(return_value=True)
+
+    with patch("ml_signal.signal_consumer.send_prediction_alert", new_callable=AsyncMock), \
+         patch("ml_signal.signal_consumer.asyncio.sleep", new=AsyncMock(side_effect=asyncio.CancelledError)):
+        try:
+            await consumer.run("https://dummy.supabase.co", "dummy_key")
+        except asyncio.CancelledError:
+            pass
+
+    assert consumer.predictor.predict_from_raw.called
+    call_kwargs = consumer.predictor.predict_from_raw.call_args.kwargs
+    assert call_kwargs.get("direction") == "BEARISH"
+
+
+def test_train_offline_rollback_target_retains_prior_production_model_on_promotion(tmp_path, monkeypatch):
+    """Verify rollback_target preserves previous production model even when candidate is promoted."""
+    import json
+    from unittest.mock import MagicMock
+    from ml_signal import train_offline
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    fake_v10 = models_dir / "v10.joblib"
+    fake_v10.write_bytes(b"prior_v10")
+    metrics_path = tmp_path / "metrics.json"
+
+    class PromotedTradeOutcomePipeline:
+        def __init__(self, *args, **kwargs):
+            pass
+        def prepare_dataset(self, rows, exit_timestamps=None):
+            return pd.DataFrame({
+                "timestamp": pd.date_range("2026-08-01", periods=10, freq="15min", tz="UTC"),
+                "resolution_timestamp": pd.date_range("2026-08-01 00:15:00", periods=10, freq="15min", tz="UTC"),
+                "label": [1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+                "candle_features__body_pct": [0.1] * 10,
+            })
+        def run_walk_forward(self, frame, market_snapshots_df=None, n_splits=5):
+            return MagicMock(), {
+                "validation_method": "walk_forward_purged",
+                "mean_auc": 0.85,
+                "brier_score": 0.15,
+                "evaluable_folds": 5,
+                "fold_results": [{"fold": i, "auc": 0.85, "brier": 0.15} for i in range(1, 6)],
+                "ci_95_lower": 0.70,
+                "ci_95_upper": 0.95,
+                "min_fold_auc": 0.75,
+                "leakage_guard_passed": True,
+            }
+
+    monkeypatch.setattr(train_offline, "_fetch_ml_collection", lambda client: [])
+    monkeypatch.setattr(train_offline, "_fetch_trade_exit_timestamps", lambda client: {})
+    monkeypatch.setattr(train_offline, "TradeOutcomePipeline", PromotedTradeOutcomePipeline)
+    monkeypatch.setattr(
+        "ml_signal.predictor.get_next_model_version_and_path",
+        lambda d: (str(models_dir / "v11.joblib"), "v11"),
+    )
+
+    # First call at startup returns v10, after promotion discover_latest_model returns v11
+    discovery_calls = []
+    def mock_discover(d=None):
+        if not discovery_calls:
+            discovery_calls.append("v10")
+            return (str(fake_v10), "v10")
+        discovery_calls.append("v11")
+        return (str(models_dir / "v11.joblib"), "v11")
+
+    monkeypatch.setattr("ml_signal.predictor.discover_latest_model", mock_discover)
+
+    train_offline.main([
+        "--pipeline", "trade_outcomes",
+        "--no-hybrid",
+        "--promote",
+        "--metrics-path", str(metrics_path),
+    ])
+
+    assert metrics_path.exists()
+    with open(metrics_path) as f:
+        summary = json.load(f)
+
+    assert summary["model_version"] == "v11"
+    assert summary["active_production_version"] == "v11"
+    assert summary["promoted"] is True
+    # Rollback target must point to prior production model v10, NOT the newly promoted v11
+    assert summary["shadow_evaluation"]["rollback_target"] == "v10"
+
+
+
