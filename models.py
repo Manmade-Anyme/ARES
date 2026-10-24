@@ -390,6 +390,7 @@ class OptionTrailingContext:
     alert_events: Dict[str, Any] = field(default_factory=dict)
     activated_at: Optional[str] = None
     indicator_history_from: Optional[str] = None
+    indicator_seed_start: Optional[str] = None
     source_candle: Optional[Dict[str, Any]] = None
     monitoring_detail: Optional[str] = None
     last_index_event_at: Optional[str] = None
@@ -430,6 +431,7 @@ class OptionTrailingContext:
             "alert_events": self.alert_events,
             "activated_at": self.activated_at,
             "indicator_history_from": self.indicator_history_from,
+            "indicator_seed_start": self.indicator_seed_start,
             "source_candle": self.source_candle,
             "monitoring_detail": self.monitoring_detail,
             "last_index_event_at": self.last_index_event_at,
@@ -499,6 +501,7 @@ class OptionTrailingContext:
             alert_events=data.get("alert_events") or {},
             activated_at=data.get("activated_at"),
             indicator_history_from=data.get("indicator_history_from"),
+            indicator_seed_start=data.get("indicator_seed_start"),
             source_candle=data.get("source_candle"),
             monitoring_detail=data.get("monitoring_detail"),
             last_index_event_at=data.get("last_index_event_at"),

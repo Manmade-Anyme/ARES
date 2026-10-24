@@ -1156,6 +1156,17 @@ class PositionManager:
             history_from = opt.get("indicator_history_from")
             if history_from:
                 normalized = [bar for bar in normalized if bar.start_time.date().isoformat() >= history_from]
+            cached = self._option_history.get(trade["id"], [])
+            seed_start = opt.get("indicator_seed_start") or (cached[0].start_time if cached else None)
+            if seed_start:
+                opt["indicator_seed_start"] = seed_start
+                seed_at = parse_candle_timestamp(seed_start)
+                # Wilder smoothing depends on the original warmup prefix, even
+                # when a shortened response still includes the durable watermark.
+                normalized = [bar for bar in normalized if bar.start_time >= seed_at]
+                if not normalized or normalized[0].start_time != seed_at:
+                    result[trade["id"]] = []
+                    continue
             contiguous = contiguous_option_candles(normalized)
             bars = calculate_option_atr_bars(contiguous)
             # Validate against this trade's durable progress before publishing
@@ -1172,6 +1183,7 @@ class PositionManager:
             result[trade["id"]] = bars
             # Keep previously confirmed history through a transient outage.
             if bars:
+                opt["indicator_seed_start"] = bars[0].start_time
                 self._option_history[trade["id"]] = bars
         return result
 
