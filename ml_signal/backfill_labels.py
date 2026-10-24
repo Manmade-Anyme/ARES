@@ -428,7 +428,7 @@ def repair_stuck_open_trades(
     trades = _page(
         sb,
         "trade_analytics",
-        "id,signal_id,setup_type,result_state,entry_timestamp,entry_price,direction,pnl_points,score",
+        "id,signal_id,setup_type,result_state,entry_timestamp,entry_price,direction,pnl_points,score,market_context",
     )
     open_trades = [t for t in trades if t.get("result_state") in _OPEN_STATES]
     analytics_by_id = {str(t["id"]): t for t in trades if t.get("id")}
@@ -450,14 +450,27 @@ def repair_stuck_open_trades(
         if not is_missing and t.get("result_state") not in _OPEN_STATES:
             continue
 
+        if is_missing and a.get("exit_type") == "OPTION_SL_FLOOR_HIT":
+            # This reason exists only in the new policy. Without its canonical
+            # context the milestone/allocation cannot be reconstructed safely.
+            print(f"  missing option lifecycle context (left unchanged): {a['id']}")
+            continue
         source = a if is_missing else t
+        option_context = (source.get("market_context") or {}).get("option_trailing") or {}
+        option_policy = option_context.get("policy_version") == "option_atr_v1"
         if a.get("pnl_points_override") is not None:
             pnl = float(a["pnl_points_override"])
+        elif option_policy:
+            # New-policy P&L includes modeled partial allocations. A missing
+            # weighted override is unknown, never the remaining mark alone.
+            pnl = None
+        elif a.get("exit_price") is None:
+            pnl = None
         else:
             ep = float(source["entry_price"])
             xp = float(a["exit_price"])
             pnl = xp - ep if source["direction"] == "BULLISH" else ep - xp
-        pnl = round(pnl, 2)
+        pnl = round(pnl, 2) if pnl is not None else None
 
         final_state = a["exit_type"]
         score = {
@@ -469,13 +482,20 @@ def repair_stuck_open_trades(
             "STOPPED_OUT": 0,
         }.get(final_state)
 
+        if option_policy:
+            score = int(option_context.get("highest_milestone", 0))
+
         terminal = {
             "result_state": final_state,
-            "exit_price": float(a["exit_price"]),
+            "exit_price": float(a["exit_price"]) if a.get("exit_price") is not None else None,
             "exit_timestamp": a["exit_timestamp"],
             "pnl_points": pnl,
             "score": score,
         }
+        if option_policy:
+            repaired_option = {**option_context, "phase": "CLOSED", "remaining_fraction": 0.0}
+            terminal["market_context"] = {**(source.get("market_context") or {}),
+                                          "option_trailing": repaired_option}
         insert_data = None
         if is_missing:
             entry_timestamp = a.get("entry_timestamp") or a.get("created_at")
@@ -551,6 +571,7 @@ def repair_be_after_t1(
     be_rows = [
         trade for trade in trades
         if trade.get("result_state") == "STOPPED_OUT_AT_BE"
+        and ((trade.get("market_context") or {}).get("option_trailing") or {}).get("policy_version") != "option_atr_v1"
     ]
     zero_rows = [trade for trade in be_rows if _is_zero_pnl(trade.get("pnl_points"))]
     nonzero_rows = [

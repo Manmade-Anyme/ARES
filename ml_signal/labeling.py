@@ -4,8 +4,29 @@ import pandas as pd
 import numpy as np
 
 
-def classify_ares_outcome(result_state: str, t1_is_win: bool = True) -> Optional[int]:
+def classify_ares_outcome(
+    result_state: str, t1_is_win: bool = True, option_trailing: Optional[dict] = None,
+) -> Optional[int]:
     """Pure function to map an ARES result state to a binary ML label."""
+    if option_trailing and option_trailing.get("policy_version") == "option_atr_v1":
+        # A visible milestone score is not a final training outcome while a
+        # runner remains open. Canonical milestones survive every exit reason.
+        if result_state in ("OPEN", "T1_HIT", "T2_REACHED", None, ""):
+            return None
+        if result_state not in {"SL_HIT", "STOPPED_OUT", "TIME_STOP", "STOPPED_OUT_AT_BE",
+                                "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
+            return None
+        try:
+            if float(option_trailing.get("remaining_fraction", 1)) != 0:
+                return None
+        except (TypeError, ValueError):
+            return None
+        milestone = option_trailing.get("highest_milestone", 0)
+        if milestone == 2:
+            return 1
+        if milestone == 1:
+            return int(t1_is_win)
+        return 0 if result_state in ("SL_HIT", "STOPPED_OUT", "TIME_STOP") else None
     if result_state == "T2_HIT":
         return 1
     if result_state in ("T1_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT"):
@@ -25,7 +46,10 @@ def label_from_ares_outcome(
     rows = []
     for rec in trade_analytics_records:
         result = rec.get("result_state", "")
-        label = classify_ares_outcome(result, t1_is_win=t1_is_win)
+        label = classify_ares_outcome(
+            result, t1_is_win=t1_is_win,
+            option_trailing=(rec.get("market_context") or {}).get("option_trailing"),
+        )
         
         if label is None:
             continue
