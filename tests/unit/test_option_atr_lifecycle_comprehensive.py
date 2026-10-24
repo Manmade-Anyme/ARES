@@ -277,7 +277,7 @@ async def test_option_atr_exit_requires_completed_close_strictly_below_stop():
         complete=True,
     )
     with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
-        events = await pm.update_option_atr_trailing([candle_equal])
+        events = await pm.update_option_atr_trailing([candle_wick, candle_equal])
         assert trade["state"] == "T1_HIT"
 
     # 3. Bar closes strictly below at 129.95 -> EXIT TRIGGERED
@@ -293,7 +293,7 @@ async def test_option_atr_exit_requires_completed_close_strictly_below_stop():
         complete=True,
     )
     with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
-        events = await pm.update_option_atr_trailing([candle_exit])
+        events = await pm.update_option_atr_trailing([candle_wick, candle_equal, candle_exit])
         assert ("trade-1950", "ATR_SL_HIT") in events
         assert trade["state"] == "CLOSED"
         assert opt["phase"] == "CLOSED"

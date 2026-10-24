@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #147 test history continuity:** Supply cumulative historical bars in the strict-close ATR lifecycle test so subsequent evaluations preserve the pinned Wilder warmup seed and verify candle-close exits against active stops.
+
 - **PR #147 stable option ATR warmup seed:** Pin the first accepted source-candle timestamp in the existing option lifecycle context. A shortened response missing that seed stays unavailable even when it contains the processed-bar watermark, preventing Wilder ATR from silently reseeding into a false stop raise or exit. Ignore additional earlier candles once pinned, preserve the seed through typed serialization/restart and resume the original calculation after complete backfill.
 
 - **PR #147 durable T2 guard clear:** Write an explicit null for the consumed index-guard marker in both T2 transition paths. Preserve the committed guard clear and consumed observation list when an older stop raise rebases onto POST_T2. Preserve an already observed closed state and align terminal modeled exit allocation with retained target bookings during conflict repair. The existing JSON merge now clears the persisted marker, so restarting a valid 20% option runner does not restore an obsolete backfill guard or suppress later stop-raise alerts. No database schema or exit-policy change is required.
