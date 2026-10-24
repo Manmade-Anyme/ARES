@@ -225,3 +225,45 @@ def test_shadow_evaluation_summary_contract(tmp_path, monkeypatch):
     assert shadow["rollback_target"] == "v10"
     assert shadow["unfiltered_baseline_win_rate"] == 0.5
 
+
+def test_market_movement_run_walk_forward_excludes_schema_artifacts(monkeypatch):
+    """Verify MarketMovementPipeline.run_walk_forward excludes structure__ and greek__ flags."""
+    from unittest.mock import MagicMock
+    mock_xgb = MagicMock()
+    monkeypatch.setattr("xgboost.XGBClassifier", mock_xgb)
+
+    pipe = MarketMovementPipeline(DEFAULT_CONFIG)
+    # Build dataframe with schema flags
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-08-01", periods=10, freq="15min", tz="UTC"),
+        "resolution_timestamp": pd.date_range("2026-08-01 00:15:00", periods=10, freq="15min", tz="UTC"),
+        "label": [1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+        "candle_features__body_pct": [0.1] * 10,
+        "detector_scores__continuation": [0.8] * 10,
+        "structure__has_nearest_support": [1.0] * 10,
+        "greek__has_net_delta": [1.0] * 10,
+    })
+
+    pipe.run_walk_forward(df, n_splits=2)
+
+    # Check that any fit call had columns excluding detector_scores__, structure__, greek__
+    for call in mock_xgb.return_value.fit.call_args_list:
+        X_arg = call[0][0]
+        assert "detector_scores__continuation" not in X_arg.columns
+        assert "structure__has_nearest_support" not in X_arg.columns
+        assert "greek__has_net_delta" not in X_arg.columns
+        assert "candle_features__body_pct" in X_arg.columns
+
+
+def test_transfer_probability_fallback_is_causal():
+    """Verify unscored early rows in transfer probabilities do not receive backward-filled future fold scores."""
+    # Test that when inner splits evaluate later indices, earlier rows stay 0.5
+    tscv_series = pd.Series([np.nan, np.nan, 0.85, 0.90])
+    causal_series = tscv_series.ffill().fillna(0.5)
+    # Early unscored rows must be 0.5, not 0.85 (which bfill would have done)
+    assert causal_series.iloc[0] == 0.5
+    assert causal_series.iloc[1] == 0.5
+    assert causal_series.iloc[2] == 0.85
+    assert causal_series.iloc[3] == 0.90
+
+

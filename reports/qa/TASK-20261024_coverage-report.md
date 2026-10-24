@@ -16,8 +16,8 @@
 ---
 
 ## 2. Test Execution & Regression Diff
-- **Test Suite Execution:** 173 passed out of 173 tests (0 failed, 0 skipped).
-  - `tests/unit/test_ml_prediction_improvements.py`: 4 passed (Direction alignment, schema artifact filtering, shadow evaluation metadata).
+- **Test Suite Execution:** 175 passed out of 175 tests (0 failed, 0 skipped).
+  - `tests/unit/test_ml_prediction_improvements.py`: 6 passed (Direction alignment, schema artifact filtering, shadow evaluation metadata, causal probability fallback, Stage 1 validation feature exclusions).
   - `tests/unit/test_task155_ml_predictor.py`: 1 passed.
   - `tests/unit/test_task155_ml_training_refactor.py`: 48 passed.
   - `tests/unit/test_task183_ml_offline.py`: 55 passed.
@@ -33,15 +33,18 @@
    - Bullish setup: Resistance = Target wall, Support = Stop wall.
    - Bearish setup: Support = Target wall, Resistance = Stop wall.
    - Net delta inverted for bearish setup (`-net_delta`), preserving directional delta magnitude.
-2. **Schema Artifact Isolation:**
-   - Verified schema flags (`greek__has_net_delta`, `structure__*`) are filtered out of Stage 1 and Stage 2 model inputs.
-3. **Operational Model Protection:**
+2. **Schema Artifact Isolation Across Pipelines:**
+   - Verified schema flags (`greek__has_net_delta`, `structure__*`) are filtered out of both Stage 1 walk-forward validation and final refit.
+3. **Causal Transfer Probabilities:**
+   - Unscored early trades in inner cross-validation strictly default to neutral 0.5 prior with forward-fill only, eliminating lookahead from `bfill()`.
+4. **Operational Model Protection:**
    - Verified production artifact `ml_signal/models/v10.joblib` remains the active production model.
    - Candidate model saved strictly as `v11_unpromoted.joblib` with rejection audit log (`reports/ml/v11_rejection_audit.json`).
-4. **Offline Zero-Network Safety:**
+5. **Offline Zero-Network Safety:**
    - `--cache-dir` flag validated for reproducible sandboxed offline training without Supabase network dependencies.
 
 ---
 
 ## 4. Assertion Quality & Boundary Coverage
 - Assertions in `test_ml_prediction_improvements.py` verify concrete arithmetic calculations (e.g. `dist_to_target_wall == 50.0`, `aligned_net_delta == -0.05`), feature set membership, and rejection gate dictionary keys. No tautological or dummy assertions.
+

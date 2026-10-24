@@ -1662,8 +1662,8 @@ def main(argv=None) -> None:
                         test_trades = trade_df.iloc[test_idx]
                         market_probs.iloc[test_idx] = fold_model.predict_proba(test_trades.reindex(columns=stage1_feat_cols))[:, 1]
                     
-                    # Preserve the chronological fallback for unscored early rows with backward-fill then forward-fill.
-                    market_probs = market_probs.bfill().ffill().fillna(0.5)
+                    # Preserve the chronological fallback for unscored early rows with forward-fill.
+                    market_probs = market_probs.ffill().fillna(0.5)
                     trade_df["meta_features__market_movement_prob"] = market_probs
                     # Splits are independent frames: refresh after augmentation
                     # so Stage 2 sees the generated probabilities, never stale input.

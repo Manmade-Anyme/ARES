@@ -194,7 +194,7 @@ class TradeOutcomePipeline:
                                 model_inner.fit(inner_snaps[stage1_feat_cols], inner_snaps["label"])
                                 test_trades = train_df.iloc[sub_test_idx]
                                 train_probs.iloc[sub_test_idx] = model_inner.predict_proba(test_trades.reindex(columns=stage1_feat_cols))[:, 1]
-                    train_probs = train_probs.bfill().ffill().fillna(0.5)
+                    train_probs = train_probs.ffill().fillna(0.5)
                     train_df["meta_features__market_movement_prob"] = train_probs.values
                 else:
                     test_df["meta_features__market_movement_prob"] = 0.5

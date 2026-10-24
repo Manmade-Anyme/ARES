@@ -1,0 +1,92 @@
+{
+  "shap_computed": true,
+  "shap_top_features": [
+    {
+      "feature": "structure_features__dist_to_nearest_support",
+      "mean_abs_shap": 0.189812
+    },
+    {
+      "feature": "meta_features__market_movement_prob",
+      "mean_abs_shap": 0.118184
+    },
+    {
+      "feature": "structure_features__dist_to_target_wall",
+      "mean_abs_shap": 0.078817
+    },
+    {
+      "feature": "greek_features__aligned_net_delta",
+      "mean_abs_shap": 0.054002
+    },
+    {
+      "feature": "greek_features__net_delta",
+      "mean_abs_shap": 0.042786
+    },
+    {
+      "feature": "candle_features__body_pct",
+      "mean_abs_shap": 0.041386
+    },
+    {
+      "feature": "oi_features__pcr_oi",
+      "mean_abs_shap": 0.020783
+    },
+    {
+      "feature": "structure_features__dist_to_nearest_resistance",
+      "mean_abs_shap": 0.01544
+    },
+    {
+      "feature": "candle_features__aligns_direction",
+      "mean_abs_shap": 0.008705
+    },
+    {
+      "feature": "iv_features__iv_level",
+      "mean_abs_shap": 0.00794
+    },
+    {
+      "feature": "structure_features__dist_to_stop_wall",
+      "mean_abs_shap": 0.006914
+    }
+  ],
+  "shap_output_unit": "raw_margin_log_odds",
+  "shap_explained_rows": 61,
+  "shap_backend": "shap_tree_explainer",
+  "shap_status": "computed",
+  "shap_plot_saved": true,
+  "shap_plot_status": "saved",
+  "shap_plot_error_type": null,
+  "shap_fallback_reason": null,
+  "shap_error_type": null,
+  "shap_iteration_range": [
+    0,
+    50
+  ],
+  "shap_raw_margin_additivity": true,
+  "model_version": "v11",
+  "n_samples": 301,
+  "n_train": 240,
+  "n_test": 61,
+  "shap_metadata": {
+    "model_version": "v11",
+    "feature_schema_version": "v1.0",
+    "feature_count": 11,
+    "feature_schema_hash": "55bfb83c",
+    "training_window_start": "2026-08-03T08:35:06.933948+00:00",
+    "training_window_end": "2026-09-29T09:30:16.878917+00:00",
+    "testing_window_start": "2026-09-30T05:45:07.282340+00:00",
+    "testing_window_end": "2026-10-23T09:33:19.321143+00:00",
+    "sample_size_total": 301,
+    "sample_size_train": 240,
+    "sample_size_test": 61,
+    "shap_backend": "shap_tree_explainer",
+    "shap_status": "computed",
+    "raw_margin_additivity": true,
+    "generated_at": "2026-10-24T12:47:55.097126+00:00"
+  },
+  "shap_stability_audit": {
+    "status": "computed",
+    "mean_rank_correlation": 0.9757575757575757,
+    "mean_top5_turnover": 0.13333333333333333,
+    "max_attribution_drift": 0.5514065027236938,
+    "stability_verdict": "stable",
+    "flagged_features": []
+  }
+}
