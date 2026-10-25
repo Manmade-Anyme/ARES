@@ -148,6 +148,10 @@ class SignalConsumer:
                         "volume": features.get("volume", 0),
                     }
 
+                    signal_direction = signal.get("direction")
+                    if hasattr(signal_direction, "value"):
+                        signal_direction = signal_direction.value
+
                     result = self.predictor.predict_from_raw(
                         candle=candle,
                         volume_history=[],
@@ -165,6 +169,7 @@ class SignalConsumer:
                         pdl=None,
                         dte=None,
                         is_expiry=False,
+                        direction=signal_direction,
                     )
 
 

@@ -1,0 +1,47 @@
+{
+  "shap_computed": true,
+  "shap_top_features": [
+    {
+      "feature": "candle_features__body_pct",
+      "mean_abs_shap": 0.0
+    }
+  ],
+  "shap_output_unit": "raw_margin_log_odds",
+  "shap_explained_rows": 2,
+  "shap_backend": "shap_tree_explainer",
+  "shap_status": "computed",
+  "shap_plot_saved": true,
+  "shap_plot_status": "saved",
+  "shap_plot_error_type": null,
+  "shap_fallback_reason": null,
+  "shap_error_type": null,
+  "shap_iteration_range": [
+    0,
+    50
+  ],
+  "shap_raw_margin_additivity": true,
+  "model_version": "v11",
+  "n_samples": 8,
+  "n_train": 6,
+  "n_test": 2,
+  "shap_metadata": {
+    "model_version": "v11",
+    "feature_schema_version": "v1.0",
+    "feature_count": 1,
+    "feature_schema_hash": "9f5da8db",
+    "training_window_start": "2026-08-01T00:00:00+00:00",
+    "training_window_end": "2026-08-01T01:15:00+00:00",
+    "testing_window_start": "2026-08-01T02:00:00+00:00",
+    "testing_window_end": "2026-08-01T02:15:00+00:00",
+    "sample_size_total": 8,
+    "sample_size_train": 6,
+    "sample_size_test": 2,
+    "shap_backend": "shap_tree_explainer",
+    "shap_status": "computed",
+    "raw_margin_additivity": true,
+    "generated_at": "2026-10-24T17:27:16.264507+00:00"
+  },
+  "shap_stability_audit": {
+    "status": "insufficient_data"
+  }
+}

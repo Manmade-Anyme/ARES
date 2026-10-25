@@ -1,0 +1,42 @@
+{
+  "version": "v11",
+  "reasons": [
+    "Validation method must be walk_forward_purged."
+  ],
+  "metrics": {
+    "mean_auc": 0.85,
+    "brier_score": 0.15,
+    "evaluable_folds": 5,
+    "fold_results": [
+      {
+        "fold": 1,
+        "auc": 0.85,
+        "brier": 0.15
+      },
+      {
+        "fold": 2,
+        "auc": 0.85,
+        "brier": 0.15
+      },
+      {
+        "fold": 3,
+        "auc": 0.85,
+        "brier": 0.15
+      },
+      {
+        "fold": 4,
+        "auc": 0.85,
+        "brier": 0.15
+      },
+      {
+        "fold": 5,
+        "auc": 0.85,
+        "brier": 0.15
+      }
+    ],
+    "ci_95_lower": 0.7,
+    "ci_95_upper": 0.95,
+    "min_fold_auc": 0.75,
+    "leakage_guard_passed": true
+  }
+}
