@@ -10,6 +10,46 @@ from models import AresSignal, Direction, SetupType
 from reports import _option_rupees
 
 
+@pytest.mark.asyncio
+async def test_t2_touch_card_reports_active_runner_without_option_exit():
+    trade = {"direction": "BEARISH", "setup_type": "TREND_CONTINUATION", "display_id": 1950,
+             "state": "T1_HIT", "entry_price": 22552.10, "stop_loss": 22546.46, "target_2": 22472.10,
+             "market_context": {
+                 "target_milestones": {"t2": {"touched_at": "2026-10-23T04:45:00+00:00", "time_basis": "candle_start", "target_spot": 22472.10,
+                                                "spot_points_from_entry": 80.0}},
+                 "options_sizing": {"entry_limit": 139.25, "target_2": 180, "lot_size": 65},
+             }}
+    client = AsyncMock()
+    client.post.return_value = MagicMock()
+    with patch("alerts.settings.discord_webhook_url", "http://example.invalid"), patch("httpx.AsyncClient") as factory:
+        factory.return_value.__aenter__.return_value = client
+        await send_trade_update(trade, 22472.10, "T2_TOUCHED")
+    description = client.post.call_args.kwargs["json"]["embeds"][0]["description"]
+    for text in ("Target 2 touched", "ATR runner remains active", "22472.10", "22552.10", "22546.46", "10:15:00", "IST"):
+        assert text in description
+    assert "Estimated Option Exit" not in description
+    assert "Trade Closed" not in description
+    assert "180.00" in description and "reference" in description
+    assert "+80.00 points (reference)" in description
+    assert "candle start; exact touch time unknown" in description
+    assert "not an observed premium touch or executed exit" in description
+
+
+@pytest.mark.asyncio
+async def test_t2_touch_without_marker_time_does_not_invent_touch_timestamp():
+    trade = {"direction": "BULLISH", "setup_type": "TREND_CONTINUATION", "state": "T1_HIT",
+             "entry_price": 24000, "stop_loss": 24010, "target_2": 24100}
+    client = AsyncMock()
+    client.post.return_value = MagicMock()
+    with patch("alerts.settings.discord_webhook_url", "http://example.invalid"), patch("httpx.AsyncClient") as factory:
+        factory.return_value.__aenter__.return_value = client
+        await send_trade_update(trade, 24100, "T2_TOUCHED")
+    description = client.post.call_args.kwargs["json"]["embeds"][0]["description"]
+    assert "**Time reference**: unavailable" in description
+    assert "ATR runner remains active" in description
+    assert "Estimated Option Exit" not in description
+
+
 def signal_with_bracket():
     signal = AresSignal(
         setup_type=SetupType.FAILED_BREAKOUT, direction=Direction.BULLISH,

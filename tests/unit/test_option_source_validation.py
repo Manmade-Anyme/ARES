@@ -201,7 +201,7 @@ async def test_new_policy_tick_uses_recent_receipt_and_skips_stale_lifecycle(mon
     monkeypatch.setattr(main.settings,"tick_exit_check_interval_seconds",1)
     await main._sleep_with_tick_exits(1,feed,positions,SimpleNamespace(),dispatcher,price_fetcher=fetcher)
     assert positions.update_trades.await_args.args == (22470,)
-    assert positions.update_trades.await_args.kwargs == ({"event_time":receipt} if fresh else {"include_option_policy":False})
+    assert positions.update_trades.await_args.kwargs == ({"event_time":receipt} if fresh else {"include_option_policy":False,"allow_t2_milestone":False})
 
 
 @pytest.mark.asyncio

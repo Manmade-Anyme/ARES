@@ -29,6 +29,7 @@ def loop(monkeypatch):
         oi.fetch_chain = AsyncMock(return_value=(None, []))
         positions = MagicMock()
         positions.update_trades = AsyncMock(return_value=[])
+        positions.flush_pending_trade_updates = AsyncMock(return_value=True)
         dispatcher = MagicMock()
         dispatcher.on_snapshot = AsyncMock()
         dispatcher.on_spot = AsyncMock()
@@ -84,6 +85,47 @@ async def test_final_bar_reaches_detector_snapshot_and_intrabar_exits(loop):
                                                   candle_low=final.low, candle_timestamp=final.timestamp)
     assert ctx.dispatcher.on_snapshot.await_count == 1
     ctx.outbox.close.assert_awaited_once()
+    ctx.positions.flush_pending_trade_updates.assert_awaited_once()
+    ctx.feed.stop.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_final_bar_drains_delayed_t2_alert_exit_alert_and_write(loop, monkeypatch):
+    from position_manager import PositionManager
+
+    first, final = candle(), candle(minute=29)
+    ctx = loop([first, final], [datetime(2026, 10, 19, 15, 29), datetime(2026, 10, 19, 15, 30)])
+    manager = object.__new__(PositionManager)
+    manager._trade_writes = {}
+    manager._trade_alerts = {}
+    sent = []
+    persisted = []
+    release = asyncio.Event()
+
+    async def delayed_alert(trade, price, kind):
+        if kind == "T2_TOUCHED":
+            asyncio.get_running_loop().call_soon(release.set)
+            await release.wait()
+        sent.append((kind, trade["state"]))
+
+    monkeypatch.setattr("position_manager.send_trade_update", delayed_alert)
+    ctx.positions.flush_pending_trade_updates = manager.flush_pending_trade_updates
+
+    async def record_final(spot, **kwargs):
+        if kwargs.get("candle_timestamp") == final.timestamp:
+            trade = {"id": "final", "state": "T1_HIT"}
+            manager._queue_trade_write("final", lambda: persisted.append("saved"))
+            manager._queue_trade_alert(trade, 24100, "T2_TOUCHED")
+            trade["state"] = "CLOSED"
+            manager._queue_trade_alert(trade, 24000, "ATR_SL_HIT")
+        return []
+
+    ctx.positions.update_trades.side_effect = record_final
+    await main.run()
+
+    assert persisted == ["saved"]
+    assert sent == [("T2_TOUCHED", "T1_HIT"), ("ATR_SL_HIT", "CLOSED")]
+    assert not manager._trade_writes and not manager._trade_alerts
     ctx.feed.stop.assert_called()
 
 
@@ -700,7 +742,7 @@ async def test_close_aware_tick_sleep_finishes_protective_callbacks_without_anot
     async def pending_update(spot):
         current[0] = datetime(2026, 10, 19, 15, 30, 10)
 
-    async def protect_position(spot):
+    async def protect_position(spot, **kwargs):
         protected.append(spot)
         return [("existing", "SL_HIT")]
 

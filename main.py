@@ -162,21 +162,21 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
         if price_fetcher is not None and option_policy:
             await _monitor_completed_atr(price_fetcher.watch_candles, position_manager,
                                          dispatcher, price_fetcher=price_fetcher, engine=engine)
-        tick_kwargs = {}
-        if option_policy:
-            from datetime import datetime as real_datetime
-            from math import isfinite
-            observation_fn = getattr(tick_feed, "get_latest_observation", None)
-            observation = observation_fn(max_age_seconds=5) if callable(observation_fn) else None
-            if (isinstance(observation, tuple) and len(observation) == 2
-                    and isinstance(observation[0], (int, float)) and not isinstance(observation[0], bool)
-                    and isfinite(observation[0]) and observation[0] > 0
-                    and isinstance(observation[1], real_datetime) and observation[1].tzinfo is not None):
-                price, received_at = observation
-                tick_kwargs = {"event_time": received_at}
-            else:
-                # Legacy price-only consumers retain their previous contract.
-                tick_kwargs = {"include_option_policy": False}
+        from datetime import datetime as real_datetime
+        from math import isfinite
+        observation_fn = getattr(tick_feed, "get_latest_observation", None)
+        observation = observation_fn(max_age_seconds=5) if callable(observation_fn) else None
+        if (isinstance(observation, tuple) and len(observation) == 2
+                and isinstance(observation[0], (int, float)) and not isinstance(observation[0], bool)
+                and isfinite(observation[0]) and observation[0] > 0
+                and isinstance(observation[1], real_datetime) and observation[1].tzinfo is not None):
+            price, received_at = observation
+            tick_kwargs = {"event_time": received_at}
+        else:
+            # Keep legacy stop monitoring, but a stale price cannot mark T2.
+            tick_kwargs = {"allow_t2_milestone": False}
+            if option_policy:
+                tick_kwargs["include_option_policy"] = False
         if price is not None and dispatcher is not None:
             try:
                 await dispatcher.on_spot(price)
@@ -859,7 +859,12 @@ async def run():
                 if watch_outbox is not None:
                     await watch_outbox.close()
             finally:
-                tick_feed.stop()
+                try:
+                    await position_manager.flush_pending_trade_updates()
+                except Exception as drain_err:
+                    logger.warning("Trade update shutdown drain failed: %s", drain_err)
+                finally:
+                    tick_feed.stop()
 
 if __name__ == "__main__":
     try:

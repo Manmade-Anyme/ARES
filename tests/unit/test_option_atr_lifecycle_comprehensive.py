@@ -105,6 +105,8 @@ def _make_pm():
     # These isolated index lifecycle cases explicitly assume the premium clock
     # is caught up; outage ordering is exercised through real source histories.
     pm._option_available_until = defaultdict(lambda: datetime(2099,1,1,tzinfo=IST))
+    # dict.get does not invoke defaultdict's factory during the availability check.
+    pm._option_available_until["trade-1950"] = datetime(2099, 1, 1, tzinfo=IST)
     return pm
 
 

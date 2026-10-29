@@ -170,14 +170,8 @@ def ratchet_option_stop(
     return (float(current_stop or 0.0), "NONE", False)
 
 
-def completed_atr_bars(candles):
-    """Aggregate explicit completed minute bars and calculate Wilder ATR(5).
-
-    Legacy helper preserved for spot-index trailing stop callers.
-    Timestamps identify source bar starts; output timestamps identify five-minute
-    bar ends in IST. Gaps and session changes reset ATR and the ten-bar extremes.
-    Stop levels are raw candidates; callers enforce entry and ratchet bounds.
-    """
+def completed_spot_minutes(candles):
+    """Validate completed spot minutes, keeping invalid later revisions invalid."""
     minutes = {}
     for candle in candles or ():
         if not isinstance(candle, dict):
@@ -204,6 +198,18 @@ def completed_atr_bars(candles):
         if high < max(opening, low, close) or low > min(opening, close):
             continue
         minutes[at] = (high, low, close)
+    return minutes
+
+
+def completed_atr_bars(candles):
+    """Aggregate explicit completed minute bars and calculate Wilder ATR(5).
+
+    Legacy helper preserved for spot-index trailing stop callers.
+    Timestamps identify source bar starts; output timestamps identify five-minute
+    bar ends in IST. Gaps and session changes reset ATR and the ten-bar extremes.
+    Stop levels are raw candidates; callers enforce entry and ratchet bounds.
+    """
+    minutes = completed_spot_minutes(candles)
 
     starts = sorted({at.replace(minute=at.minute // 5 * 5) for at in minutes})
     output, ranges = [], []

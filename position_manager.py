@@ -10,7 +10,7 @@ from options_math import option_sizing_context, option_sizing_summary
 from models import AresSignal, ATMStrikes, OptionTrailingContract, OptionTrailingContext, OptionTrailingExit
 from config import settings
 from alerts import send_trade_update, send_option_lifecycle_event
-from atr_trailing import completed_atr_bars, calculate_option_atr_bars, ratchet_option_stop
+from atr_trailing import completed_atr_bars, completed_spot_minutes, calculate_option_atr_bars, ratchet_option_stop
 from options_candles import (load_option_candles, contiguous_option_candles,
                              expected_completed_option_bar_end, parse_option_candle)
 from oi_watch_context import parse_candle_timestamp
@@ -33,9 +33,11 @@ class PositionManager:
         self.analytics = AnalyticsLogger()
         self.active_trades: List[Dict[str, Any]] = []
         self._trade_writes: Dict[str, asyncio.Task] = {}
+        self._trade_alerts: Dict[str, asyncio.Task] = {}
         self._execution_snapshots = {}
         self._execution_ml_bound = set()
         self._context_locks = {}
+        self._pending_target_milestones = {}
         self._pending_reference_registrations = {}
         self.is_initialized = False
         self._initialize_db()
@@ -57,6 +59,57 @@ class PositionManager:
                     self._trade_writes.pop(trade_id, None)
 
         self._trade_writes[trade_id] = loop.create_task(_write_after_previous())
+
+    def _queue_trade_alert(self, trade, price, update_type):
+        """Keep a slow T2 webhook off the protective path and preserve order."""
+        trade_id = trade["id"]
+        alerts = self.__dict__.setdefault("_trade_alerts", {})
+        previous = alerts.get(trade_id)
+        snapshot = deepcopy(trade)
+
+        async def send_after_previous():
+            try:
+                if previous is not None:
+                    await previous
+                await send_trade_update(snapshot, price, update_type)
+            except Exception as e:
+                print(f"Failed to send trade update alert: {e}")
+            finally:
+                if alerts.get(trade_id) is asyncio.current_task():
+                    alerts.pop(trade_id, None)
+
+        alerts[trade_id] = asyncio.create_task(send_after_previous())
+
+    async def flush_pending_trade_updates(self, timeout=12.0):
+        """Give queued persistence and ordered alerts a bounded graceful drain."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        tasks = set(self._trade_writes.values()) | set(getattr(self, "_trade_alerts", {}).values())
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=max(0.0, deadline - loop.time()))
+            if pending:
+                print(f"Trade update shutdown drain timed out with {len(pending)} task(s) pending")
+                return False
+        # An earlier failed write may have finished before shutdown started.
+        # Retry its frozen milestone once within the same shutdown deadline.
+        milestones = getattr(self, "_pending_target_milestones", {})
+        if milestones and deadline > loop.time():
+            for trade_id, marker in tuple(milestones.items()):
+                self._queue_trade_write(
+                    trade_id,
+                    lambda t_id=trade_id, snapshot=deepcopy(marker):
+                        self._persist_trade_context(t_id, t2_snapshot=snapshot),
+                )
+            tasks = set(self._trade_writes.values())
+            if tasks:
+                _, pending = await asyncio.wait(tasks, timeout=max(0.0, deadline - loop.time()))
+                if pending:
+                    print(f"Trade update shutdown drain timed out with {len(pending)} task(s) pending")
+                    return False
+        if milestones:
+            print(f"Trade update shutdown drain left {len(milestones)} T2 milestone(s) unpersisted")
+            return False
+        return True
 
     def _initialize_db(self):
         """
@@ -441,6 +494,7 @@ class PositionManager:
         only_option_policy: bool = False,
         event_time: Optional[datetime] = None,
         only_trade_id: Optional[str] = None,
+        allow_t2_milestone: bool = True,
     ) -> List[Tuple[str, str]]:
         """
         Loops through active trades and evaluates live price action against the active trailing stops.
@@ -466,6 +520,15 @@ class PositionManager:
             self._initialize_db()
             if not self.is_initialized:
                 return events  # Skip update if still not initialized
+
+        # A successful alert is not repeated while a failed context write retries.
+        for trade_id, marker in tuple(getattr(self, "_pending_target_milestones", {}).items()):
+            if trade_id not in self._trade_writes:
+                self._queue_trade_write(
+                    trade_id,
+                    lambda t_id=trade_id, snapshot=deepcopy(marker):
+                        self._persist_trade_context(t_id, t2_snapshot=snapshot),
+                )
 
         high = candle_high if candle_high is not None else spot_price
         low = candle_low if candle_low is not None else spot_price
@@ -560,7 +623,19 @@ class PositionManager:
             # Post-T1 touch evaluations
             if trade["state"] == "T1_HIT":
                 if not is_option_atr:
-                    continue  # Legacy spot ATR handles post-T1 exits on completed 5m bars
+                    if not allow_t2_milestone:
+                        continue
+                    last_bar = (context.get("atr_trailing") or {}).get("last_bar")
+                    if (candle_timestamp is not None and last_bar
+                            and parse_candle_timestamp(candle_timestamp) + timedelta(minutes=1)
+                            <= parse_candle_timestamp(last_bar)):
+                        continue
+                    if (event_time is not None and last_bar
+                            and parse_candle_timestamp(event_time) < parse_candle_timestamp(last_bar)):
+                        continue
+                    if await self._record_t2_touch(trade, trade_high, trade_low, event_ts_base, candle_timestamp, spot_price):
+                        events.append((trade["id"], "T2_TOUCHED"))
+                    continue  # Legacy spot ATR handles exits on completed 5m bars
 
                 # Dual protection between T1 and T2: check T2 touch and index entry BE touch
                 # Target-first resolution if a single bar touches both
@@ -624,6 +699,10 @@ class PositionManager:
                 event_price = trade["target_1"]
                 events.append((trade["id"], update_type))
                 await self._record_trade_update(trade, event_price, update_type, event_ts)
+                if allow_t2_milestone and not is_option_atr and trade["state"] == "T1_HIT" and await self._record_t2_touch(
+                    trade, trade_high, trade_low, event_ts_base, candle_timestamp, spot_price
+                ):
+                    events.append((trade["id"], "T2_TOUCHED"))
 
                 # Target-first: If single index observation established both T1 and T2, apply T1 then T2 exactly once
                 if target_2_hit and is_option_atr:
@@ -664,6 +743,63 @@ class PositionManager:
 
         return events
 
+    async def _record_t2_touch(self, trade, high, low, event_ts, candle_timestamp, spot_price):
+        """Record one spot milestone without changing the ATR runner lifecycle."""
+        target = trade.get("target_2")
+        context = trade.get("market_context") or {}
+        if target is None or (context.get("target_milestones") or {}).get("t2"):
+            return False
+        time_basis = "candle_start" if candle_timestamp is not None else "spot_observation"
+        if candle_timestamp is None and trade.get("entry_timestamp"):
+            if parse_candle_timestamp(event_ts) < parse_candle_timestamp(trade["entry_timestamp"]):
+                return False
+        if candle_timestamp is not None and trade.get("entry_timestamp"):
+            source_at = parse_candle_timestamp(candle_timestamp)
+            entry_at = parse_candle_timestamp(trade["entry_timestamp"])
+            if source_at + timedelta(minutes=1) <= entry_at:
+                return False
+            if source_at <= entry_at:
+                high = low = spot_price
+                event_ts = __import__("storage").to_utc_iso(entry_at)
+                time_basis = "entry_boundary"
+        touched = high >= target if trade["direction"] == "BULLISH" else low <= target
+        if not touched:
+            return False
+        sign = 1 if trade["direction"] == "BULLISH" else -1
+        marker = {"touched_at": event_ts, "time_basis": time_basis, "target_spot": target,
+                  "spot_points_from_entry": round(sign * (float(target) - float(trade["entry_price"])), 2)}
+        trade.setdefault("market_context", {}).setdefault("target_milestones", {})["t2"] = marker
+        self.__dict__.setdefault("_pending_target_milestones", {})[trade["id"]] = deepcopy(marker)
+        self._queue_trade_write(
+            trade["id"],
+            lambda t_id=trade["id"], snapshot=deepcopy(marker):
+                self._persist_trade_context(t_id, t2_snapshot=snapshot),
+        )
+        self._queue_trade_alert(trade, target, "T2_TOUCHED")
+        return True
+
+    def _persist_trade_context(self, trade_id, atr_snapshot=None, t2_snapshot=None):
+        """Merge owned context keys under the shared execution/ATR context lock."""
+        if atr_snapshot is None and t2_snapshot is None:
+            return
+        with self._context_locks.setdefault(trade_id, threading.Lock()):
+            response = self.supabase.table("trade_analytics").select("market_context").eq("id", trade_id).execute()
+            if not response.data:
+                raise RuntimeError("ATR trade analytics row is unavailable")
+            context = dict(response.data[0].get("market_context") or {})
+            if atr_snapshot is not None:
+                context["atr_trailing"] = atr_snapshot
+            if t2_snapshot is not None:
+                context["target_milestones"] = {
+                    **(context.get("target_milestones") or {}), "t2": t2_snapshot,
+                }
+            updated = self.supabase.table("trade_analytics").update({"market_context": context}).eq("id", trade_id).execute()
+            if t2_snapshot is not None:
+                if not updated.data:
+                    raise RuntimeError("T2 milestone update was not persisted")
+                if self._pending_target_milestones.get(trade_id) == t2_snapshot:
+                    self._pending_target_milestones.pop(trade_id, None)
+
 
     async def _record_trade_update(self, trade, event_price, update_type, event_ts, pnl_points_override=None):
         """Persist each lifecycle transition through the existing ordered writer."""
@@ -689,22 +825,16 @@ class PositionManager:
         if atr is not None:
             atr.update(state=trade["state"], stop_loss=trade["stop_loss"])
         atr_snapshot = deepcopy(atr)
+        t2_snapshot = deepcopy((trade.get("market_context", {}).get("target_milestones") or {}).get("t2"))
 
         opt_trailing = trade.get("market_context", {}).get("option_trailing")
         opt_snapshot = deepcopy(opt_trailing) if opt_trailing else None
 
-        def _update(t_id=trade["id"], data=update_data, snapshot=atr_snapshot, opt_snap=opt_snapshot):
+        def _update(t_id=trade["id"], data=update_data, snapshot=atr_snapshot, milestone=t2_snapshot):
             terminal = data["state"] in ["CLOSED", "STOPPED_OUT"]
             if terminal:
                 self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
-            if snapshot is not None:
-                with self._context_locks.setdefault(t_id, threading.Lock()):
-                    response = self.supabase.table("trade_analytics").select("market_context").eq("id", t_id).execute()
-                    if not response.data:
-                        raise RuntimeError("ATR trade analytics row is unavailable")
-                    context = dict(response.data[0].get("market_context") or {})
-                    context["atr_trailing"] = snapshot
-                    self.supabase.table("trade_analytics").update({"market_context": context}).eq("id", t_id).execute()
+            self._persist_trade_context(t_id, snapshot, milestone)
             if not terminal:
                 self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
 
@@ -754,16 +884,22 @@ class PositionManager:
         except Exception as e:
             print(f"Failed to update trade in Supabase: {e}")
         if update_type is not None:
-            try:
-                await send_trade_update(trade, event_price, update_type)
-            except Exception as e:
-                print(f"Failed to send trade update alert: {e}")
+            if trade["id"] in getattr(self, "_trade_alerts", {}):
+                self._queue_trade_alert(trade, event_price, update_type)
+            else:
+                try:
+                    await send_trade_update(trade, event_price, update_type)
+                except Exception as e:
+                    print(f"Failed to send trade update alert: {e}")
 
     async def update_atr_trailing(self, candles):
         """Ratchet post-T1 stops and exit at completed five-minute closes only."""
+        candles = list(candles or ())
         bars = completed_atr_bars(candles)
         events = []
-        if not bars:
+        source_minutes = sorted((at, values) for at, values in completed_spot_minutes(candles).items()
+                                if values is not None)
+        if not source_minutes:
             return events
         for trade in self.active_trades:
             # Skip trades governed by option premium ATR trailing
@@ -776,13 +912,29 @@ class PositionManager:
             # Old carried runners lack a T1 timestamp. Resume from the latest
             # complete bar without replaying their unknown historical lifecycle.
             if not atr.get("last_bar"):
-                atr["last_bar"] = bars[-1]["timestamp"]
-                await self._record_trade_update(trade, bars[-1]["close"], None, bars[-1]["timestamp"])
+                if bars:
+                    atr["last_bar"] = bars[-1]["timestamp"]
+                    await self._record_trade_update(trade, bars[-1]["close"], None, bars[-1]["timestamp"])
                 continue
             sign = 1 if trade["direction"] == "BULLISH" else -1
-            for bar in bars:
-                if parse_candle_timestamp(bar["timestamp"]) <= parse_candle_timestamp(atr["last_bar"]):
+            watermark = parse_candle_timestamp(atr["last_bar"])
+            eligible = [(at, values) for at, values in source_minutes if at + timedelta(minutes=1) > watermark]
+            cursor = 0
+            for bar in [*bars, None]:
+                bar_end = parse_candle_timestamp(bar["timestamp"]) if bar is not None else None
+                if bar_end is not None and bar_end <= watermark:
                     continue
+                # Check every valid source minute, even when an ATR group has a
+                # gap, before processing any later five-minute close.
+                while cursor < len(eligible) and (bar_end is None or eligible[cursor][0] + timedelta(minutes=1) <= bar_end):
+                    source_at, (high, low, close) = eligible[cursor]
+                    cursor += 1
+                    if await self._record_t2_touch(
+                        trade, high, low, __import__("storage").to_utc_iso(source_at), source_at, close,
+                    ):
+                        events.append((trade["id"], "T2_TOUCHED"))
+                if bar is None:
+                    break
                 atr["last_bar"] = bar["timestamp"]
                 old_stop = trade["stop_loss"]
                 atr["previous_sl"] = old_stop
