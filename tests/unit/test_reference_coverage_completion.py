@@ -79,7 +79,8 @@ async def test_alerts_t2_touched_entry_boundary_label():
             }
         },
     }
-    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+    with patch.object(settings, "discord_webhook_url", "https://discord.test/webhook"), \
+            patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
         mock_post.return_value.status_code = 204
         mock_post.return_value.raise_for_status = Mock()
         await alerts.send_trade_update(trade, 22600.0, "T2_TOUCHED")

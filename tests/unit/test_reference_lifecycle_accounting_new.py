@@ -1,11 +1,12 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 from threading import Event
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from types import SimpleNamespace
 
 import pytest
 
+import main as main_module
 import position_manager as position_manager_module
 from tests.unit.test_option_atr_lifecycle_comprehensive import _make_pm, _make_signal, _mock_trade_from_signal
 from options_candles import OptionCandle
@@ -257,6 +258,244 @@ async def test_buffered_tick_before_option_activation_is_ignored_even_after_late
 
     assert events == []
     assert trade["state"] == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_buffered_pre_t1_tick_cannot_hit_post_t1_entry_guard():
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    minute = datetime(2026, 10, 23, 9, 31, tzinfo=IST)
+    received_after_t1 = minute + timedelta(minutes=1, seconds=5)
+    pre_t1_exchange_time = minute + timedelta(seconds=10)
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        t1_events = await pm.update_trades(
+            22525.0, candle_high=22540.0, candle_low=22525.0,
+            candle_timestamp=minute, event_time=minute + timedelta(minutes=1))
+        committed_rows = len(pm.analytics.rows)
+        replayed_events = await pm.update_trades(
+            22553.0, event_time=received_after_t1,
+            market_event_time=pre_t1_exchange_time)
+        opt = trade["market_context"]["option_trailing"]
+        assert t1_events == [(trade["id"], "T1_HIT")]
+        assert opt["t1_at"] == (minute + timedelta(minutes=1)).astimezone(timezone.utc).isoformat()
+        assert replayed_events == []
+        assert trade["state"] == "T1_HIT"
+        assert opt["phase"] == "POST_T1"
+        assert opt["index_guard_enabled"] is True
+        assert len(pm.analytics.rows) == committed_rows
+        boundary_events = await pm.update_trades(
+            22553.0, event_time=received_after_t1 + timedelta(seconds=2),
+            market_event_time=minute + timedelta(minutes=1, seconds=1))
+
+    assert boundary_events == [(trade["id"], "STOPPED_OUT_AT_BE")]
+    assert trade["state"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_tick_t1_exchange_time_allows_later_exchange_t2_after_late_receipt():
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    option = trade["market_context"]["option_trailing"]
+    source_t1 = datetime(2026, 10, 23, 10, 0, 10, tzinfo=timezone.utc)
+    received_t1 = source_t1 + timedelta(seconds=2)
+    source_t2 = source_t1 + timedelta(seconds=1)
+    received_t2 = source_t1 + timedelta(seconds=3)
+    sign = 1 if trade["direction"] == "BULLISH" else -1
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        t1_events = await pm.update_trades(
+            trade["target_1"], event_time=received_t1, market_event_time=source_t1)
+        t2_events = await pm.update_trades(
+            trade["target_2"], event_time=received_t2, market_event_time=source_t2)
+
+    assert t1_events == [(trade["id"], "T1_HIT")]
+    assert option["t1_at"] == source_t1.isoformat()
+    assert option["accounting"]["legs"]["T1"]["event_at"] == source_t1.isoformat()
+    assert pm.analytics.rows[0]["alert_snapshot"]["event_time"] == source_t1.isoformat()
+    assert t2_events == [(trade["id"], "T2_HIT")]
+    assert trade["state"] == "T2_REACHED"
+    assert option["t2_at"] == source_t2.isoformat()
+    assert option["accounting"]["legs"]["T2"]["event_at"] == source_t2.isoformat()
+    assert pm.analytics.rows[-1]["alert_snapshot"]["event_time"] == source_t2.isoformat()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tick_offset,expected_score", [(-1, 2), (0, 1), (1, 1)])
+async def test_live_spot_ticks_replay_by_source_time_without_guessing_same_second_order(tick_offset, expected_score):
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    option = trade["market_context"]["option_trailing"]
+    option.update(phase="POST_T1", highest_milestone=1, t1_at="2026-10-23T10:00:00+05:30",
+                  t1_activation_source="tick_exchange", locked_option_sl=150,
+                  protection_mode="ATR", remaining_fraction=.5)
+    trade.update(state="T1_HIT", stop_loss=trade["entry_price"])
+    source_close = datetime(2026, 10, 23, 10, 55, tzinfo=IST)
+    spot_tick_at = source_close + timedelta(seconds=tick_offset)
+    option_start = datetime(2026, 10, 23, 9, 15, tzinfo=IST)
+    history = [
+        OptionCandle(option_start + timedelta(minutes=5 * i),
+                     option_start + timedelta(minutes=5 * (i + 1)),
+                         200, 201, 148 if i == 19 else 199,
+                         149 if i == 19 else 200, 1, "51333")
+        for i in range(20)
+    ]
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events(
+            [], {"51333": history}, current_time=source_close + timedelta(seconds=5),
+            index_ticks=[{"price": trade["target_2"], "exchange_at": spot_tick_at,
+                          "received_at": source_close + timedelta(seconds=6), "source": "dhan_tick"}],
+        )
+
+    assert option["highest_milestone"] == expected_score
+    assert pm.analytics.rows[-1]["score"] == expected_score
+    if tick_offset == 0:
+        assert trade["state"] == "T1_HIT"
+        assert option.get("exit") is None
+        ambiguity = option["ambiguous_index_touch"]
+        assert ambiguity["kind"] == "SPOT_OPTION_EXIT_TIE"
+        assert ambiguity["status"] == "ORDER_UNKNOWN"
+        assert ambiguity["touches_t2"] is True
+        protective_exit = ambiguity["protective_option_exit"]
+        assert protective_exit["event_at"] == source_close.astimezone(timezone.utc).isoformat()
+        assert protective_exit["option_close"] == 149
+        assert protective_exit["option_stop"] > protective_exit["option_close"]
+        assert protective_exit["reason"] == "ATR_SL_HIT"
+    else:
+        assert trade["state"] == "CLOSED"
+        assert option["exit"]["reason"] == "ATR_SL_HIT"
+        assert option["exit"]["event_at"] == source_close.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_delayed_entry_guard_exit_persists_source_and_receipt_times_separately():
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    option = trade["market_context"]["option_trailing"]
+    source_t1 = datetime(2026, 10, 23, 10, 0, 10, tzinfo=timezone.utc)
+    source_guard = source_t1 + timedelta(seconds=2)
+    received_guard = source_guard + timedelta(seconds=10)
+    sign = 1 if trade["direction"] == "BULLISH" else -1
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(
+            trade["target_1"], event_time=source_t1 + timedelta(seconds=2),
+            market_event_time=source_t1)
+        events = await pm.update_trades(
+            trade["entry_price"] - sign, event_time=received_guard,
+            market_event_time=source_guard)
+
+    assert events == [(trade["id"], "STOPPED_OUT_AT_BE")]
+    assert option["exit"]["event_at"] == source_guard.isoformat()
+    assert option["exit"]["received_at"] == received_guard.isoformat()
+    assert pm.analytics.rows[-1]["exit_timestamp"] == source_guard.isoformat()
+    assert pm.analytics.rows[-1]["alert_snapshot"]["event_time"] == source_guard.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_tick_loop_sends_buffered_option_ticks_to_chronological_replay(monkeypatch):
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    pm.record_reference_spot_quote = MagicMock()
+    pm.update_trades = AsyncMock(return_value=[])
+    tick = {"price": 22470.0,
+            "exchange_at": datetime(2026, 10, 23, 10, 54, 59, tzinfo=IST),
+            "received_at": datetime(2026, 10, 23, 10, 55, 4, tzinfo=IST),
+            "source": "dhan_tick"}
+    feed = SimpleNamespace(is_active=True, get_latest_price=lambda: tick["price"],
+                           get_observations_since=lambda: [tick])
+    fetcher = SimpleNamespace(watch_candles=[])
+    monkeypatch.setattr(main_module.asyncio, "sleep", AsyncMock())
+    replay = AsyncMock(return_value=True)
+    monkeypatch.setattr(main_module, "_monitor_completed_atr", replay)
+    monkeypatch.setattr(main_module, "_schedule_reference_recovery", lambda *args: None)
+    monkeypatch.setattr(main_module, "_resolve_reference_ambiguities", AsyncMock())
+
+    await main_module._sleep_with_tick_exits(
+        0.01, feed, pm, SimpleNamespace(clear_cooldown=lambda: None),
+        price_fetcher=fetcher,
+        respect_close=False)
+
+    replay.assert_awaited_once()
+    assert replay.await_args.kwargs["index_ticks"] == [tick]
+    pm.record_reference_spot_quote.assert_called_once_with(22470.0, tick["exchange_at"], "dhan_tick")
+    pm.update_trades.assert_awaited_once_with(
+        22470.0, event_time=tick["received_at"], market_event_time=tick["exchange_at"],
+        include_option_policy=False)
+
+
+@pytest.mark.asyncio
+async def test_completed_candle_t1_same_second_guard_stays_unresolved():
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    minute = datetime(2026, 10, 23, 9, 31, tzinfo=IST)
+    boundary = minute + timedelta(minutes=1)
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(
+            22525.0, candle_high=22540.0, candle_low=22525.0,
+            candle_timestamp=minute, event_time=boundary)
+        boundary_events = await pm.update_trades(
+            22553.0, event_time=boundary + timedelta(seconds=5), market_event_time=boundary)
+        option = trade["market_context"]["option_trailing"]
+        ticks = [{"observed_at": boundary.isoformat(), "price": 22553.0,
+                  "source": "complete_tick_history"}]
+        resolved = await pm.resolve_reference_ambiguity(trade["id"], ticks, complete=True)
+
+    assert boundary_events == []
+    assert not resolved
+    assert trade["state"] == "T1_HIT"
+    assert option["t1_activation_source"] == "completed_candle"
+    assert option["ambiguous_index_touch"]["kind"] == "T1_PHASE_ENTRY"
+    assert option["ambiguous_index_touch"]["status"] == "ORDER_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_same_exchange_second_t1_and_entry_guard_preserves_ambiguity():
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    option = trade["market_context"]["option_trailing"]
+    source_t1 = datetime(2026, 10, 23, 10, 0, 10, tzinfo=timezone.utc)
+    sign = 1 if trade["direction"] == "BULLISH" else -1
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(
+            trade["target_1"], event_time=source_t1 + timedelta(seconds=2),
+            market_event_time=source_t1)
+        guard_events = await pm.update_trades(
+            trade["entry_price"] - sign, event_time=source_t1 + timedelta(seconds=3),
+            market_event_time=source_t1)
+        observations = [
+            {"observed_at": source_t1.isoformat(), "price": trade["target_1"],
+             "source": "provider_certified_order"},
+            {"observed_at": source_t1.isoformat(), "price": trade["entry_price"] - sign,
+             "source": "provider_certified_order"},
+        ]
+        unresolved = await pm.resolve_reference_ambiguity(
+            trade["id"], observations, complete=False)
+        resolved = await pm.resolve_reference_ambiguity(
+            trade["id"], observations, complete=True)
+
+    assert guard_events == []
+    assert not unresolved
+    assert resolved
+    assert trade["state"] == "CLOSED"
+    assert option["exit"]["reason"] == "STOPPED_OUT_AT_BE"
+    assert option["exit"]["received_at"] == (source_t1 + timedelta(seconds=3)).isoformat()
+    assert pm.analytics.rows[-1]["exit_timestamp"] == source_t1.isoformat()
+    assert option["ambiguity_resolution"]["outcome"] == "STOPPED_OUT_AT_BE"
+    assert option["ambiguous_index_touch"] is None
+    restored = position_manager_module.OptionTrailingContext.from_dict(option).to_dict()
+    assert restored["t1_activation_source"] == "tick_exchange"
+    assert restored["ambiguous_index_touch"] is None
 
 
 @pytest.mark.asyncio

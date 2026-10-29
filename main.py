@@ -198,11 +198,9 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
 
         price = tick_feed.get_latest_price()
         option_policy = _has_option_policy_trades(position_manager)
-        if price_fetcher is not None and option_policy:
-            await _monitor_completed_atr(price_fetcher.watch_candles, position_manager,
-                                         dispatcher, price_fetcher=price_fetcher, engine=engine)
         tick_reader = getattr(tick_feed, "get_observations_since", None)
         tick_batch = tick_reader() if callable(tick_reader) else None
+        ordered_ticks = []
         if isinstance(tick_batch, list):
             ordered_ticks = [item for item in tick_batch if isinstance(item, dict)
                              and item.get("exchange_at") is not None
@@ -211,17 +209,28 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                              and isinstance(item.get("price"), (int, float))
                              and not isinstance(item.get("price"), bool)
                              and isfinite(item["price"]) and item["price"] > 0]
+        quote_recorder = getattr(position_manager, "record_reference_spot_quote", None)
+        if callable(quote_recorder):
+            for tick in ordered_ticks:
+                quote_recorder(float(tick["price"]), tick["exchange_at"],
+                               tick.get("source") or "dhan_websocket_tick")
+        option_ticks_replayed = False
+        if price_fetcher is not None and option_policy:
+            option_ticks_replayed = await _monitor_completed_atr(
+                price_fetcher.watch_candles, position_manager,
+                dispatcher, price_fetcher=price_fetcher, engine=engine,
+                index_ticks=ordered_ticks,
+            )
+        if isinstance(tick_batch, list):
             if ordered_ticks:
                 for tick in ordered_ticks:
                     price = float(tick["price"])
-                    quote_recorder = getattr(position_manager, "record_reference_spot_quote", None)
-                    if callable(quote_recorder):
-                        quote_recorder(price, tick["exchange_at"], tick.get("source") or "dhan_websocket_tick")
                     if not position_manager.active_trades:
                         continue
                     try:
                         events = await position_manager.update_trades(
-                            price, event_time=tick["received_at"], market_event_time=tick["exchange_at"])
+                            price, event_time=tick["received_at"], market_event_time=tick["exchange_at"],
+                            include_option_policy=not option_ticks_replayed)
                         if any(event == "SL_HIT" for _, event in events):
                             engine.clear_cooldown()
                     except Exception as exc:
@@ -332,12 +341,14 @@ async def _retry_reference_entries(position_manager):
         logger.warning("Reference registration retry failed: %s", exc)
 
 
-async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price_fetcher=None, current_time=None, engine=None):
+async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price_fetcher=None, current_time=None,
+                                engine=None, index_ticks=None):
     """Run independent protection paths, including polls with no new index bar.
 
     Option history is contract-pinned and independent of chain availability.
     PositionManager owns source-time ordering across index and premium candles.
     """
+    option_ticks_replayed = False
     if price_fetcher is not None:
         from options_candles import IST
         contracts = {}
@@ -363,7 +374,9 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                     histories[security_id] = []
                     logger.warning("Pinned option history unavailable for %s: %s", security_id, exc)
             try:
-                events = await position_manager.update_option_market_events(candles, histories, current_time=now)
+                events = await position_manager.update_option_market_events(
+                    candles, histories, current_time=now, index_ticks=index_ticks)
+                option_ticks_replayed = index_ticks is not None
                 if engine is not None and any(event == "SL_HIT" for _, event in events):
                     engine.clear_cooldown()
             except Exception as exc:
@@ -377,6 +390,7 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
         except Exception as exc:
             logger.warning("Completed ATR monitoring failed: %s", exc)
     _schedule_reference_recovery(position_manager, price_fetcher)
+    return option_ticks_replayed
 
 
 async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatcher, *, finalizing=False, engine=None):
