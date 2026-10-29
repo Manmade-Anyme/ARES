@@ -478,6 +478,71 @@ class AnalyticsLogger:
             raise RuntimeError("Option alert acknowledgement did not confirm a commit")
         return result
 
+    def option_reference_accounting_ready(self) -> bool:
+        """Check the installed schema and backend privileges before enrollment."""
+        if not getattr(self, "_option_backend_configured", False):
+            return False
+        try:
+            response = self.supabase.rpc("option_reference_accounting_capabilities", {}).execute()
+            result = getattr(response, "data", None)
+            return (isinstance(result, dict) and result.get("ready") is True
+                    and result.get("schema_version") == "option_reference_accounting_v1")
+        except Exception:
+            logger.warning("Option reference accounting capability check failed", exc_info=True)
+            return False
+
+    def list_incomplete_option_accounting(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """List a bounded page of new-policy closed trades needing evidence."""
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("limit must be an integer between 1 and 500")
+        if type(offset) is not int or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
+        response = self.supabase.rpc(
+            "list_incomplete_option_accounting", {"p_limit": limit, "p_offset": offset},
+        ).execute()
+        result = getattr(response, "data", None)
+        if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
+            raise RuntimeError("Option accounting recovery scan returned invalid data")
+        return result
+
+    def sync_option_reference_ml_label(self, trade_id: str) -> Dict[str, Any]:
+        """Retry a closed trade's exact-bound ML label without changing its lifecycle."""
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
+        response = self.supabase.rpc("sync_option_reference_ml_label", {"p_trade_id": str(trade_id)}).execute()
+        result = getattr(response, "data", None)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise RuntimeError("Option reference ML label sync did not confirm a commit")
+        return result
+
+    def apply_option_accounting_correction(
+        self, trade_id: str, expected_revision: int, event_id: str,
+        accounting: Dict[str, Any], spot_pnl_points: Optional[float],
+        option_pnl_points: Optional[float],
+    ) -> Dict[str, Any]:
+        """Fill missing evidence on a closed trade without changing its outcome."""
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ValueError("expected_revision must be a positive integer")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("event_id must identify a stable source event")
+        if not isinstance(accounting, dict):
+            raise ValueError("accounting must be an object")
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
+        response = self.supabase.rpc(
+            "apply_option_accounting_correction",
+            {"p_trade_id": str(trade_id), "p_expected_revision": expected_revision,
+             "p_event_id": event_id, "p_accounting": accounting,
+             "p_spot_pnl_points": spot_pnl_points,
+             "p_option_pnl_points": option_pnl_points},
+        ).execute()
+        result = getattr(response, "data", None)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise RuntimeError("Option accounting correction did not confirm a commit")
+        return result
+
     def get_option_lifecycle_state(self, trade_id: str) -> Dict[str, Any]:
         """Read committed canonical state after a revision conflict or restart."""
         analytics = self.supabase.table("trade_analytics").select(

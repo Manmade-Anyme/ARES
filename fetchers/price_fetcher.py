@@ -1,4 +1,5 @@
 import asyncio
+import time as monotonic_time
 from datetime import datetime, time, timedelta, timezone
 from datetime import datetime as _real_datetime
 from math import isfinite
@@ -9,6 +10,10 @@ from dhanhq import dhanhq
 from models import OHLCVCandle
 from config import settings
 from oi_watch_context import IST, build_watch_candles
+
+
+class ReferencePriceDeferred(RuntimeError):
+    """Lower-priority evidence can be retried without delaying protection."""
 
 
 class PriceFetcher:
@@ -71,7 +76,7 @@ class PriceFetcher:
         securities = {settings.exchange_segment: [int(settings.security_id)]}
         loop = asyncio.get_running_loop()
         try:
-            response = await loop.run_in_executor(None, lambda: self.dhan.ticker_data(securities))
+            response = await self._protective_request(lambda: self.dhan.ticker_data(securities))
         except Exception as exc:
             raise ValueError("Dhan REST LTP request failed.") from exc
         if not isinstance(response, dict) or response.get("status") != "success":
@@ -115,8 +120,7 @@ class PriceFetcher:
         
         for attempt in range(max_retries):
             try:
-                response = await loop.run_in_executor(
-                    None,
+                response = await self._protective_request(
                     lambda: self.dhan.intraday_minute_data(
                         settings.security_id,
                         settings.exchange_segment,
@@ -263,8 +267,7 @@ class PriceFetcher:
         cache = getattr(self, "_option_candle_cache", {})
         if cache_key in cache:
             return cache[cache_key]
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(None, lambda: self.dhan.intraday_minute_data(
+        response = await self._protective_request(lambda: self.dhan.intraday_minute_data(
             security_id, exchange, "OPTIDX", from_date, to_date, interval=5,
         ))
         if not isinstance(response, dict) or response.get("status") != "success":
@@ -293,6 +296,139 @@ class PriceFetcher:
             cache[cache_key] = bars
             self._option_candle_cache = cache
         return bars
+
+    @staticmethod
+    def _reference_contract(contract, event_at):
+        """Validate every part of the original suggested-contract pin."""
+        from oi_watch_context import parse_candle_timestamp
+
+        if not isinstance(contract, dict):
+            raise ValueError("Reference price requires a pinned option contract")
+        security_id = str(contract.get("security_id") or "").strip()
+        exchange = contract.get("exchange_segment") or contract.get("exchange")
+        expiry = contract.get("expiry_date") or contract.get("expiry")
+        strike = contract.get("strike")
+        try:
+            expiry_date = datetime.strptime(str(expiry), "%Y-%m-%d").date()
+            event = parse_candle_timestamp(event_at)
+            valid_strike = not isinstance(strike, bool) and isfinite(float(strike)) and float(strike) > 0
+        except (TypeError, ValueError, OverflowError, OSError):
+            raise ValueError("Reference price requires a complete option pin") from None
+        if (not security_id.isdigit() or int(security_id) <= 0 or exchange != "NSE_FNO"
+                or contract.get("option_type") not in ("CE", "PE") or not valid_strike
+                or event.date() > expiry_date):
+            raise ValueError("Reference price requires a complete option pin")
+        return security_id, exchange, event
+
+    async def _protective_request(self, request):
+        """Never wait for background requests; reserve a recovery cooldown."""
+        self._protective_active = getattr(self, "_protective_active", 0) + 1
+        self._protective_last_request = monotonic_time.monotonic()
+        try:
+            future = asyncio.get_running_loop().run_in_executor(None, request)
+        except BaseException:
+            self._protective_active -= 1
+            raise
+        def complete(_future):
+            self._protective_active -= 1
+            self._protective_last_request = monotonic_time.monotonic()
+        future.add_done_callback(complete)
+        # Cancellation must not mark an executor request complete prematurely.
+        return await asyncio.shield(future)
+
+    async def _reference_request(self, request):
+        """Defer lower-priority evidence while protection uses the provider."""
+        if not hasattr(self, "_reference_request_lock"):
+            self._reference_request_lock = asyncio.Lock()
+        async with self._reference_request_lock:
+            now = monotonic_time.monotonic()
+            if (getattr(self, "_protective_active", 0)
+                    or now < getattr(self, "_protective_last_request", float("-inf")) + 1.05
+                    or now < getattr(self, "_reference_next_request", 0.0)):
+                raise ReferencePriceDeferred("Market protection has priority over reference evidence")
+            self._reference_next_request = now + 1.05
+            return await asyncio.get_running_loop().run_in_executor(None, request)
+
+    async def fetch_option_minutes(self, contract: dict, event_at, *, observed_at=None):
+        """Fetch completed 1m closes for the original contract and event date.
+
+        Each provider row is bound to the exact requested security ID. Dhan
+        does not return strike/expiry metadata in this endpoint, so the pin
+        itself must already have been resolved from the security master.
+        """
+        from execution.reference_prices import normalize_option_minutes
+        from oi_watch_context import parse_candle_timestamp
+
+        security_id, exchange, event = self._reference_contract(contract, event_at)
+        actual_now = parse_candle_timestamp(datetime.now(timezone.utc))
+        now = min(parse_candle_timestamp(observed_at), actual_now) if observed_at is not None else actual_now
+        if event > now:
+            return []
+        date = event.date().isoformat()
+        response = await self._reference_request(lambda: self.dhan.intraday_minute_data(
+            security_id, exchange, "OPTIDX", date, date, interval=1,
+        ))
+        if not isinstance(response, dict) or response.get("status") != "success":
+            raise ValueError("Pinned option minute history request failed")
+        # A caller-supplied cutoff is not the time Dhan actually responded.
+        sampled = parse_candle_timestamp(datetime.now(timezone.utc))
+        return normalize_option_minutes(response.get("data"), event.date(), sampled)
+
+    async def fetch_spot_minutes(self, event_at, *, observed_at=None):
+        """Recover completed 1m index bars for an ATR exit's session date."""
+        from execution.reference_prices import normalize_option_minutes
+        from oi_watch_context import parse_candle_timestamp
+
+        event = parse_candle_timestamp(event_at)
+        actual_now = parse_candle_timestamp(datetime.now(timezone.utc))
+        cutoff = min(parse_candle_timestamp(observed_at), actual_now) if observed_at is not None else actual_now
+        if event > cutoff:
+            return []
+        date = event.date().isoformat()
+        response = await self._reference_request(lambda: self.dhan.intraday_minute_data(
+            settings.security_id, settings.exchange_segment, settings.instrument_type, date, date, interval=1,
+        ))
+        if not isinstance(response, dict) or response.get("status") != "success":
+            raise ValueError("Spot minute history request failed")
+        sampled = parse_candle_timestamp(datetime.now(timezone.utc))
+        return normalize_option_minutes(response.get("data"), event.date(), sampled)
+
+    async def fetch_option_observation(self, contract: dict):
+        """Fetch a pinned LTP only when Dhan supplies a recent trade time."""
+        from oi_watch_context import parse_candle_timestamp
+
+        requested = parse_candle_timestamp(datetime.now(timezone.utc))
+        security_id, exchange, _ = self._reference_contract(contract, requested)
+        response = await self._reference_request(lambda: self.dhan.quote_data({exchange: [int(security_id)]}))
+        received = parse_candle_timestamp(datetime.now(timezone.utc))
+        if not isinstance(response, dict) or response.get("status") != "success":
+            raise ValueError("Pinned option quote request failed")
+        data = response.get("data")
+        if isinstance(data, dict) and "data" in data:
+            if data.get("status", "success") != "success":
+                raise ValueError("Pinned option quote payload failed")
+            data = data["data"]
+        try:
+            quote = data[exchange][security_id]
+            value = quote["last_price"]
+            if isinstance(value, bool):
+                raise ValueError
+            price = float(value)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise ValueError("Pinned option quote is missing or invalid") from None
+        if not isfinite(price) or price <= 0:
+            raise ValueError("Pinned option quote is missing or invalid")
+        trade_time = quote.get("last_trade_time")
+        try:
+            if isinstance(trade_time, str) and "/" in trade_time:
+                at = datetime.strptime(trade_time, "%d/%m/%Y %H:%M:%S").replace(tzinfo=IST)
+            else:
+                at = parse_candle_timestamp(trade_time)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+        if not 0 <= (received - at).total_seconds() <= 5:
+            return None
+        return {"price": price, "observed_at": at.isoformat(), "source": "dhan_last_trade"}
 
     async def fetch_previous_day_ohlc(self) -> Tuple[float, float]:
         """

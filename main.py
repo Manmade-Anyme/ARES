@@ -130,6 +130,34 @@ def _has_option_policy_trades(position_manager):
     return False
 
 
+def _schedule_reference_recovery(position_manager, price_fetcher):
+    """Run evidence retrieval independently of time-critical protection."""
+    if price_fetcher is None:
+        return
+    analytics = getattr(position_manager, "analytics", None)
+    if getattr(analytics, "_option_backend_configured", False) is not True:
+        return
+    task = getattr(position_manager, "_reference_recovery_task", None)
+    if task is not None and not task.done():
+        return
+    signatures = []
+    for trade in position_manager.active_trades:
+        option = (trade.get("market_context") or {}).get("option_trailing") or {}
+        if option.get("accounting_formula_version") == "one_lot_reference_v1":
+            legs = (option.get("accounting") or {}).get("legs") or {}
+            signatures.append((str(trade.get("id")), tuple(sorted(legs))))
+    signature = tuple(sorted(signatures))
+    loop = asyncio.get_running_loop()
+    last = getattr(position_manager, "_reference_recovery_last", 0.0)
+    if signature == getattr(position_manager, "_reference_recovery_signature", None) and loop.time() - last < 60:
+        return
+    from execution.reference_recovery import run_reference_recovery
+    position_manager._reference_recovery_signature = signature
+    position_manager._reference_recovery_last = loop.time()
+    position_manager._reference_recovery_task = loop.create_task(
+        run_reference_recovery(position_manager, price_fetcher, analytics))
+
+
 async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine, dispatcher=None, *, respect_close=False, price_fetcher=None):
     """
     Sleeps for `total_seconds` (the REST poll interval), but when the
@@ -185,6 +213,7 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
         if price is not None and position_manager.active_trades:
             try:
                 events = await position_manager.update_trades(price, **tick_kwargs)
+                _schedule_reference_recovery(position_manager, price_fetcher)
                 if any(ev_type == "SL_HIT" for _, ev_type in events):
                     engine.clear_cooldown()
             except Exception as e:
@@ -302,6 +331,7 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
             await monitor(candles)
         except Exception as exc:
             logger.warning("Completed ATR monitoring failed: %s", exc)
+    _schedule_reference_recovery(position_manager, price_fetcher)
 
 
 async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatcher, *, finalizing=False, engine=None):
@@ -860,6 +890,13 @@ async def run():
                     await watch_outbox.close()
             finally:
                 try:
+                    recovery_task = getattr(position_manager, "_reference_recovery_task", None)
+                    if isinstance(recovery_task, asyncio.Task) and not recovery_task.done():
+                        recovery_task.cancel()
+                        try:
+                            await recovery_task
+                        except asyncio.CancelledError:
+                            pass
                     await position_manager.flush_pending_trade_updates()
                 except Exception as drain_err:
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)

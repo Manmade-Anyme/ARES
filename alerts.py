@@ -649,8 +649,12 @@ def render_option_lifecycle_event(event: dict) -> dict:
     display_id = trade.get("display_id") or trade.get("signal_id") or trade.get("id", "unavailable")
     target_booked = .8 if milestone >= 2 else .5 if milestone == 1 else 0.
     remaining = context.get("remaining_fraction", 1. - target_booked)
+    target_leg = (context.get("accounting") or {}).get("legs", {}).get(
+        "T1" if kind == "T1_HIT" else "T2" if kind in {"T2_HIT", "T2_REACHED"} else "", {})
+    candle_touch = bool(target_leg.get("source_minute") and target_leg.get("event_at") is None)
+    time_label = "Detection candle close (exact touch time unavailable)" if candle_touch else "Event time"
     lines = [
-        f"Event time: {_lifecycle_event_time(event.get('event_time') or exit_info.get('event_at'))}",
+        f"{time_label}: {_lifecycle_event_time(event.get('event_time') or exit_info.get('event_at'))}",
         f"Trade ID: {trade.get('id', 'unavailable')} | Event ID: {event.get('event_id') or event.get('id', 'unavailable')}",
         f"Contract: {contract.get('strike', 'unavailable')} {contract.get('option_type', 'unavailable')} | Expiry {contract.get('expiry', 'unavailable')} | {contract.get('exchange_segment', 'unavailable')} | Security ID {contract.get('security_id', 'unavailable')}",
         f"Phase: {phase} | Lifecycle: {'CLOSED' if terminal or phase == 'CLOSED' else 'OPEN'}",
@@ -664,6 +668,18 @@ def render_option_lifecycle_event(event: dict) -> dict:
                   f"Observed event detail: {event.get('detail') or 'unavailable'}"]
     elif kind != "NEW_SIGNAL":
         lines.append(f"Score: {milestone}{' retained' if terminal else ' recorded'}")
+    accounting = context.get("accounting") or {}
+    if kind != "NEW_SIGNAL" and context.get("accounting_formula_version") == "one_lot_reference_v1":
+        points_kind = "total" if terminal else "booked"
+        spot_points = accounting.get(f"spot_{points_kind}_points")
+        option_points = accounting.get(f"option_{points_kind}_points")
+        legs = accounting.get("legs") or {}
+        spot_approximate = any(leg.get("spot_approximate") is True for leg in legs.values() if isinstance(leg, dict))
+        option_approximate = any(leg.get("approximate") is True for leg in legs.values() if isinstance(leg, dict))
+        spot_suffix = " (includes minute-close approximation)" if spot_points is not None and spot_approximate else ""
+        option_suffix = " (includes minute-close approximation)" if option_points is not None and option_approximate else ""
+        lines.append(f"Spot {points_kind} points (one-lot equivalent): {_number(spot_points)}{spot_suffix}")
+        lines.append(f"Option {points_kind} points (one-lot equivalent): {_number(option_points)}{option_suffix}")
     guard_enabled = context.get("index_guard_enabled", milestone < 2)
     if terminal or milestone >= 2 or not guard_enabled:
         lines.append("Index guard: disabled")
