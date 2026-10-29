@@ -383,7 +383,8 @@ class TestPositionManager(unittest.IsolatedAsyncioTestCase):
             "stop_loss": 24025.0,
             "target_1": 23950.0,
             "target_2": 23900.0,
-            "state": "OPEN"
+            "state": "OPEN",
+            "market_context": {"legacy_t2_tracking_approved": True},
         }
         pm.active_trades = [trade_t2]
         mock_send_trade_update.reset_mock()
@@ -641,6 +642,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
         """A candle that spans both the stop and a target is resolved as a
         target hit — an optimistic assumption so wicks that touch targets count as wins."""
         trade = self._bullish_trade()
+        trade["market_context"] = {"legacy_t2_tracking_approved": True}
         pm = PositionManager()
         pm.active_trades = [trade]
 
@@ -666,6 +668,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
             direction="BEARISH", stop_loss=24250.0,
             target_1=24180.0, target_2=24130.0,
         )
+        trade["market_context"] = {"legacy_t2_tracking_approved": True}
         pm = PositionManager()
         pm.active_trades = [trade]
 
@@ -685,6 +688,7 @@ class TestIntrabarExitsAndDedup(unittest.IsolatedAsyncioTestCase):
     @patch('position_manager.settings')
     async def test_intrabar_t2_does_not_close_atr_runner(self, mock_settings, mock_alert):
         trade = self._bullish_trade(state="T1_HIT", stop_loss=24000.0)
+        trade["market_context"] = {"legacy_t2_tracking_approved": True}
         pm = PositionManager()
         pm.active_trades = [trade]
 
@@ -855,6 +859,8 @@ def _atr_trade(sign=1, **changes):
         "state": "OPEN",
     }
     trade.update(changes)
+    # These milestone-specific fixtures represent individually reviewed trades.
+    trade.setdefault("market_context", {})["legacy_t2_tracking_approved"] = True
     return trade
 
 
@@ -865,6 +871,26 @@ def _atr_minutes(start_minute, count, sign=1, close=35, low=30, high=40):
              "high": 24000 + (high if sign == 1 else -low),
              "low": 24000 + (low if sign == 1 else -high)}
             for i in range(start_minute, start_minute + count)]
+
+
+@pytest.mark.asyncio
+async def test_unreviewed_legacy_runner_keeps_existing_exit_behavior(atr_position_manager):
+    pm, _, alert = atr_position_manager
+    trade = _atr_trade(state="T1_HIT", stop_loss=24000,
+        market_context={"atr_trailing": {"last_bar": "2099-01-01T09:30:00+05:30"}})
+    trade["market_context"].pop("legacy_t2_tracking_approved")
+    pm.active_trades = [trade]
+    assert await pm.update_trades(24100) == []
+    assert "target_milestones" not in trade["market_context"]
+    assert trade["state"] == "T1_HIT"
+    candles = _atr_minutes(15, 5, close=-1, low=-5, high=5)
+    candles[1]["high"] = 24100
+    events = await pm.update_atr_trailing(candles)
+    await _flush_trade_writes(pm)
+    assert events == [(trade["id"], "ATR_SL_HIT")]
+    assert trade["state"] == "CLOSED"
+    assert "target_milestones" not in trade["market_context"]
+    assert [call.args[2] for call in alert.call_args_list] == ["ATR_SL_HIT"]
 
 
 @pytest.mark.asyncio
@@ -1551,6 +1577,8 @@ async def test_missing_atr_analytics_defers_active_stop_write_then_recovers_next
     })
     # Neither OPEN nor terminal trades participate in post-T1 candle trailing.
     untouched = [_atr_trade(id="open", state="OPEN"), _atr_trade(id="closed", state="CLOSED")]
+    for row in untouched:
+        row.pop("market_context", None)
     pm.active_trades = [*untouched, trade]
     selected = client.select_mock.return_value.eq.return_value.execute.return_value
     selected.data = []

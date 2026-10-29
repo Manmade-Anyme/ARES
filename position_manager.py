@@ -797,6 +797,10 @@ class PositionManager:
         """Record one spot milestone without changing the ATR runner lifecycle."""
         target = trade.get("target_2")
         context = trade.get("market_context") or {}
+        # Legacy trades must be reviewed individually before enabling this new
+        # T2 observation path. Their pre-existing ATR protection continues.
+        if context.get("legacy_t2_tracking_approved") is not True:
+            return False
         if target is None or (context.get("target_milestones") or {}).get("t2"):
             return False
         time_basis = "candle_start" if candle_timestamp is not None else "spot_observation"
