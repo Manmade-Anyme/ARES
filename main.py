@@ -220,7 +220,8 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                     if not position_manager.active_trades:
                         continue
                     try:
-                        events = await position_manager.update_trades(price, event_time=tick["received_at"])
+                        events = await position_manager.update_trades(
+                            price, event_time=tick["received_at"], market_event_time=tick["exchange_at"])
                         if any(event == "SL_HIT" for _, event in events):
                             engine.clear_cooldown()
                     except Exception as exc:

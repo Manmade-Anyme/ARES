@@ -111,6 +111,72 @@ async def test_incomplete_tick_feed_cannot_resolve_ambiguity():
     assert trade["market_context"]["option_trailing"]["ambiguous_index_touch"]["status"] == "ORDER_UNKNOWN"
 
 
+@pytest.mark.asyncio
+async def test_buffered_pre_entry_tick_is_skipped_only_for_trade_not_yet_entered():
+    pm = _make_pm()
+    old_trade = {
+        "id": "old-trade", "state": "OPEN", "direction": "BULLISH",
+        "entry_price": 100, "stop_loss": 90, "target_1": 110, "target_2": 120,
+        "entry_timestamp": "2026-10-23T10:00:00+00:00",
+    }
+    new_trade = {**old_trade, "id": "new-trade",
+                 "entry_timestamp": "2026-10-23T10:05:00+00:00"}
+    pm.active_trades = [old_trade, new_trade]
+    pm._record_trade_update = AsyncMock()
+
+    events = await pm.update_trades(
+        89, event_time=datetime(2026, 10, 23, 10, 6, tzinfo=timezone.utc),
+        market_event_time=datetime(2026, 10, 23, 10, 4, tzinfo=timezone.utc),
+    )
+
+    assert events == [("old-trade", "SL_HIT")]
+    assert old_trade["state"] == "CLOSED"
+    assert new_trade["state"] == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_same_second_exchange_tick_after_entry_is_not_rejected_as_stale():
+    pm = _make_pm()
+    trade = {
+        "id": "same-second-trade", "state": "OPEN", "direction": "BULLISH",
+        "entry_price": 100, "stop_loss": 90, "target_1": 110, "target_2": 120,
+        "entry_timestamp": "2026-10-23T10:05:00.500000+00:00",
+    }
+    pm.active_trades = [trade]
+    pm._record_trade_update = AsyncMock()
+
+    events = await pm.update_trades(
+        111, event_time=datetime(2026, 10, 23, 10, 5, 0, 600000, tzinfo=timezone.utc),
+        market_event_time=datetime(2026, 10, 23, 10, 5, tzinfo=timezone.utc),
+    )
+
+    assert events == [("same-second-trade", "T1_HIT")]
+
+
+@pytest.mark.asyncio
+async def test_buffered_tick_before_option_activation_is_ignored_even_after_late_receipt():
+    pm = _make_pm()
+    trade = {
+        "id": "late-activation-trade", "state": "OPEN", "direction": "BULLISH",
+        "entry_price": 100, "stop_loss": 90, "target_1": 110, "target_2": 120,
+        "entry_timestamp": "2026-10-23T10:00:00+00:00",
+        "market_context": {"option_trailing": {
+            "policy_version": "option_atr_v1",
+            "activated_at": "2026-10-23T10:05:00+00:00",
+        }},
+    }
+    pm.active_trades = [trade]
+    pm._record_trade_update = AsyncMock()
+
+    events = await pm.update_trades(
+        89, event_time=datetime(2026, 10, 23, 10, 6, tzinfo=timezone.utc),
+        market_event_time=datetime(2026, 10, 23, 10, 4, 59, tzinfo=timezone.utc),
+    )
+
+    assert events == []
+    assert trade["state"] == "OPEN"
+
+
 def test_timestamped_spot_tick_is_used_for_atr_exit_accounting():
     pm = _make_pm()
     trade = reference_trade()

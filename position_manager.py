@@ -506,6 +506,7 @@ class PositionManager:
         include_option_policy: bool = True,
         only_option_policy: bool = False,
         event_time: Optional[datetime] = None,
+        market_event_time: Optional[datetime] = None,
         only_trade_id: Optional[str] = None,
         allow_t2_milestone: bool = True,
     ) -> List[Tuple[str, str]]:
@@ -526,6 +527,9 @@ class PositionManager:
 
         Returns a list of (trade_id, update_type) for every state change this
         tick, so the caller can react (e.g. clear the engine cooldown on SL_HIT).
+        For buffered ticks, market_event_time is the provider timestamp used to
+        reject observations that occurred before an individual trade's entry;
+        event_time remains the local arrival time used to preserve tick order.
         """
         events: List[Tuple[str, str]] = []
         await self.retry_option_lifecycle_writes()
@@ -561,6 +565,27 @@ class PositionManager:
                 # mistaken for an observation that predates T1.
                 event_ts_base = __import__("storage").to_utc_iso(
                     candle_timestamp + timedelta(minutes=1))
+            entry_cutoff = (opt.get("activated_at") if versioned else None) or trade.get("entry_timestamp")
+            entry_at = None
+            if entry_cutoff:
+                try:
+                    entry_at = parse_candle_timestamp(entry_cutoff)
+                except (TypeError, ValueError, OverflowError, OSError):
+                    pass
+            if entry_at is not None and event_time is not None:
+                try:
+                    if parse_candle_timestamp(event_time) < entry_at:
+                        continue
+                except (TypeError, ValueError, OverflowError, OSError):
+                    pass
+            if entry_at is not None and market_event_time is not None:
+                try:
+                    # Dhan LTT is second-resolution. Reject only when the
+                    # whole possible event second ends before this trade began.
+                    if parse_candle_timestamp(market_event_time) + timedelta(seconds=1) <= entry_at:
+                        continue
+                except (TypeError, ValueError, OverflowError, OSError):
+                    pass
             if (versioned and not include_option_policy) or (only_option_policy and not versioned):
                 continue
             observation_high, observation_low = high, low

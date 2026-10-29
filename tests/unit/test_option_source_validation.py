@@ -229,6 +229,7 @@ async def test_tick_sleep_replays_buffered_dhan_ticks_and_attempts_safe_ambiguit
     assert positions.update_trades.await_count == 2
     assert positions.update_trades.await_args_list[0].args == (22470.0,)
     assert positions.update_trades.await_args_list[1].args == (22469.0,)
+    assert all("market_event_time" in call.kwargs for call in positions.update_trades.await_args_list)
     assert positions.record_reference_spot_quote.call_count == 2
     positions.resolve_reference_ambiguities_from_feed.assert_awaited_once_with(feed)
 
