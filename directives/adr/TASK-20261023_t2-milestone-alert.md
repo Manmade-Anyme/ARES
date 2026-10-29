@@ -4,7 +4,7 @@ Status: user approved alert-only behavior on 2026-10-23.
 
 ## Contract
 
-Every registered manual/reference trade using the spot ATR runner can report one `T2_TOUCHED` milestone. The separately gated option ATR policy retains its own T2 lifecycle and accounting.
+Every newly registered manual/reference trade using the spot ATR runner is enrolled for one `T2_TOUCHED` milestone. Pre-existing trades remain gated until individually reviewed. The separately gated option ATR policy retains its own T2 lifecycle and accounting.
 Detect an inclusive favorable touch from live spot or completed-candle extremes,
 using the existing entry-time wick safeguards. If a sample reaches T1 and T2,
 record and notify T1 first, then T2. Closed trades and pre-entry candles cannot

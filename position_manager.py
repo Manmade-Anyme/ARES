@@ -354,6 +354,11 @@ class PositionManager:
             else:
                 market_context["option_atr_unavailable"] = "Incomplete pinned option bracket metadata"
 
+        if (market_context.get("option_trailing") or {}).get("policy_version") != "option_atr_v1":
+            # New spot-ATR registrations participate in the T2 notification
+            # milestone. Previously stored trades remain gated until reviewed.
+            market_context["legacy_t2_tracking_approved"] = True
+
         if getattr(signal, "oi_wall_context", None) is not None:
             market_context["oi_wall"] = signal.oi_wall_context
 
@@ -565,7 +570,16 @@ class PositionManager:
                 # mistaken for an observation that predates T1.
                 event_ts_base = __import__("storage").to_utc_iso(
                     candle_timestamp + timedelta(minutes=1))
-            entry_cutoff = (opt.get("activated_at") if versioned else None) or trade.get("entry_timestamp")
+            market_context = trade.get("market_context") or {}
+            execution = market_context.get("execution") or {}
+            if versioned:
+                entry_cutoff = (opt.get("activated_at") or execution.get("filled_at")
+                                or trade.get("entry_timestamp"))
+            elif market_context.get("tracking_mode") == "SIGNAL_REFERENCE":
+                entry_cutoff = (execution.get("filled_at") or trade.get("created_at")
+                                or trade.get("entry_timestamp"))
+            else:
+                entry_cutoff = trade.get("entry_timestamp")
             entry_at = None
             if entry_cutoff:
                 try:
@@ -763,8 +777,12 @@ class PositionManager:
             if target_1_hit:
                 trade["state"] = "T1_HIT"
                 trade["stop_loss"] = trade["entry_price"]
-                activated = (parse_candle_timestamp(candle_timestamp) + timedelta(minutes=1)
-                             if candle_timestamp else datetime.now(timezone.utc))
+                if candle_timestamp is not None:
+                    activated = parse_candle_timestamp(candle_timestamp) + timedelta(minutes=1)
+                elif event_time is not None:
+                    activated = parse_candle_timestamp(event_ts_base)
+                else:
+                    activated = datetime.now(timezone.utc)
                 trade.setdefault("market_context", {})["atr_trailing"] = {
                     "last_bar": activated.isoformat(),
                 }
@@ -844,8 +862,8 @@ class PositionManager:
         """Record one spot milestone without changing the ATR runner lifecycle."""
         target = trade.get("target_2")
         context = trade.get("market_context") or {}
-        # Legacy trades must be reviewed individually before enabling this new
-        # T2 observation path. Their pre-existing ATR protection continues.
+        # New spot-ATR registrations opt in at creation. Older trades need an
+        # explicit per-trade review marker before enabling this notification.
         if context.get("legacy_t2_tracking_approved") is not True:
             return False
         if target is None or (context.get("target_milestones") or {}).get("t2"):

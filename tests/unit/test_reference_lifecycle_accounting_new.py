@@ -135,6 +135,28 @@ async def test_buffered_pre_entry_tick_is_skipped_only_for_trade_not_yet_entered
 
 
 @pytest.mark.asyncio
+async def test_signal_reference_ignores_ticks_before_registration_time():
+    pm = _make_pm()
+    trade = {
+        "id": "late-registration", "state": "OPEN", "direction": "BULLISH",
+        "entry_price": 100, "stop_loss": 90, "target_1": 110, "target_2": 120,
+        "entry_timestamp": "2026-10-23T10:00:00+00:00",
+        "created_at": "2026-10-23T10:05:00+00:00",
+        "market_context": {"tracking_mode": "SIGNAL_REFERENCE"},
+    }
+    pm.active_trades = [trade]
+    pm._record_trade_update = AsyncMock()
+
+    events = await pm.update_trades(
+        89, event_time=datetime(2026, 10, 23, 10, 6, tzinfo=timezone.utc),
+        market_event_time=datetime(2026, 10, 23, 10, 4, 59, tzinfo=timezone.utc),
+    )
+
+    assert events == []
+    assert trade["state"] == "OPEN"
+
+
+@pytest.mark.asyncio
 async def test_same_second_exchange_tick_after_entry_is_not_rejected_as_stale():
     pm = _make_pm()
     trade = {
@@ -175,6 +197,60 @@ async def test_buffered_tick_before_option_activation_is_ignored_even_after_late
 
     assert events == []
     assert trade["state"] == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_same_buffered_batch_can_record_t2_after_tick_driven_t1():
+    pm = _make_pm()
+    trade = {
+        "id": "buffered-runner", "state": "OPEN", "direction": "BULLISH",
+        "entry_price": 100, "stop_loss": 90, "target_1": 110, "target_2": 120,
+        "entry_timestamp": "2026-10-23T09:00:00+00:00",
+        "market_context": {"legacy_t2_tracking_approved": True},
+    }
+    pm.active_trades = [trade]
+    pm._record_trade_update = AsyncMock()
+    pm._queue_trade_alert = lambda *args: None
+    t1_at = datetime(2026, 10, 23, 10, 0, tzinfo=timezone.utc)
+
+    t1_events = await pm.update_trades(110, event_time=t1_at)
+    t2_events = await pm.update_trades(120, event_time=t1_at + timedelta(seconds=1))
+
+    assert t1_events == [("buffered-runner", "T1_HIT")]
+    assert t2_events == [("buffered-runner", "T2_TOUCHED")]
+    assert trade["market_context"]["target_milestones"]["t2"]["touched_at"] == (t1_at + timedelta(seconds=1)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_new_spot_atr_registration_enrolls_t2_milestone_tracking(monkeypatch):
+    from config import settings
+    from position_manager import PositionManager
+    from tests.unit.test_manm176_review_persistence import MemoryDatabase, make_signal
+
+    monkeypatch.setattr(settings, "option_atr_enabled", False)
+    monkeypatch.setattr(settings, "option_atr_approved_version", "")
+    monkeypatch.setattr(settings, "supabase_service_role_key", "")
+    monkeypatch.setattr(settings, "signal_schema_mode", "bridge")
+    database = MemoryDatabase()
+    signal = make_signal()
+    signal.market_context = {"tracking_mode": "SIGNAL_REFERENCE"}
+    with patch("position_manager.create_client", return_value=database), \
+            patch("position_manager.AnalyticsLogger"):
+        pm = PositionManager()
+        _, status = await pm.add_trade(signal, 24000)
+
+    trade = pm.active_trades[0]
+    assert status == "BOUND"
+    assert trade["market_context"]["legacy_t2_tracking_approved"] is True
+    pm._record_trade_update = AsyncMock()
+    pm._queue_trade_write = lambda *args: None
+    pm._queue_trade_alert = lambda *args: None
+    t1_at = datetime.fromisoformat(trade["created_at"]) + timedelta(seconds=1)
+    assert await pm.update_trades(24025, event_time=t1_at) == [(trade["id"], "T1_HIT")]
+    assert await pm.update_trades(24040, event_time=t1_at + timedelta(seconds=1)) == [
+        (trade["id"], "T2_TOUCHED")
+    ]
+    assert "t2" in trade["market_context"]["target_milestones"]
 
 
 def test_timestamped_spot_tick_is_used_for_atr_exit_accounting():
