@@ -54,6 +54,79 @@ async def test_same_candle_t2_and_guard_remains_unresolved():
 
 
 @pytest.mark.asyncio
+async def test_t2_wick_in_the_minute_t1_was_observed_is_not_discarded():
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    minute = datetime(2026, 10, 23, 9, 32, tzinfo=IST)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(22525, event_time=minute + timedelta(seconds=20))
+        events = await pm.update_trades(22500, candle_high=22540, candle_low=22470,
+            candle_timestamp=minute)
+    opt = trade["market_context"]["option_trailing"]
+    assert events == [(trade["id"], "T2_HIT")]
+    assert trade["state"] == "T2_REACHED"
+    assert opt["highest_milestone"] == 2
+    assert opt["accounting"]["legs"]["T2"]["source_minute"] == minute.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_provider_certified_tick_history_resolves_ambiguity_and_persists_clear():
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    minute = datetime(2026, 10, 23, 9, 32, tzinfo=IST)
+    ticks = [{"observed_at": (minute + timedelta(seconds=second)).isoformat(),
+              "price": price, "source": "dhan_websocket_tick"}
+             for second, price in [(5, 22560), (20, 22525), (35, 22470), (45, 22553)]]
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(22525, event_time=minute + timedelta(seconds=20))
+        await pm.update_trades(22500, candle_high=22553, candle_low=22470,
+            candle_timestamp=minute)
+        feed = SimpleNamespace(get_complete_minute_observations=lambda _: (ticks, True))
+        assert await pm.resolve_reference_ambiguities_from_feed(feed) == 1
+    opt = trade["market_context"]["option_trailing"]
+    assert trade["state"] == "T2_REACHED"
+    assert opt["highest_milestone"] == 2
+    assert opt["ambiguous_index_touch"] is None
+    assert pm.analytics.rows[-1]["option_trailing"]["ambiguous_index_touch"] is None
+    from models import OptionTrailingContext
+    restored = OptionTrailingContext.from_dict(pm.analytics.rows[-1]["option_trailing"])
+    assert restored.ambiguous_index_touch is None
+
+
+@pytest.mark.asyncio
+async def test_incomplete_tick_feed_cannot_resolve_ambiguity():
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    minute = datetime(2026, 10, 23, 9, 32, tzinfo=IST)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(22525, event_time=minute + timedelta(seconds=20))
+        await pm.update_trades(22500, candle_high=22553, candle_low=22470,
+            candle_timestamp=minute)
+        feed = SimpleNamespace(get_complete_minute_observations=lambda _: ([], False))
+        assert await pm.resolve_reference_ambiguities_from_feed(feed) == 0
+    assert trade["state"] == "T1_HIT"
+    assert trade["market_context"]["option_trailing"]["ambiguous_index_touch"]["status"] == "ORDER_UNKNOWN"
+
+
+def test_timestamped_spot_tick_is_used_for_atr_exit_accounting():
+    pm = _make_pm()
+    trade = reference_trade()
+    close_at = datetime(2026, 10, 23, 10, 35, tzinfo=IST)
+    pm.record_reference_spot_quote(22501.25, close_at - timedelta(seconds=2), "dhan_websocket_tick")
+    opt = trade["market_context"]["option_trailing"]
+    opt["accounting"]["legs"]["EXIT"] = {
+        "event_at": close_at.isoformat(), "spot_price": None,
+        "option_price": 145, "option_source": "completed_5m_close",
+    }
+    pm._enrich_reference_trade(trade)
+    assert opt["accounting"]["legs"]["EXIT"]["spot_price"] == 22501.25
+    assert opt["accounting"]["legs"]["EXIT"]["spot_source"] == "dhan_websocket_tick"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("first,expected", [(22470, "T2_REACHED"), (22553, "CLOSED")])
 async def test_ambiguity_resolves_only_from_complete_ordered_ticks(first, expected):
     pm = _make_pm()

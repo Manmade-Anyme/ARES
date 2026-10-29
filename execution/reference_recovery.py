@@ -1,7 +1,7 @@
 """Recover missing reference-accounting prices outside the protection loop."""
 import asyncio
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -75,7 +75,7 @@ def _new_evidence(before, after, row):
     return False
 
 
-def _merge_minutes(old, new):
+def _merge_minutes(old, new, *, preserve=()):
     rows = {}
     for row in list(old or []) + list(new or []):
         if not isinstance(row, dict):
@@ -86,7 +86,9 @@ def _merge_minutes(old, new):
         previous = rows.get(at)
         if previous is None or sampled >= _stamp(previous.get("sampled_at")):
             rows[at] = row
-    return [rows[at] for at in sorted(rows)[-2000:]]
+    retained = set(sorted(rows)[-2000:])
+    retained.update(at for value in preserve if (at := _stamp(value)) in rows)
+    return [rows[at] for at in sorted(retained)]
 
 
 def _complete_after_correction(row, option, accounting):
@@ -140,6 +142,7 @@ async def run_reference_recovery(manager, fetcher, analytics, *, limit=100, offs
     closed = [(row, trade) for row in (rows or []) if (trade := _closed_trade(row)) is not None]
     active = [deepcopy(trade) for trade in list(manager.active_trades) if _option(trade) is not None]
     option_requests, spot_requests, quote_requests = {}, {}, {}
+    required_option_minutes, required_spot_minutes = {}, set()
     now = datetime.now(timezone.utc)
     for trade in active + [trade for _, trade in closed]:
         opt = _option(trade)
@@ -158,11 +161,14 @@ async def run_reference_recovery(manager, fetcher, analytics, *, limit=100, offs
                        str(contract.get("expiry_date") or contract.get("expiry")),
                        str(contract.get("strike")), str(contract.get("option_type")), event.date())
                 option_requests[key] = (contract, event)
+                required_option_minutes.setdefault(security, set()).add(
+                    event.replace(second=0, microsecond=0))
                 exact = _stamp(leg.get("event_at")) if not leg.get("source_minute") else None
                 if exact is not None and 0 <= (now - exact).total_seconds() <= 5:
                     quote_requests[key[:-1]] = contract
             if name == "EXIT" and leg.get("spot_price") is None and leg.get("option_source") == "completed_5m_close":
                 spot_requests[event.date()] = event
+                required_spot_minutes.add((event - timedelta(minutes=1)).replace(second=0, microsecond=0))
     option_minutes, option_quotes, spot_minutes = {}, {}, []
     for key, contract in quote_requests.items():
         try:
@@ -197,10 +203,16 @@ async def run_reference_recovery(manager, fetcher, analytics, *, limit=100, offs
     # that evidence rather than clearing it merely because a fetch failed.
     existing = getattr(manager, "_reference_price_evidence", {})
     for key, value in (existing.get("option_minutes") or {}).items():
-        option_minutes[key] = _merge_minutes(value, option_minutes.get(key))
+        option_minutes[key] = _merge_minutes(value, option_minutes.get(key),
+                                              preserve=required_option_minutes.get(key, ()))
+    for key, value in list(option_minutes.items()):
+        if key not in (existing.get("option_minutes") or {}):
+            option_minutes[key] = _merge_minutes((), value,
+                                                  preserve=required_option_minutes.get(key, ()))
     for key, value in (existing.get("option_quotes") or {}).items():
         option_quotes[key] = (list(value) + option_quotes.get(key, []))[-100:]
-    spot_minutes = _merge_minutes(existing.get("spot_minutes"), spot_minutes)
+    spot_minutes = _merge_minutes(existing.get("spot_minutes"), spot_minutes,
+                                  preserve=required_spot_minutes)
     manager.set_reference_price_evidence(option_minutes=option_minutes, option_quotes=option_quotes,
                                          spot_minutes=spot_minutes)
     try:

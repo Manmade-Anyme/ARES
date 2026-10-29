@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #150 lifecycle review fixes:** Evaluate completed spot candles at their close so a same-minute T2 touch after T1 is retained. Keep same-minute entry-guard ordering unresolved unless a provider certifies complete ordered history; Dhan Ticker mode has no sequence watermark, so socket continuity cannot prove completeness. Persist any certified ambiguity clear explicitly for restart. Replay each buffered tick, retain timestamped spot quotes for ATR-exit accounting, and keep explicitly requested historical minute bars outside the rolling 2,000-bar cache window. No Supabase schema change.
+
 - **TASK-20261024 ML prediction pipeline audit and shadow evaluation:**
   - Audited ML prediction pipeline, feature extraction, Sharpe calculations, and out-of-fold validation against 301 live trades (3 Aug – 23 Oct 2026).
   - Reproduced reported weekly ML metrics: Sharpe 3.181493 (56 active days, 301 trades, 1334.05 spot P&L points) and walk-forward test AUC ~0.4501 (95% CI: [0.394, 0.505], demonstrating sample starvation noise on N=151 evaluated trades rather than an inverted signal).

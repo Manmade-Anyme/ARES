@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, time
 import logging
+from math import isfinite
 from inspect import iscoroutinefunction
 from typing import Optional, Tuple
 
@@ -158,6 +159,16 @@ def _schedule_reference_recovery(position_manager, price_fetcher):
         run_reference_recovery(position_manager, price_fetcher, analytics))
 
 
+async def _resolve_reference_ambiguities(position_manager, tick_feed):
+    resolver = getattr(position_manager, "resolve_reference_ambiguities_from_feed", None)
+    if not iscoroutinefunction(resolver):
+        return
+    try:
+        await resolver(tick_feed)
+    except Exception as exc:
+        print(f"[-] Reference ambiguity resolution deferred: {exc}")
+
+
 async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, engine, dispatcher=None, *, respect_close=False, price_fetcher=None):
     """
     Sleeps for `total_seconds` (the REST poll interval), but when the
@@ -190,8 +201,40 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
         if price_fetcher is not None and option_policy:
             await _monitor_completed_atr(price_fetcher.watch_candles, position_manager,
                                          dispatcher, price_fetcher=price_fetcher, engine=engine)
+        tick_reader = getattr(tick_feed, "get_observations_since", None)
+        tick_batch = tick_reader() if callable(tick_reader) else None
+        if isinstance(tick_batch, list):
+            ordered_ticks = [item for item in tick_batch if isinstance(item, dict)
+                             and item.get("exchange_at") is not None
+                             and isinstance(item.get("received_at"), datetime)
+                             and item["received_at"].tzinfo is not None
+                             and isinstance(item.get("price"), (int, float))
+                             and not isinstance(item.get("price"), bool)
+                             and isfinite(item["price"]) and item["price"] > 0]
+            if ordered_ticks:
+                for tick in ordered_ticks:
+                    price = float(tick["price"])
+                    quote_recorder = getattr(position_manager, "record_reference_spot_quote", None)
+                    if callable(quote_recorder):
+                        quote_recorder(price, tick["exchange_at"], tick.get("source") or "dhan_websocket_tick")
+                    if not position_manager.active_trades:
+                        continue
+                    try:
+                        events = await position_manager.update_trades(price, event_time=tick["received_at"])
+                        if any(event == "SL_HIT" for _, event in events):
+                            engine.clear_cooldown()
+                    except Exception as exc:
+                        print(f"[-] Tick-driven exit check failed: {exc}")
+                if dispatcher is not None:
+                    try:
+                        await dispatcher.on_spot(float(ordered_ticks[-1]["price"]))
+                    except Exception as exc:
+                        print(f"[-] Pending order spot update failed: {exc}")
+                if position_manager.active_trades:
+                    _schedule_reference_recovery(position_manager, price_fetcher)
+                await _resolve_reference_ambiguities(position_manager, tick_feed)
+                continue
         from datetime import datetime as real_datetime
-        from math import isfinite
         observation_fn = getattr(tick_feed, "get_latest_observation", None)
         observation = observation_fn(max_age_seconds=5) if callable(observation_fn) else None
         if (isinstance(observation, tuple) and len(observation) == 2
@@ -218,6 +261,7 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                     engine.clear_cooldown()
             except Exception as e:
                 print(f"[-] Tick-driven exit check failed: {e}")
+        await _resolve_reference_ambiguities(position_manager, tick_feed)
 
 
 def _session_now():

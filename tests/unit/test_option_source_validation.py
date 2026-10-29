@@ -205,6 +205,35 @@ async def test_new_policy_tick_uses_recent_receipt_and_skips_stale_lifecycle(mon
 
 
 @pytest.mark.asyncio
+async def test_tick_sleep_replays_buffered_dhan_ticks_and_attempts_safe_ambiguity_resolution(monkeypatch):
+    from datetime import timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    import main
+    from fetchers.tick_feed import TickFeed
+
+    feed = TickFeed()
+    feed._feed = object()
+    ltt = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    feed._on_ticks(None, {"LTP": 22470, "LTT": ltt})
+    feed._on_ticks(None, {"LTP": 22469, "LTT": ltt})
+    positions = SimpleNamespace(active_trades=[{"state": "T1_HIT"}],
+        update_trades=AsyncMock(return_value=[]), record_reference_spot_quote=Mock(),
+        resolve_reference_ambiguities_from_feed=AsyncMock(return_value=0))
+    monkeypatch.setattr(main.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(main.settings, "tick_exit_check_interval_seconds", 1)
+    monkeypatch.setattr(main, "_schedule_reference_recovery", lambda *_: None)
+
+    await main._sleep_with_tick_exits(1, feed, positions, SimpleNamespace())
+
+    assert positions.update_trades.await_count == 2
+    assert positions.update_trades.await_args_list[0].args == (22470.0,)
+    assert positions.update_trades.await_args_list[1].args == (22469.0,)
+    assert positions.record_reference_spot_quote.call_count == 2
+    positions.resolve_reference_ambiguities_from_feed.assert_awaited_once_with(feed)
+
+
+@pytest.mark.asyncio
 async def test_terminal_pending_delivery_retries_on_closed_session_startup(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock,MagicMock

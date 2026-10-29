@@ -116,7 +116,9 @@ try {
   // A later stale client snapshot cannot erase or rewrite an already committed leg.
   await db.exec('RESET ROLE; TRUNCATE public.active_trades, public.trade_analytics, public.ml_collection;');
   await q("INSERT INTO public.active_trades(id,state,stop_loss,entry_price,direction,signal_uuid) VALUES ($1,'OPEN',22000,22000,'BULLISH','00000000-0000-0000-0000-000000000099')", [id]);
-  await q("INSERT INTO public.trade_analytics(id,result_state,market_context,signal_uuid) VALUES ($1,'OPEN',$2,'00000000-0000-0000-0000-000000000099')", [id, JSON.stringify(initial)]);
+  const ambiguousInitial = structuredClone(initial);
+  ambiguousInitial.option_trailing.ambiguous_index_touch = {status: 'ORDER_UNKNOWN', source_minute: '2026-10-23T04:40:00Z'};
+  await q("INSERT INTO public.trade_analytics(id,result_state,market_context,signal_uuid) VALUES ($1,'OPEN',$2,'00000000-0000-0000-0000-000000000099')", [id, JSON.stringify(ambiguousInitial)]);
   await q("INSERT INTO public.ml_collection(id,trade_id,signal_uuid) VALUES (1,$1,'00000000-0000-0000-0000-000000000099'), (2,$1,'00000000-0000-0000-0000-000000000098'), (3,NULL,'00000000-0000-0000-0000-000000000099')", [id]);
   await db.exec('SET ROLE service_role;');
   const withEvidence = structuredClone(t1);
@@ -132,9 +134,11 @@ try {
   conflicting.option_trailing.accounting.legs.T1.option_price = 111;
   await assert.rejects(() => callTransition(3, 'conflicting-snapshot', conflicting), /Cannot overwrite existing accounting evidence/);
   const staleT2 = {active_state: 'T2_REACHED', score: 2, option_trailing: {phase: 'POST_T2', highest_milestone: 2,
-    remaining_fraction: .2, accounting: {legs: {T2: {spot_price: 22200, option_price: null}},
+    remaining_fraction: .2, ambiguous_index_touch: null,
+    accounting: {legs: {T2: {spot_price: 22200, option_price: null}},
     spot_booked_points: 110, option_booked_points: null}}};
   const mergedT2 = await callTransition(3, 'stale-T2', staleT2);
+  assert.equal(mergedT2.option_trailing.ambiguous_index_touch, null);
   assert.equal(mergedT2.option_trailing.accounting.legs.T1.option_price, 110);
   assert.equal(mergedT2.option_trailing.accounting.legs.T2.spot_price, 22200);
   assert.equal(mergedT2.option_trailing.accounting.option_booked_points, null);

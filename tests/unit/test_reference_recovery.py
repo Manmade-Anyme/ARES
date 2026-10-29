@@ -37,6 +37,16 @@ def client():
                            fetch_spot_minutes=AsyncMock(return_value=[bar(EXIT - timedelta(minutes=1), 22520)]))
 
 
+def test_minute_cache_keeps_explicitly_requested_old_bar_past_capacity():
+    from execution.reference_recovery import _merge_minutes
+
+    target = T1 - timedelta(days=8)
+    newer = [bar(target + timedelta(minutes=index + 1), 22000 + index) for index in range(2001)]
+    merged = _merge_minutes(newer, [bar(target, 21999)], preserve=(target,))
+    assert len(merged) == 2001
+    assert any(row["timestamp"] == target.isoformat() for row in merged)
+
+
 @pytest.mark.asyncio
 async def test_recovery_restores_closed_evidence_and_submits_revisioned_correction():
     pm = _make_pm()
