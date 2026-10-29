@@ -2142,7 +2142,7 @@ class PositionManager:
         finally:
             self._option_replaying = False
 
-    def _mark_same_close_option_spot_ambiguities(self, event_at, timeline, pending_ticks, live_ticks, histories):
+    async def _mark_same_close_option_spot_ambiguities(self, event_at, timeline, pending_ticks, live_ticks, histories):
         """Preserve spot/option ordering when a second-resolution event ties a stopped bar close."""
         for trade in self.active_trades:
             if trade.get("state") != "T1_HIT":
@@ -2184,7 +2184,7 @@ class PositionManager:
                 if not touches_t2 and not touches_guard:
                     continue
                 reason = "ATR_SL_HIT" if opt.get("protection_mode") == "ATR" else "OPTION_SL_FLOOR_HIT"
-                opt["ambiguous_index_touch"] = {
+                ambiguity = opt["ambiguous_index_touch"] = {
                     "kind": "SPOT_OPTION_EXIT_TIE",
                     "source_minute": source_start.replace(second=0, microsecond=0).isoformat(),
                     "event_at": __import__("storage").to_utc_iso(event_at),
@@ -2201,11 +2201,12 @@ class PositionManager:
                         "reason": reason,
                     },
                 }
+                await self._record_trade_update(trade, None, None, ambiguity["event_at"])
                 break
 
     async def _replay_option_timeline(self, timeline, pending_ticks, live_ticks, histories, option_histories, now, events):
         for event_at in sorted(timeline):
-            self._mark_same_close_option_spot_ambiguities(
+            await self._mark_same_close_option_spot_ambiguities(
                 event_at, timeline, pending_ticks, live_ticks, histories)
             for candle in timeline[event_at]:
                 val = (lambda key: candle[key]) if isinstance(candle, dict) else (lambda key: getattr(candle, key))

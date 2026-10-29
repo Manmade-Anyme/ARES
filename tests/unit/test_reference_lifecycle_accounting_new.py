@@ -365,6 +365,8 @@ async def test_live_spot_ticks_replay_by_source_time_without_guessing_same_secon
         assert protective_exit["option_close"] == 149
         assert protective_exit["option_stop"] > protective_exit["option_close"]
         assert protective_exit["reason"] == "ATR_SL_HIT"
+        assert pm.analytics.rows[-1]["active_state"] == "T1_HIT"
+        assert pm.analytics.rows[-1]["option_trailing"]["ambiguous_index_touch"] == ambiguity
     else:
         assert trade["state"] == "CLOSED"
         assert option["exit"]["reason"] == "ATR_SL_HIT"
