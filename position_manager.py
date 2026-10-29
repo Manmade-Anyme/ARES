@@ -84,9 +84,20 @@ class PositionManager:
 
     async def flush_pending_trade_updates(self, timeout=12.0):
         """Give queued persistence and ordered alerts a bounded graceful drain."""
+        self._option_runtime()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, timeout)
-        tasks = set(self._trade_writes.values()) | set(getattr(self, "_trade_alerts", {}).values())
+        for trade in list(getattr(self, "active_trades", [])) + list(getattr(self, "_option_alert_trades", [])):
+            opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+            alerts = opt.get("alert_events") or {}
+            if (opt.get("policy_version") == "option_atr_v1"
+                    and (self._option_pending.get(trade["id"])
+                         or any(event.get("status") in {"PENDING", "FAILED"}
+                                for event in alerts.values()))):
+                self._schedule_option_flush(trade)
+        tasks = (set(self._trade_writes.values())
+                 | set(getattr(self, "_trade_alerts", {}).values())
+                 | set(getattr(self, "_option_flush_tasks", {}).values()))
         if tasks:
             _, pending = await asyncio.wait(tasks, timeout=max(0.0, deadline - loop.time()))
             if pending:
@@ -110,6 +121,11 @@ class PositionManager:
                     return False
         if milestones:
             print(f"Trade update shutdown drain left {len(milestones)} T2 milestone(s) unpersisted")
+            return False
+        pending_option = {trade_id: len(events) for trade_id, events in
+                          getattr(self, "_option_pending", {}).items() if events}
+        if pending_option:
+            print(f"Trade update shutdown drain left option lifecycle writes pending: {pending_option}")
             return False
         return True
 
@@ -537,7 +553,7 @@ class PositionManager:
         event_time remains the local arrival time used to preserve tick order.
         """
         events: List[Tuple[str, str]] = []
-        await self.retry_option_lifecycle_writes()
+        await self.retry_option_lifecycle_writes(defer_for_protection=True)
         if not self.is_initialized:
             self._initialize_db()
             if not self.is_initialized:
@@ -1105,7 +1121,8 @@ class PositionManager:
         """Lazy initialization also supports restored managers and injected test adapters."""
         for name, factory in (("_option_pending", dict), ("_option_locks", dict),
                               ("_option_revisions", dict), ("_option_history", dict),
-                              ("_option_warning_sent", set), ("_option_confirmed_sessions", set)):
+                              ("_option_warning_sent", set), ("_option_confirmed_sessions", set),
+                              ("_option_flush_tasks", dict), ("_option_flush_followups", set)):
             if not hasattr(self, name):
                 setattr(self, name, factory())
 
@@ -1461,6 +1478,14 @@ class PositionManager:
         pending = self._option_pending.setdefault(trade["id"], [])
         if not any(item[0] == event_id for item in pending):
             pending.append((event_id, payload))
+        if self._option_locks.setdefault(trade["id"], asyncio.Lock()).locked():
+            # Recovery/outbox persistence may be waiting on a slow provider RPC.
+            # The observed protection is already applied in memory; queue this
+            # transition and let the active writer drain it without blocking the
+            # market evaluation loop on the same per-trade lock.
+            self._option_flush_followups.add(trade["id"])
+            self._schedule_option_flush(trade)
+            return
         await self._flush_option_trade(trade)
 
     async def _flush_option_trade(self, trade):
@@ -1740,12 +1765,46 @@ class PositionManager:
                 # SENDING remains durable if the final acknowledgement is lost.
                 continue
 
-    async def retry_option_lifecycle_writes(self):
-        """Retry committed outbox and failed observed decisions on every monitor poll."""
+    def _schedule_option_flush(self, trade):
+        """Start one non-blocking retry task for a trade's lifecycle outbox."""
+        self._option_runtime()
+        trade_id = trade["id"]
+        tasks = self._option_flush_tasks
+        existing = tasks.get(trade_id)
+        if existing is not None and not existing.done():
+            return existing
+        task = asyncio.create_task(self._flush_option_trade(trade))
+        tasks[trade_id] = task
+
+        def clear(done):
+            if tasks.get(trade_id) is done:
+                tasks.pop(trade_id, None)
+            if not done.cancelled():
+                error = done.exception()
+                if error is not None:
+                    logger.warning("Background option lifecycle retry failed for %s: %s", trade_id, error)
+                followups = self._option_flush_followups
+                if trade_id in followups:
+                    followups.discard(trade_id)
+                    if self._option_pending.get(trade_id):
+                        self._schedule_option_flush(trade)
+
+        task.add_done_callback(clear)
+        return task
+
+    async def retry_option_lifecycle_writes(self, *, defer_for_protection=False):
+        """Retry lifecycle writes, optionally keeping protection independent of storage latency."""
         self._option_runtime()
         for trade in list(getattr(self, "active_trades", [])) + list(getattr(self, "_option_alert_trades", [])):
             if (trade.get("market_context") or {}).get("option_trailing", {}).get("policy_version") == "option_atr_v1":
-                await self._flush_option_trade(trade)
+                if defer_for_protection:
+                    alerts = ((trade.get("market_context") or {}).get("option_trailing") or {}).get("alert_events") or {}
+                    has_retryable_alert = any(event.get("status") in {"PENDING", "FAILED"}
+                                              for event in alerts.values())
+                    if self._option_pending.get(trade["id"]) or has_retryable_alert:
+                        self._schedule_option_flush(trade)
+                else:
+                    await self._flush_option_trade(trade)
 
     def _seed_option_stop(self, trade, event_at):
         """Arm the last line known before T1 without replaying pre-activation closes."""
@@ -1827,7 +1886,7 @@ class PositionManager:
         if not getattr(self, "_option_replaying", False):
             self._option_available_until = {key: parse_candle_timestamp(bars[-1].end_time) for key, bars in histories.items() if bars}
         events = []
-        await self.retry_option_lifecycle_writes()
+        await self.retry_option_lifecycle_writes(defer_for_protection=True)
         for trade in self.active_trades:
             opt = (trade.get("market_context") or {}).get("option_trailing") or {}
             if opt.get("policy_version") != "option_atr_v1" or trade["state"] in {"CLOSED", "STOPPED_OUT"}:

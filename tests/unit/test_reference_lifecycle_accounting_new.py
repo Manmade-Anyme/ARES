@@ -1,10 +1,14 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
+from threading import Event
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
 import pytest
 
+import position_manager as position_manager_module
 from tests.unit.test_option_atr_lifecycle_comprehensive import _make_pm, _make_signal, _mock_trade_from_signal
+from options_candles import OptionCandle
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -109,6 +113,62 @@ async def test_incomplete_tick_feed_cannot_resolve_ambiguity():
         assert await pm.resolve_reference_ambiguities_from_feed(feed) == 0
     assert trade["state"] == "T1_HIT"
     assert trade["market_context"]["option_trailing"]["ambiguous_index_touch"]["status"] == "ORDER_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_atr_protection_does_not_wait_for_open_accounting_recovery(monkeypatch):
+    pm = _make_pm()
+    trade = reference_trade()
+    trade["state"] = "T1_HIT"
+    opt = trade["market_context"]["option_trailing"]
+    start = datetime(2026, 10, 23, 8, 0, tzinfo=IST)
+    prior = [OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                          132, 135, 125, 132, 1, "51333") for i in range(19)]
+    cutoff = prior[-1].end_time
+    opt.update(phase="POST_T1", highest_milestone=1, t1_at="2026-10-23T09:30:00+05:30",
+               last_processed_option_bar_end=cutoff.isoformat(), locked_option_sl=130.0,
+               protection_mode="ATR", accounting={"legs": {"T1": {
+                   "event_at": "2026-10-23T09:30:00+05:30", "spot_price": 22527.1,
+                   "option_price": None,
+               }}})
+    pm.active_trades = [trade]
+    pm._reference_price_evidence = {"option_quotes": {"51333": [{
+        "observed_at": "2026-10-23T09:30:00+05:30", "price": 150.0,
+        "source": "test_quote",
+    }]}}
+
+    entered, release = Event(), Event()
+    ledger = pm.analytics
+    original_commit = ledger.apply_option_lifecycle_transition
+
+    def stalled_commit(*args, **kwargs):
+        entered.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test did not release stalled recovery write")
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(ledger, "apply_option_lifecycle_transition", stalled_commit)
+    sender = AsyncMock(return_value="DELIVERED")
+    monkeypatch.setattr(position_manager_module, "send_option_lifecycle_event", sender)
+    recovery = asyncio.create_task(pm.enrich_reference_accounting())
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        exit_bar = OptionCandle(cutoff, cutoff + timedelta(minutes=5),
+                                130, 131, 128, 129.95, 1, "51333")
+        events = await asyncio.wait_for(
+            pm.update_option_atr_trailing(prior + [exit_bar]), timeout=0.5)
+        assert (trade["id"], "ATR_SL_HIT") in events
+        assert trade["state"] == "CLOSED"
+        assert opt["phase"] == "CLOSED"
+        assert len(pm._option_pending[trade["id"]]) >= 2
+    finally:
+        release.set()
+        await asyncio.wait_for(recovery, timeout=2)
+        for task in list(getattr(pm, "_option_flush_tasks", {}).values()):
+            await asyncio.wait_for(task, timeout=2)
+    assert pm.analytics.rows[-1]["active_state"] == "CLOSED"
+    assert pm.analytics.rows[-1]["update_type"] == "ATR_SL_HIT"
+    assert pm.analytics.rows[-1]["score"] == 1
 
 
 @pytest.mark.asyncio

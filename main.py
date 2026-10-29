@@ -319,7 +319,7 @@ async def _retry_option_lifecycle_outbox(position_manager):
     if not iscoroutinefunction(retry):
         return
     try:
-        await retry()
+        await retry(defer_for_protection=True)
     except Exception as exc:
         logger.warning("Option lifecycle outbox retry failed: %s", exc)
 
