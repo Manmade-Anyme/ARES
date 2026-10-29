@@ -1,12 +1,12 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from execution.reference_recovery import run_reference_recovery
-from fetchers.price_fetcher import ReferencePriceDeferred
+from execution.reference_recovery import _retry_deferred, run_reference_recovery
+from fetchers.price_fetcher import PriceFetcher, ReferencePriceDeferred
 from tests.unit.test_option_atr_lifecycle_comprehensive import _make_pm, _make_signal, _mock_trade_from_signal
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -284,9 +284,45 @@ async def test_spot_history_gets_a_turn_when_option_history_never_recovers():
         return [bar(EXIT - timedelta(minutes=1), 22520)]
     fetcher = SimpleNamespace(fetch_option_minutes=option, fetch_spot_minutes=spot,
                               fetch_option_observation=AsyncMock(return_value=None))
-    await run_reference_recovery(pm, fetcher, logger)
-    slot["used"] = False
-    await run_reference_recovery(pm, fetcher, logger)
+    with patch("execution.reference_recovery.asyncio.sleep", new=AsyncMock()):
+        await run_reference_recovery(pm, fetcher, logger)
+        slot["used"] = False
+        await run_reference_recovery(pm, fetcher, logger)
     assert first_calls == ["option", "spot"]
     assert logger.apply_option_accounting_correction.call_count >= 1
     assert logger.apply_option_accounting_correction.call_args.args[3]["legs"]["EXIT"]["spot_price"] == 22520
+
+
+@pytest.mark.asyncio
+async def test_recovery_retries_after_protection_cooldown_without_another_poll():
+    pm = _make_pm()
+    row = closed_row()
+    logger = SimpleNamespace(list_incomplete_option_accounting=Mock(return_value=[row]),
+                             apply_option_accounting_correction=Mock(return_value={"success": True}),
+                             sync_option_reference_ml_label=Mock(return_value={"success": True, "matched": 1}))
+    gate = PriceFetcher.__new__(PriceFetcher)
+    await gate._protective_request(lambda: None)
+
+    async def option(*args):
+        return await gate._reference_request(lambda: [bar(T1, 150)])
+
+    async def spot(*args):
+        return await gate._reference_request(lambda: [bar(EXIT - timedelta(minutes=1), 22520)])
+
+    fetcher = SimpleNamespace(fetch_option_minutes=option, fetch_spot_minutes=spot,
+                              fetch_option_observation=AsyncMock(return_value=None))
+    result = await run_reference_recovery(pm, fetcher, logger)
+    assert result["corrected"] == 1
+    accounting = logger.apply_option_accounting_correction.call_args.args[3]
+    assert accounting["legs"]["T1"]["option_price"] == 150
+    assert accounting["legs"]["EXIT"]["spot_price"] == 22520
+
+
+@pytest.mark.asyncio
+async def test_persistent_deferral_is_bounded():
+    request = AsyncMock(side_effect=ReferencePriceDeferred())
+    with patch("execution.reference_recovery.asyncio.sleep", new=AsyncMock()) as sleep:
+        with pytest.raises(ReferencePriceDeferred):
+            await _retry_deferred(request)
+    assert request.await_count == 3
+    assert sleep.await_count == 2

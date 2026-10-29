@@ -12,6 +12,17 @@ from oi_watch_context import parse_candle_timestamp
 log = logging.getLogger(__name__)
 
 
+async def _retry_deferred(request):
+    """Retry in the background after protection's provider cooldown."""
+    for attempt in range(3):
+        try:
+            return await request()
+        except ReferencePriceDeferred:
+            if attempt == 2:
+                raise
+            await asyncio.sleep(1.1)
+
+
 def _stamp(value):
     try:
         return parse_candle_timestamp(value)
@@ -155,7 +166,7 @@ async def run_reference_recovery(manager, fetcher, analytics, *, limit=100, offs
     option_minutes, option_quotes, spot_minutes = {}, {}, []
     for key, contract in quote_requests.items():
         try:
-            quote = await fetcher.fetch_option_observation(contract)
+            quote = await _retry_deferred(lambda: fetcher.fetch_option_observation(contract))
             if quote:
                 option_quotes.setdefault(key[0], []).append(quote)
         except ReferencePriceDeferred:
@@ -174,10 +185,10 @@ async def run_reference_recovery(manager, fetcher, analytics, *, limit=100, offs
         try:
             if kind == "option":
                 contract, event = value
-                bars = await fetcher.fetch_option_minutes(contract, event)
+                bars = await _retry_deferred(lambda: fetcher.fetch_option_minutes(contract, event))
                 option_minutes.setdefault(key[0], []).extend(bars or [])
             else:
-                spot_minutes.extend(await fetcher.fetch_spot_minutes(value) or [])
+                spot_minutes.extend(await _retry_deferred(lambda: fetcher.fetch_spot_minutes(value)) or [])
         except ReferencePriceDeferred:
             pass
         except Exception:
