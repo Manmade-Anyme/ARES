@@ -374,6 +374,47 @@ async def test_live_spot_ticks_replay_by_source_time_without_guessing_same_secon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("option_close_time,t1_time,processed_time", [
+    ("10:55", "10:56", None),
+    ("11:00", "10:56", "11:00"),
+])
+async def test_same_close_ambiguity_ignores_pre_t1_or_processed_bars(option_close_time, t1_time, processed_time):
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    option = trade["market_context"]["option_trailing"]
+    day = datetime(2026, 10, 23, tzinfo=IST)
+    option_close = day.replace(hour=int(option_close_time[:2]), minute=int(option_close_time[3:]))
+    t1_at = day.replace(hour=int(t1_time[:2]), minute=int(t1_time[3:]))
+    option.update(phase="POST_T1", highest_milestone=1, t1_at=t1_at.isoformat(),
+                  t1_activation_source="tick_exchange", locked_option_sl=150,
+                  protection_mode="ATR", remaining_fraction=.5)
+    if processed_time:
+        option["last_processed_option_bar_end"] = day.replace(
+            hour=int(processed_time[:2]), minute=int(processed_time[3:])).isoformat()
+    trade.update(state="T1_HIT", stop_loss=trade["entry_price"])
+    bar = SimpleNamespace(end_time=option_close, close=149)
+    tick = {"price": trade["target_2"], "exchange_at": option_close,
+            "received_at": option_close + timedelta(seconds=5)}
+
+    await pm._mark_same_close_option_spot_ambiguities(
+        option_close, {option_close: []}, {}, {option_close: [tick]},
+        {trade["id"]: [bar]},
+    )
+
+    assert option.get("ambiguous_index_touch") is None
+    sign = 1 if trade["direction"] == "BULLISH" else -1
+    guard_at = max(option_close, t1_at) + timedelta(seconds=30)
+    pm._option_available_until = {trade["id"]: guard_at + timedelta(minutes=10)}
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_trades(
+            trade["entry_price"] - sign, event_time=guard_at, market_event_time=guard_at)
+
+    assert events == [(trade["id"], "STOPPED_OUT_AT_BE")]
+    assert trade["state"] == "CLOSED"
+
+
+@pytest.mark.asyncio
 async def test_delayed_entry_guard_exit_persists_source_and_receipt_times_separately():
     pm = _make_pm()
     trade = reference_trade()

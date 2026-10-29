@@ -2153,6 +2153,16 @@ class PositionManager:
                     or opt.get("phase") != "POST_T1"
                     or opt.get("ambiguous_index_touch")):
                 continue
+            if not opt.get("t1_at"):
+                continue
+            try:
+                if event_at <= parse_candle_timestamp(opt["t1_at"]):
+                    continue
+                watermark = opt.get("last_processed_option_bar_end")
+                if watermark and event_at <= parse_candle_timestamp(watermark):
+                    continue
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
             bar = next((candidate for candidate in histories.get(trade["id"], [])
                         if parse_candle_timestamp(candidate.end_time) == event_at), None)
             if bar is None or event_at.microsecond != 0:

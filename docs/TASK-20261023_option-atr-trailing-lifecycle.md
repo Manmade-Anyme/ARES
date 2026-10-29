@@ -203,4 +203,4 @@ The owner explicitly chose “Keep agreed exits; handle expiry separately” dur
 
 ## Source-time replay ties
 
-Buffered spot events and completed option bars are replayed in source-time order. When a second-resolution spot event in POST_T1 shares the option stop candle's close boundary and touches T2 or the entry guard, the model persists an `ORDER_UNKNOWN` marker with the option close and active stop before skipping either source event. It does not infer T2-before-stop or close against the wrong allocation; reliable cross-market ordering evidence is required to resolve the accounting outcome.
+Buffered spot events and completed option bars are replayed in source-time order. A same-close tie is considered only after the trade's T1 activation and beyond its processed option-bar watermark. If a second-resolution spot event there touches T2 or the entry guard, persist an `ORDER_UNKNOWN` marker with the option close and active stop before skipping either source event. Do not infer T2-before-stop or close against the wrong allocation; reliable cross-market ordering evidence is required to resolve the accounting outcome.
