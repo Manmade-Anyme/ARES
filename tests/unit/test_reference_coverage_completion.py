@@ -517,8 +517,10 @@ async def test_main_shutdown_cancels_recovery_task_and_handles_drain_error(monke
     positions = MagicMock()
     positions.update_trades = AsyncMock(return_value=[])
 
+    hang_event = asyncio.Event()
+
     async def dummy_recovery():
-        await asyncio.sleep(100)
+        await hang_event.wait()
 
     recovery_task = asyncio.create_task(dummy_recovery())
     positions._reference_recovery_task = recovery_task
