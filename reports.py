@@ -2,10 +2,9 @@
 Discord weekly / monthly performance reports for ARES.
 
 Posts a dashboard-style embed summarizing how the system performed: trade count,
-win rate, net spot points, and an estimated options rupee P&L, both overall and
-broken down per setup type. Reads closed trades from the `trade_analytics` table
-(see storage.py) — spot `pnl_points` are recorded there; options P&L is *derived*
-from the delta/lots stored in `market_context.options_sizing`, so it is an estimate.
+win rate, net spot points, and one-lot option-reference P&L when the pinned
+contract has valid observed entry and final-exit prices. Spot `pnl_points` remain
+the independent spot outcome. Missing option-price evidence stays unavailable.
 
 Triggered in-process from main.py's session-end branch:
   - "weekly"  every Friday, eligible from 15:28 until 15:30 IST (exclusive)
@@ -18,6 +17,7 @@ from datetime import datetime, timezone, timedelta, date, time
 from typing import Any
 
 from config import settings
+from oi_watch_context import parse_candle_timestamp
 
 IST = timezone(timedelta(hours=5, minutes=30))
 REPORT_QUERY_PAGE_SIZE = 1000
@@ -99,7 +99,7 @@ def fetch_closed_trades(supabase: Any, start_utc: str, end_utc: str) -> list[dic
     while True:
         response = (
             supabase.table("trade_analytics")
-            .select("id, setup_type, direction, pnl_points, result_state, market_context, entry_timestamp, exit_timestamp, time_metrics_excluded")
+            .select("id, setup_type, direction, pnl_points, score, result_state, market_context, entry_timestamp, exit_timestamp, time_metrics_excluded")
             .gte("exit_timestamp", start_utc)
             .lte("exit_timestamp", end_utc)
             .eq("time_metrics_excluded", False)
@@ -128,74 +128,172 @@ def fetch_closed_trades(supabase: Any, start_utc: str, end_utc: str) -> list[dic
     return valid_rows
 
 
-def _option_rupees(trade: dict) -> float:
-    """
-    Estimated options rupee P&L for one trade, from stored sizing:
-        spot_points × |delta| × lot_size × suggested_lots
-
-    ponytail: linear-delta model (same as options_math.translate_to_premium),
-    ignores premium floor / theta / convexity. Trades without options_sizing
-    contribute 0. Upgrade to real option fills once those are recorded.
-    """
-    sizing = (trade.get("market_context") or {}).get("options_sizing")
-    if not sizing:
-        return 0.0
-    delta = sizing.get("option_delta", sizing.get("delta"))
-    lots = sizing.get("final_lots", sizing.get("suggested_lots"))
-    if isinstance(lots, bool):
-        return 0.0
+def _reference_price(leg: dict, event_at: Any) -> tuple[float, bool] | None:
+    """Validate captured premium evidence against its source event."""
+    if not isinstance(leg, dict):
+        return None
     try:
-        delta, lots = float(delta), float(lots)
-        pnl_points = float(trade["pnl_points"])
-        lot_size = float(sizing.get("lot_size", settings.nifty_lot_size))
-    except (TypeError, ValueError, OverflowError, KeyError):
-        return 0.0
-    if (not all(math.isfinite(value) for value in (delta, lots, pnl_points, lot_size))
-            or lots <= 0 or not lots.is_integer() or lot_size <= 0 or not lot_size.is_integer()):
-        return 0.0
-    result = pnl_points * abs(delta) * lot_size * int(lots)
-    return result if math.isfinite(result) else 0.0
+        price = float(leg.get("price"))
+        observed_at = parse_candle_timestamp(leg.get("observed_at"))
+        event_at = parse_candle_timestamp(event_at)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    source = leg.get("source")
+    approximate = leg.get("approximate")
+    if (isinstance(leg.get("price"), bool) or not math.isfinite(price) or price <= 0
+            or not isinstance(source, str) or not source.strip() or type(approximate) is not bool):
+        return None
+    if approximate:
+        expected_close = event_at.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        if source != "completed_1m_close" or observed_at != expected_close:
+            return None
+    elif source != "dhan_last_trade" or abs((observed_at - event_at).total_seconds()) > 5:
+        return None
+    return price, approximate
 
 
-def _option_1_lot_rupees(trade: dict) -> float:
-    """Estimated bracket P&L for one lot; these levels are not confirmed fills."""
-    sizing = (trade.get("market_context") or {}).get("options_sizing")
-    if not sizing:
-        return 0.0
-    
-    option_entry = sizing.get("entry_limit", sizing.get("premium"))
-    option_sl = sizing.get("option_sl")
-    option_target = sizing.get("target_1", sizing.get("option_target"))
-    
-    if option_entry is None or option_sl is None or option_target is None:
-        return 0.0
-        
+def _option_reference_result(trade: dict) -> tuple[float, float, bool] | None:
+    """Return observed exit-minus-entry premium points, rupees and approximation."""
+    context = trade.get("market_context") or {}
+    reference = context.get("option_reference") if isinstance(context, dict) else None
+    if not isinstance(reference, dict) or reference.get("formula_version") != "one_lot_hold_to_exit_v1":
+        return None
+    if (reference.get("status") != "CLOSED" or type(reference.get("reference_lots")) is not int
+            or reference.get("reference_lots") != 1):
+        return None
+    contract = reference.get("contract")
+    if not isinstance(contract, dict):
+        return None
+    security_id = str(contract.get("security_id") or "")
+    exchange = contract.get("exchange_segment")
+    option_type = contract.get("option_type")
     try:
-        pnl_points = float(trade.get("pnl_points", 0.0))
-        lot_size = float(sizing.get("lot_size", settings.nifty_lot_size))
-        option_entry, option_sl, option_target = map(float, (option_entry, option_sl, option_target))
+        expiry = datetime.strptime(str(contract.get("expiry_date") or ""), "%Y-%m-%d").date()
+        strike = float(contract.get("strike"))
     except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not all(math.isfinite(value) for value in (pnl_points, lot_size, option_entry, option_sl, option_target)) or lot_size <= 0:
-        return 0.0
-    
-    if pnl_points > 0:
-        return (float(option_target) - float(option_entry)) * lot_size
-    elif pnl_points < 0:
-        return (float(option_sl) - float(option_entry)) * lot_size
-    else:
-        return 0.0
+        return None
+    if (not security_id.isdigit() or int(security_id) <= 0 or exchange != "NSE_FNO"
+            or option_type not in {"CE", "PE"} or isinstance(contract.get("strike"), bool)
+            or not math.isfinite(strike) or strike <= 0 or not strike.is_integer()):
+        return None
+    lot_size = contract.get("lot_size")
+    if isinstance(lot_size, bool):
+        return None
+    try:
+        lot_size = float(lot_size)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(lot_size) or lot_size <= 0 or not lot_size.is_integer():
+        return None
+    entry = _reference_price(reference.get("entry"), reference.get("entry_event_at"))
+    exit_ = _reference_price(reference.get("exit"), reference.get("exit_event_at"))
+    if entry is None or exit_ is None:
+        return None
+    try:
+        entry_event = parse_candle_timestamp(reference.get("entry_event_at"))
+        exit_event = parse_candle_timestamp(reference.get("exit_event_at"))
+        entry_observed = parse_candle_timestamp(reference["entry"]["observed_at"])
+        exit_observed = parse_candle_timestamp(reference["exit"]["observed_at"])
+        row_exit = parse_candle_timestamp(trade.get("exit_timestamp"))
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return None
+    row_entry = trade.get("entry_timestamp")
+    row_result = trade.get("result_state")
+    try:
+        row_entry = parse_candle_timestamp(row_entry) if row_entry is not None else entry_event
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    if (entry_event > exit_event or entry_observed > exit_observed or exit_event != row_exit
+            or entry_event.date() > expiry or exit_event.date() > expiry
+            or entry_event != row_entry or row_result in (None, "OPEN")
+            or reference.get("exit_reason") != row_result):
+        return None
+    raw_points = exit_[0] - entry[0]
+    if not math.isfinite(raw_points):
+        return None
+    points = round(raw_points, 8)
+    stored_points = reference.get("premium_points")
+    if stored_points is not None:
+        try:
+            if isinstance(stored_points, bool) or round(float(stored_points), 8) != points:
+                return None
+        except (TypeError, ValueError, OverflowError):
+            return None
+    rupees = points * int(lot_size)
+    if not math.isfinite(rupees):
+        return None
+    return points, rupees, entry[1] or exit_[1]
+
+
+def _option_reference_metrics(trades: list[dict]) -> dict:
+    """Aggregate only validated option marks; never turn missing evidence into zero."""
+    exact_points, exact_rupees, exact_count = 0.0, 0.0, 0
+    approximate_points, approximate_rupees, approximate_count = 0.0, 0.0, 0
+    for trade in trades:
+        result = _option_reference_result(trade)
+        if result is None:
+            continue
+        points, rupees, approximate = result
+        if approximate:
+            approximate_points += points
+            approximate_rupees += rupees
+            approximate_count += 1
+        else:
+            exact_points += points
+            exact_rupees += rupees
+            exact_count += 1
+    priced = exact_count + approximate_count
+    eligible = len(trades)
+    complete = eligible > 0 and priced == eligible
+    return {
+        "eligible_trades": eligible,
+        "priced_trades": priced,
+        "coverage_pct": priced / eligible * 100.0 if eligible else 0.0,
+        "net_premium_points": round(exact_points + approximate_points, 8) if complete else None,
+        "net_rupees": round(exact_rupees + approximate_rupees, 8) if complete else None,
+        "exact": {"trades": exact_count, "premium_points": round(exact_points, 8),
+                  "rupees": round(exact_rupees, 8)},
+        "approximate": {"trades": approximate_count,
+                        "premium_points": round(approximate_points, 8),
+                        "rupees": round(approximate_rupees, 8)},
+    }
 
 
 def _bucket(trades: list[dict]) -> dict:
     """Aggregate one list of trades into a metrics dict."""
     n = len(trades)
+
+    def _reached(trade, milestone):
+        score = trade.get("score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool) and score >= milestone:
+            return True
+        context = trade.get("market_context") or {}
+        if not isinstance(context, dict):
+            return False
+        reference = context.get("option_reference") or {}
+        milestones = reference.get("milestones") if isinstance(reference, dict) else None
+        marker = milestones.get(f"T{milestone}") if isinstance(milestones, dict) else None
+        if isinstance(marker, dict):
+            return True
+        spot_milestones = context.get("target_milestones")
+        if (milestone == 2 and isinstance(spot_milestones, dict)
+                and isinstance(spot_milestones.get("t2"), dict)):
+            return True
+        trailing = context.get("option_trailing") or {}
+        if isinstance(trailing, dict):
+            highest = trailing.get("highest_milestone", 0)
+            highest_reached = (isinstance(highest, (int, float)) and not isinstance(highest, bool)
+                              and highest >= milestone)
+            return (highest_reached
+                    or bool(trailing.get("t1_at" if milestone == 1 else "t2_at")))
+        return False
+
     if n == 0:
         return {
             "trades": 0, "wins": 0, "win_rate": 0.0,
             "net_points": 0.0, "avg_points": 0.0,
-            "best": 0.0, "worst": 0.0, "option_rupees": 0.0,
-            "option_1_lot_rupees": 0.0,
+            "best": 0.0, "worst": 0.0,
+            "t1_trades": 0, "t2_trades": 0,
         }
     points = [float(t["pnl_points"]) for t in trades]
     wins = sum(1 for p in points if p > 0)
@@ -208,8 +306,8 @@ def _bucket(trades: list[dict]) -> dict:
         "avg_points": net / n,
         "best": max(points),
         "worst": min(points),
-        "option_rupees": sum(_option_rupees(t) for t in trades),
-        "option_1_lot_rupees": sum(_option_1_lot_rupees(t) for t in trades),
+        "t1_trades": sum(1 for t in trades if _reached(t, 1)),
+        "t2_trades": sum(1 for t in trades if _reached(t, 2)),
     }
 
 
@@ -219,7 +317,9 @@ def compute_metrics(trades: list[dict]) -> dict:
         s: _bucket([t for t in trades if t.get("setup_type") == s])
         for s in SETUP_TYPES
     }
-    return {"overall": _bucket(trades), "per_setup": per_setup}
+    overall = _bucket(trades)
+    overall["option_reference"] = _option_reference_metrics(trades)
+    return {"overall": overall, "per_setup": per_setup}
 
 
 def _fmt_rupees(v: float) -> str:
@@ -231,16 +331,47 @@ def build_report_embed(period_label: str, date_range: str, metrics: dict) -> dic
     """Build the Discord embed payload dict."""
     o = metrics["overall"]
     net = o["net_points"]
+    reference = o["option_reference"]
     # Green up / red down / neutral grey.
     color = 3066993 if net > 0 else 15158332 if net < 0 else 9807270
 
+    option_points = reference["net_premium_points"]
+    option_rupees = reference["net_rupees"]
+    option_totals = "Unavailable" if option_points is None else f"{option_points:+.1f} pts"
+    rupee_total = "Unavailable" if option_rupees is None else _fmt_rupees(option_rupees)
+    coverage = (f"{reference['priced_trades']}/{reference['eligible_trades']}"
+                f" ({reference['coverage_pct']:.0f}%) · "
+                f"Exact {reference['exact']['trades']} · Approximate {reference['approximate']['trades']} · "
+                f"Missing {reference['eligible_trades'] - reference['priced_trades']}")
+    exact = reference["exact"]
+    approximate = reference["approximate"]
+    complete_coverage = (reference["eligible_trades"] > 0
+                         and reference["priced_trades"] == reference["eligible_trades"])
+    if not complete_coverage and reference["priced_trades"] < reference["eligible_trades"]:
+        exact_subtotal = approximate_subtotal = "unavailable (incomplete coverage)"
+    else:
+        exact_subtotal = (
+            f"{exact['premium_points']:+.1f} pts / {_fmt_rupees(exact['rupees'])}"
+            if complete_coverage and exact["trades"] else "unavailable (0 exact-price pairs)"
+        )
+        approximate_subtotal = (
+            f"{approximate['premium_points']:+.1f} pts / {_fmt_rupees(approximate['rupees'])}"
+            if complete_coverage and approximate["trades"]
+            else "unavailable (0 approximate-price pairs)"
+        )
+    quality = (
+        f"Exact subtotal: {exact_subtotal} · Approximate subtotal: {approximate_subtotal}"
+    )
     summary = (
         f"📈 **Trades:** {o['trades']}   "
         f"🎯 **Win Rate:** {o['win_rate']:.0f}%\n"
         f"📊 **Net Spot Points:** {net:+.1f}   "
         f"🕒 **Avg/Trade:** {o['avg_points']:+.1f}\n"
-        f"💰 **Est. Spot movement P&L:** {_fmt_rupees(o['option_rupees'])}\n"
-        f"💰 **Est. Bracket 1-Lot P&L:** {_fmt_rupees(o['option_1_lot_rupees'])}\n"
+        f"📊 **Net Option Premium Points:** {option_totals}\n"
+        f"💰 **One-Lot Option P&L:** {rupee_total}\n"
+        f"🗂️ **Option Price Coverage:** {coverage}\n"
+        f"{quality}\n"
+        f"🎯 **Spot Milestones:** T1 {o['t1_trades']} · T2 {o['t2_trades']}\n"
         f"🟢 **Best:** {o['best']:+.1f}   🔴 **Worst:** {o['worst']:+.1f}"
     )
     fields = [{"name": "📋 Overall", "value": summary, "inline": False}]
@@ -252,7 +383,7 @@ def build_report_embed(period_label: str, date_range: str, metrics: dict) -> dic
         else:
             value = (
                 f"{b['trades']} trades · {b['win_rate']:.0f}% win\n"
-                f"Net {b['net_points']:+.1f} pts · {_fmt_rupees(b['option_rupees'])}"
+                f"Net {b['net_points']:+.1f} spot pts"
             )
         fields.append({"name": SETUP_LABELS[s], "value": value, "inline": True})
 
@@ -261,7 +392,7 @@ def build_report_embed(period_label: str, date_range: str, metrics: dict) -> dic
         "description": f"🗓️ {date_range}",
         "color": color,
         "fields": fields,
-        "footer": {"text": "Spot movement P&L is a delta-based estimate (spot pts x |Δ| x lots x lot size)."},
+        "footer": {"text": "Option figures use one reference lot from observed entry to final-exit premium; these are marks, not broker fills or realized account P&L. Exact and approximate subtotals are separated."},
     }
 
 

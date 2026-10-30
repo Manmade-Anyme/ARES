@@ -201,6 +201,7 @@ def _schedule_reference_recovery(position_manager, price_fetcher):
     analytics = getattr(position_manager, "analytics", None)
     if getattr(analytics, "_option_backend_configured", False) is not True:
         return
+    _schedule_option_reference_capture(position_manager, price_fetcher, analytics)
     task = getattr(position_manager, "_reference_recovery_task", None)
     if task is not None and not task.done():
         return
@@ -220,6 +221,26 @@ def _schedule_reference_recovery(position_manager, price_fetcher):
     position_manager._reference_recovery_last = loop.time()
     position_manager._reference_recovery_task = loop.create_task(
         run_reference_recovery(position_manager, price_fetcher, analytics))
+
+
+def _schedule_option_reference_capture(position_manager, price_fetcher, analytics=None):
+    """Schedule report-only premium capture outside trade protection updates."""
+    if (not settings.option_reference_accounting_enabled or price_fetcher is None):
+        return
+    analytics = analytics or getattr(position_manager, "analytics", None)
+    if getattr(analytics, "_option_backend_configured", False) is not True:
+        return
+    task = getattr(position_manager, "_option_reference_capture_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        return
+    loop = asyncio.get_running_loop()
+    last = getattr(position_manager, "_option_reference_capture_last", 0.0)
+    if loop.time() - last < 10:
+        return
+    from execution.option_reference_capture import run_option_reference_capture
+    position_manager._option_reference_capture_last = loop.time()
+    position_manager._option_reference_capture_task = loop.create_task(
+        run_option_reference_capture(position_manager, price_fetcher, analytics))
 
 
 async def _resolve_reference_ambiguities(position_manager, tick_feed):
@@ -888,6 +909,7 @@ async def run():
                             # allocation and paper/broker order eligibility.
                             signal.market_context["tracking_mode"] = "SIGNAL_REFERENCE"
                             signal.trade_id, signal.trade_binding_status = await position_manager.add_trade(signal, spot, atm=atm)
+                            _schedule_option_reference_capture(position_manager, price_fetcher)
                         except Exception as pm_err:
                             # Registration may have succeeded before telemetry sync
                             # failed. Preserve that binding so the next poll retries
@@ -964,6 +986,7 @@ async def run():
                         if any(ev_type == "SL_HIT" for _, ev_type in trade_events):
                             engine.clear_cooldown()
                             print(f"{Y}[{now.strftime('%H:%M:%S')}] 🔓 Cooldown cleared after stop-out — re-entry unlocked.{RESET}")
+                        _schedule_option_reference_capture(position_manager, price_fetcher)
                     except Exception as pm_update_err:
                         print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager update_trades failed: {pm_update_err}{RESET}")
             
@@ -1039,6 +1062,16 @@ async def run():
                             await recovery_task
                         except asyncio.CancelledError:
                             pass
+                    capture_task = getattr(position_manager, "_option_reference_capture_task", None)
+                    if isinstance(capture_task, asyncio.Task) and not capture_task.done():
+                        try:
+                            await asyncio.wait_for(asyncio.shield(capture_task), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            capture_task.cancel()
+                            try:
+                                await capture_task
+                            except asyncio.CancelledError:
+                                pass
                     await position_manager.flush_pending_trade_updates()
                 except Exception as drain_err:
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)

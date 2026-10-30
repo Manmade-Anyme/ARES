@@ -33,7 +33,7 @@ ARES evaluates completed one-minute NIFTY spot candles alongside open interest (
 
 ## 🆕 Recent Updates
 
-This README describes the source in this checkout through **22 October 2026**. Earlier [changelog](CHANGELOG.md) entries preserve their implementation-time status; runtime rollout evidence must be checked separately.
+This README describes the source in this checkout through **30 October 2026**. Earlier [changelog](CHANGELOG.md) entries preserve their implementation-time status; runtime rollout evidence must be checked separately.
 
 <details>
 <summary><strong>View recent changes and linked PRs</strong></summary>
@@ -42,6 +42,7 @@ This README describes the source in this checkout through **22 October 2026**. E
 |---|---|---|
 | Dhan WebSocket subscription | Sends the security ID as a string so the spot subscription can receive ticks for between-candle monitoring. | [PR #144](https://github.com/Manmade-Anyme/ARES/pull/144) |
 | Manual signals and ATR runners | Tracks persisted signals independently of lots; after T1, completed five-minute spot closes govern the ATR runner. Fixed T2 remains a reference. | [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
+| Weekly option-reference reporting | Keeps spot points separate from one-lot option premium change, based on pinned entry/final-exit marks. Capture defaults off pending the migration and a separate activation approval; historical trades without captured marks report unavailable. | [TASK-20261030 directive](directives/TASK-20261030-weekly-report-pnl.md) |
 | Uniform, compact Discord alerts | Shows available option entry, premium SL, T1/T2 and suggested lots without execution-status banners. Extra diagnostics default off. | [PR #142](https://github.com/Manmade-Anyme/ARES/pull/142), [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
 | Capital-independent option prices | Calculates prices even with unavailable, zero, or insufficient capital; capital controls lots. The option R:R rejection has been removed. | [PR #141](https://github.com/Manmade-Anyme/ARES/pull/141), [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
 | Completed-candle inputs | Evaluates each selected completed bar once, rebuilds full-session VWAP, and preserves risk monitoring on polls with no new candle. | [PR #140](https://github.com/Manmade-Anyme/ARES/pull/140), [input contract](docs/completed-candle-inputs.md) |
@@ -104,7 +105,7 @@ See the [completed-candle input contract](docs/completed-candle-inputs.md) for a
 ### Spot-based outcomes
 
 > [!NOTE]
-> Detection, setup geometry, trade labels and `pnl_points` use **NIFTY spot points**. Option premiums are derived references and estimates; they do not redefine spot outcomes. Manual tracking does not establish an option fill or realized account P&L.
+> Detection, setup geometry, trade labels and `pnl_points` use **NIFTY spot points**. Weekly/monthly option-reference P&L uses captured premium marks when available; it does not redefine spot outcomes or establish an option fill or realized account P&L.
 
 Registered trades can carry across sessions without automatic end-of-day square-off. Initial stops remain until SL or T1; there is no timer-based break-even exit. Stored paper execution telemetry, where present, is separate from manual spot analytics.
 
@@ -190,6 +191,10 @@ Failed manual registrations retry on later market polls from a frozen original p
 
 Retained paper APIs require an observed executable ask for entry and bid for exit. Paper ATR exit intent remains pending without a bid, and its initial emergency premium floor remains active. Application startup restores reporting context but does not reconstruct pending orders or resume paper simulation. `OrderManager` blocks new live dispatch with `LIVE_RUNTIME_UNSUPPORTED` before broker submission.
 
+### Weekly and monthly performance reports
+
+Reports retain spot P&L points and show one-lot option premium points as captured final-exit premium minus captured entry premium, multiplied by the pinned contract's stored lot size for the rupee equivalent. T1/T2 are spot milestones and do not book partial option exits. Exact LTP pairs and approximate completed-minute-close pairs are shown separately; totals remain unavailable unless all closed trades in the period have both valid marks. These references are market marks, not broker fills or realized after-cost account P&L. Setup rows remain spot-only. Capture uses `OPTION_REFERENCE_ACCOUNTING_ENABLED`, default `false`; production migration application and activation require separate approval. Existing records without timestamped option marks cannot be reconstructed from planned limits or spot/delta estimates.
+
 <a name="machine-learning-and-jev-predictions"></a>
 
 ## 🧠 Machine Learning and Jev Predictions
@@ -239,7 +244,7 @@ ARES/
 ├── storage.py              # Signal/trade persistence and prediction audits
 ├── fetchers/               # REST candles/chain/levels and WebSocket ticks
 ├── detectors/              # Four detectors, OI entry filter and expiry detection
-├── execution/              # Retained paper/order APIs and documentation generator
+├── execution/              # Paper/order APIs and independent option-reference capture
 ├── ml_signal/              # Collection, inference, calibration and offline training
 ├── system_one/             # Independent Jev context, inference and delivery
 ├── oi_watch_outbox.py      # Durable ready-watch producer and lifecycle writes
@@ -283,6 +288,7 @@ Populate `.env` from `.env.example`. Keep credentials outside source control.
 | `SUPABASE_URL` | String / empty | Database API URL; required for the engine and worker. |
 | `SUPABASE_KEY` | String / empty | Main engine persistence and Dhan credential lookup; permissions must match the deployed policies. |
 | `SUPABASE_SERVICE_ROLE_KEY` | String / empty | Required for Jev lifecycle tables/RPCs and ML prediction audit persistence. Backend only. |
+| `OPTION_REFERENCE_ACCOUNTING_ENABLED` | Boolean / `false` | Enables independent one-lot premium-mark capture only after its migration is installed and activation is approved. Does not enable option ATR or protection. |
 | `TYPESAFE_API_KEY` | String / unset | Required for hosted Jev inference. |
 
 Dhan credentials are loaded at startup from the existing Supabase `api_keys` row with `provider = 'DHAN'`, using its `client_id` and `access_token` fields. Provision that row through the existing credential-management process; adding Dhan variables to `.env` alone does not replace this lookup.

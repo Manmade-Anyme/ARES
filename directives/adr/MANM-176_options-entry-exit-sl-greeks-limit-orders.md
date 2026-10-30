@@ -297,7 +297,7 @@ Refactor existing linear functions into a pure, comprehensive calculation suite:
 
 ### 5.6 `storage.py` and `reports.py`
 - Persist `market_context.options_sizing` containing `greeks` (`delta`, `gamma`, `theta`, `vega`), `security_id`, `entry_limit`, `option_sl`, `option_target`, `capital`, and `rejection_reason`.
-- Enforce non-negative lot guard in `reports._option_rupees()` to prevent sign inversion on legacy dirty rows.
+- The former `reports._option_rupees()` estimate had a non-negative-lot guard. TASK-20261030 retired that report helper in favor of captured one-lot entry-to-exit option marks.
 
 ### 5.7 `alerts.py` (Discord Alert Specification)
 
@@ -358,7 +358,7 @@ Enrich spot lifecycle alerts with explicitly labelled option premium estimates. 
 - [x] **Tick Rounding**: Ensure all computed prices are exact multiples of 0.05.
 - [x] **Full Chain Greeks Verification**: Unit tests verifying `fetch_chain` returns full Greeks for all strikes.
 - [x] **Dual-Layer Stop Verification**: Unit test verifying synthetic spot SL and catastrophic emergency floor are computed cleanly.
-- [x] **Reporting Invariant**: Verify `reports._option_rupees()` never inverts P&L on negative lot inputs.
+- [x] **Historical Reporting Invariant**: Verify the former `reports._option_rupees()` helper never inverted P&L on negative lot inputs. TASK-20261030 later retired that helper and its estimate.
 - [x] **Pre-commit Doc Sync**: Sync ADR to repository docs in PR #136. Obsidian production documentation sync occurs locally after the user merges, per the Global Development Pipeline.
 
 
@@ -397,7 +397,7 @@ The following paper-order contracts describe the retained order-manager APIs/mon
 ### Reporting interpretation
 - Signal alerts show available calculated limits separately from LTP and capital-based suggested quantity even when execution is rejected. Missing provider data is explicitly unavailable. Discord hides optional Greeks/order/risk diagnostics by default and shows one premium stop; console diagnostics retain details. Neither display claims submission or execution.
 - Lifecycle option prices and the 50% booking P&L example are estimates, not broker fills. In particular, a spot break-even exit can still lose option premium after theta, IV changes, spread and fees.
-- Aggregate option P&L retains the existing linear-Delta approximation; one-lot bracket P&L uses the stored plan. Both are labelled estimates and use persisted lot size where available. Neither is a realized-fill accounting ledger.
+- Weekly/monthly report P&L now uses the independent `one_lot_hold_to_exit_v1` reference: captured option exit premium minus captured entry premium, multiplied by the pinned lot size. It retains spot points separately, treats T1/T2 as spot context, distinguishes exact LTP pairs from approximate minute-close pairs, and reports totals as unavailable if any closed trade lacks a valid pair. It does not claim broker fills or realized account P&L. Capture remains disabled until the additive migration is installed and separately approved for activation; historical rows without timestamped marks stay unavailable.
 - Spot outcome labels remain `0` for initial loss, `1` for post-T1 trailing resolution (`ATR_SL_HIT`) and `2` for historical T2 records. These labels do not assert realized option profit.
 
 ### Verification and delivery

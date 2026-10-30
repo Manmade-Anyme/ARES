@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Weekly option-reference performance reporting (TASK-20261030):** Keep spot points as the spot outcome and calculate one-lot option premium points from the pinned contract's observed entry and final-exit marks. Show the one-lot rupee equivalent, exact/approximate coverage, and spot T1/T2 hit counts. Missing evidence remains unavailable; setup breakdowns remain spot-only. The capture flag defaults off until the additive migration is installed and separately approved for activation. Historical rows without captured prices remain unavailable.
+
 - **Weekly performance report timing:** Begin weekly and month-end report attempts at 15:28 IST and keep them eligible until 15:30 (exclusive), adding another poll opportunity before shutdown. Trades closed after delivery remain outside that report.
 
 - **PR #150 same-close durability:** Only compare ties after T1 and beyond the processed option-bar watermark; persist the `ORDER_UNKNOWN` marker and protective close evidence before replay advances.

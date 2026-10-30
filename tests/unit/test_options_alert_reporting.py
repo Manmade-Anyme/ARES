@@ -7,7 +7,6 @@ import pytest
 
 from alerts import format_signal, send_discord, send_trade_update
 from models import AresSignal, Direction, SetupType
-from reports import _option_rupees
 
 
 @pytest.mark.asyncio
@@ -166,13 +165,6 @@ async def test_lifecycle_projection_is_not_claimed_as_broker_fill():
     assert "Realized" not in description
 
 
-@pytest.mark.parametrize("lots", [-3, -0.5, float("nan"), float("inf"), "bad", None])
-@pytest.mark.parametrize("pnl", [-10, 10])
-def test_dirty_lots_never_reverse_or_poison_report_pnl(lots, pnl):
-    trade = {"pnl_points": pnl, "market_context": {"options_sizing": {"delta": .5, "suggested_lots": lots}}}
-    assert _option_rupees(trade) == 0
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize('show_details', [False, True])
 async def test_valid_discord_bracket_separates_limits_from_spot_levels(show_details):
@@ -235,38 +227,10 @@ async def test_other_lifecycle_prices_are_estimates(update_type, spot, price):
         assert "+611.00" in description
 
 
-@pytest.mark.parametrize("pnl,expected", [(10, 650), (-10, -650)])
-def test_report_uses_final_allocation_and_preserves_pnl_sign(pnl, expected):
-    trade = {"pnl_points": pnl, "market_context": {"options_sizing": {
-        "delta": -.5, "suggested_lots": 9, "final_lots": 2,
-    }}}
-    assert _option_rupees(trade) == expected
-    trade["market_context"]["options_sizing"]["final_lots"] = 0
-    assert _option_rupees(trade) == 0
-
-
-def test_report_reads_canonical_bracket_fields_and_historical_lot_size():
-    trade = {"pnl_points": 10, "market_context": {"options_sizing": {
-        "option_delta": .5, "final_lots": 2, "lot_size": 25,
-        "entry_limit": 100, "option_sl": 95, "target_1": 110,
-    }}}
-    assert _option_rupees(trade) == 250
-    from reports import _option_1_lot_rupees
-    assert _option_1_lot_rupees(trade) == 250
-
-
 def test_signal_quantity_uses_bracket_lot_size():
     signal = signal_with_bracket()
     signal.bracket.lot_size = 25
     assert "2 Lots (50 qty)" in format_signal(signal, 24000)
-
-
-@pytest.mark.parametrize("lots", [True, 1.5])
-def test_non_integral_allocations_are_not_reported(lots):
-    trade = {"pnl_points": 10, "market_context": {"options_sizing": {
-        "delta": .5, "final_lots": lots,
-    }}}
-    assert _option_rupees(trade) == 0
 
 
 def test_signal_surfaces_iv_feed_warning_as_diagnostic_only():

@@ -22,6 +22,7 @@ class Secrets(BaseSettings):
     option_atr_enabled: bool = False
     option_atr_parity_version: str = ""
     option_atr_approved_version: str = ""
+    option_reference_accounting_enabled: bool = False
 
     model_config = SettingsConfigDict(
         env_file='.env', env_file_encoding='utf-8', extra='ignore'
