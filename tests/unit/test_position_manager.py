@@ -1457,6 +1457,32 @@ async def test_atr_real_candles_ratchet_ignore_wicks_and_exit_completed_close(at
 
 
 @pytest.mark.asyncio
+async def test_tick_t1_runner_activation_uses_exchange_time_across_atr_boundary(atr_position_manager):
+    pm, _, alert = atr_position_manager
+    trade = _atr_trade()
+    pm.active_trades = [trade]
+    source_at = datetime(2099, 1, 1, 9, 34, 59, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    received_at = source_at + timedelta(seconds=2)
+
+    assert await pm.update_trades(
+        trade["target_1"], event_time=received_at, market_event_time=source_at,
+    ) == [(trade["id"], "T1_HIT")]
+    assert trade["market_context"]["atr_trailing"]["last_bar"] == source_at.isoformat()
+
+    closes_at_0935 = _atr_minutes(15, 5, close=-1, low=-5, high=5)
+    assert await pm.update_atr_trailing(closes_at_0935) == [(trade["id"], "ATR_SL_HIT")]
+    await _flush_trade_writes(pm)
+    assert trade["state"] == "CLOSED"
+
+    later_at = received_at + timedelta(seconds=1)
+    assert await pm.update_trades(
+        trade["target_2"], event_time=later_at, market_event_time=later_at,
+    ) == []
+    assert "t2" not in trade["market_context"].get("target_milestones", {})
+    assert [call.args[2] for call in alert.call_args_list] == ["T1_HIT", "ATR_SL_HIT"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("sign", [1, -1])
 async def test_atr_warmup_cost_floor_and_older_activation_bars(atr_position_manager, sign):
     pm, _, alert = atr_position_manager

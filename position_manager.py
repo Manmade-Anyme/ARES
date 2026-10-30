@@ -879,8 +879,8 @@ class PositionManager:
                 trade["stop_loss"] = trade["entry_price"]
                 if candle_timestamp is not None:
                     activated = parse_candle_timestamp(candle_timestamp) + timedelta(minutes=1)
-                elif event_time is not None:
-                    activated = parse_candle_timestamp(event_ts_base)
+                elif event_time is not None or source_event_ts is not None:
+                    activated = parse_candle_timestamp(source_event_ts or event_ts_base)
                 else:
                     activated = datetime.now(timezone.utc)
                 trade.setdefault("market_context", {})["atr_trailing"] = {
