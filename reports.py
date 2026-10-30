@@ -8,19 +8,27 @@ broken down per setup type. Reads closed trades from the `trade_analytics` table
 from the delta/lots stored in `market_context.options_sizing`, so it is an estimate.
 
 Triggered in-process from main.py's session-end branch:
-  - "weekly"  every Friday
-  - "monthly" on the last trading day of the month
+  - "weekly"  every Friday, eligible from 15:28 until 15:30 IST (exclusive)
+  - "monthly" on the last trading day of the month, in the same window
 """
 
 import httpx
 import math
-from datetime import datetime, timezone, timedelta, date
+from datetime import datetime, timezone, timedelta, date, time
 from typing import Any
 
 from config import settings
 
 IST = timezone(timedelta(hours=5, minutes=30))
 REPORT_QUERY_PAGE_SIZE = 1000
+
+
+def is_performance_report_window(now_ist: datetime) -> bool:
+    """Return whether an IST time is in the final report window, [15:28, 15:30)."""
+    if now_ist.tzinfo is None:
+        now_ist = now_ist.replace(tzinfo=IST)
+    current_time_ist = now_ist.astimezone(IST).time().replace(tzinfo=None)
+    return time(15, 28) <= current_time_ist < time(15, 30)
 
 # Setups reported on (models.SetupType), in display order.
 SETUP_TYPES = [

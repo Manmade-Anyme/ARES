@@ -16,7 +16,11 @@ from config import settings, detector_names, SESSION_DISPLAY
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple, days_to_expiry
 from alerts import send_discord, send_startup_alert, send_error_alert, dispatch_oi_wall_watch_alerts
-from reports import send_performance_report, is_last_trading_day_of_month
+from reports import (
+    send_performance_report,
+    is_last_trading_day_of_month,
+    is_performance_report_window,
+)
 from ml_signal.collector import MLCollector
 from ml_signal.predictor import SignalPredictor
 from options_math import process_options_calculation, option_sizing_summary
@@ -671,15 +675,15 @@ async def run():
                 print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
             
             # Session gate: only run between 09:15 and 15:30
-            # Post the performance digest once, in the final live minute (15:29–15:30).
+            # Post the digest once during the final two live minutes (15:28 inclusive, 15:30 exclusive).
             # The upper bound keeps an after-hours restart from re-posting: the *_sent
             # flags are in-memory and reset on reboot, but a boot at any other time
             # can't satisfy the window. Each flag flips only on successful delivery so
             # a failed webhook stays eligible for retry on the next poll in the window.
-            # ponytail: trades closing in this last minute are excluded, and a skipped
-            # 60s poll tick can rarely miss the window — accepted for a summary digest;
-            # persist a per-period marker if either ever matters.
-            if time(15, 29) <= current_time < time(15, 30):
+            # ponytail: trades closing after delivery are excluded; the extra minute
+            # gives the 60s poll another chance, though a longer delayed cycle can still miss.
+            # Persist a per-period marker if missed deliveries or in-window restarts matter.
+            if is_performance_report_window(now):
                 if now.weekday() == 4 and not weekly_report_sent:  # Friday
                     weekly_report_sent = await send_performance_report(storage.supabase, now, "weekly")
                 if is_last_trading_day_of_month(now.date()) and not monthly_report_sent:

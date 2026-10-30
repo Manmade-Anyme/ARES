@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Weekly performance report timing:** Begin weekly and month-end report attempts at 15:28 IST and keep them eligible until 15:30 (exclusive), adding another poll opportunity before shutdown. Trades closed after delivery remain outside that report.
+
 - **PR #150 same-close durability:** Only compare ties after T1 and beyond the processed option-bar watermark; persist the `ORDER_UNKNOWN` marker and protective close evidence before replay advances.
 
 - **PR #150 same-second market-order tie:** When a second-resolution spot tick or completed spot candle coincides with an option ATR close-through, retain an `ORDER_UNKNOWN` marker and the protective option-close evidence. Do not infer that T2 occurred before the option stop; the lifecycle remains unresolved until reliable ordering evidence exists.
