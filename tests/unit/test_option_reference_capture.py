@@ -330,6 +330,37 @@ async def test_price_evidence_defers_forming_bar_then_uses_completed_history(mon
     fetcher.fetch_option_minutes.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_minute_fallback_uses_post_fetch_validation_cutoff(monkeypatch):
+    event_at = datetime(2026, 10, 30, 9, 20, tzinfo=IST)
+    pass_now = event_at + timedelta(minutes=1, seconds=5)
+    request_started = pass_now + timedelta(seconds=1)
+    fetched_at = request_started + timedelta(seconds=1)
+    minute = event_at.replace(second=0, microsecond=0)
+    bar = {
+        "timestamp": minute.isoformat(), "sampled_at": request_started.isoformat(),
+        "complete": True, "open": 140, "high": 142, "low": 139, "close": 141,
+        "volume": 10,
+    }
+    fetcher = SimpleNamespace(
+        fetch_option_minutes=AsyncMock(return_value=[bar]),
+    )
+    monkeypatch.setattr(capture, "datetime", SimpleNamespace(
+        now=MagicMock(return_value=fetched_at),
+    ))
+
+    evidence = await capture._price_evidence(
+        fetcher, CONTRACT, event_at, pass_now, {}, {},
+    )
+
+    assert evidence == {
+        "price": 141.0, "observed_at": (minute + timedelta(minutes=1)).isoformat(),
+        "source": "completed_1m_close", "approximate": True,
+    }
+    assert bar["sampled_at"] == request_started.isoformat()
+    fetcher.fetch_option_minutes.assert_awaited_once_with(CONTRACT, event_at)
+
+
 def test_apply_sync_requires_positive_revision_and_updates_without_existing_lock_map():
     manager = SimpleNamespace()
     analytics = SimpleNamespace(apply_option_reference_capture=AsyncMock())

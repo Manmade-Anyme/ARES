@@ -102,7 +102,8 @@ async def _price_evidence(fetcher, contract, event_at, now, quote_cache, minute_
     if event.replace(second=0, microsecond=0) + timedelta(minutes=1) > now:
         return None
     bars = await _minutes(fetcher, contract, event, minute_cache)
-    return _evidence(event, quote=quote, bars=bars, now=now)
+    validation_now = datetime.now(timezone.utc)
+    return _evidence(event, quote=quote, bars=bars, now=validation_now)
 
 
 def _apply_sync(manager, analytics, trade_id, reference, event):

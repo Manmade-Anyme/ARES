@@ -115,6 +115,7 @@ Use the contract selected at the signal (`options_sizing.security_id`, exchange 
 - Use the event timestamp from the existing lifecycle event, not the later database-write time.
 - Prefer a pinned LTP observation whose last-trade timestamp is within five seconds of the event. `fetchers/price_fetcher.py:412-447` already rejects stale last trades; `execution/reference_prices.py:105-130` provides a nearby-quote selector with the same five-second bound.
 - If no eligible quote exists, use only the matching completed one-minute option close, sampled after that minute ended, and set `approximate: true`. The existing minute-normalization and close validation in `execution/reference_prices.py:30-85` is the reference behavior.
+- After a minute-history request completes, validate returned bars against a fresh cutoff; preserve each provider-supplied `sampled_at` and `complete` value unchanged as provenance.
 - If neither source yields valid evidence, keep that side null and mark coverage incomplete. Do not substitute delta, `entry_limit`, option SL/T1/T2 projections, or zero.
 
 The API returns LTP, not a guaranteed executable bid or ask. The report must name the metric as a captured/reference premium change, not a fill or realized option P&L. Bid/ask execution-cost modelling is outside this ADR.
