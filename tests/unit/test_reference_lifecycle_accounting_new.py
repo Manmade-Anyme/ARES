@@ -403,6 +403,47 @@ async def test_live_spot_ticks_replay_by_source_time_without_guessing_same_secon
 
 
 @pytest.mark.asyncio
+async def test_protection_poll_drains_spot_ticks_before_option_history_replay(monkeypatch):
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    option = trade["market_context"]["option_trailing"]
+    option.update(phase="POST_T1", highest_milestone=1, t1_at="2026-10-23T10:00:00+05:30",
+                  t1_activation_source="tick_exchange", locked_option_sl=150,
+                  protection_mode="ATR", remaining_fraction=.5)
+    trade.update(state="T1_HIT", stop_loss=trade["entry_price"])
+    source_close = datetime(2026, 10, 23, 10, 55, tzinfo=IST)
+    tick = {"price": trade["target_2"], "exchange_at": source_close - timedelta(seconds=1),
+            "received_at": source_close + timedelta(seconds=6), "source": "dhan_tick"}
+    feed = SimpleNamespace(get_observations_since=MagicMock(return_value=[tick]))
+    start = datetime(2026, 10, 23, 9, 15, tzinfo=IST)
+    history = [
+        OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                     200, 201, 148 if i == 19 else 199, 149 if i == 19 else 200, 1, "51333")
+        for i in range(20)
+    ]
+
+    async def replay_with_drained_ticks(candles, position_manager, dispatcher, *, index_ticks=None, **kwargs):
+        return await position_manager.update_option_market_events(
+            candles, {"51333": history}, current_time=source_close + timedelta(seconds=7),
+            index_ticks=index_ticks)
+
+    monkeypatch.setattr(main_module, "_monitor_completed_atr", replay_with_drained_ticks)
+    fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=None), watch_candles=[])
+    dispatcher = SimpleNamespace(on_spot=AsyncMock())
+    engine = SimpleNamespace(clear_cooldown=MagicMock())
+
+    await main_module._fetch_candle_with_protection(
+        fetcher, pm, dispatcher, engine=engine, tick_feed=feed)
+
+    feed.get_observations_since.assert_called_once_with()
+    assert trade["state"] == "CLOSED"
+    assert option["highest_milestone"] == 2
+    assert option["exit"]["reason"] == "ATR_SL_HIT"
+    assert pm.analytics.rows[-1]["score"] == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("option_close_time,t1_time,processed_time", [
     ("10:55", "10:56", None),
     ("11:00", "10:56", "11:00"),
