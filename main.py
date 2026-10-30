@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import logging
 from math import isfinite
 from inspect import iscoroutinefunction
@@ -152,6 +152,44 @@ def _read_buffered_spot_ticks(tick_feed, position_manager):
     return tick_batch, ordered_ticks
 
 
+def _completed_spot_candles_through(candles, event_at):
+    """Limit spot history to source minutes closed by an observation time."""
+    from options_candles import parse_candle_timestamp
+
+    completed = []
+    for candle in candles or ():
+        if not isinstance(candle, dict) or candle.get("complete") is not True:
+            continue
+        try:
+            source_at = parse_candle_timestamp(candle["timestamp"])
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            continue
+        if source_at + timedelta(minutes=1) <= event_at:
+            completed.append(candle)
+    return completed
+
+
+async def _replay_spot_atr_with_ticks(candles, position_manager, index_ticks):
+    """Replay ordinary spot runners and ticks in their shared source-time order."""
+    from options_candles import parse_candle_timestamp
+
+    ticks = []
+    for tick in index_ticks or ():
+        try:
+            ticks.append((parse_candle_timestamp(tick["exchange_at"]), tick))
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            continue
+    events = []
+    for event_at, tick in sorted(ticks, key=lambda item: item[0]):
+        events.extend(await position_manager.update_atr_trailing(
+            _completed_spot_candles_through(candles, event_at)))
+        events.extend(await position_manager.update_trades(
+            float(tick["price"]), event_time=tick["received_at"],
+            market_event_time=event_at, include_option_policy=False))
+    events.extend(await position_manager.update_atr_trailing(candles))
+    return events
+
+
 def _schedule_reference_recovery(position_manager, price_fetcher):
     """Run evidence retrieval independently of time-critical protection."""
     if price_fetcher is None:
@@ -220,8 +258,10 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
         price = tick_feed.get_latest_price()
         option_policy = _has_option_policy_trades(position_manager)
         tick_batch, ordered_ticks = _read_buffered_spot_ticks(tick_feed, position_manager)
+        ticks_replayed = False
         option_ticks_replayed = False
-        if price_fetcher is not None and option_policy:
+        if price_fetcher is not None and (ordered_ticks or option_policy):
+            ticks_replayed = bool(ordered_ticks)
             option_ticks_replayed = await _monitor_completed_atr(
                 price_fetcher.watch_candles, position_manager,
                 dispatcher, price_fetcher=price_fetcher, engine=engine,
@@ -233,9 +273,12 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                     price = float(tick["price"])
                     if not position_manager.active_trades:
                         continue
+                    if ticks_replayed and not (option_policy and not option_ticks_replayed):
+                        continue
                     try:
                         events = await position_manager.update_trades(
                             price, event_time=tick["received_at"], market_event_time=tick["exchange_at"],
+                            only_option_policy=ticks_replayed,
                             include_option_policy=not option_ticks_replayed)
                         if any(event == "SL_HIT" for _, event in events):
                             engine.clear_cooldown()
@@ -390,12 +433,18 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                     engine.clear_cooldown()
             except Exception as exc:
                 logger.warning("Option lifecycle monitoring failed: %s", exc)
-    monitors = [position_manager.update_atr_trailing]
+    try:
+        if index_ticks is None:
+            events = await position_manager.update_atr_trailing(candles)
+        else:
+            events = await _replay_spot_atr_with_ticks(candles, position_manager, index_ticks)
+        if engine is not None and any(event == "SL_HIT" for _, event in events):
+            engine.clear_cooldown()
+    except Exception as exc:
+        logger.warning("Completed ATR monitoring failed: %s", exc)
     if dispatcher is not None:
-        monitors.append(dispatcher.on_candles)
-    for monitor in monitors:
         try:
-            await monitor(candles)
+            await dispatcher.on_candles(candles)
         except Exception as exc:
             logger.warning("Completed ATR monitoring failed: %s", exc)
     _schedule_reference_recovery(position_manager, price_fetcher)
@@ -413,7 +462,7 @@ async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatc
     finally:
         if candle is not None or _has_option_policy_trades(position_manager):
             index_ticks = None
-            if tick_feed is not None and _has_option_policy_trades(position_manager):
+            if tick_feed is not None and position_manager.active_trades:
                 _, index_ticks = _read_buffered_spot_ticks(tick_feed, position_manager)
             option_ticks_replayed = await _monitor_completed_atr(
                 price_fetcher.watch_candles, position_manager, dispatcher,
@@ -429,17 +478,6 @@ async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatc
                             engine.clear_cooldown()
                     except Exception as exc:
                         logger.warning("Option tick replay deferred: %s", exc)
-            # The chronological option replay above handles option-policy trades.
-            # Preserve ordinary spot-trade monitoring for ticks consumed above.
-            for tick in index_ticks or []:
-                try:
-                    events = await position_manager.update_trades(
-                        float(tick["price"]), event_time=tick["received_at"],
-                        market_event_time=tick["exchange_at"], include_option_policy=False)
-                    if engine is not None and any(event == "SL_HIT" for _, event in events):
-                        engine.clear_cooldown()
-                except Exception as exc:
-                    logger.warning("Tick-driven exit check failed: %s", exc)
             if index_ticks and dispatcher is not None:
                 try:
                     await dispatcher.on_spot(float(index_ticks[-1]["price"]))

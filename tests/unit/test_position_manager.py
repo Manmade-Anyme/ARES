@@ -1308,6 +1308,39 @@ async def test_completed_atr_before_latest_candle_reports_t2_then_exit(atr_posit
 
 
 @pytest.mark.asyncio
+async def test_protection_poll_replays_spot_atr_closes_between_buffered_ticks(atr_position_manager, monkeypatch):
+    import main
+    from types import SimpleNamespace
+
+    pm, _, alert = atr_position_manager
+    start = datetime(2099, 1, 1, 9, 15, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    trade = _atr_trade(entry_timestamp=start.isoformat())
+    pm.active_trades = [trade]
+    candles = _atr_minutes(0, 25)
+    for candle in candles[15:20]:
+        candle.update(open=24000, high=24005, low=23990, close=23999)
+    t1_at = start + timedelta(minutes=16, seconds=10)
+    t2_at = start + timedelta(minutes=20, seconds=1)
+    ticks = [
+        {"price": trade["target_1"], "exchange_at": t1_at,
+         "received_at": t1_at + timedelta(seconds=1), "source": "dhan_tick"},
+        {"price": trade["target_2"], "exchange_at": t2_at,
+         "received_at": t2_at + timedelta(seconds=1), "source": "dhan_tick"},
+    ]
+    feed = SimpleNamespace(get_observations_since=MagicMock(return_value=ticks))
+    fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=SimpleNamespace()),
+                              watch_candles=candles)
+    monkeypatch.setattr(main, "_schedule_reference_recovery", lambda *_: None)
+
+    await main._fetch_candle_with_protection(fetcher, pm, None, tick_feed=feed)
+    await _flush_trade_writes(pm)
+
+    assert trade["state"] == "CLOSED"
+    assert "t2" not in trade["market_context"].get("target_milestones", {})
+    assert [call.args[2] for call in alert.call_args_list] == ["T1_HIT", "ATR_SL_HIT"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("sign", [1, -1])
 async def test_atr_history_before_activation_and_replayed_bars_cannot_create_t2(atr_position_manager, sign):
     pm, _, alert = atr_position_manager

@@ -538,9 +538,7 @@ async def test_tick_loop_sends_buffered_option_ticks_to_chronological_replay(mon
     replay.assert_awaited_once()
     assert replay.await_args.kwargs["index_ticks"] == [tick]
     pm.record_reference_spot_quote.assert_called_once_with(22470.0, tick["exchange_at"], "dhan_tick")
-    pm.update_trades.assert_awaited_once_with(
-        22470.0, event_time=tick["received_at"], market_event_time=tick["exchange_at"],
-        include_option_policy=False)
+    pm.update_trades.assert_not_awaited()
 
 
 @pytest.mark.asyncio
