@@ -54,6 +54,18 @@ def _has_leg(reference, name):
     return isinstance(reference.get(name), dict)
 
 
+def _exit_evidence_follows_entry(reference, evidence):
+    entry = reference.get("entry")
+    if not isinstance(entry, dict) or not isinstance(evidence, dict):
+        return False
+    try:
+        entry_at = parse_candle_timestamp(entry.get("observed_at"))
+        exit_at = parse_candle_timestamp(evidence.get("observed_at"))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+    return exit_at >= entry_at
+
+
 def _has_pending_exit(reference):
     return bool(reference.get("exit_event_at") and reference.get("exit_reason"))
 
@@ -96,7 +108,8 @@ async def _price_evidence(fetcher, contract, event_at, now, quote_cache, minute_
     quote = None
     if abs((now - event).total_seconds()) <= 5:
         quote = await _quote(fetcher, contract, _contract_key(contract), quote_cache)
-        selected = _evidence(event, quote=quote, bars=(), now=now)
+        quote_validation_now = datetime.now(timezone.utc)
+        selected = _evidence(event, quote=quote, bars=(), now=quote_validation_now)
         if selected is not None:
             return selected
     if event.replace(second=0, microsecond=0) + timedelta(minutes=1) > now:
@@ -248,9 +261,9 @@ async def _process_row(manager, fetcher, analytics, row, quote_cache, minute_cac
             if not _has_pending_exit(reference):
                 await _persist_event(manager, analytics, trade, reference, marker)
                 completed += 1
-            if not _has_leg(reference, "exit"):
+            if _has_leg(reference, "entry") and not _has_leg(reference, "exit"):
                 evidence = await _price_evidence(fetcher, contract, exit_at, now, quote_cache, minute_cache)
-                if evidence:
+                if evidence and _exit_evidence_follows_entry(reference, evidence):
                     capture = {
                         "kind": "EXIT_CAPTURE", "event_at": _iso(exit_at),
                         "exit_reason": str(exit_reason), "evidence": evidence,

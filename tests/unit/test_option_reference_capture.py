@@ -361,6 +361,57 @@ async def test_minute_fallback_uses_post_fetch_validation_cutoff(monkeypatch):
     fetcher.fetch_option_minutes.assert_awaited_once_with(CONTRACT, event_at)
 
 
+@pytest.mark.asyncio
+async def test_quote_uses_post_fetch_validation_cutoff(monkeypatch):
+    event_at = datetime(2026, 10, 30, 9, 20, tzinfo=IST)
+    pass_now = event_at + timedelta(seconds=1)
+    quote_at = event_at + timedelta(seconds=2)
+    fetched_at = event_at + timedelta(seconds=3)
+    fetcher = SimpleNamespace(
+        fetch_option_observation=AsyncMock(return_value={
+            "price": 140, "observed_at": quote_at.isoformat(), "source": "dhan_last_trade",
+        }),
+        fetch_option_minutes=AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(capture, "datetime", SimpleNamespace(
+        now=MagicMock(return_value=fetched_at),
+    ))
+
+    evidence = await capture._price_evidence(
+        fetcher, CONTRACT, event_at, pass_now, {}, {},
+    )
+
+    assert evidence == {
+        "price": 140.0, "observed_at": quote_at.isoformat(),
+        "source": "dhan_last_trade", "approximate": False,
+    }
+    fetcher.fetch_option_observation.assert_awaited_once_with(CONTRACT)
+    fetcher.fetch_option_minutes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_quote_after_post_fetch_cutoff_is_rejected(monkeypatch):
+    event_at = datetime(2026, 10, 30, 9, 20, tzinfo=IST)
+    pass_now = event_at + timedelta(seconds=1)
+    fetched_at = event_at + timedelta(seconds=3)
+    fetcher = SimpleNamespace(
+        fetch_option_observation=AsyncMock(return_value={
+            "price": 140, "observed_at": (fetched_at + timedelta(seconds=1)).isoformat(),
+            "source": "dhan_last_trade",
+        }),
+        fetch_option_minutes=AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(capture, "datetime", SimpleNamespace(
+        now=MagicMock(return_value=fetched_at),
+    ))
+
+    evidence = await capture._price_evidence(
+        fetcher, CONTRACT, event_at, pass_now, {}, {},
+    )
+
+    assert evidence is None
+
+
 def test_apply_sync_requires_positive_revision_and_updates_without_existing_lock_map():
     manager = SimpleNamespace()
     analytics = SimpleNamespace(apply_option_reference_capture=AsyncMock())
@@ -494,9 +545,84 @@ async def test_process_row_defers_entry_and_exit_capture_exceptions(monkeypatch)
         exit_at + timedelta(minutes=2),
     )
 
-    assert result == 1  # The terminal marker persists; both price lookups defer.
-    assert calls == 2
+    assert result == 1  # The terminal marker persists; entry lookup defers first.
+    assert calls == 1
     assert [item[3]["kind"] for item in analytics.events] == ["EXIT_MARKER"]
+
+
+@pytest.mark.asyncio
+async def test_exit_capture_waits_for_entry_and_recovers_as_a_compatible_pair(monkeypatch):
+    entry_at = datetime(2026, 10, 30, 9, 20, tzinfo=IST)
+    exit_at = entry_at + timedelta(seconds=30)
+    reference = _reference(entry_at)
+    row = {"id": "trade-paired-recovery", "entry_timestamp": entry_at.isoformat(),
+           "exit_timestamp": exit_at.isoformat(), "result_state": "SL_HIT",
+           "market_context": {"option_reference": reference}}
+    analytics = _Analytics([row])
+    manager = SimpleNamespace(active_trades=[])
+    exact_exit = {"price": 132, "observed_at": (exit_at + timedelta(seconds=1)).isoformat(),
+                  "source": "dhan_last_trade", "approximate": False}
+    approximate = {"price": 140, "observed_at": "2026-10-30T09:21:00+05:30",
+                   "source": "completed_1m_close", "approximate": True}
+    price_evidence = AsyncMock(side_effect=[None, approximate, approximate])
+    monkeypatch.setattr(capture, "_price_evidence", price_evidence)
+
+    first = await _process_row(
+        manager, SimpleNamespace(), analytics, row, {}, {}, exit_at + timedelta(seconds=2),
+    )
+
+    assert first == 1
+    assert [item[3]["kind"] for item in analytics.events] == ["EXIT_MARKER"]
+    assert row["market_context"]["option_reference"]["exit"] is None
+    price_evidence.assert_awaited_once()
+
+    # Entry fallback is captured after the minute closes; an exact exit quote
+    # from before that close is incompatible and must remain retryable.
+    price_evidence.side_effect = [approximate, exact_exit]
+    second = await _process_row(
+        manager, SimpleNamespace(), analytics, row, {}, {},
+        entry_at + timedelta(minutes=1, seconds=2),
+    )
+
+    assert second == 1
+    assert [item[3]["kind"] for item in analytics.events] == ["EXIT_MARKER", "ENTRY_CAPTURE"]
+    reference = row["market_context"]["option_reference"]
+    assert reference["entry"] == approximate
+    assert reference["exit"] is None
+
+    # The next completed-minute observation is compatible with the saved entry.
+    price_evidence.side_effect = [approximate]
+    third = await _process_row(
+        manager, SimpleNamespace(), analytics, row, {}, {},
+        entry_at + timedelta(minutes=1, seconds=3),
+    )
+
+    assert third == 1
+    assert [item[3]["kind"] for item in analytics.events] == [
+        "EXIT_MARKER", "ENTRY_CAPTURE", "EXIT_CAPTURE",
+    ]
+    assert reference["exit"] == approximate
+    assert reference["status"] == "CLOSED"
+
+
+def test_exit_evidence_requires_valid_chronological_pair():
+    entry_at = "2026-10-30T09:20:01+05:30"
+    assert not capture._exit_evidence_follows_entry({}, {})
+    assert not capture._exit_evidence_follows_entry(
+        {"entry": {"observed_at": entry_at}}, {},
+    )
+    assert not capture._exit_evidence_follows_entry(
+        {"entry": {"observed_at": "invalid"}},
+        {"observed_at": "2026-10-30T09:20:02+05:30"},
+    )
+    assert not capture._exit_evidence_follows_entry(
+        {"entry": {"observed_at": entry_at}},
+        {"observed_at": "2026-10-30T09:20:00+05:30"},
+    )
+    assert capture._exit_evidence_follows_entry(
+        {"entry": {"observed_at": entry_at}},
+        {"observed_at": "2026-10-30T09:20:01+05:30"},
+    )
 
 
 @pytest.mark.asyncio
@@ -520,6 +646,31 @@ async def test_process_row_records_closed_exit_marker_and_capture(monkeypatch):
 
     assert [item[3]["kind"] for item in analytics.events] == ["EXIT_MARKER", "EXIT_CAPTURE"]
     assert row["market_context"]["option_reference"]["exit"] == evidence
+
+
+@pytest.mark.asyncio
+async def test_process_row_defers_exit_capture_exception_after_marker(caplog, monkeypatch):
+    event_at = datetime(2026, 10, 30, 9, 20, tzinfo=IST)
+    exit_at = event_at + timedelta(minutes=10)
+    reference = _reference(event_at)
+    reference["entry"] = {"price": 140, "observed_at": event_at.isoformat(),
+                          "source": "dhan_last_trade", "approximate": False}
+    row = {"id": "trade-exit-error", "entry_timestamp": event_at.isoformat(),
+           "exit_timestamp": exit_at.isoformat(), "result_state": "SL_HIT",
+           "market_context": {"option_reference": reference}}
+    analytics = _Analytics([row])
+    monkeypatch.setattr(capture, "_price_evidence", AsyncMock(
+        side_effect=RuntimeError("price history unavailable"),
+    ))
+
+    result = await _process_row(
+        SimpleNamespace(active_trades=[]), SimpleNamespace(), analytics, row, {}, {},
+        exit_at + timedelta(minutes=2),
+    )
+
+    assert result == 1
+    assert [item[3]["kind"] for item in analytics.events] == ["EXIT_MARKER"]
+    assert "Option final-exit premium capture deferred" in caplog.text
 
 
 @pytest.mark.asyncio

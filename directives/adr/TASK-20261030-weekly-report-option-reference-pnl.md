@@ -115,7 +115,8 @@ Use the contract selected at the signal (`options_sizing.security_id`, exchange 
 - Use the event timestamp from the existing lifecycle event, not the later database-write time.
 - Prefer a pinned LTP observation whose last-trade timestamp is within five seconds of the event. `fetchers/price_fetcher.py:412-447` already rejects stale last trades; `execution/reference_prices.py:105-130` provides a nearby-quote selector with the same five-second bound.
 - If no eligible quote exists, use only the matching completed one-minute option close, sampled after that minute ended, and set `approximate: true`. The existing minute-normalization and close validation in `execution/reference_prices.py:30-85` is the reference behavior.
-- After a minute-history request completes, validate returned bars against a fresh cutoff; preserve each provider-supplied `sampled_at` and `complete` value unchanged as provenance.
+- After quote or minute-history requests complete, validate returned observations against a fresh post-fetch cutoff; preserve each provider observation timestamp and quality/completion metadata unchanged as provenance.
+- Persist the terminal-exit marker promptly, but defer exit-price lookup and capture until valid entry evidence exists. If the exit observation precedes the entry observation, leave exit evidence unset and retry against the original terminal event timestamp.
 - If neither source yields valid evidence, keep that side null and mark coverage incomplete. Do not substitute delta, `entry_limit`, option SL/T1/T2 projections, or zero.
 
 The API returns LTP, not a guaranteed executable bid or ask. The report must name the metric as a captured/reference premium change, not a fill or realized option P&L. Bid/ask execution-cost modelling is outside this ADR.
@@ -189,6 +190,7 @@ Revoke execution from `PUBLIC`, `anon`, and `authenticated`; grant only to `serv
 - Enrollment must not set `market_context.option_trailing`, even when the pinned contract is valid.
 - The option capture worker is separate from `update_option_atr_trailing` and from ATR history calculation. It may call the pinned quote/minute-price APIs but must not feed observations into ATR state.
 - Record entry, T1/T2, and exit event identities promptly. Mirror T1/T2 report events outside the legacy spot milestone shape, then replay durable evidence after restart. Run network price lookup and repair in a bounded background task, not in the protection path.
+- Persist a terminal-exit marker promptly, but do not persist an exit-price leg before valid entry evidence exists. Keep an exit whose observation time precedes the entry observation retryable; recover it against its original terminal event time.
 - On a closed trade with a missing exit capture, recovery may fetch only the pinned contract's matching historical minute. It cannot revise the spot exit or trade outcome.
 - A missing option price, database failure, or capability failure must leave the existing spot monitoring, stop checks, exit, and shutdown behavior available.
 
@@ -215,4 +217,4 @@ The work is ready for a release proposal only after the additive migration, capa
 
 The user approved implementation on 2026-10-30. Deliver the implementation as one feature change with the additive migration, tests, report changes, and documentation. The new accounting flag and database capability must be independently gated. Production migration application and runtime activation require separate human approval. `option_atr_enabled` and the approved ATR version remain unchanged throughout this rollout.
 
-Implementation source is on the target feature branch. Static Python compilation and whitespace checks passed; regression tests and the isolated SQL migration checks have not been run. The change is not ready for release until those checks and the listed independent migration/activation gates are complete.
+The implementation remains on the feature branch. Local verification for the review follow-up passed: `python -m pytest tests/ -q` (2,110 passed, 45 subtests passed, 12 warnings); focused capture coverage is 100% statements and branches (29 tests, 230 statements, 70 branches); the standalone report self-check, isolated PGlite migration/RPC check, Python compilation, Node syntax check, and `git diff --check` passed. No production migration was applied and the capture flag remains off; those rollout steps still require separate approval.
