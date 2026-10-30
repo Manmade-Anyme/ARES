@@ -503,6 +503,38 @@ async def test_tick_loop_sends_buffered_option_ticks_to_chronological_replay(mon
 
 
 @pytest.mark.asyncio
+async def test_empty_tick_batch_keeps_exchange_time_for_latest_fallback(monkeypatch):
+    from fetchers.tick_feed import TickFeed
+
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    received_at = datetime.now(timezone.utc)
+    t1_at = received_at.replace(microsecond=0) - timedelta(seconds=20)
+    delayed_exchange_at = t1_at - timedelta(minutes=1)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(trade["target_1"], event_time=t1_at + timedelta(seconds=1),
+                               market_event_time=t1_at)
+        assert trade["state"] == "T1_HIT"
+
+        feed = TickFeed()
+        feed._feed = object()
+        feed._on_ticks(None, {
+            "LTP": trade["entry_price"] + 1,
+            "LTT": delayed_exchange_at.strftime("%H:%M:%S"),
+        })
+        engine = SimpleNamespace(clear_cooldown=lambda: None)
+        monkeypatch.setattr(main_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(main_module.settings, "tick_exit_check_interval_seconds", 1)
+        monkeypatch.setattr(main_module, "_schedule_reference_recovery", lambda *_: None)
+
+        await main_module._sleep_with_tick_exits(2, feed, pm, engine)
+
+    assert trade["state"] == "T1_HIT"
+    assert trade["market_context"]["option_trailing"].get("exit") is None
+
+
+@pytest.mark.asyncio
 async def test_completed_candle_t1_same_second_guard_stays_unresolved():
     pm = _make_pm()
     trade = reference_trade()

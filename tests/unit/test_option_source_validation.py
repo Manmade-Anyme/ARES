@@ -172,6 +172,7 @@ def test_tick_feed_latest_observation_requires_recent_receipt():
     observation=feed.get_latest_observation()
     assert observation[0] == 22525
     assert observation[1].tzinfo == timezone.utc
+    assert observation[2] is None
     feed._latest_received_at=datetime.now(timezone.utc)-timedelta(seconds=6)
     assert feed.get_latest_observation(max_age_seconds=5) is None
     assert feed.get_latest_price() == 22525  # Legacy accessor keeps its price-only contract.

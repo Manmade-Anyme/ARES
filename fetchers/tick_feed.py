@@ -25,6 +25,7 @@ class TickFeed:
         self._lock = threading.Lock()
         self._latest_price: Optional[float] = None
         self._latest_received_at: Optional[datetime] = None
+        self._latest_market_at: Optional[datetime] = None
         self._feed: Optional[MarketFeed] = None
         self._ticks = deque(maxlen=50000)
         self._tick_sequence = 0
@@ -75,6 +76,7 @@ class TickFeed:
                         received_at = self._latest_received_at + timedelta(microseconds=1)
                     self._latest_price = price
                     self._latest_received_at = received_at
+                    self._latest_market_at = market_at
                     self._tick_sequence += 1
                     self._ticks.append({
                         "sequence": self._tick_sequence, "price": price,
@@ -116,22 +118,24 @@ class TickFeed:
         with self._lock:
             return self._latest_price
 
-    def get_latest_observation(self, max_age_seconds: float = 5) -> Optional[tuple[float, datetime]]:
-        """Return a recent valid index LTP with its local UTC receipt time.
+    def get_latest_observation(self, max_age_seconds: float = 5) -> Optional[tuple[float, datetime, Optional[datetime]]]:
+        """Return a recent valid index LTP with receipt and exchange times.
 
-        Receipt time is the observation timestamp, never an invented exchange
-        event time. A stale feed must not advance the new option lifecycle.
+        Receipt time records local arrival; exchange time is provider-supplied
+        and may be absent. A stale feed must not advance the option lifecycle.
         """
         if isinstance(max_age_seconds, bool) or not isfinite(max_age_seconds) or max_age_seconds < 0:
             return None
         with self._lock:
-            price, received_at = self._latest_price, self._latest_received_at
+            price, received_at, market_at = (
+                self._latest_price, self._latest_received_at, self._latest_market_at
+            )
         if price is None or received_at is None:
             return None
         age = (datetime.now(timezone.utc) - received_at).total_seconds()
         if not 0 <= age <= max_age_seconds:
             return None
-        return price, received_at
+        return price, received_at, market_at
 
     def get_observations_since(self):
         """Return each buffered tick once in WebSocket arrival order."""

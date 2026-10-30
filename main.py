@@ -247,12 +247,15 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
         from datetime import datetime as real_datetime
         observation_fn = getattr(tick_feed, "get_latest_observation", None)
         observation = observation_fn(max_age_seconds=5) if callable(observation_fn) else None
-        if (isinstance(observation, tuple) and len(observation) == 2
+        if (isinstance(observation, tuple) and len(observation) in {2, 3}
                 and isinstance(observation[0], (int, float)) and not isinstance(observation[0], bool)
                 and isfinite(observation[0]) and observation[0] > 0
                 and isinstance(observation[1], real_datetime) and observation[1].tzinfo is not None):
-            price, received_at = observation
+            price, received_at = observation[:2]
             tick_kwargs = {"event_time": received_at}
+            if (len(observation) == 3 and isinstance(observation[2], real_datetime)
+                    and observation[2].tzinfo is not None):
+                tick_kwargs["market_event_time"] = observation[2]
         else:
             # Keep legacy stop monitoring, but a stale price cannot mark T2.
             tick_kwargs = {"allow_t2_milestone": False}
