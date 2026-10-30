@@ -98,6 +98,42 @@ async def test_pinned_history_request_validates_rows_and_returns_provider_proven
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("history_kind", ["option", "spot"])
+async def test_history_completion_uses_request_start_not_response_time(monkeypatch, history_kind):
+    clock = {"now": START + timedelta(seconds=59)}
+
+    class FrozenClock:
+        strptime = staticmethod(datetime.strptime)
+
+        @classmethod
+        def now(cls, tz=None):
+            value = clock["now"]
+            return value.astimezone(tz) if tz is not None else value
+
+    monkeypatch.setattr("fetchers.price_fetcher.datetime", FrozenClock)
+
+    def provider(*_args, **_kwargs):
+        clock["now"] = START + timedelta(minutes=1, seconds=1)
+        return {"status": "success", "data": {
+            "timestamp": [START.isoformat()], "open": [100], "high": [110],
+            "low": [90], "close": [105], "volume": [1],
+        }}
+
+    fetcher = PriceFetcher.__new__(PriceFetcher)
+    fetcher.dhan = SimpleNamespace(intraday_minute_data=Mock(side_effect=provider))
+    if history_kind == "option":
+        contract = dict(security_id="53796", exchange_segment="NSE_FNO", expiry="2026-11-03",
+                        strike=22850, option_type="CE")
+        rows = await fetcher.fetch_option_minutes(contract, START)
+    else:
+        rows = await fetcher.fetch_spot_minutes(START)
+
+    assert len(rows) == 1
+    assert rows[0]["sampled_at"] == (START + timedelta(seconds=59)).isoformat()
+    assert rows[0]["complete"] is False
+
+
+@pytest.mark.asyncio
 async def test_spot_history_recovers_exit_close_after_restart():
     fetcher = PriceFetcher.__new__(PriceFetcher)
     provider = Mock(return_value={"status": "success", "data": {"timestamp": [START.isoformat()],

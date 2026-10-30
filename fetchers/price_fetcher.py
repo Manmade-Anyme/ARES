@@ -365,13 +365,20 @@ class PriceFetcher:
         if event > now:
             return []
         date = event.date().isoformat()
-        response = await self._reference_request(lambda: self.dhan.intraday_minute_data(
-            security_id, exchange, "OPTIDX", date, date, interval=1,
-        ))
+        request_started = []
+
+        def request():
+            request_started.append(datetime.now(timezone.utc))
+            return self.dhan.intraday_minute_data(
+                security_id, exchange, "OPTIDX", date, date, interval=1,
+            )
+
+        response = await self._reference_request(request)
         if not isinstance(response, dict) or response.get("status") != "success":
             raise ValueError("Pinned option minute history request failed")
-        # A caller-supplied cutoff is not the time Dhan actually responded.
-        sampled = parse_candle_timestamp(datetime.now(timezone.utc))
+        # The provider may return a still-forming last bar after crossing the
+        # minute boundary; response receipt cannot certify it was sampled closed.
+        sampled = parse_candle_timestamp(request_started[0])
         return normalize_option_minutes(response.get("data"), event.date(), sampled)
 
     async def fetch_spot_minutes(self, event_at, *, observed_at=None):
@@ -385,12 +392,21 @@ class PriceFetcher:
         if event > cutoff:
             return []
         date = event.date().isoformat()
-        response = await self._reference_request(lambda: self.dhan.intraday_minute_data(
-            settings.security_id, settings.exchange_segment, settings.instrument_type, date, date, interval=1,
-        ))
+        request_started = []
+
+        def request():
+            request_started.append(datetime.now(timezone.utc))
+            return self.dhan.intraday_minute_data(
+                settings.security_id, settings.exchange_segment, settings.instrument_type,
+                date, date, interval=1,
+            )
+
+        response = await self._reference_request(request)
         if not isinstance(response, dict) or response.get("status") != "success":
             raise ValueError("Spot minute history request failed")
-        sampled = parse_candle_timestamp(datetime.now(timezone.utc))
+        # Match option history: use the conservative request-start cutoff so
+        # response delay cannot age a partial candle into completed evidence.
+        sampled = parse_candle_timestamp(request_started[0])
         return normalize_option_minutes(response.get("data"), event.date(), sampled)
 
     async def fetch_option_observation(self, contract: dict):
