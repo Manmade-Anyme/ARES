@@ -80,6 +80,7 @@ def test_last_trading_day():
 def test_stopped_out_at_be_keeps_spot_outcome_separate_from_option_reference():
     trade = _trade("OI_WALL_REJECTION", 50.0, 100.0, 125.0)
     trade["result_state"] = "STOPPED_OUT_AT_BE"
+    trade["market_context"]["option_reference"]["exit_reason"] = "STOPPED_OUT_AT_BE"
     metrics = compute_metrics([trade])["overall"]
 
     assert metrics["wins"] == 1
