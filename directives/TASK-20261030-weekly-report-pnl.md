@@ -1,7 +1,7 @@
 ---
 task_id: "TASK-20261030"
 date: "2026-10-30"
-status: "approved for implementation; production migration and activation require separate approval"
+status: "approved for implementation and bounded 26–30 Oct recovery; production migration and capture activation require separate approval"
 author: "Codex PM Agent"
 objective: "Move the performance digest earlier and report one-lot option reference P&L only from observed entry and final-exit premiums."
 ---
@@ -22,9 +22,17 @@ option premium at entry and the observed premium at final exit. Spot T1/T2 remai
 milestone context and do not allocate partial P&L.
 
 A manual report for 26–30 Oct 2026 was delivered on 30 Oct at approximately
-16:19 IST. The production audit found no option-price capture for the 16 trades
-in that week or the 381 closed rows checked, so the historical option P&L cannot
-be reconstructed from recorded evidence.
+16:19 IST. The production audit found no stored option-price captures for that
+week's 16 trades or the 381 closed rows checked. A separate read-only Dhan
+history review returned matching pinned-security completed-minute bars
+(approximate marks) for 11 trades.
+Five trades pin the 27 Oct expiry, which was already expired. Dhan's rolling
+history endpoint rejects expiry code 0 (current/near expiry); code 1 is next
+expiry, so a same-strike minute from that series cannot prove it belongs to the
+stored 27 Oct contract. The user approved a one-time recovery for this exact
+weekly cohort, but the all-or-nothing write must remain blocked until all 16
+pairs have verified contract identity. The 11 validated pairs are approximate
+market references, not contemporaneous fills.
 
 ## 2. Objective and scope
 
@@ -46,6 +54,11 @@ be reconstructed from recorded evidence.
 5. Keep setup breakdowns for trade count, win rate, and spot points. Do not
    retain their spot-derived currency estimates. The new option P&L is an
    overall period metric; setup-level premium P&L is outside this scope.
+6. Backfill only the 16 report-eligible trades closed from 26 Oct 00:00 IST
+   through 31 Oct 00:00 IST, using validated Dhan completed-minute closes for
+   each pinned contract. Proceed only if all 16 pairs are verifiable; otherwise
+   write none and leave the period unavailable. No other historical rows are
+   in scope.
 
 ## 3. Acceptance criteria
 
@@ -89,8 +102,12 @@ stable trade ID:
 Both observations must refer to the same contract. Rejected, stale, non-finite,
 non-positive, missing, or out-of-order observations do not count toward price
 coverage. The eligible-trade denominator must match the report's closed-trade
-filters. Existing rows without these observations remain unpriced; do not
-backfill them from spot movement or planned bracket metadata.
+filters. The one approved historical exception is the exact 26–30 Oct 2026
+cohort above, using complete Dhan minute bars with verified contract identity
+and preserving provider and bar provenance as approximate evidence. Current
+read-only evidence covers only 11/16 trades, so the atomic write is not
+eligible yet. All other rows without timestamped prices remain unpriced; never
+infer marks from spot movement, delta, or planned bracket metadata.
 
 ## 5. Boundaries
 
@@ -100,14 +117,18 @@ backfill them from spot movement or planned bracket metadata.
 - Do not enable or bypass the existing option-ATR approval gate to obtain
   reference prices. Any required storage or capture path needs separate review
   and explicit rollout authorization.
-- Do not add partial-exit weighting at T1/T2, broker-fill claims, historical
-  estimates, or a spot-derived currency fallback.
-- No Supabase production schema/data changes are included in this directive.
+- Do not add partial-exit weighting at T1/T2, broker-fill claims, inferred
+  historical prices, or a spot-derived currency fallback.
+- The only approved historical data write is the all-or-nothing, service-role
+  backfill of the complete 16-row 26–30 Oct cohort, after PR #151 is merged and
+  its migration is applied and verified. The reviewed dry-run must validate
+  16/16 exact contract pairs; any shortfall aborts without writes. There is no
+  general historical-enrollment path.
 
 ## 6. Rollout gate
 
-The design is **approved for implementation**. Before numeric option premium
-points or a rupee equivalent are exposed in a production digest:
+Implementation and the exact-week recovery were approved. Before numeric
+option premium points or a rupee equivalent are exposed in a production digest:
 
 1. Implement reference capture behind an explicit gate independent of
    `option_atr_enabled`; confirm by review that it cannot alter trade protection
@@ -118,8 +139,14 @@ points or a rupee equivalent are exposed in a production digest:
 3. Require complete price coverage for a period before displaying either
    aggregate option metric. Until then, display both as `Unavailable` plus
    `N/M` coverage and percentage.
-4. Obtain separate human approval before applying the migration or enabling the
-   capture path. Do not promote, merge, or deploy as part of this directive.
+4. The human merges PR #151 and verifies its exact merged SHA. Obtain separate
+   human approval before applying the migration. Then review the dry-run; only
+   execute the already-authorized 16-row backfill if it validates 16/16 exact
+   contract pairs. Any shortfall leaves all rows unchanged and the report
+   unavailable. Obtain separate human approval before enabling future capture.
+   Do not apply the migration, activate capture, or post a Discord report as
+   part of this feature implementation.
 
-The manually delivered 30 Oct report is complete. This directive applies to
-future reporting behavior only.
+The manually delivered 30 Oct report is complete. The approved backfill may
+populate only its exact 26–30 Oct cohort after the rollout gates above; future
+capture remains independently gated.

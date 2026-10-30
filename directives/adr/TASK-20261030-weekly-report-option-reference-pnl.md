@@ -37,7 +37,7 @@ The selected reporting behavior is a hypothetical one-lot reference position hel
 - Enable `option_atr_enabled` or change `option_atr_approved_version`.
 - Change index or option stops, ATR calculations, exit triggers, dispatch, or broker execution.
 - Claim a broker fill or realized net-of-costs P&L. The reference uses observed LTP marks and excludes fees, spread crossing, and market impact.
-- Reinterpret the existing weighted `one_lot_reference_v1` records or retroactively enroll historical trades.
+- Reinterpret the existing weighted `one_lot_reference_v1` records or add a generalized historical-enrollment mechanism. The single explicitly approved 26–30 Oct 2026 cohort is handled by a separate bounded RPC below.
 - Change ML outcome labels or trade scores.
 
 ## 3. Decision
@@ -179,9 +179,42 @@ list_incomplete_option_reference(p_limit integer, p_offset integer) -> jsonb
 - Include the pinned contract, original event time, terminal/open state, current reference revision, and only the evidence needed for recovery.
 - Exclude all rows that lack the new formula marker; do not auto-enroll historical rows.
 
+### `apply_option_reference_weekly_backfill`
+
+```text
+apply_option_reference_weekly_backfill(p_rows jsonb) -> jsonb
+```
+
+- This separate one-time RPC accepts only the 16 unique report-eligible closed
+  trade IDs whose exit timestamps are in `[2026-10-26 00:00 IST,
+  2026-10-31 00:00 IST)`, with `time_metrics_excluded = false`, non-null
+  `pnl_points`, and no exit-before-entry timestamp. Recompute that exact set
+  server-side and reject any mismatch, missing row, extra ID, or changed count.
+- Derive contract identity, lot size, entry/exit timestamps, and terminal
+  result from the locked `options_sizing` and trade row. Candidate payload fields
+  must match those canonical values. Lock all eligible rows in deterministic
+  ID order before validation.
+- Require both marks to be `completed_1m_close` with `approximate = true` and
+  preserve complete Dhan OHLCV provenance, event-minute bar start, minute-end
+  observation time, and a sample time after bar close. The regular Dhan source
+  must match the pinned security ID. If using Dhan's expired rolling-options
+  source, preserve the weekly expiry code and require it to match the pinned
+  expiry mapping as well as the returned strike and event minute. In this
+  cohort, code `0` is required for the 27 Oct contract, but Dhan rejects that
+  request; code `1` is next expiry and cannot be substituted. Reject missing,
+  malformed, stale, incomplete, wrong-minute, wrong-strike, wrong-expiry,
+  wrong-contract, or chronologically invalid evidence.
+- Validate all 16 candidate rows before writing any of them. Apply the entry,
+  terminal-exit marker, and final-exit evidence through the normal immutable
+  capture RPCs in the same transaction. Identical reruns are idempotent;
+  conflicting existing evidence aborts the whole transaction.
+- Grant execution only to `service_role`. This RPC cannot change trade outcome,
+  spot P&L, lifecycle/protection state, legacy weighted option P&L, ML labels, or
+  order data. It does not make other historical rows eligible.
+
 ### `option_reference_capture_capabilities`
 
-Return a distinct schema version (`one_lot_hold_to_exit_v1`) and `ready` only when the new scalar column, both RPCs, required service-role privileges, and table access are present. The existing `option_reference_accounting_v1` check is insufficient: its SQL predicates and recovery scan are coupled to `option_trailing` and `one_lot_reference_v1`.
+Return a distinct schema version (`one_lot_hold_to_exit_v1`) and `ready` only when the new scalar column, all three RPCs, required service-role privileges, and table access are present. The existing `option_reference_accounting_v1` check is insufficient: its SQL predicates and recovery scan are coupled to `option_trailing` and `one_lot_reference_v1`.
 
 Revoke execution from `PUBLIC`, `anon`, and `authenticated`; grant only to `service_role`, following the existing lifecycle migration. Do not alter the current ATR lifecycle or correction functions to accept the new formula.
 
@@ -200,11 +233,13 @@ Revoke execution from `PUBLIC`, `anon`, and `authenticated`; grant only to `serv
 
 Existing rows may contain `options_sizing.premium`, but it lacks a saved quote timestamp/source. Existing `option_trailing.original_option_entry` is populated from `entry_limit`, a derived limit, not a captured entry observation. Existing v1 milestone records therefore cannot be relabeled as this held-through-exit formula.
 
-A historical audit may attempt a separate reconstruction only when the original security ID, expiry, strike, type, event times, and matching option-minute bars are all available. A minute close is reconstructed approximate evidence, not the exact contemporaneous LTP. Provider retention and data availability are not guaranteed. Missing pins or bars leave the row unavailable. No automatic migration, delta fallback, or formula conversion is approved here.
+The user approved a single bounded recovery: the 16 report-eligible rows from 26–30 Oct 2026, and only if Dhan provides a completed minute close matching each stored contract pin and event minute. Eleven trades have completed-minute bars fetched by matching pinned security ID. Five trades pin the 27 Oct expiry and were already expired; the expired rolling endpoint has no expired security ID, requires ATM-relative strikes, and does not return a contract expiry field. The documented current/near-expiry code `0` is rejected by Dhan, while code `1` means next expiry. A matching strike and minute from code `1` therefore cannot establish the pinned 27 Oct contract. Do not store those five candidate pairs. The exact-week RPC remains all-or-nothing, so it stays unused unless another trusted source validates all 16 pairs. The 11 available pairs are approximate market marks, not exact event-time quotes or broker fills.
+
+The backfill RPC validates the exact 16-row report cohort and all evidence before one transactional write. Any missing or mismatched mark aborts the entire recovery; the report then remains unavailable for incomplete coverage. Current read-only verification has only 11/16 pairs, so no historical Supabase write is eligible. No general historical recovery, delta/spot estimate, planned-price substitution, or formula conversion is approved. Other historical rows remain unavailable unless separately authorized.
 
 ## 10. Verification Seams and Definition of Done
 
-Implementation should add focused tests at these public seams; this ADR does not run or authorize tests:
+Implementation should add focused tests at these public seams:
 
 1. **Gate isolation:** accounting-only enrollment with option ATR disabled creates `option_reference` but no `option_trailing`; no option ATR fetch/update/stop path is invoked. ATR-enabled behavior remains unchanged.
 2. **Capture selection:** exact pinned security ID only; a quote within five seconds is accepted, a stale/wrong-contract quote is rejected, and a matching completed one-minute close is accepted only as approximate.
@@ -212,11 +247,12 @@ Implementation should add focused tests at these public seams; this ADR does not
 4. **Missing data:** missing entry/exit remains null and counts as unavailable; equal observed premiums yield a true zero; incomplete rows do not enter option totals.
 5. **Persistence:** RPC retries are idempotent; evidence cannot be overwritten by a conflicting event; accounting writes cannot change lifecycle fields, ML labels, or legacy weighted values.
 6. **Recovery/report:** bounded recovery targets only new formula rows; report separates exact/approximate/unavailable coverage and does not mix legacy formulas.
+7. **Weekly backfill:** prove the exact 16-row set, service-role-only access, wrong-pin and wrong-expiry-code rejection, no partial writes on any invalid row, preservation of legacy fields, and idempotent identical replay. Exercise the Dhan adapter with exact-minute fixtures and ensure expired pins are not guessed from next-expiry rolling data. Run the guarded script locally in dry-run mode; it must never write or send Discord unless `--apply` is passed, the cohort is 16/16, and migration readiness succeeds.
 
 The work is ready for a release proposal only after the additive migration, capability probe, focused regression coverage, and report output are independently verified. Supabase migration application and runtime activation require their own explicit approval.
 
 ## 11. Approval and Rollout Gate
 
-The user approved implementation on 2026-10-30. Deliver the implementation as one feature change with the additive migration, tests, report changes, and documentation. The new accounting flag and database capability must be independently gated. Production migration application and runtime activation require separate human approval. `option_atr_enabled` and the approved ATR version remain unchanged throughout this rollout.
+The user approved implementation on 2026-10-30, then separately selected recovery of this exact week's 16 trades using Dhan minute-close history plus future capture. Deliver this as one update to PR #151 with the additive migration, bounded backfill tool, tests, report changes, and documentation. Current read-only verification supports only 11/16 exact contract pairs; do not apply a partial or unverified write. The historical write may run only after the human merges PR #151, the merged SHA is verified, and the migration has been separately approved, applied, and capability-checked. Review a later dry-run and execute only if it validates all 16 rows. Future capture remains off until a separate human activation approval. Do not send a Discord report as part of this change. `option_atr_enabled` and the approved ATR version remain unchanged throughout this rollout.
 
-The implementation remains on the feature branch. Local verification for the review follow-up passed: `python -m pytest tests/ -q` (2,117 passed, 45 subtests passed, 12 warnings); focused capture coverage is 100% statements and branches (36 tests, 262 statements, 80 branches); the standalone report self-check, isolated PGlite migration/RPC check, Python compilation, Node syntax check, and `git diff --check` passed. No production migration was applied and the capture flag remains off; those rollout steps still require separate approval.
+The implementation remains on the feature branch. Prior report/capture QA is recorded in the earlier implementation history. This follow-up adds isolated SQL and Dhan-adapter verification; record its exact results here after QA. No production migration has been applied, the capture flag remains off, and no historical Supabase data has been written.

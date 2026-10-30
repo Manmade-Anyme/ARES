@@ -322,6 +322,330 @@ REVOKE ALL ON FUNCTION public.list_incomplete_option_reference(integer, integer)
 GRANT EXECUTE ON FUNCTION public.list_incomplete_option_reference(integer, integer)
     TO service_role;
 
+-- One-time, exact-cohort recovery for 26–30 Oct 2026. This is deliberately
+-- separate from normal enrollment/capture and cannot enroll arbitrary history.
+CREATE OR REPLACE FUNCTION public.apply_option_reference_weekly_backfill(p_rows jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+DECLARE
+    v_input jsonb;
+    v_id uuid;
+    v_row public.trade_analytics%ROWTYPE;
+    v_context jsonb;
+    v_reference jsonb;
+    v_options jsonb;
+    v_contract jsonb;
+    v_entry jsonb;
+    v_exit jsonb;
+    v_evidence jsonb;
+    v_provenance jsonb;
+    v_event_at timestamptz;
+    v_entry_at timestamptz;
+    v_exit_at timestamptz;
+    v_bar_at timestamptz;
+    v_sampled_at timestamptz;
+    v_price numeric;
+    v_open numeric;
+    v_high numeric;
+    v_low numeric;
+    v_close numeric;
+    v_volume numeric;
+    v_side text;
+    v_provider text;
+    v_event jsonb;
+    v_result jsonb;
+    v_all_idempotent boolean := true;
+    v_input_ids uuid[];
+    v_eligible_ids uuid[];
+BEGIN
+    IF pg_catalog.jsonb_typeof(p_rows) IS DISTINCT FROM 'array'
+       OR pg_catalog.jsonb_array_length(p_rows) <> 16 THEN
+        RAISE EXCEPTION 'Weekly option-reference backfill requires exactly 16 rows';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.jsonb_array_elements(p_rows) AS item(value)
+        WHERE pg_catalog.jsonb_typeof(item.value) IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(item.value->'id') IS DISTINCT FROM 'string'
+    ) THEN
+        RAISE EXCEPTION 'Every weekly backfill row requires an object and trade id';
+    END IF;
+
+    SELECT pg_catalog.array_agg(parsed.id ORDER BY parsed.id)
+    INTO v_input_ids
+    FROM (
+        SELECT (item.value->>'id')::uuid AS id
+        FROM pg_catalog.jsonb_array_elements(p_rows) AS item(value)
+    ) AS parsed;
+    IF pg_catalog.cardinality(v_input_ids) <> 16
+       OR (SELECT pg_catalog.count(DISTINCT item.value->>'id')
+           FROM pg_catalog.jsonb_array_elements(p_rows) AS item(value)) <> 16 THEN
+        RAISE EXCEPTION 'Weekly backfill trade ids must be unique';
+    END IF;
+
+    -- Lock exactly the rows the report counts, in deterministic order.
+    PERFORM t.id
+    FROM public.trade_analytics AS t
+    WHERE t.exit_timestamp >= TIMESTAMPTZ '2026-10-26 00:00:00+05:30'
+      AND t.exit_timestamp < TIMESTAMPTZ '2026-10-31 00:00:00+05:30'
+      AND t.time_metrics_excluded = false
+      AND t.pnl_points IS NOT NULL
+      AND (t.entry_timestamp IS NULL OR t.exit_timestamp >= t.entry_timestamp)
+    ORDER BY t.id
+    FOR UPDATE;
+
+    SELECT pg_catalog.array_agg(t.id ORDER BY t.id)
+    INTO v_eligible_ids
+    FROM public.trade_analytics AS t
+    WHERE t.exit_timestamp >= TIMESTAMPTZ '2026-10-26 00:00:00+05:30'
+      AND t.exit_timestamp < TIMESTAMPTZ '2026-10-31 00:00:00+05:30'
+      AND t.time_metrics_excluded = false
+      AND t.pnl_points IS NOT NULL
+      AND (t.entry_timestamp IS NULL OR t.exit_timestamp >= t.entry_timestamp);
+    IF pg_catalog.cardinality(v_eligible_ids) IS DISTINCT FROM 16 THEN
+        RAISE EXCEPTION 'Expected exactly 16 report-eligible closed trades for 26–30 Oct 2026; found %',
+            COALESCE(pg_catalog.cardinality(v_eligible_ids), 0);
+    END IF;
+    IF v_input_ids IS DISTINCT FROM v_eligible_ids THEN
+        RAISE EXCEPTION 'Submitted trade ids must exactly match the report-eligible 26–30 Oct 2026 cohort';
+    END IF;
+
+    -- Validate every candidate against canonical rows before writing any row.
+    FOR v_input IN SELECT item.value FROM pg_catalog.jsonb_array_elements(p_rows) AS item(value)
+    LOOP
+        v_id := (v_input->>'id')::uuid;
+        SELECT * INTO STRICT v_row FROM public.trade_analytics WHERE id = v_id;
+        IF v_row.entry_timestamp IS NULL OR v_row.exit_timestamp IS NULL
+           OR v_row.result_state IS NULL OR v_row.result_state = 'OPEN'
+           OR v_row.exit_timestamp < v_row.entry_timestamp THEN
+            RAISE EXCEPTION 'Trade % is not a chronologically valid closed trade', v_id;
+        END IF;
+        IF pg_catalog.jsonb_typeof(v_input->'entry_event_at') IS DISTINCT FROM 'string'
+           OR pg_catalog.jsonb_typeof(v_input->'exit_event_at') IS DISTINCT FROM 'string'
+           OR (v_input->>'entry_event_at')::timestamptz IS DISTINCT FROM v_row.entry_timestamp
+           OR (v_input->>'exit_event_at')::timestamptz IS DISTINCT FROM v_row.exit_timestamp
+           OR v_input->>'exit_reason' IS DISTINCT FROM v_row.result_state THEN
+            RAISE EXCEPTION 'Trade % event times or terminal state do not match Supabase', v_id;
+        END IF;
+
+        v_options := v_row.market_context->'options_sizing';
+        IF pg_catalog.jsonb_typeof(v_options) IS DISTINCT FROM 'object'
+           OR COALESCE(v_options->>'security_id', '') !~ '^[0-9]+$'
+           OR COALESCE(v_options->>'expiry_date', '') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+           OR COALESCE(v_options->>'expiry_date', '') NOT IN ('2026-10-27', '2026-11-03')
+           OR COALESCE(v_options->>'option_type', '') NOT IN ('CE', 'PE')
+           OR pg_catalog.jsonb_typeof(v_options->'strike') IS DISTINCT FROM 'number'
+           OR pg_catalog.jsonb_typeof(v_options->'lot_size') IS DISTINCT FROM 'number'
+           OR (v_options->>'strike')::numeric <= 0
+           OR (v_options->>'lot_size')::numeric <= 0
+           OR (v_options->>'strike')::numeric::text IN ('NaN', 'Infinity', '-Infinity')
+           OR (v_options->>'lot_size')::numeric::text IN ('NaN', 'Infinity', '-Infinity')
+           OR (v_options->>'lot_size')::numeric <> pg_catalog.trunc((v_options->>'lot_size')::numeric)
+           OR (v_options->>'expiry_date')::date < (v_row.exit_timestamp AT TIME ZONE 'Asia/Kolkata')::date THEN
+            RAISE EXCEPTION 'Trade % has no valid pinned options_sizing contract', v_id;
+        END IF;
+        v_contract := pg_catalog.jsonb_build_object(
+            'security_id', v_options->>'security_id',
+            'exchange_segment', 'NSE_FNO',
+            'expiry_date', v_options->>'expiry_date',
+            'strike', (v_options->>'strike')::numeric,
+            'option_type', v_options->>'option_type',
+            'lot_size', (v_options->>'lot_size')::numeric);
+        IF pg_catalog.jsonb_typeof(v_input->'contract') IS DISTINCT FROM 'object'
+           OR (v_input->'contract'->>'security_id') IS DISTINCT FROM v_contract->>'security_id'
+           OR (v_input->'contract'->>'exchange_segment') IS DISTINCT FROM 'NSE_FNO'
+           OR (v_input->'contract'->>'expiry_date') IS DISTINCT FROM v_contract->>'expiry_date'
+           OR (v_input->'contract'->>'option_type') IS DISTINCT FROM v_contract->>'option_type'
+           OR (v_input->'contract'->>'strike')::numeric IS DISTINCT FROM (v_contract->>'strike')::numeric
+           OR (v_input->'contract'->>'lot_size')::numeric IS DISTINCT FROM (v_contract->>'lot_size')::numeric THEN
+            RAISE EXCEPTION 'Trade % submitted contract does not match its pinned options_sizing contract', v_id;
+        END IF;
+
+        FOR v_side, v_event_at, v_evidence IN
+            SELECT 'entry', v_row.entry_timestamp, v_input->'entry'
+            UNION ALL
+            SELECT 'exit', v_row.exit_timestamp, v_input->'exit'
+        LOOP
+            IF pg_catalog.jsonb_typeof(v_evidence) IS DISTINCT FROM 'object'
+               OR pg_catalog.jsonb_typeof(v_evidence->'price') IS DISTINCT FROM 'number'
+               OR pg_catalog.jsonb_typeof(v_evidence->'observed_at') IS DISTINCT FROM 'string'
+               OR v_evidence->>'source' IS DISTINCT FROM 'completed_1m_close'
+               OR pg_catalog.jsonb_typeof(v_evidence->'approximate') IS DISTINCT FROM 'boolean'
+               OR (v_evidence->>'approximate')::boolean IS DISTINCT FROM true
+               OR pg_catalog.jsonb_typeof(v_evidence->'provenance') IS DISTINCT FROM 'object' THEN
+                RAISE EXCEPTION 'Trade % % requires approximate completed-minute evidence', v_id, v_side;
+            END IF;
+            v_provenance := v_evidence->'provenance';
+            IF pg_catalog.jsonb_typeof(v_provenance) IS DISTINCT FROM 'object'
+               OR pg_catalog.jsonb_typeof(v_provenance->'provider') IS DISTINCT FROM 'string'
+               OR pg_catalog.jsonb_typeof(v_provenance->'bar_start') IS DISTINCT FROM 'string'
+               OR COALESCE(v_provenance->>'bar_start', '') = ''
+               OR pg_catalog.jsonb_typeof(v_provenance->'sampled_at') IS DISTINCT FROM 'string'
+               OR COALESCE(v_provenance->>'sampled_at', '') = ''
+               OR pg_catalog.jsonb_typeof(v_provenance->'complete') IS DISTINCT FROM 'boolean'
+               OR v_provenance->'complete' IS DISTINCT FROM 'true'::jsonb
+               OR pg_catalog.jsonb_typeof(v_provenance->'requested_exchange_segment') IS DISTINCT FROM 'string'
+               OR pg_catalog.jsonb_typeof(v_provenance->'requested_expiry_date') IS DISTINCT FROM 'string'
+               OR pg_catalog.jsonb_typeof(v_provenance->'requested_strike') IS DISTINCT FROM 'number'
+               OR pg_catalog.jsonb_typeof(v_provenance->'requested_option_type') IS DISTINCT FROM 'string'
+               OR pg_catalog.jsonb_typeof(v_provenance->'requested_lot_size') IS DISTINCT FROM 'number'
+               OR pg_catalog.jsonb_typeof(v_provenance->'open') IS DISTINCT FROM 'number'
+               OR pg_catalog.jsonb_typeof(v_provenance->'high') IS DISTINCT FROM 'number'
+               OR pg_catalog.jsonb_typeof(v_provenance->'low') IS DISTINCT FROM 'number'
+               OR pg_catalog.jsonb_typeof(v_provenance->'close') IS DISTINCT FROM 'number'
+               OR pg_catalog.jsonb_typeof(v_provenance->'volume') IS DISTINCT FROM 'number' THEN
+                RAISE EXCEPTION 'Trade % % has missing or malformed timestamp, request, or OHLCV provenance', v_id, v_side;
+            END IF;
+            IF v_provenance->>'provider' = 'dhan_intraday_minute'
+               AND pg_catalog.jsonb_typeof(v_provenance->'requested_security_id') IS DISTINCT FROM 'string' THEN
+                RAISE EXCEPTION 'Trade % % intraday provenance requires a requested security id', v_id, v_side;
+            ELSIF v_provenance->>'provider' = 'dhan_expired_rolling_options'
+               AND (pg_catalog.jsonb_typeof(v_provenance->'underlying_security_id') IS DISTINCT FROM 'string'
+                    OR pg_catalog.jsonb_typeof(v_provenance->'expiry_flag') IS DISTINCT FROM 'string'
+                    OR pg_catalog.jsonb_typeof(v_provenance->'expiry_code') IS DISTINCT FROM 'number'
+                    OR pg_catalog.jsonb_typeof(v_provenance->'returned_strike') IS DISTINCT FROM 'number'
+                    OR pg_catalog.jsonb_typeof(v_provenance->'moneyness') IS DISTINCT FROM 'string') THEN
+                RAISE EXCEPTION 'Trade % % expired rolling provenance is missing expiry or returned-strike fields', v_id, v_side;
+            END IF;
+            v_provider := v_provenance->>'provider';
+            v_bar_at := (v_provenance->>'bar_start')::timestamptz;
+            v_sampled_at := (v_provenance->>'sampled_at')::timestamptz;
+            v_price := (v_evidence->>'price')::numeric;
+            v_open := (v_provenance->>'open')::numeric;
+            v_high := (v_provenance->>'high')::numeric;
+            v_low := (v_provenance->>'low')::numeric;
+            v_close := (v_provenance->>'close')::numeric;
+            v_volume := (v_provenance->>'volume')::numeric;
+            IF NOT pg_catalog.isfinite(v_event_at)
+               OR v_event_at < TIMESTAMPTZ '2026-10-26 00:00:00+05:30'
+               OR v_event_at >= TIMESTAMPTZ '2026-10-31 00:00:00+05:30'
+               OR (v_event_at AT TIME ZONE 'Asia/Kolkata')::time < TIME '09:15'
+               OR (v_event_at AT TIME ZONE 'Asia/Kolkata')::time >= TIME '15:30'
+               OR v_bar_at <> pg_catalog.date_trunc('minute', v_event_at)
+               OR (v_evidence->>'observed_at')::timestamptz <> v_bar_at + INTERVAL '1 minute'
+               OR v_sampled_at < v_bar_at + INTERVAL '1 minute'
+               OR v_sampled_at > pg_catalog.clock_timestamp()
+               OR v_provenance->'complete' IS DISTINCT FROM 'true'::jsonb
+               OR v_provenance->>'requested_exchange_segment' IS DISTINCT FROM 'NSE_FNO'
+               OR v_provenance->>'requested_expiry_date' IS DISTINCT FROM v_contract->>'expiry_date'
+               OR v_provenance->>'requested_option_type' IS DISTINCT FROM v_contract->>'option_type'
+               OR (v_provenance->>'requested_strike')::numeric IS DISTINCT FROM (v_contract->>'strike')::numeric
+               OR (v_provenance->>'requested_lot_size')::numeric IS DISTINCT FROM (v_contract->>'lot_size')::numeric
+               OR v_price <= 0 OR v_price::text IN ('NaN', 'Infinity', '-Infinity')
+               OR v_open <= 0 OR v_high <= 0 OR v_low <= 0 OR v_close <= 0
+               OR v_open::text IN ('NaN', 'Infinity', '-Infinity')
+               OR v_high::text IN ('NaN', 'Infinity', '-Infinity')
+               OR v_low::text IN ('NaN', 'Infinity', '-Infinity')
+               OR v_close::text IN ('NaN', 'Infinity', '-Infinity')
+               OR v_volume < 0 OR v_volume::text IN ('NaN', 'Infinity', '-Infinity')
+               OR v_close IS DISTINCT FROM v_price
+               OR v_high < GREATEST(v_open, v_low, v_close)
+               OR v_low > LEAST(v_open, v_high, v_close) THEN
+                RAISE EXCEPTION 'Trade % % has invalid completed-minute provenance or OHLCV', v_id, v_side;
+            END IF;
+            IF v_provider = 'dhan_intraday_minute' THEN
+                IF v_provenance->>'requested_security_id' IS DISTINCT FROM v_contract->>'security_id' THEN
+                    RAISE EXCEPTION 'Trade % % intraday security id does not match its contract pin', v_id, v_side;
+                END IF;
+            ELSIF v_provider = 'dhan_expired_rolling_options' THEN
+                IF v_provenance->>'underlying_security_id' IS DISTINCT FROM '13'
+                   OR v_provenance->>'expiry_flag' IS DISTINCT FROM 'WEEK'
+                   OR (v_contract->>'expiry_date' = '2026-10-27'
+                       AND v_provenance->>'expiry_code' IS DISTINCT FROM '0')
+                   OR (v_contract->>'expiry_date' <> '2026-10-27'
+                       AND v_provenance->>'expiry_code' IS DISTINCT FROM '1')
+                   OR (v_provenance->>'returned_strike')::numeric IS DISTINCT FROM (v_contract->>'strike')::numeric
+                   OR COALESCE(v_provenance->>'moneyness', '') !~ '^ATM([+-][0-9]+)?$' THEN
+                    RAISE EXCEPTION 'Trade % % expired rolling bar returned strike/provenance does not match the pinned weekly strike', v_id, v_side;
+                END IF;
+            ELSE
+                RAISE EXCEPTION 'Trade % % has unsupported Dhan provider provenance', v_id, v_side;
+            END IF;
+        END LOOP;
+        IF (v_input->>'entry_event_at')::timestamptz > (v_input->>'exit_event_at')::timestamptz
+           OR (v_input->'entry'->>'observed_at')::timestamptz > (v_input->'exit'->>'observed_at')::timestamptz THEN
+            RAISE EXCEPTION 'Trade % option entry evidence must precede final exit evidence', v_id;
+        END IF;
+
+        v_context := COALESCE(v_row.market_context, '{}'::jsonb);
+        v_reference := v_context->'option_reference';
+        IF v_reference IS NOT NULL AND v_reference <> 'null'::jsonb THEN
+            IF pg_catalog.jsonb_typeof(v_reference) IS DISTINCT FROM 'object'
+               OR v_reference->>'formula_version' IS DISTINCT FROM 'one_lot_hold_to_exit_v1'
+               OR v_reference->'contract' IS DISTINCT FROM v_contract
+               OR (v_reference->>'entry_event_at')::timestamptz IS DISTINCT FROM v_row.entry_timestamp THEN
+                RAISE EXCEPTION 'Trade % already has a conflicting option reference', v_id;
+            END IF;
+        END IF;
+    END LOOP;
+
+    -- All checks passed. The function call is one transaction; any downstream
+    -- conflict rolls every row back. Existing capture RPCs retain their normal
+    -- enrolled-row-only boundary and validate each immutable event again.
+    FOR v_input IN SELECT item.value FROM pg_catalog.jsonb_array_elements(p_rows) AS item(value)
+                   ORDER BY item.value->>'id'
+    LOOP
+        v_id := (v_input->>'id')::uuid;
+        SELECT * INTO STRICT v_row FROM public.trade_analytics WHERE id = v_id;
+        v_context := COALESCE(v_row.market_context, '{}'::jsonb);
+        v_reference := v_context->'option_reference';
+        v_contract := pg_catalog.jsonb_build_object(
+            'security_id', v_row.market_context #>> '{options_sizing,security_id}',
+            'exchange_segment', 'NSE_FNO',
+            'expiry_date', v_row.market_context #>> '{options_sizing,expiry_date}',
+            'strike', (v_row.market_context #>> '{options_sizing,strike}')::numeric,
+            'option_type', v_row.market_context #>> '{options_sizing,option_type}',
+            'lot_size', (v_row.market_context #>> '{options_sizing,lot_size}')::numeric);
+        IF v_reference IS NULL OR v_reference = 'null'::jsonb THEN
+            v_reference := pg_catalog.jsonb_build_object(
+                'formula_version', 'one_lot_hold_to_exit_v1', 'revision', 1,
+                'status', 'TRACKING', 'reference_lots', 1, 'contract', v_contract,
+                'entry_event_at', v_row.entry_timestamp, 'milestones', '{}'::jsonb,
+                'applied_events', '{}'::jsonb);
+            v_context := pg_catalog.jsonb_set(v_context, '{option_reference}', v_reference, true);
+            UPDATE public.trade_analytics SET market_context = v_context WHERE id = v_id;
+        END IF;
+
+        v_result := public.apply_option_reference_capture(
+            v_id, COALESCE((v_reference->>'revision')::integer, 1),
+            'weekly-backfill-20261030-entry',
+            pg_catalog.jsonb_build_object('kind', 'ENTRY_CAPTURE',
+                'event_at', v_row.entry_timestamp, 'evidence', v_input->'entry'));
+        IF COALESCE((v_result->>'idempotent_skip')::boolean, false) IS false THEN
+            v_all_idempotent := false;
+        END IF;
+        v_reference := v_result->'option_reference';
+        v_result := public.apply_option_reference_capture(
+            v_id, (v_reference->>'revision')::integer,
+            'weekly-backfill-20261030-exit-marker',
+            pg_catalog.jsonb_build_object('kind', 'EXIT_MARKER',
+                'event_at', v_row.exit_timestamp, 'exit_reason', v_row.result_state));
+        IF COALESCE((v_result->>'idempotent_skip')::boolean, false) IS false THEN
+            v_all_idempotent := false;
+        END IF;
+        v_reference := v_result->'option_reference';
+        v_result := public.apply_option_reference_capture(
+            v_id, (v_reference->>'revision')::integer,
+            'weekly-backfill-20261030-exit',
+            pg_catalog.jsonb_build_object('kind', 'EXIT_CAPTURE',
+                'event_at', v_row.exit_timestamp, 'exit_reason', v_row.result_state,
+                'evidence', v_input->'exit'));
+        IF COALESCE((v_result->>'idempotent_skip')::boolean, false) IS false THEN
+            v_all_idempotent := false;
+        END IF;
+    END LOOP;
+
+    RETURN pg_catalog.jsonb_build_object(
+        'success', true, 'backfilled', 16, 'idempotent', v_all_idempotent);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.apply_option_reference_weekly_backfill(jsonb)
+    FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.apply_option_reference_weekly_backfill(jsonb)
+    TO service_role;
+
 CREATE OR REPLACE FUNCTION public.option_reference_capture_capabilities()
 RETURNS jsonb
 LANGUAGE sql SECURITY INVOKER SET search_path = '' AS $$
@@ -332,11 +656,14 @@ LANGUAGE sql SECURITY INVOKER SET search_path = '' AS $$
                 WHERE attrelid = pg_catalog.to_regclass('public.trade_analytics')
                   AND attname = 'option_reference_pnl_points' AND NOT attisdropped)
         AND pg_catalog.to_regprocedure('public.apply_option_reference_capture(uuid,integer,text,jsonb)') IS NOT NULL
+        AND pg_catalog.to_regprocedure('public.apply_option_reference_weekly_backfill(jsonb)') IS NOT NULL
         AND pg_catalog.to_regprocedure('public.list_incomplete_option_reference(integer,integer)') IS NOT NULL
         AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.trade_analytics', 'SELECT')
         AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.trade_analytics', 'UPDATE')
         AND pg_catalog.has_function_privilege(
             CURRENT_USER, pg_catalog.to_regprocedure('public.apply_option_reference_capture(uuid,integer,text,jsonb)'), 'EXECUTE')
+        AND pg_catalog.has_function_privilege(
+            CURRENT_USER, pg_catalog.to_regprocedure('public.apply_option_reference_weekly_backfill(jsonb)'), 'EXECUTE')
         AND pg_catalog.has_function_privilege(
             CURRENT_USER, pg_catalog.to_regprocedure('public.list_incomplete_option_reference(integer,integer)'), 'EXECUTE')
     );

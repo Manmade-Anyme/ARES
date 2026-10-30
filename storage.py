@@ -526,6 +526,35 @@ class AnalyticsLogger:
             raise RuntimeError("Option reference capture transaction did not confirm a commit")
         return result
 
+    def apply_option_reference_weekly_backfill(self, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Apply only the guarded, exact 26–30 Oct 2026 reference backfill cohort."""
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Weekly option-reference backfill requires SUPABASE_SERVICE_ROLE_KEY")
+        if not isinstance(rows, list) or len(rows) != 16:
+            raise ValueError("Weekly option-reference backfill requires exactly 16 rows")
+        ids = [row.get("id") for row in rows if isinstance(row, dict)]
+        if (len(ids) != 16 or any(not isinstance(value, str) or not value for value in ids)
+                or len(set(ids)) != 16):
+            raise ValueError("Weekly option-reference backfill requires 16 unique trade ids")
+        for row in rows:
+            if (not isinstance(row.get("contract"), dict)
+                    or not isinstance(row.get("entry"), dict)
+                    or not isinstance(row.get("exit"), dict)
+                    or not row.get("entry_event_at")
+                    or not row.get("exit_event_at")
+                    or not row.get("exit_reason")):
+                raise ValueError("Every weekly backfill row requires a contract, both marks and terminal event")
+        if not self.option_reference_capture_ready():
+            raise RuntimeError("Weekly option-reference backfill migration/capability is not ready")
+        response = self.supabase.rpc(
+            "apply_option_reference_weekly_backfill", {"p_rows": rows},
+        ).execute()
+        result = getattr(response, "data", None)
+        if (not isinstance(result, dict) or result.get("success") is not True
+                or result.get("backfilled") != 16):
+            raise RuntimeError("Supabase did not confirm the full weekly option-reference backfill")
+        return result
+
     def list_incomplete_option_reference(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """List a bounded page of independently enrolled trades missing premium evidence."""
         if type(limit) is not int or not 1 <= limit <= 500:

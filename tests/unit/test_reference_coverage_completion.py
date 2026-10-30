@@ -28,6 +28,8 @@ from execution.reference_prices import (
     option_target_evidence,
     spot_exit_evidence,
 )
+
+_TEST_OPTION_EXPIRY = (datetime.now(timezone.utc).date() + timedelta(days=7)).isoformat()
 from execution.reference_recovery import (
     _closed_trade,
     _complete_after_correction,
@@ -291,7 +293,7 @@ async def test_reference_recovery_legs_and_quote_requests():
         contract={
             "security_id": "9999",
             "exchange_segment": "NSE_FNO",
-            "expiry_date": "2026-10-30",
+            "expiry_date": _TEST_OPTION_EXPIRY,
             "strike": 24000.0,
             "option_type": "CE",
         },
@@ -396,7 +398,7 @@ async def test_price_fetcher_fetch_option_minutes_edge_cases():
     contract = {
         "security_id": "12345",
         "exchange_segment": "NSE_FNO",
-        "expiry_date": "2026-10-30",
+        "expiry_date": _TEST_OPTION_EXPIRY,
         "strike": 24000.0,
         "option_type": "CE",
     }
@@ -421,7 +423,7 @@ async def test_price_fetcher_fetch_option_observation_edge_cases():
     contract = {
         "security_id": "12345",
         "exchange_segment": "NSE_FNO",
-        "expiry_date": "2026-10-30",
+        "expiry_date": _TEST_OPTION_EXPIRY,
         "strike": 24000.0,
         "option_type": "CE",
     }
