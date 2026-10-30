@@ -12,15 +12,15 @@ from tests.unit.test_manm176_review_persistence import MemoryDatabase, make_sign
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('enabled,parity,backend,enrolled', [
-    (False, '', True, False), (True, '', True, False),
-    (True, 'unverified', True, False), (True, 'option_atr_v1', False, False),
-    (True, 'option_atr_v1', True, True),
+@pytest.mark.parametrize('enabled,approved,backend,ready,enrolled', [
+    (False, '', True, True, False), (True, '', True, True, False),
+    (True, 'unverified', True, True, False), (True, 'option_atr_v1', False, True, False),
+    (True, 'option_atr_v1', True, False, False), (True, 'option_atr_v1', True, True, True),
 ])
-async def test_actual_entry_requires_all_release_gates_and_preserves_prices(monkeypatch, enabled, parity, backend, enrolled):
+async def test_actual_entry_requires_all_release_gates_and_preserves_prices(monkeypatch, enabled, approved, backend, ready, enrolled):
     database = MemoryDatabase()
     monkeypatch.setattr(settings, 'option_atr_enabled', enabled)
-    monkeypatch.setattr(settings, 'option_atr_parity_version', parity)
+    monkeypatch.setattr(settings, 'option_atr_approved_version', approved)
     monkeypatch.setattr(settings, 'supabase_service_role_key', 'test-backend-only' if backend else '')
     signal = make_signal()
     signal.suggested_lots = signal.bracket.lots
@@ -28,7 +28,8 @@ async def test_actual_entry_requires_all_release_gates_and_preserves_prices(monk
     signal.option_sl = 95
     signal.market_context = {'tracking_mode':'SIGNAL_REFERENCE', 'unrelated': {'preserved':True}}
     original = deepcopy(signal.bracket)
-    with patch('position_manager.create_client',return_value=database), patch('position_manager.AnalyticsLogger'):
+    with patch('position_manager.create_client',return_value=database), patch('position_manager.AnalyticsLogger') as analytics:
+        analytics.return_value.option_reference_accounting_ready.return_value = ready
         pm = PositionManager()
         await pm.add_trade(signal, 24000)
     trade = pm.active_trades[0]

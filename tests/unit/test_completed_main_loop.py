@@ -18,6 +18,7 @@ async def test_no_completed_bar_keeps_tick_exits_and_pending_orders_running(monk
     positions = MagicMock()
     positions.active_trades = [{"id": "existing-paper-trade"}]
     positions.update_trades = AsyncMock(return_value=[])
+    positions.flush_pending_trade_updates = AsyncMock(return_value=True)
     dispatcher = MagicMock()
     dispatcher.on_spot = AsyncMock()
     collector = MagicMock()
@@ -64,6 +65,6 @@ async def test_no_completed_bar_keeps_tick_exits_and_pending_orders_running(monk
     # Exercise the actual sleep helper: existing exits and pending orders still
     # receive live prices throughout the two-second no-new-bar polling pause.
     assert positions.update_trades.await_count == 2
-    positions.update_trades.assert_awaited_with(22900.0)
+    positions.update_trades.assert_awaited_with(22900.0, allow_t2_milestone=False)
     assert dispatcher.on_spot.await_count == 2
     dispatcher.on_spot.assert_awaited_with(22900.0)

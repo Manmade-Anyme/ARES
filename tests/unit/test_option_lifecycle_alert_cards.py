@@ -59,6 +59,29 @@ def test_exit_retains_target_booking_separate_from_exited_remainder():
     assert "Targets model-booked: 100%" not in description
 
 
+def test_reference_points_show_missing_and_approximate_evidence():
+    snapshot = event()
+    snapshot["option_trailing"]["accounting_formula_version"] = "one_lot_reference_v1"
+    snapshot["option_trailing"]["accounting"] = {
+        "spot_booked_points": 36.5, "option_booked_points": 12.75,
+        "legs": {"T1": {"approximate": True}},
+    }
+    description = render_option_lifecycle_event(snapshot)["embeds"][0]["description"]
+    assert "Spot booked points (one-lot equivalent): 36.50" in description
+    assert "Option booked points (one-lot equivalent): 12.75 (includes minute-close approximation)" in description
+    snapshot["option_trailing"]["accounting"]["option_booked_points"] = None
+    description = render_option_lifecycle_event(snapshot)["embeds"][0]["description"]
+    assert "Option booked points (one-lot equivalent): unavailable" in description
+
+
+def test_candle_target_does_not_claim_exact_touch_time():
+    snapshot = event()
+    snapshot["option_trailing"]["accounting"] = {"legs": {"T2": {
+        "source_minute": "2026-10-23T10:59:00+05:30", "event_at": None}}}
+    description = render_option_lifecycle_event(snapshot)["embeds"][0]["description"]
+    assert "Detection candle close (exact touch time unavailable):" in description
+
+
 def test_pre_t2_exit_card_and_persistence_warning_do_not_claim_recorded_score():
     snapshot = event("ATR_SL_HIT", 1)
     snapshot["option_trailing"].update(phase="CLOSED", remaining_fraction=0)

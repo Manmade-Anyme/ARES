@@ -172,6 +172,7 @@ def test_tick_feed_latest_observation_requires_recent_receipt():
     observation=feed.get_latest_observation()
     assert observation[0] == 22525
     assert observation[1].tzinfo == timezone.utc
+    assert observation[2] is None
     feed._latest_received_at=datetime.now(timezone.utc)-timedelta(seconds=6)
     assert feed.get_latest_observation(max_age_seconds=5) is None
     assert feed.get_latest_price() == 22525  # Legacy accessor keeps its price-only contract.
@@ -201,7 +202,37 @@ async def test_new_policy_tick_uses_recent_receipt_and_skips_stale_lifecycle(mon
     monkeypatch.setattr(main.settings,"tick_exit_check_interval_seconds",1)
     await main._sleep_with_tick_exits(1,feed,positions,SimpleNamespace(),dispatcher,price_fetcher=fetcher)
     assert positions.update_trades.await_args.args == (22470,)
-    assert positions.update_trades.await_args.kwargs == ({"event_time":receipt} if fresh else {"include_option_policy":False})
+    assert positions.update_trades.await_args.kwargs == ({"event_time":receipt} if fresh else {"include_option_policy":False,"allow_t2_milestone":False})
+
+
+@pytest.mark.asyncio
+async def test_tick_sleep_replays_buffered_dhan_ticks_and_attempts_safe_ambiguity_resolution(monkeypatch):
+    from datetime import timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    import main
+    from fetchers.tick_feed import TickFeed
+
+    feed = TickFeed()
+    feed._feed = object()
+    ltt = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    feed._on_ticks(None, {"LTP": 22470, "LTT": ltt})
+    feed._on_ticks(None, {"LTP": 22469, "LTT": ltt})
+    positions = SimpleNamespace(active_trades=[{"state": "T1_HIT"}],
+        update_trades=AsyncMock(return_value=[]), record_reference_spot_quote=Mock(),
+        resolve_reference_ambiguities_from_feed=AsyncMock(return_value=0))
+    monkeypatch.setattr(main.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(main.settings, "tick_exit_check_interval_seconds", 1)
+    monkeypatch.setattr(main, "_schedule_reference_recovery", lambda *_: None)
+
+    await main._sleep_with_tick_exits(1, feed, positions, SimpleNamespace())
+
+    assert positions.update_trades.await_count == 2
+    assert positions.update_trades.await_args_list[0].args == (22470.0,)
+    assert positions.update_trades.await_args_list[1].args == (22469.0,)
+    assert all("market_event_time" in call.kwargs for call in positions.update_trades.await_args_list)
+    assert positions.record_reference_spot_quote.call_count == 2
+    positions.resolve_reference_ambiguities_from_feed.assert_awaited_once_with(feed)
 
 
 @pytest.mark.asyncio

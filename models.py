@@ -334,6 +334,7 @@ class OptionTrailingExit:
     reason: str
     event_at: str
     detected_at: str
+    received_at: Optional[str] = None
     option_close: Optional[float] = None
     option_stop: Optional[float] = None
     index_price: Optional[float] = None
@@ -347,6 +348,7 @@ class OptionTrailingExit:
             "reason": self.reason,
             "event_at": self.event_at,
             "detected_at": self.detected_at,
+            "received_at": self.received_at,
             "option_close": self.option_close,
             "option_stop": self.option_stop,
             "index_price": self.index_price,
@@ -365,6 +367,7 @@ class OptionTrailingContext:
     phase: str = "PRE_T1"                     # PRE_T1 | POST_T1 | POST_T2 | CLOSED
     highest_milestone: int = 0               # 0 | 1 | 2
     t1_at: Optional[str] = None
+    t1_activation_source: Optional[str] = None  # tick_exchange | tick_receipt | completed_candle
     t2_at: Optional[str] = None
     booked_fraction: float = 0.0
     remaining_fraction: float = 1.0
@@ -397,6 +400,12 @@ class OptionTrailingContext:
     last_index_mark: Optional[Dict[str, Any]] = None
     pending_index_observations: List[Dict[str, Any]] = field(default_factory=list)
     observed_index_guard_exit: Optional[Dict[str, Any]] = None
+    accounting: Dict[str, Any] = field(default_factory=lambda: {
+        "legs": {}, "spot_booked_points": None, "option_booked_points": None,
+    })
+    accounting_formula_version: Optional[str] = None
+    ambiguous_index_touch: Optional[Dict[str, Any]] = None
+    ambiguity_resolution: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -406,6 +415,7 @@ class OptionTrailingContext:
             "phase": self.phase,
             "highest_milestone": self.highest_milestone,
             "t1_at": self.t1_at,
+            "t1_activation_source": self.t1_activation_source,
             "t2_at": self.t2_at,
             "booked_fraction": self.booked_fraction,
             "remaining_fraction": self.remaining_fraction,
@@ -438,6 +448,10 @@ class OptionTrailingContext:
             "last_index_mark": self.last_index_mark,
             "pending_index_observations": self.pending_index_observations,
             "observed_index_guard_exit": self.observed_index_guard_exit,
+            "accounting": self.accounting,
+            "accounting_formula_version": self.accounting_formula_version,
+            "ambiguous_index_touch": self.ambiguous_index_touch,
+            "ambiguity_resolution": self.ambiguity_resolution,
         }
 
     @classmethod
@@ -461,6 +475,7 @@ class OptionTrailingContext:
                 reason=str(exit_data.get("reason", "")),
                 event_at=str(exit_data.get("event_at", "")),
                 detected_at=str(exit_data.get("detected_at", "")),
+                received_at=exit_data.get("received_at"),
                 option_close=exit_data.get("option_close"),
                 option_stop=exit_data.get("option_stop"),
                 index_price=exit_data.get("index_price"),
@@ -476,6 +491,7 @@ class OptionTrailingContext:
             phase=data.get("phase", "PRE_T1"),
             highest_milestone=int(data.get("highest_milestone", 0)),
             t1_at=data.get("t1_at"),
+            t1_activation_source=data.get("t1_activation_source"),
             t2_at=data.get("t2_at"),
             booked_fraction=float(data.get("booked_fraction", 0.0)),
             remaining_fraction=float(data.get("remaining_fraction", 1.0)),
@@ -508,4 +524,10 @@ class OptionTrailingContext:
             last_index_mark=data.get("last_index_mark"),
             pending_index_observations=list(data.get("pending_index_observations") or []),
             observed_index_guard_exit=data.get("observed_index_guard_exit"),
+            accounting=data.get("accounting") if isinstance(data.get("accounting"), dict) else {
+                "legs": {}, "spot_booked_points": None, "option_booked_points": None,
+            },
+            accounting_formula_version=data.get("accounting_formula_version"),
+            ambiguous_index_touch=data.get("ambiguous_index_touch"),
+            ambiguity_resolution=data.get("ambiguity_resolution"),
         )

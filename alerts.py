@@ -519,6 +519,8 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
         return "5-minute close crossed ATR Stop Loss. Runner exit triggered."
     if update_type == "OPTION_SL_FLOOR_HIT":
         return "Option SL Floor Hit on 5-Minute Close. Final 20% Runner Closed (Score: 2 retained)."
+    if update_type == "T2_TOUCHED":
+        return "Target 2 touched! ATR runner remains active."
     if update_type == "STOPPED_OUT_AT_BE":
         if is_option_atr:
             return "Trailing Stop Loss Hit at Entry. Remaining 50% Closed (Score: 1 retained)."
@@ -549,6 +551,9 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
     if not sizing:
         return ""
+    if update_type == "T2_TOUCHED":
+        return (f"\n🎯 **Option T2 reference**: ₹ {_number(sizing.get('target_2'))}. "
+                "Reference only; not an observed premium touch or executed exit.")
     entry = sizing.get("entry_limit") or sizing.get("premium") or None
     lot_size = sizing.get("lot_size", settings.nifty_lot_size)
     t1 = sizing.get("target_1") or sizing.get("option_target") or None
@@ -644,8 +649,12 @@ def render_option_lifecycle_event(event: dict) -> dict:
     display_id = trade.get("display_id") or trade.get("signal_id") or trade.get("id", "unavailable")
     target_booked = .8 if milestone >= 2 else .5 if milestone == 1 else 0.
     remaining = context.get("remaining_fraction", 1. - target_booked)
+    target_leg = (context.get("accounting") or {}).get("legs", {}).get(
+        "T1" if kind == "T1_HIT" else "T2" if kind in {"T2_HIT", "T2_REACHED"} else "", {})
+    candle_touch = bool(target_leg.get("source_minute") and target_leg.get("event_at") is None)
+    time_label = "Detection candle close (exact touch time unavailable)" if candle_touch else "Event time"
     lines = [
-        f"Event time: {_lifecycle_event_time(event.get('event_time') or exit_info.get('event_at'))}",
+        f"{time_label}: {_lifecycle_event_time(event.get('event_time') or exit_info.get('event_at'))}",
         f"Trade ID: {trade.get('id', 'unavailable')} | Event ID: {event.get('event_id') or event.get('id', 'unavailable')}",
         f"Contract: {contract.get('strike', 'unavailable')} {contract.get('option_type', 'unavailable')} | Expiry {contract.get('expiry', 'unavailable')} | {contract.get('exchange_segment', 'unavailable')} | Security ID {contract.get('security_id', 'unavailable')}",
         f"Phase: {phase} | Lifecycle: {'CLOSED' if terminal or phase == 'CLOSED' else 'OPEN'}",
@@ -659,6 +668,18 @@ def render_option_lifecycle_event(event: dict) -> dict:
                   f"Observed event detail: {event.get('detail') or 'unavailable'}"]
     elif kind != "NEW_SIGNAL":
         lines.append(f"Score: {milestone}{' retained' if terminal else ' recorded'}")
+    accounting = context.get("accounting") or {}
+    if kind != "NEW_SIGNAL" and context.get("accounting_formula_version") == "one_lot_reference_v1":
+        points_kind = "total" if terminal else "booked"
+        spot_points = accounting.get(f"spot_{points_kind}_points")
+        option_points = accounting.get(f"option_{points_kind}_points")
+        legs = accounting.get("legs") or {}
+        spot_approximate = any(leg.get("spot_approximate") is True for leg in legs.values() if isinstance(leg, dict))
+        option_approximate = any(leg.get("approximate") is True for leg in legs.values() if isinstance(leg, dict))
+        spot_suffix = " (includes minute-close approximation)" if spot_points is not None and spot_approximate else ""
+        option_suffix = " (includes minute-close approximation)" if option_points is not None and option_approximate else ""
+        lines.append(f"Spot {points_kind} points (one-lot equivalent): {_number(spot_points)}{spot_suffix}")
+        lines.append(f"Option {points_kind} points (one-lot equivalent): {_number(option_points)}{option_suffix}")
     guard_enabled = context.get("index_guard_enabled", milestone < 2)
     if terminal or milestone >= 2 or not guard_enabled:
         lines.append("Index guard: disabled")
@@ -766,6 +787,22 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     ):
         atr = (trade.get("market_context") or {}).get("atr_trailing") or {}
         description += f"\n🛑 **Previous SL**: {_number(atr.get('previous_sl', trade['stop_loss']))}\n📐 **Method**: 5-minute ATR trailing"
+    if update_type == "T2_TOUCHED":
+        marker = ((trade.get("market_context") or {}).get("target_milestones") or {}).get("t2") or {}
+        touched_at = marker.get("touched_at")
+        try:
+            touch_time = datetime.fromisoformat(touched_at.replace("Z", "+00:00")).astimezone(ist).strftime("%d-%b-%Y %H:%M:%S IST")
+        except (AttributeError, TypeError, ValueError):
+            touch_time = "unavailable"
+        if marker.get("time_basis") == "candle_start":
+            touch_time += " (candle start; exact touch time unknown)"
+        elif marker.get("time_basis") == "entry_boundary":
+            touch_time += " (entry boundary; exact touch time unknown)"
+        description += (f"\n🎯 **Spot T2**: {_number(marker.get('target_spot', trade.get('target_2')))}"
+                        f"\n🕒 **Time reference**: {touch_time}"
+                        "\n🏃 **Runner**: Active under ATR; no exit or additional booking.")
+        if marker.get("spot_points_from_entry") is not None:
+            description += f"\n📈 **Spot move to T2**: {_number(marker['spot_points_from_entry'], '+.2f')} points (reference)."
     description += _option_lifecycle_estimate(trade, spot, update_type)
 
     payload = {

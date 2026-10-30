@@ -6,6 +6,7 @@ connect/parse failure is caught so the caller can fall back to REST-only
 polling instead of crashing the main loop.
 """
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from fetchers.tick_feed import TickFeed
@@ -132,6 +133,52 @@ class TestTickFeedLifecycle(unittest.TestCase):
         _, kwargs = mock_feed_cls.call_args
         instruments = mock_feed_cls.call_args.args[1] if len(mock_feed_cls.call_args.args) > 1 else kwargs.get("instruments")
         self.assertIn((0, "13", 15), instruments)
+
+
+class TestTickFeedReferenceHistory(unittest.TestCase):
+
+    def setUp(self):
+        self.feed = TickFeed()
+
+    def test_dhan_ticks_preserve_arrival_order_but_do_not_certify_minute_completeness(self):
+        minute = datetime(2026, 10, 23, 9, 32, tzinfo=timezone.utc)
+        clock = [minute - timedelta(seconds=2), minute - timedelta(seconds=1),
+                 minute + timedelta(seconds=1), minute + timedelta(seconds=2),
+                 minute + timedelta(seconds=59), minute + timedelta(minutes=1),
+                 minute + timedelta(minutes=1, seconds=1)]
+        with patch.object(self.feed, "_now_utc", side_effect=clock):
+            for ltt, price in (("09:31:59", 100), ("09:32:01", 101),
+                               ("09:32:01", 102), ("09:32:59", 103),
+                               ("09:33:00", 104)):
+                self.feed._on_ticks(MagicMock(), {"LTP": price, "LTT": ltt})
+
+        observations, complete = self.feed.get_complete_minute_observations(
+            minute.isoformat(), now=minute + timedelta(minutes=1, seconds=1))
+        self.assertFalse(complete)
+        self.assertEqual(observations, [])
+        ticks = self.feed.get_observations_since()
+        self.assertEqual([row["price"] for row in ticks], [100, 101, 102, 103, 104])
+        self.assertEqual(ticks[1]["exchange_at"], ticks[2]["exchange_at"])
+
+    def test_tick_sequence_is_delivered_once_and_dhan_never_certifies_minute_history(self):
+        minute = datetime(2026, 10, 23, 9, 32, tzinfo=timezone.utc)
+        clock = [minute - timedelta(seconds=3), minute - timedelta(seconds=1),
+                 minute + timedelta(seconds=1), minute + timedelta(seconds=30),
+                 minute + timedelta(seconds=40), minute + timedelta(minutes=1, seconds=1),
+                 minute + timedelta(minutes=1, seconds=2)]
+        with patch.object(self.feed, "_now_utc", side_effect=clock):
+            for ltt in ("09:31:59", "09:32:01", "09:32:30"):
+                self.feed._on_ticks(MagicMock(), {"LTP": 100, "LTT": ltt})
+            first = self.feed.get_observations_since()
+            second = self.feed.get_observations_since()
+            self.feed._on_error(MagicMock(), RuntimeError("feed gap"))
+            self.feed._on_ticks(MagicMock(), {"LTP": 100, "LTT": "09:33:00"})
+
+        self.assertEqual(len(first), 3)
+        self.assertEqual(second, [])
+        _, complete = self.feed.get_complete_minute_observations(
+            minute.isoformat(), now=minute + timedelta(minutes=1, seconds=1))
+        self.assertFalse(complete)
 
 
 if __name__ == "__main__":

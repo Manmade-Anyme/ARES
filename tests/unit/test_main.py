@@ -114,7 +114,7 @@ class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(mock_sleep.await_count, 3)  # 6s / 2s steps
         self.assertEqual(position_manager.update_trades.await_count, 3)
-        position_manager.update_trades.assert_awaited_with(24000.0)
+        position_manager.update_trades.assert_awaited_with(24000.0, allow_t2_milestone=False)
 
     async def test_sl_hit_clears_engine_cooldown(self):
         tick_feed = MagicMock()
@@ -218,6 +218,7 @@ class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
     ):
         pm_instance = MockPM.return_value
         pm_instance.update_trades = AsyncMock(return_value=[])
+        pm_instance.flush_pending_trade_updates = AsyncMock(return_value=True)
         
         price_instance = MockPrice.return_value
         import types
@@ -280,6 +281,7 @@ class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
     ):
         pm_instance = MockPM.return_value
         pm_instance.update_trades = AsyncMock(return_value=[])
+        pm_instance.flush_pending_trade_updates = AsyncMock(return_value=True)
 
         price_instance = MockPrice.return_value
         import types
