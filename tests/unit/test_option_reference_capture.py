@@ -7,6 +7,8 @@ import pytest
 
 import execution.option_reference_capture as capture
 from execution.option_reference_capture import _process_row, run_option_reference_capture
+import fetchers.price_fetcher as price_fetcher_module
+from fetchers.price_fetcher import PriceFetcher, ReferencePriceDeferred
 from models import AresSignal, Direction, SetupType
 from position_manager import PositionManager
 
@@ -412,6 +414,44 @@ async def test_quote_after_post_fetch_cutoff_is_rejected(monkeypatch):
     assert evidence is None
 
 
+@pytest.mark.asyncio
+async def test_quote_retries_after_provider_cooldown(monkeypatch):
+    quote = {"price": 140, "observed_at": "2026-10-30T09:20:01+05:30",
+             "source": "dhan_last_trade"}
+    fetcher = SimpleNamespace(fetch_option_observation=AsyncMock(
+        side_effect=[ReferencePriceDeferred("cooldown"), quote],
+    ))
+    sleeps = []
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(capture.asyncio, "sleep", record_sleep)
+
+    result = await capture._quote(fetcher, CONTRACT, capture._contract_key(CONTRACT), {})
+
+    assert result == quote
+    assert fetcher.fetch_option_observation.await_count == 2
+    assert sleeps == [1.1]
+
+
+@pytest.mark.asyncio
+async def test_provider_cooldown_retry_is_bounded(monkeypatch):
+    request = AsyncMock(side_effect=ReferencePriceDeferred("still cooling down"))
+    sleeps = []
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(capture.asyncio, "sleep", record_sleep)
+
+    with pytest.raises(ReferencePriceDeferred):
+        await capture._retry_deferred(request)
+
+    assert request.await_count == 3
+    assert sleeps == [1.1, 1.1]
+
+
 def test_apply_sync_requires_positive_revision_and_updates_without_existing_lock_map():
     manager = SimpleNamespace()
     analytics = SimpleNamespace(apply_option_reference_capture=AsyncMock())
@@ -728,6 +768,13 @@ async def test_run_capture_feature_and_backend_gates(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("max_rows", [0, True])
+@pytest.mark.asyncio
+async def test_run_capture_requires_positive_integer_batch_size(max_rows):
+    with pytest.raises(ValueError, match="max_rows must be a positive integer"):
+        await run_option_reference_capture(SimpleNamespace(), object(), _Analytics(), max_rows=max_rows)
+
+
 @pytest.mark.asyncio
 async def test_run_capture_handles_scan_error_row_errors_and_offset_cycle(monkeypatch):
     monkeypatch.setattr("execution.option_reference_capture.settings.option_reference_accounting_enabled", True)
@@ -776,10 +823,148 @@ async def test_run_capture_merges_active_trade_with_queued_milestone(monkeypatch
     }])
     analytics.list_incomplete_option_reference = lambda limit, offset: []
 
-    result = await run_option_reference_capture(manager, SimpleNamespace(), analytics)
+    result = await run_option_reference_capture(
+        manager, SimpleNamespace(), analytics, max_rows=1,
+    )
 
     assert result == {"rows_seen": 1, "events_applied": 1}
     assert trade["market_context"]["option_reference"]["milestones"]["T1"] == marker
+
+
+@pytest.mark.asyncio
+async def test_run_capture_retries_rate_limited_history_for_later_contracts(monkeypatch):
+    monkeypatch.setattr("execution.option_reference_capture.settings.option_reference_accounting_enabled", True)
+    event_at = datetime(2026, 10, 30, 9, 20, tzinfo=IST)
+    rows = []
+    for trade_id, security_id in (("first", "51333"), ("second", "51334")):
+        reference = _reference(event_at)
+        reference["contract"]["security_id"] = security_id
+        rows.append({
+            "id": trade_id, "entry_timestamp": event_at.isoformat(),
+            "exit_timestamp": None, "result_state": "OPEN",
+            "market_context": {"option_reference": reference},
+        })
+    analytics = _Analytics(rows)
+    manager = SimpleNamespace(active_trades=[])
+    request_clock = [100.0]
+    requested_security_ids = []
+
+    class _Dhan:
+        def intraday_minute_data(self, security_id, exchange, instrument, start, end, *, interval):
+            requested_security_ids.append(str(security_id))
+            return {"status": "success", "data": {
+                "start_Time": [], "open": [], "high": [], "low": [],
+                "close": [], "volume": [],
+            }}
+
+    fetcher = PriceFetcher.__new__(PriceFetcher)
+    fetcher.dhan = _Dhan()
+
+    async def advance_cooldown(seconds):
+        request_clock[0] += seconds
+
+    monkeypatch.setattr(price_fetcher_module, "monotonic_time", SimpleNamespace(
+        monotonic=lambda: request_clock[0],
+    ))
+    monkeypatch.setattr(capture.asyncio, "sleep", advance_cooldown)
+
+    result = await run_option_reference_capture(
+        manager, fetcher, analytics, limit=10, max_rows=8,
+    )
+
+    assert result == {"rows_seen": 2, "events_applied": 0}
+    assert requested_security_ids == ["51333", "51334"]
+    assert request_clock[0] >= 101.1
+
+
+@pytest.mark.asyncio
+async def test_run_capture_rotates_queued_active_row_with_full_database_batch(monkeypatch):
+    monkeypatch.setattr("execution.option_reference_capture.settings.option_reference_accounting_enabled", True)
+    event_at = datetime(2026, 10, 30, 9, 20, tzinfo=IST)
+    database_rows = [{
+        "id": f"database-{index}", "entry_timestamp": event_at.isoformat(),
+        "exit_timestamp": None, "result_state": "OPEN",
+        "market_context": {"option_reference": _reference(event_at)},
+    } for index in range(8)]
+    active_reference = _reference(event_at)
+    active_trade = {
+        "id": "active-queued", "entry_timestamp": event_at.isoformat(),
+        "result_state": "OPEN", "market_context": {"option_reference": active_reference},
+    }
+    pending_event = {"kind": "MILESTONE", "name": "T1", "milestone": {
+        "event_at": (event_at + timedelta(minutes=1)).isoformat(),
+        "spot_target": 22870, "spot_price": None,
+        "source": "spot_observation", "time_basis": "spot_observation",
+    }}
+    manager = SimpleNamespace(
+        active_trades=[active_trade], _context_locks={},
+        _pending_option_reference_events={"active-queued": [pending_event]},
+    )
+    analytics = _Analytics(database_rows)
+    visited = []
+
+    async def record_row(_manager, _fetcher, _analytics, row, *_args):
+        visited.append(str(row["id"]))
+        return 0
+
+    monkeypatch.setattr(capture, "_process_row", record_row)
+
+    first = await run_option_reference_capture(manager, SimpleNamespace(), analytics, max_rows=8)
+
+    assert first == {"rows_seen": 8, "events_applied": 0}
+    assert "active-queued" in visited
+    assert manager._option_reference_recovery_offset == 7
+
+    visited.clear()
+    second = await run_option_reference_capture(manager, SimpleNamespace(), analytics, max_rows=8)
+
+    assert second == {"rows_seen": 2, "events_applied": 0}
+    assert "active-queued" in visited
+    assert "database-7" in visited
+
+
+@pytest.mark.asyncio
+async def test_run_capture_alternates_single_slot_between_multiple_active_and_database_rows(monkeypatch):
+    monkeypatch.setattr("execution.option_reference_capture.settings.option_reference_accounting_enabled", True)
+    event_at = datetime(2026, 10, 30, 9, 20, tzinfo=IST)
+    database_rows = [{
+        "id": "database", "entry_timestamp": event_at.isoformat(),
+        "exit_timestamp": None, "result_state": "OPEN",
+        "market_context": {"option_reference": _reference(event_at)},
+    }]
+    active_trades = []
+    pending = {}
+    for trade_id in ("active-a", "active-b"):
+        active_trades.append({
+            "id": trade_id, "entry_timestamp": event_at.isoformat(),
+            "result_state": "OPEN",
+            "market_context": {"option_reference": _reference(event_at)},
+        })
+        pending[trade_id] = [{"kind": "MILESTONE", "name": "T1", "milestone": {
+            "event_at": (event_at + timedelta(minutes=1)).isoformat(),
+            "spot_target": 22870, "spot_price": None,
+            "source": "spot_observation", "time_basis": "spot_observation",
+        }}]
+    manager = SimpleNamespace(
+        active_trades=active_trades, _context_locks={},
+        _pending_option_reference_events=pending,
+    )
+    analytics = _Analytics(database_rows)
+    visited = []
+
+    async def record_row(_manager, _fetcher, _analytics, row, *_args):
+        visited.append(str(row["id"]))
+        return 0
+
+    monkeypatch.setattr(capture, "_process_row", record_row)
+
+    for expected in ("active-a", "database", "active-b", "database"):
+        visited.clear()
+        result = await run_option_reference_capture(
+            manager, SimpleNamespace(), analytics, max_rows=1,
+        )
+        assert result == {"rows_seen": 1, "events_applied": 0}
+        assert visited == [expected]
 
 
 @pytest.mark.asyncio

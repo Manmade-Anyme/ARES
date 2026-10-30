@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from config import settings
 from execution.reference_prices import option_target_evidence
+from fetchers.price_fetcher import ReferencePriceDeferred
 from oi_watch_context import parse_candle_timestamp
 
 log = logging.getLogger(__name__)
@@ -79,10 +80,25 @@ def _evidence(event_at, *, quote, bars, now):
     )
 
 
+async def _retry_deferred(request):
+    """Retry lower-priority evidence after the provider cooldown expires."""
+    attempt = 0
+    while True:
+        try:
+            return await request()
+        except ReferencePriceDeferred:
+            if attempt >= 2:
+                raise
+            attempt += 1
+            await asyncio.sleep(1.1)
+
+
 async def _quote(fetcher, contract, key, cache):
     if key not in cache:
         try:
-            cache[key] = await fetcher.fetch_option_observation(contract)
+            cache[key] = await _retry_deferred(
+                lambda: fetcher.fetch_option_observation(contract),
+            )
         except Exception as exc:
             # Reference observations yield to live market protection; a later
             # pass can use the completed minute close instead.
@@ -96,7 +112,9 @@ async def _minutes(fetcher, contract, event_at, cache):
     key = (*_contract_key(contract), event.date().isoformat())
     if key not in cache:
         try:
-            cache[key] = await fetcher.fetch_option_minutes(contract, event)
+            cache[key] = await _retry_deferred(
+                lambda: fetcher.fetch_option_minutes(contract, event),
+            )
         except Exception as exc:
             cache[key] = []
             log.debug("Pinned option minute history deferred for %s: %s", key[0], exc)
@@ -278,6 +296,8 @@ async def _process_row(manager, fetcher, analytics, row, quote_cache, minute_cac
 async def run_option_reference_capture(manager, fetcher, analytics, *, limit=DEFAULT_SCAN_LIMIT,
                                        max_rows=MAX_ROWS_PER_PASS):
     """Persist queued spot milestones and capture missing option entry/exit marks."""
+    if type(max_rows) is not int or max_rows < 1:
+        raise ValueError("max_rows must be a positive integer")
     if (not getattr(settings, "option_reference_accounting_enabled", False)
             or fetcher is None or getattr(analytics, "_option_backend_configured", False) is not True):
         return {"rows_seen": 0, "events_applied": 0}
@@ -295,17 +315,45 @@ async def run_option_reference_capture(manager, fetcher, analytics, *, limit=DEF
     except Exception:
         log.warning("Option reference recovery scan failed", exc_info=True)
         rows = []
-    rows_by_id = {str(row.get("id")): row for row in rows if row.get("id") is not None}
+    database_rows = {str(row.get("id")): row for row in rows if row.get("id") is not None}
+    queued_active_rows = []
     for trade in getattr(manager, "active_trades", []):
         local = _row_from_active(trade)
         if local is None:
             continue
         key = str(local.get("id") or "")
-        if key in getattr(manager, "_pending_option_reference_events", {}):
-            rows_by_id.setdefault(key, local)
-    selected = list(rows_by_id.values())[:max_rows]
+        if (key in getattr(manager, "_pending_option_reference_events", {})
+                and key not in database_rows):
+            queued_active_rows.append(local)
+
+    active_selected = []
+    if queued_active_rows:
+        active_offset = getattr(manager, "_option_reference_active_recovery_offset", 0)
+        active_offset %= len(queued_active_rows)
+        rotated_active = queued_active_rows[active_offset:] + queued_active_rows[:active_offset]
+        if max_rows == 1 and database_rows:
+            active_next = getattr(manager, "_option_reference_single_slot_active_next", True)
+            manager._option_reference_single_slot_active_next = not active_next
+            if active_next:
+                active_selected = rotated_active[:1]
+                manager._option_reference_active_recovery_offset = (
+                    active_offset + 1
+                ) % len(queued_active_rows)
+        else:
+            active_selected = rotated_active[:1]
+            manager._option_reference_active_recovery_offset = (
+                active_offset + 1
+            ) % len(queued_active_rows)
+            manager._option_reference_single_slot_active_next = True
+    else:
+        manager._option_reference_active_recovery_offset = 0
+        manager._option_reference_single_slot_active_next = True
+
+    database_budget = max(0, max_rows - len(active_selected))
+    database_selected = list(database_rows.values())[:database_budget]
+    selected = active_selected + database_selected
     if rows:
-        next_offset = offset + min(len(rows), max_rows)
+        next_offset = offset + len(database_selected)
         manager._option_reference_recovery_offset = (
             next_offset if len(rows) == limit or next_offset < offset + len(rows) else 0
         )
