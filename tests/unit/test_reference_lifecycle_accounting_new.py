@@ -101,6 +101,35 @@ async def test_provider_certified_tick_history_resolves_ambiguity_and_persists_c
 
 
 @pytest.mark.asyncio
+async def test_t1_only_ambiguity_resolution_persists_with_distinct_event_id():
+    pm = _make_pm()
+    trade = reference_trade()
+    pm.active_trades = [trade]
+    minute = datetime(2026, 10, 23, 9, 32, tzinfo=IST)
+    ticks = [{"observed_at": (minute + timedelta(seconds=second)).isoformat(),
+              "price": price, "source": "dhan_websocket_tick"}
+             for second, price in [(10, 22560), (20, 22525)]]
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(22525, event_time=minute + timedelta(seconds=20))
+        await pm.update_trades(22535, candle_high=22560, candle_low=22520,
+            candle_timestamp=minute)
+        assert trade["market_context"]["option_trailing"]["ambiguous_index_touch"]["kind"] == "T1_ENTRY"
+        assert pm.analytics.rows[-1]["option_trailing"]["ambiguous_index_touch"] is not None
+        feed = SimpleNamespace(get_complete_minute_observations=lambda _: (ticks, True))
+        assert await pm.resolve_reference_ambiguities_from_feed(feed) == 1
+
+    opt = trade["market_context"]["option_trailing"]
+    assert trade["state"] == "T1_HIT"
+    assert opt["ambiguity_resolution"]["outcome"] == "T1_ONLY"
+    assert opt["ambiguous_index_touch"] is None
+    assert len(pm.analytics.rows) == 3
+    assert pm.analytics.rows[-1]["option_trailing"]["ambiguous_index_touch"] is None
+    from models import OptionTrailingContext
+    restored = OptionTrailingContext.from_dict(pm.analytics.rows[-1]["option_trailing"])
+    assert restored.ambiguous_index_touch is None
+
+
+@pytest.mark.asyncio
 async def test_incomplete_tick_feed_cannot_resolve_ambiguity():
     pm = _make_pm()
     trade = reference_trade()

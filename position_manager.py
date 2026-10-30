@@ -1552,6 +1552,12 @@ class PositionManager:
         # Market identity is stable across retries; it does not depend on a stale revision.
         identity = ":".join(str(v) for v in (trade["id"], update_type or "WATERMARK", event_ts,
                             snapshot.get("locked_option_sl"), snapshot.get("last_processed_option_bar_end")))
+        resolution = snapshot.get("ambiguity_resolution")
+        if resolution:
+            # Keep the silent resolution distinct from the watermark snapshot
+            # that recorded the ambiguity, while retaining a retry-stable ID.
+            identity += ":resolution:" + ":".join(str(resolution.get(key) or "") for key in (
+                "source_minute", "event_at", "outcome", "evidence_source"))
         event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         alert_snapshot = None
         if update_type:
