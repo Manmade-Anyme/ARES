@@ -27,4 +27,5 @@
 | TASK-211 | 2026-10-08 | Jev in the first OI-wall ready-watch Discord embed | Implemented; local QA passed; PR review pending |
 | MANM-176 | 2026-10-15 | Improve Options Entry, Exit, and SL Calculations using Greeks and Limit Orders | Proposed |
 | TASK-258 | 2026-10-15 | TypeSafe SDK 0.7.5 Upgrade & Jev Model Compatibility Assessment | Proposed |
+| TASK-20261030 | 2026-10-30 | Independent One-Lot Option-Premium Reference Accounting | Approved for implementation |
 

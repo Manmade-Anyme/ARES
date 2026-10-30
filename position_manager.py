@@ -106,12 +106,19 @@ class PositionManager:
         # An earlier failed write may have finished before shutdown started.
         # Retry its frozen milestone once within the same shutdown deadline.
         milestones = getattr(self, "_pending_target_milestones", {})
-        if milestones and deadline > loop.time():
-            for trade_id, marker in tuple(milestones.items()):
+        reference_contexts = getattr(self, "_pending_option_reference_context", {})
+        pending_context_ids = set(milestones) | set(reference_contexts)
+        if pending_context_ids and deadline > loop.time():
+            for trade_id in tuple(pending_context_ids):
+                marker = milestones.get(trade_id)
+                refs = reference_contexts.get(str(trade_id))
                 self._queue_trade_write(
                     trade_id,
-                    lambda t_id=trade_id, snapshot=deepcopy(marker):
-                        self._persist_trade_context(t_id, t2_snapshot=snapshot),
+                    lambda t_id=trade_id, snapshot=deepcopy(marker), reference_snapshot=deepcopy(refs):
+                        self._persist_trade_context(
+                            t_id, t2_snapshot=snapshot,
+                            reference_milestone_snapshot=reference_snapshot,
+                        ),
                 )
             tasks = set(self._trade_writes.values())
             if tasks:
@@ -119,8 +126,8 @@ class PositionManager:
                 if pending:
                     print(f"Trade update shutdown drain timed out with {len(pending)} task(s) pending")
                     return False
-        if milestones:
-            print(f"Trade update shutdown drain left {len(milestones)} T2 milestone(s) unpersisted")
+        if milestones or reference_contexts:
+            print("Trade update shutdown drain left target milestone context unpersisted")
             return False
         pending_option = {trade_id: len(events) for trade_id, events in
                           getattr(self, "_option_pending", {}).items() if events}
@@ -370,6 +377,41 @@ class PositionManager:
             else:
                 market_context["option_atr_unavailable"] = "Incomplete pinned option bracket metadata"
 
+        # Report-reference accounting has a distinct schema gate and state
+        # object. It does not require or create option ATR/protection state.
+        market_context.pop("option_reference", None)
+        reference_requested = (
+            reference and settings.option_reference_accounting_enabled
+            and bool(settings.supabase_service_role_key)
+        )
+        if reference_requested:
+            try:
+                reference_ready = await asyncio.to_thread(self.analytics.option_reference_capture_ready)
+                reference_ready = reference_ready is True
+            except Exception:
+                logger.warning("Option reference capture capability check failed", exc_info=True)
+                reference_ready = False
+            opt_sizing = market_context.get("options_sizing") or {}
+            contract = self._validated_option_reference_contract(opt_sizing, entry_timestamp)
+            if reference_ready and contract:
+                market_context["option_reference"] = {
+                    "formula_version": "one_lot_hold_to_exit_v1",
+                    "revision": 1,
+                    "status": "TRACKING",
+                    "reference_lots": 1,
+                    "contract": contract,
+                    "entry_event_at": entry_timestamp,
+                    "entry": None,
+                    "milestones": {},
+                    "exit_event_at": None,
+                    "exit_reason": None,
+                    "exit": None,
+                    "premium_points": None,
+                    "applied_events": {},
+                }
+            elif reference_ready:
+                logger.info("Option reference accounting skipped for trade %s: pinned contract is incomplete", trade_id)
+
         if (market_context.get("option_trailing") or {}).get("policy_version") != "option_atr_v1":
             # New spot-ATR registrations participate in the T2 notification
             # milestone. Previously stored trades remain gated until reviewed.
@@ -450,6 +492,9 @@ class PositionManager:
                     enrolled = (trade_data.get("market_context") or {}).get("option_trailing")
                     if enrolled:
                         signal.market_context["option_trailing"] = deepcopy(enrolled)
+                    reference_state = (trade_data.get("market_context") or {}).get("option_reference")
+                    if reference_state:
+                        signal.market_context["option_reference"] = deepcopy(reference_state)
                     return trade_id, "BOUND"
             except Exception as e:
                 print(f"Failed to push new trade to Supabase (attempt {attempt}): {e}")
@@ -560,12 +605,19 @@ class PositionManager:
                 return events  # Skip update if still not initialized
 
         # A successful alert is not repeated while a failed context write retries.
-        for trade_id, marker in tuple(getattr(self, "_pending_target_milestones", {}).items()):
+        pending_t2 = getattr(self, "_pending_target_milestones", {})
+        pending_reference = getattr(self, "_pending_option_reference_context", {})
+        for trade_id in set(pending_t2) | set(pending_reference):
             if trade_id not in self._trade_writes:
+                marker = pending_t2.get(trade_id)
+                refs = pending_reference.get(str(trade_id))
                 self._queue_trade_write(
                     trade_id,
-                    lambda t_id=trade_id, snapshot=deepcopy(marker):
-                        self._persist_trade_context(t_id, t2_snapshot=snapshot),
+                    lambda t_id=trade_id, snapshot=deepcopy(marker), reference_snapshot=deepcopy(refs):
+                        self._persist_trade_context(
+                            t_id, t2_snapshot=snapshot,
+                            reference_milestone_snapshot=reference_snapshot,
+                        ),
                 )
 
         high = candle_high if candle_high is not None else spot_price
@@ -836,6 +888,9 @@ class PositionManager:
                         opt_ctx["protection_mode"] = "ORIGINAL_OPTION_SL_FLOOR"
                     update_type = "T2_HIT"
                     event_price = trade["target_2"]
+                    self._queue_option_reference_target_touch(
+                        trade, "T2", price_event_ts, trade["target_2"], spot_price, candle_timestamp,
+                    )
                     if reference_accounting:
                         self._capture_reference_leg(trade, "T2", event_price, price_event_ts, candle_timestamp)
                     events.append((trade["id"], update_type))
@@ -904,6 +959,25 @@ class PositionManager:
                     opt_ctx["index_guard_stop"] = trade["entry_price"]
                     self._seed_option_stop(trade, parse_candle_timestamp(t1_event_at))
 
+                milestone_event_at = t1_event_at if is_option_atr else event_ts
+                milestone_source = (
+                    "completed_candle_touch" if candle_timestamp is not None else
+                    "spot_tick_exchange_time" if market_event_time is not None else
+                    "spot_tick_receipt_time" if event_time is not None else
+                    "spot_observation"
+                )
+                milestone_time_basis = (
+                    "candle_start" if candle_timestamp is not None else
+                    "exchange_time" if market_event_time is not None else
+                    "receipt_time" if event_time is not None else
+                    "spot_observation"
+                )
+                self._queue_option_reference_milestone(
+                    trade, "T1", milestone_event_at, trade["target_1"],
+                    None if candle_timestamp is not None else spot_price,
+                    source=milestone_source, time_basis=milestone_time_basis,
+                )
+
                 update_type = "T1_HIT"
                 event_price = trade["target_1"]
                 if reference_accounting:
@@ -938,6 +1012,9 @@ class PositionManager:
                         opt_ctx["protection_mode"] = "ORIGINAL_OPTION_SL_FLOOR"
                     update_type_t2 = "T2_HIT"
                     event_price_t2 = trade["target_2"]
+                    self._queue_option_reference_target_touch(
+                        trade, "T2", price_event_ts, trade["target_2"], spot_price, candle_timestamp,
+                    )
                     if reference_accounting:
                         self._capture_reference_leg(trade, "T2", event_price_t2, price_event_ts, candle_timestamp)
                     events.append((trade["id"], update_type_t2))
@@ -997,18 +1074,108 @@ class PositionManager:
         marker = {"touched_at": event_ts, "time_basis": time_basis, "target_spot": target,
                   "spot_points_from_entry": round(sign * (float(target) - float(trade["entry_price"])), 2)}
         trade.setdefault("market_context", {}).setdefault("target_milestones", {})["t2"] = marker
+        self._queue_option_reference_milestone(
+            trade, "T2", event_ts, target, spot_price,
+            source="completed_candle_touch" if candle_timestamp is not None else "spot_observation",
+            time_basis=time_basis,
+        )
         self.__dict__.setdefault("_pending_target_milestones", {})[trade["id"]] = deepcopy(marker)
+        reference_snapshot = deepcopy((trade.get("market_context") or {}).get("option_reference_milestones"))
         self._queue_trade_write(
             trade["id"],
-            lambda t_id=trade["id"], snapshot=deepcopy(marker):
-                self._persist_trade_context(t_id, t2_snapshot=snapshot),
+            lambda t_id=trade["id"], snapshot=deepcopy(marker), refs=reference_snapshot:
+                self._persist_trade_context(t_id, t2_snapshot=snapshot,
+                                            reference_milestone_snapshot=refs),
         )
         self._queue_trade_alert(trade, target, "T2_TOUCHED")
         return True
 
-    def _persist_trade_context(self, trade_id, atr_snapshot=None, t2_snapshot=None):
+    @staticmethod
+    def _validated_option_reference_contract(sizing, entry_timestamp):
+        """Validate a one-lot report pin without consulting bracket execution fields."""
+        try:
+            security_id = str(sizing.get("security_id") or "").strip()
+            expiry = datetime.strptime(str(sizing.get("expiry_date") or ""), "%Y-%m-%d").date()
+            event_at = parse_candle_timestamp(entry_timestamp)
+            strike_raw = sizing.get("strike")
+            lot_raw = sizing.get("lot_size")
+            if isinstance(strike_raw, bool) or isinstance(lot_raw, bool):
+                return None
+            strike, lot_size = float(strike_raw), float(lot_raw)
+            option_type = str(sizing.get("option_type") or "").upper()
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+        if (not security_id.isdigit() or int(security_id) <= 0
+                or not isfinite(strike) or strike <= 0 or not strike.is_integer()
+                or not isfinite(lot_size) or lot_size <= 0 or not lot_size.is_integer()
+                or expiry < event_at.date() or option_type not in {"CE", "PE"}):
+            return None
+        return {
+            "security_id": security_id,
+            "exchange_segment": "NSE_FNO",
+            "expiry_date": expiry.isoformat(),
+            "strike": int(strike),
+            "option_type": option_type,
+            "lot_size": int(lot_size),
+        }
+
+    def _queue_option_reference_milestone(
+        self, trade, name, event_at, spot_target, spot_price, *, source, time_basis,
+    ):
+        """Queue a spot-only T1/T2 marker for the independent background worker."""
+        context = trade.get("market_context") or {}
+        reference = context.get("option_reference")
+        if (not isinstance(reference, dict)
+                or reference.get("formula_version") != "one_lot_hold_to_exit_v1"
+                or name not in {"T1", "T2"}):
+            return False
+        try:
+            event = parse_candle_timestamp(event_at).isoformat()
+            target = float(spot_target)
+            price = float(spot_price) if spot_price is not None else None
+        except (TypeError, ValueError, OverflowError, OSError):
+            return False
+        if not isfinite(target) or target <= 0 or (price is not None and (not isfinite(price) or price <= 0)):
+            return False
+        milestones = reference.setdefault("milestones", {})
+        marker = milestones.get(name)
+        is_new = not isinstance(marker, dict)
+        if is_new:
+            marker = {
+                "event_at": event,
+                "spot_target": target,
+                "spot_price": price,
+                "source": source,
+                "time_basis": time_basis,
+            }
+            milestones[name] = marker
+        context.setdefault("option_reference_milestones", {})[name] = deepcopy(marker)
+        self.__dict__.setdefault("_pending_option_reference_context", {})[str(trade["id"])] = deepcopy(
+            context["option_reference_milestones"]
+        )
+        if not is_new:
+            return False
+        pending = self.__dict__.setdefault("_pending_option_reference_events", {})
+        events = pending.setdefault(str(trade["id"]), [])
+        events.append({"kind": "MILESTONE", "name": name, "milestone": deepcopy(marker)})
+        return True
+
+    def _queue_option_reference_target_touch(self, trade, name, event_at, target, spot_price, candle_timestamp):
+        """Use shared timestamp/source labels for target touches from a spot observation."""
+        from_candle = candle_timestamp is not None
+        return self._queue_option_reference_milestone(
+            trade, name, event_at, target, None if from_candle else spot_price,
+            source="completed_candle_touch" if from_candle else "spot_observation",
+            time_basis="candle_start" if from_candle else "spot_observation",
+        )
+
+    def _persist_trade_context(
+        self, trade_id, atr_snapshot=None, t2_snapshot=None, target_snapshot=None,
+        reference_milestone_snapshot=None,
+    ):
         """Merge owned context keys under the shared execution/ATR context lock."""
-        if atr_snapshot is None and t2_snapshot is None:
+        if (atr_snapshot is None and t2_snapshot is None and target_snapshot is None
+                and reference_milestone_snapshot is None):
             return
         with self._context_locks.setdefault(trade_id, threading.Lock()):
             response = self.supabase.table("trade_analytics").select("market_context").eq("id", trade_id).execute()
@@ -1017,9 +1184,18 @@ class PositionManager:
             context = dict(response.data[0].get("market_context") or {})
             if atr_snapshot is not None:
                 context["atr_trailing"] = atr_snapshot
+            if isinstance(target_snapshot, dict):
+                context["target_milestones"] = {
+                    **(context.get("target_milestones") or {}), **target_snapshot,
+                }
             if t2_snapshot is not None:
                 context["target_milestones"] = {
                     **(context.get("target_milestones") or {}), "t2": t2_snapshot,
+                }
+            if isinstance(reference_milestone_snapshot, dict) and reference_milestone_snapshot:
+                context["option_reference_milestones"] = {
+                    **(context.get("option_reference_milestones") or {}),
+                    **reference_milestone_snapshot,
                 }
             updated = self.supabase.table("trade_analytics").update({"market_context": context}).eq("id", trade_id).execute()
             if t2_snapshot is not None:
@@ -1027,6 +1203,12 @@ class PositionManager:
                     raise RuntimeError("T2 milestone update was not persisted")
                 if self._pending_target_milestones.get(trade_id) == t2_snapshot:
                     self._pending_target_milestones.pop(trade_id, None)
+            if isinstance(reference_milestone_snapshot, dict) and reference_milestone_snapshot:
+                if not updated.data:
+                    raise RuntimeError("Option reference milestone context was not persisted")
+                pending = getattr(self, "_pending_option_reference_context", {})
+                if pending.get(str(trade_id)) == reference_milestone_snapshot:
+                    pending.pop(str(trade_id), None)
 
 
     async def _record_trade_update(self, trade, event_price, update_type, event_ts, pnl_points_override=None):
@@ -1034,6 +1216,17 @@ class PositionManager:
         opt = (trade.get("market_context") or {}).get("option_trailing")
         if opt and opt.get("policy_version") == "option_atr_v1":
             await self._record_option_transition(trade, event_price, update_type, event_ts)
+            target_snapshot = deepcopy((trade.get("market_context") or {}).get("target_milestones")) or None
+            reference_snapshot = deepcopy(
+                (trade.get("market_context") or {}).get("option_reference_milestones")
+            ) or None
+            if target_snapshot or reference_snapshot:
+                self._queue_trade_write(
+                    trade["id"],
+                    lambda t_id=trade["id"], snapshot=target_snapshot, refs=reference_snapshot:
+                        self._persist_trade_context(t_id, target_snapshot=snapshot,
+                                                    reference_milestone_snapshot=refs),
+                )
             return
         event_loop = asyncio.get_event_loop()
         # Prepare update payload
@@ -1054,15 +1247,20 @@ class PositionManager:
             atr.update(state=trade["state"], stop_loss=trade["stop_loss"])
         atr_snapshot = deepcopy(atr)
         t2_snapshot = deepcopy((trade.get("market_context", {}).get("target_milestones") or {}).get("t2"))
+        target_snapshot = deepcopy(trade.get("market_context", {}).get("target_milestones")) or None
+        reference_snapshot = deepcopy(
+            trade.get("market_context", {}).get("option_reference_milestones")
+        ) or None
 
         opt_trailing = trade.get("market_context", {}).get("option_trailing")
         opt_snapshot = deepcopy(opt_trailing) if opt_trailing else None
 
-        def _update(t_id=trade["id"], data=update_data, snapshot=atr_snapshot, milestone=t2_snapshot):
+        def _update(t_id=trade["id"], data=update_data, snapshot=atr_snapshot,
+                    milestone=t2_snapshot, target=target_snapshot, refs=reference_snapshot):
             terminal = data["state"] in ["CLOSED", "STOPPED_OUT"]
             if terminal:
                 self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
-            self._persist_trade_context(t_id, snapshot, milestone)
+            self._persist_trade_context(t_id, snapshot, milestone, target, refs)
             if not terminal:
                 self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
 

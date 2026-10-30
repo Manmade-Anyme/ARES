@@ -491,6 +491,86 @@ class AnalyticsLogger:
             logger.warning("Option reference accounting capability check failed", exc_info=True)
             return False
 
+    def option_reference_capture_ready(self) -> bool:
+        """Check the independent hold-to-exit capture schema and backend privileges."""
+        if not getattr(self, "_option_backend_configured", False):
+            return False
+        try:
+            response = self.supabase.rpc("option_reference_capture_capabilities", {}).execute()
+            result = getattr(response, "data", None)
+            return (isinstance(result, dict) and result.get("ready") is True
+                    and result.get("schema_version") == "one_lot_hold_to_exit_v1")
+        except Exception:
+            logger.warning("Option reference capture capability check failed", exc_info=True)
+            return False
+
+    def apply_option_reference_capture(
+        self, trade_id: str, expected_revision: int, event_id: str, event: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Atomically persist one immutable reference-price or spot-milestone event."""
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ValueError("expected_revision must be a positive integer")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("event_id must identify a stable source event")
+        if not isinstance(event, dict):
+            raise ValueError("event must be a JSON object")
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Option reference capture requires SUPABASE_SERVICE_ROLE_KEY")
+        response = self.supabase.rpc(
+            "apply_option_reference_capture",
+            {"p_trade_id": str(trade_id), "p_expected_revision": expected_revision,
+             "p_event_id": event_id, "p_event": event},
+        ).execute()
+        result = getattr(response, "data", None)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise RuntimeError("Option reference capture transaction did not confirm a commit")
+        return result
+
+    def apply_option_reference_weekly_backfill(self, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Apply only the guarded, exact 26–30 Oct 2026 reference backfill cohort."""
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Weekly option-reference backfill requires SUPABASE_SERVICE_ROLE_KEY")
+        if not isinstance(rows, list) or len(rows) != 16:
+            raise ValueError("Weekly option-reference backfill requires exactly 16 rows")
+        ids = [row.get("id") for row in rows if isinstance(row, dict)]
+        if (len(ids) != 16 or any(not isinstance(value, str) or not value for value in ids)
+                or len(set(ids)) != 16):
+            raise ValueError("Weekly option-reference backfill requires 16 unique trade ids")
+        for row in rows:
+            if (not isinstance(row.get("contract"), dict)
+                    or not isinstance(row.get("entry"), dict)
+                    or not isinstance(row.get("exit"), dict)
+                    or not row.get("entry_event_at")
+                    or not row.get("exit_event_at")
+                    or not row.get("exit_reason")):
+                raise ValueError("Every weekly backfill row requires a contract, both marks and terminal event")
+        if not self.option_reference_capture_ready():
+            raise RuntimeError("Weekly option-reference backfill migration/capability is not ready")
+        response = self.supabase.rpc(
+            "apply_option_reference_weekly_backfill", {"p_rows": rows},
+        ).execute()
+        result = getattr(response, "data", None)
+        if (not isinstance(result, dict) or result.get("success") is not True
+                or result.get("backfilled") != 16):
+            raise RuntimeError("Supabase did not confirm the full weekly option-reference backfill")
+        return result
+
+    def list_incomplete_option_reference(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """List a bounded page of independently enrolled trades missing premium evidence."""
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("limit must be an integer between 1 and 500")
+        if type(offset) is not int or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Option reference capture requires SUPABASE_SERVICE_ROLE_KEY")
+        response = self.supabase.rpc(
+            "list_incomplete_option_reference", {"p_limit": limit, "p_offset": offset},
+        ).execute()
+        result = getattr(response, "data", None)
+        if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
+            raise RuntimeError("Option reference recovery scan returned invalid data")
+        return result
+
     def list_incomplete_option_accounting(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """List a bounded page of new-policy closed trades needing evidence."""
         if type(limit) is not int or not 1 <= limit <= 500:

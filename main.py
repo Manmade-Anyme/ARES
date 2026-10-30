@@ -16,7 +16,11 @@ from config import settings, detector_names, SESSION_DISPLAY
 from config_profiles import EXPIRY_CONFIG, NON_EXPIRY_CONFIG
 from detectors.expiry_detector import is_expiry_day_from_api, is_expiry_day_simple, days_to_expiry
 from alerts import send_discord, send_startup_alert, send_error_alert, dispatch_oi_wall_watch_alerts
-from reports import send_performance_report, is_last_trading_day_of_month
+from reports import (
+    send_performance_report,
+    is_last_trading_day_of_month,
+    is_performance_report_window,
+)
 from ml_signal.collector import MLCollector
 from ml_signal.predictor import SignalPredictor
 from options_math import process_options_calculation, option_sizing_summary
@@ -197,6 +201,7 @@ def _schedule_reference_recovery(position_manager, price_fetcher):
     analytics = getattr(position_manager, "analytics", None)
     if getattr(analytics, "_option_backend_configured", False) is not True:
         return
+    _schedule_option_reference_capture(position_manager, price_fetcher, analytics)
     task = getattr(position_manager, "_reference_recovery_task", None)
     if task is not None and not task.done():
         return
@@ -216,6 +221,26 @@ def _schedule_reference_recovery(position_manager, price_fetcher):
     position_manager._reference_recovery_last = loop.time()
     position_manager._reference_recovery_task = loop.create_task(
         run_reference_recovery(position_manager, price_fetcher, analytics))
+
+
+def _schedule_option_reference_capture(position_manager, price_fetcher, analytics=None):
+    """Schedule report-only premium capture outside trade protection updates."""
+    if (not settings.option_reference_accounting_enabled or price_fetcher is None):
+        return
+    analytics = analytics or getattr(position_manager, "analytics", None)
+    if getattr(analytics, "_option_backend_configured", False) is not True:
+        return
+    task = getattr(position_manager, "_option_reference_capture_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        return
+    loop = asyncio.get_running_loop()
+    last = getattr(position_manager, "_option_reference_capture_last", 0.0)
+    if loop.time() - last < 10:
+        return
+    from execution.option_reference_capture import run_option_reference_capture
+    position_manager._option_reference_capture_last = loop.time()
+    position_manager._option_reference_capture_task = loop.create_task(
+        run_option_reference_capture(position_manager, price_fetcher, analytics))
 
 
 async def _resolve_reference_ambiguities(position_manager, tick_feed):
@@ -671,15 +696,15 @@ async def run():
                 print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
             
             # Session gate: only run between 09:15 and 15:30
-            # Post the performance digest once, in the final live minute (15:29–15:30).
+            # Post the digest once during the final two live minutes (15:28 inclusive, 15:30 exclusive).
             # The upper bound keeps an after-hours restart from re-posting: the *_sent
             # flags are in-memory and reset on reboot, but a boot at any other time
             # can't satisfy the window. Each flag flips only on successful delivery so
             # a failed webhook stays eligible for retry on the next poll in the window.
-            # ponytail: trades closing in this last minute are excluded, and a skipped
-            # 60s poll tick can rarely miss the window — accepted for a summary digest;
-            # persist a per-period marker if either ever matters.
-            if time(15, 29) <= current_time < time(15, 30):
+            # ponytail: trades closing after delivery are excluded; the extra minute
+            # gives the 60s poll another chance, though a longer delayed cycle can still miss.
+            # Persist a per-period marker if missed deliveries or in-window restarts matter.
+            if is_performance_report_window(now):
                 if now.weekday() == 4 and not weekly_report_sent:  # Friday
                     weekly_report_sent = await send_performance_report(storage.supabase, now, "weekly")
                 if is_last_trading_day_of_month(now.date()) and not monthly_report_sent:
@@ -884,6 +909,7 @@ async def run():
                             # allocation and paper/broker order eligibility.
                             signal.market_context["tracking_mode"] = "SIGNAL_REFERENCE"
                             signal.trade_id, signal.trade_binding_status = await position_manager.add_trade(signal, spot, atm=atm)
+                            _schedule_option_reference_capture(position_manager, price_fetcher)
                         except Exception as pm_err:
                             # Registration may have succeeded before telemetry sync
                             # failed. Preserve that binding so the next poll retries
@@ -960,6 +986,7 @@ async def run():
                         if any(ev_type == "SL_HIT" for _, ev_type in trade_events):
                             engine.clear_cooldown()
                             print(f"{Y}[{now.strftime('%H:%M:%S')}] 🔓 Cooldown cleared after stop-out — re-entry unlocked.{RESET}")
+                        _schedule_option_reference_capture(position_manager, price_fetcher)
                     except Exception as pm_update_err:
                         print(f"{R}[{now.strftime('%H:%M:%S')}] ⚠️ Position manager update_trades failed: {pm_update_err}{RESET}")
             
@@ -1035,6 +1062,16 @@ async def run():
                             await recovery_task
                         except asyncio.CancelledError:
                             pass
+                    capture_task = getattr(position_manager, "_option_reference_capture_task", None)
+                    if isinstance(capture_task, asyncio.Task) and not capture_task.done():
+                        try:
+                            await asyncio.wait_for(asyncio.shield(capture_task), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            capture_task.cancel()
+                            try:
+                                await capture_task
+                            except asyncio.CancelledError:
+                                pass
                     await position_manager.flush_pending_trade_updates()
                 except Exception as drain_err:
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)

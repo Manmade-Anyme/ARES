@@ -1,107 +1,97 @@
-"""Self-check for reports.compute_metrics and the options-rupee math."""
+"""Self-check for report aggregation and observed option-reference P&L."""
 from datetime import date
 
-from reports import compute_metrics, _option_rupees, _option_1_lot_rupees, is_last_trading_day_of_month
-from config import settings
+from reports import compute_metrics, is_last_trading_day_of_month
 
 
-def _trade(setup, pnl, delta=None, lots=None, opt_entry=None, opt_sl=None, opt_target=None):
-    mc = {}
-    if delta is not None and lots is not None:
-        sizing = {"delta": delta, "suggested_lots": lots}
-        if opt_entry is not None:
-            sizing["premium"] = opt_entry
-            sizing["option_sl"] = opt_sl
-            sizing["option_target"] = opt_target
-        mc["options_sizing"] = sizing
-    return {"setup_type": setup, "pnl_points": pnl, "market_context": mc}
+def _trade(setup, spot_points, entry_premium=None, exit_premium=None, lot_size=65):
+    entry_at = "2026-10-30T09:20:00+05:30"
+    exit_at = "2026-10-30T09:40:00+05:30"
+    context = {}
+    row = {
+        "setup_type": setup,
+        "pnl_points": spot_points,
+        "result_state": "SL_HIT",
+        "entry_timestamp": entry_at,
+        "exit_timestamp": exit_at,
+        "market_context": context,
+    }
+    if entry_premium is not None and exit_premium is not None:
+        context["option_reference"] = {
+            "formula_version": "one_lot_hold_to_exit_v1",
+            "status": "CLOSED",
+            "reference_lots": 1,
+            "contract": {
+                "security_id": "51333", "exchange_segment": "NSE_FNO",
+                "expiry_date": "2026-11-03", "strike": 22550,
+                "option_type": "PE", "lot_size": lot_size,
+            },
+            "entry_event_at": entry_at,
+            "entry": {"price": entry_premium, "observed_at": "2026-10-30T09:20:01+05:30",
+                      "source": "dhan_last_trade", "approximate": False},
+            "exit_event_at": exit_at,
+            "exit_reason": "SL_HIT",
+            "exit": {"price": exit_premium, "observed_at": "2026-10-30T09:40:01+05:30",
+                     "source": "dhan_last_trade", "approximate": False},
+            "premium_points": round(exit_premium - entry_premium, 8),
+        }
+    return row
 
 
 def test_metrics():
-    lot = settings.nifty_lot_size  # 65
-
     trades = [
-        _trade("FAILED_BREAKOUT", 30.0, delta=0.50, lots=2, opt_entry=100.0, opt_sl=90.0, opt_target=120.0),   # win, options
-        _trade("FAILED_BREAKOUT", -10.0, delta=0.50, lots=2, opt_entry=100.0, opt_sl=90.0, opt_target=120.0),  # loss, options
-        _trade("OI_WALL_REJECTION", 20.0),                     # win, NO sizing -> 0 rupees
-        _trade("EXHAUSTION_REVERSAL", 0.0, delta=0.5, lots=1, opt_entry=100.0, opt_sl=90.0, opt_target=120.0), # breakeven, not a win
-        _trade("EXHAUSTION_REVERSAL", 10.0, delta=0.5, lots=1), # missing premium -> 0 1-lot rupees
+        _trade("FAILED_BREAKOUT", 30.0, 100.0, 120.0),
+        _trade("FAILED_BREAKOUT", -10.0, 100.0, 90.0),
+        _trade("OI_WALL_REJECTION", 20.0),
+        _trade("EXHAUSTION_REVERSAL", 0.0, 100.0, 100.0),
+        _trade("EXHAUSTION_REVERSAL", 10.0),
     ]
+    metrics = compute_metrics(trades)
+    overall = metrics["overall"]
 
-    m = compute_metrics(trades)
-    o = m["overall"]
+    assert overall["trades"] == 5
+    assert overall["wins"] == 3
+    assert overall["win_rate"] == 60.0
+    assert overall["net_points"] == 50.0
+    assert overall["best"] == 30.0 and overall["worst"] == -10.0
+    reference = overall["option_reference"]
+    assert reference["priced_trades"] == 3
+    assert reference["eligible_trades"] == 5
+    assert reference["net_premium_points"] is None
+    assert reference["net_rupees"] is None
+    assert reference["exact"] == {"trades": 3, "premium_points": 10.0, "rupees": 650.0}
 
-    assert o["trades"] == 5
-    assert o["wins"] == 3                      # 30, 20 and 10; 0.0 excluded
-    assert o["win_rate"] == 60.0
-    assert o["net_points"] == 50.0             # 30 -10 +20 +0 +10
-    assert o["best"] == 30.0 and o["worst"] == -10.0
-
-    # options rupees: FAILED_BREAKOUT trades and EXHAUSTION_REVERSAL trades with sizing contribute.
-    #   30*0.5*lot*2  +  -10*0.5*lot*2  +  0(no sizing)  +  0 + 10*0.5*lot*1
-    assert o["option_rupees"] == 25.0 * lot
-
-    # 1-lot options rupees: FAILED_BREAKOUT trades contribute. EXHAUSTION_REVERSAL breakeven is 0. EXHAUSTION missing is 0.
-    # Win (120 - 100)*65 = 20*65. Loss (90 - 100)*65 = -10*65. Total = 10*65.
-    assert o["option_1_lot_rupees"] == 10.0 * lot
-
-    fb = m["per_setup"]["FAILED_BREAKOUT"]
+    fb = metrics["per_setup"]["FAILED_BREAKOUT"]
     assert fb["trades"] == 2 and fb["net_points"] == 20.0
-    assert fb["option_1_lot_rupees"] == 10.0 * lot
-
-    oi = m["per_setup"]["OI_WALL_REJECTION"]
-    assert oi["trades"] == 1 and oi["option_rupees"] == 0.0
-
-    # empty setup bucket is safe
-    assert m["per_setup"]["TREND_CONTINUATION"]["trades"] == 0
-
-    # empty overall is safe (no ZeroDivision)
+    oi = metrics["per_setup"]["OI_WALL_REJECTION"]
+    assert oi["trades"] == 1 and "option_reference" not in oi
+    assert metrics["per_setup"]["TREND_CONTINUATION"]["trades"] == 0
     empty = compute_metrics([])["overall"]
     assert empty["trades"] == 0 and empty["win_rate"] == 0.0
-
-    # single-trade option math sanity
-    assert _option_rupees(_trade("X", 30.0, delta=0.5, lots=2)) == 30.0 * 0.5 * lot * 2
-
-    # 1-lot math sanity
-    t_win = _trade("X", 30.0, delta=0.5, lots=2, opt_entry=100.0, opt_sl=90.0, opt_target=120.0)
-    t_loss = _trade("X", -10.0, delta=0.5, lots=2, opt_entry=100.0, opt_sl=90.0, opt_target=120.0)
-    t_be = _trade("X", 0.0, delta=0.5, lots=2, opt_entry=100.0, opt_sl=90.0, opt_target=120.0)
-    t_miss = _trade("X", 30.0, delta=0.5, lots=2)
-    assert _option_1_lot_rupees(t_win) == (120.0 - 100.0) * lot
-    assert _option_1_lot_rupees(t_loss) == (90.0 - 100.0) * lot
-    assert _option_1_lot_rupees(t_be) == 0.0
-    assert _option_1_lot_rupees(t_miss) == 0.0
+    assert empty["option_reference"]["net_rupees"] is None
 
 
 def test_last_trading_day():
-    # 2026-07-31 is a Friday and the last weekday of July.
     assert is_last_trading_day_of_month(date(2026, 7, 31)) is True
-    # 2026-07-30 (Thu) is not.
     assert is_last_trading_day_of_month(date(2026, 7, 30)) is False
-    # 2026-05-29 is a Friday; 30/31 are Sat/Sun, so it's the last trading day of May.
     assert is_last_trading_day_of_month(date(2026, 5, 29)) is True
 
 
-def test_stopped_out_at_be_is_a_t1_win_and_credits_option_target():
-    trade = _trade(
-        "OI_WALL_REJECTION",
-        50.0,
-        delta=0.5,
-        lots=1,
-        opt_entry=100.0,
-        opt_sl=90.0,
-        opt_target=125.0,
-    )
+def test_stopped_out_at_be_keeps_spot_outcome_separate_from_option_reference():
+    trade = _trade("OI_WALL_REJECTION", 50.0, 100.0, 125.0)
     trade["result_state"] = "STOPPED_OUT_AT_BE"
-
+    trade["market_context"]["option_reference"]["exit_reason"] = "STOPPED_OUT_AT_BE"
     metrics = compute_metrics([trade])["overall"]
 
     assert metrics["wins"] == 1
     assert metrics["win_rate"] == 100.0
-    assert metrics["option_1_lot_rupees"] == (125.0 - 100.0) * settings.nifty_lot_size
+    assert metrics["net_points"] == 50.0
+    assert metrics["option_reference"]["net_premium_points"] == 25.0
+    assert metrics["option_reference"]["net_rupees"] == 25.0 * 65
 
 
 if __name__ == "__main__":
     test_metrics()
     test_last_trading_day()
+    test_stopped_out_at_be_keeps_spot_outcome_separate_from_option_reference()
     print("reports self-check passed.")

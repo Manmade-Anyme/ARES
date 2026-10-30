@@ -48,6 +48,55 @@ else:
 
 from storage import Storage, AnalyticsLogger, load_dhan_credentials_from_supabase  # noqa: E402
 
+
+class TestWeeklyOptionReferenceBackfill(unittest.TestCase):
+    @staticmethod
+    def _rows(count=16):
+        return [{
+            "id": f"trade-{index}", "contract": {"security_id": str(index)},
+            "entry_event_at": "2026-10-26T09:20:00+05:30",
+            "exit_event_at": "2026-10-26T09:40:00+05:30", "exit_reason": "SL_HIT",
+            "entry": {"price": 100}, "exit": {"price": 110},
+        } for index in range(count)]
+
+    def _analytics(self, *, service_role=True):
+        analytics = AnalyticsLogger.__new__(AnalyticsLogger)
+        analytics._option_backend_configured = service_role
+        analytics.supabase = MagicMock()
+        analytics.option_reference_capture_ready = MagicMock(return_value=True)
+        analytics.supabase.rpc.return_value.execute.return_value.data = {
+            "success": True, "backfilled": 16, "idempotent": False,
+        }
+        return analytics
+
+    def test_weekly_backfill_uses_guarded_rpc_with_exact_sixteen_rows(self):
+        analytics = self._analytics()
+        rows = self._rows()
+
+        result = analytics.apply_option_reference_weekly_backfill(rows)
+
+        self.assertEqual(result["backfilled"], 16)
+        analytics.option_reference_capture_ready.assert_called_once_with()
+        analytics.supabase.rpc.assert_called_once_with(
+            "apply_option_reference_weekly_backfill", {"p_rows": rows},
+        )
+
+    def test_weekly_backfill_rejects_bad_cohort_before_rpc(self):
+        analytics = self._analytics()
+
+        with self.assertRaisesRegex(ValueError, "exactly 16"):
+            analytics.apply_option_reference_weekly_backfill(self._rows(15))
+
+        analytics.supabase.rpc.assert_not_called()
+
+    def test_weekly_backfill_requires_service_role(self):
+        analytics = self._analytics(service_role=False)
+
+        with self.assertRaisesRegex(RuntimeError, "SERVICE_ROLE_KEY"):
+            analytics.apply_option_reference_weekly_backfill(self._rows())
+
+        analytics.supabase.rpc.assert_not_called()
+
 class TestStorage(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
