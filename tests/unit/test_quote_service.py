@@ -10,6 +10,8 @@ from quote_service import (
     match_option_quote_from_chain,
     QuotePersistenceService,
     validate_option_contract,
+    _to_utc_iso,
+    _parse_utc_datetime,
 )
 
 
@@ -432,3 +434,42 @@ class TestQuotePersistenceService:
         assert success is False
         # Memory payload remains intact
         assert service.get_latest_quotes_payload()["underlying"]["currentSpot"] == 23300.8
+
+    def test_ist_timestamp_normalization(self):
+        """Dhan candle feeds arrive as naive IST; must convert to UTC properly without +5.5h shift."""
+        # Naive datetime 10:25:00 IST -> 04:55:00 UTC
+        naive_dt = datetime(2026, 11, 2, 10, 25, 0)
+        iso_str = _to_utc_iso(naive_dt)
+        assert iso_str == "2026-11-02T04:55:00Z"
+
+        # Naive ISO string "2026-11-02 10:25:00" -> 04:55:00 UTC
+        iso_str_text = _to_utc_iso("2026-11-02 10:25:00")
+        assert iso_str_text == "2026-11-02T04:55:00Z"
+
+        # Explicit UTC string preserves UTC
+        utc_text = _to_utc_iso("2026-11-02T04:55:00Z")
+        assert utc_text == "2026-11-02T04:55:00Z"
+
+        # Parse UTC datetime
+        parsed = _parse_utc_datetime(naive_dt)
+        assert parsed is not None
+        assert parsed.tzinfo is not None
+        assert parsed.hour == 4
+        assert parsed.minute == 55
+
+    def test_get_supabase_client_initialization(self, monkeypatch):
+        """Verifies quote_service initializes with a real client or through fallback."""
+        from unittest.mock import MagicMock
+        import quote_service
+
+        quote_service._global_quote_service = None
+        mock_client = MagicMock()
+        monkeypatch.setattr("storage.get_supabase_client", lambda: mock_client)
+
+        svc = quote_service.get_quote_service()
+        assert svc.supabase is mock_client
+
+        # If re-called with explicit client, keeps or updates
+        new_client = MagicMock()
+        svc2 = quote_service.get_quote_service(new_client)
+        assert svc2 is svc

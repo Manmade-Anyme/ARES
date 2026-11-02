@@ -30,7 +30,7 @@ Security & Architecture:
 """
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 from math import isfinite
 import threading
@@ -39,9 +39,15 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("ares.quotes")
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
 
 def _to_utc_iso(ts: Any) -> Optional[str]:
-    """Convert any datetime, epoch, or ISO timestamp into a normalized UTC ISO 8601 string."""
+    """Convert any datetime, epoch, or ISO timestamp into a normalized UTC ISO 8601 string.
+
+    If the timestamp arrives as a naive datetime or string (e.g. from Dhan candle feed),
+    it is explicitly treated as IST (UTC+5:30) per exchange convention, then converted to UTC.
+    """
     if ts is None:
         return None
     if isinstance(ts, (int, float)):
@@ -50,16 +56,20 @@ def _to_utc_iso(ts: Any) -> Optional[str]:
         dt = datetime.fromtimestamp(float(ts), timezone.utc)
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     if isinstance(ts, datetime):
-        dt = ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+        dt = ts.replace(tzinfo=IST) if ts.tzinfo is None else ts
+        dt = dt.astimezone(timezone.utc)
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     if isinstance(ts, str):
         text = ts.strip()
         if not text:
             return None
         try:
-            # Handle trailing Z or offsets
-            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-            dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+            # Handle trailing Z or z
+            if text.endswith("Z") or text.endswith("z"):
+                text = text[:-1] + "+00:00"
+            dt = datetime.fromisoformat(text)
+            dt = dt.replace(tzinfo=IST) if dt.tzinfo is None else dt
+            dt = dt.astimezone(timezone.utc)
             return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         except (ValueError, TypeError):
             return None
@@ -71,7 +81,8 @@ def _parse_utc_datetime(ts: Any) -> Optional[datetime]:
     if ts is None:
         return None
     if isinstance(ts, datetime):
-        return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+        dt = ts.replace(tzinfo=IST) if ts.tzinfo is None else ts
+        return dt.astimezone(timezone.utc)
     iso_str = _to_utc_iso(ts)
     if iso_str:
         return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
@@ -430,7 +441,20 @@ def get_quote_service(supabase_client: Any = None, throttle_seconds: float = 1.0
                 from storage import get_supabase_client
                 supabase_client = get_supabase_client()
             except Exception:
-                supabase_client = None
+                try:
+                    from config import settings
+                    from supabase import create_client
+                    url = getattr(settings, "supabase_url", None)
+                    key = (
+                        getattr(settings, "supabase_service_role_key", None)
+                        or getattr(settings, "supabase_key", None)
+                    )
+                    if url and key:
+                        supabase_client = create_client(url, key)
+                    else:
+                        supabase_client = None
+                except Exception:
+                    supabase_client = None
         _global_quote_service = QuotePersistenceService(
             supabase_client=supabase_client,
             throttle_seconds=throttle_seconds,

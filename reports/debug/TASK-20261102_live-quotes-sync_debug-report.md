@@ -41,6 +41,21 @@ Date: 2026-11-02. Status: VERIFIED & CLEAN.
   5. **Security:** Supabase RLS grants `SELECT` to `anon` / `authenticated` roles while restricting mutations to `service_role`. Dhan and Supabase service credentials remain server-side only.
 
 ### Local Test Execution
-- All 33 unit and integration tests passed cleanly.
+- All 38 unit and integration tests passed cleanly.
 - Full regression suite passed (2,155 passed, 45 subtests).
 - Zero failures, zero regressions.
+
+## 4. Code Review Findings & Remediation (PR #153)
+
+1. **Client Initialization (P1):**
+   - *Issue:* `get_quote_service()` attempted `from storage import get_supabase_client`, which did not exist, leaving the singleton with `supabase=None` and preventing database flushes.
+   - *Fix:* Added `get_supabase_client()` helper to `storage.py` and implemented multi-layer auto-initialization from `config.settings`, `Storage.supabase`, and `PositionManager.supabase`.
+2. **Candle IST Timezone Normalization (P2):**
+   - *Issue:* `_to_utc_iso` treated naive datetimes as UTC, shifting Dhan IST candle timestamps 5.5 hours into the future.
+   - *Fix:* Added `IST` awareness in `_to_utc_iso` and `_parse_utc_datetime`, properly converting naive IST times to UTC (e.g. 10:25 IST -> 04:55 UTC). Decoupled live option chain observation timestamps from historical candle times using `datetime.now(timezone.utc)`.
+3. **Buffered WebSocket Ticks Flush (P2):**
+   - *Issue:* `_sleep_with_tick_exits` took its `ordered_ticks` branch and executed `continue` before reaching `await qs.flush()`.
+   - *Fix:* Added `await get_quote_service().flush()` before `continue`, ensuring buffered ticks flush to Supabase under the 1.0s throttle.
+4. **Option Policy Terminal Cleanup (P2):**
+   - *Issue:* Trades using `option_atr_v1` delegated to `_record_option_transition()` and returned before `clear_selected_option()` was called.
+   - *Fix:* Added `_cleanup_option_selection_if_terminal()` helper on `PositionManager` and hooked into `_record_trade_update()`, `_record_option_transition()`, `_flush_option_trade()`, and `_update()` for all terminal paths.

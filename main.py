@@ -317,6 +317,11 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                 if position_manager.active_trades:
                     _schedule_reference_recovery(position_manager, price_fetcher)
                 await _resolve_reference_ambiguities(position_manager, tick_feed)
+                try:
+                    from quote_service import get_quote_service
+                    await get_quote_service().flush()
+                except Exception:
+                    pass
                 continue
         from datetime import datetime as real_datetime
         observation_fn = getattr(tick_feed, "get_latest_observation", None)
@@ -418,7 +423,9 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
         selected_contract = position_manager.get_selected_option_contract()
         if selected_contract is not None:
             from quote_service import get_quote_service, match_option_quote_from_chain
-            matched = match_option_quote_from_chain(selected_contract, full_chain)
+            matched = match_option_quote_from_chain(
+                selected_contract, full_chain, timestamp=datetime.now(timezone.utc)
+            )
             if matched is not None:
                 qs = get_quote_service()
                 qs.record_option_quote(selected_contract, matched["price"], matched["observed_at"], source="dhan_option_chain")
@@ -643,6 +650,11 @@ async def run():
     level_fetcher = LevelFetcher()
     storage = Storage()
     position_manager = PositionManager()
+    try:
+        from quote_service import get_quote_service
+        get_quote_service(storage.supabase)
+    except Exception:
+        pass
     await _retry_option_lifecycle_outbox(position_manager)
     # Explicit paper execution: no broker account is activated by deployment.
     order_dispatcher = SignalDispatcher(OrderManager(), position_manager)
@@ -842,7 +854,7 @@ async def run():
                     selected_contract = position_manager.get_selected_option_contract()
                     if selected_contract is not None:
                         matched = match_option_quote_from_chain(
-                            selected_contract, full_chain, timestamp=candle.timestamp if candle else None
+                            selected_contract, full_chain, timestamp=datetime.now(timezone.utc)
                         )
                         if matched is not None:
                             qs.record_option_quote(
