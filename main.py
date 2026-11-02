@@ -421,15 +421,16 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
     _, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry)
     try:
         selected_contract = position_manager.get_selected_option_contract()
+        from quote_service import get_quote_service, match_option_quote_from_chain
+        qs = get_quote_service()
+        qs.reconcile_selected_contract(selected_contract)
         if selected_contract is not None:
-            from quote_service import get_quote_service, match_option_quote_from_chain
             matched = match_option_quote_from_chain(
                 selected_contract, full_chain, timestamp=datetime.now(timezone.utc)
             )
             if matched is not None:
-                qs = get_quote_service()
                 qs.record_option_quote(selected_contract, matched["price"], matched["observed_at"], source="dhan_option_chain")
-                await qs.flush()
+            await qs.flush()
     except Exception:
         pass
     if _session_now().time() < time(15, 30):
@@ -653,8 +654,8 @@ async def run():
     try:
         from quote_service import get_quote_service
         qs = get_quote_service()
-        if position_manager.get_selected_option_contract() is None:
-            qs.clear_selected_option()
+        selected_contract = position_manager.get_selected_option_contract()
+        if qs.reconcile_selected_contract(selected_contract):
             await qs.flush(force=True)
     except Exception:
         pass
@@ -855,6 +856,7 @@ async def run():
                         source="completed_candle" if candle else "dhan_option_chain",
                     )
                     selected_contract = position_manager.get_selected_option_contract()
+                    qs.reconcile_selected_contract(selected_contract)
                     if selected_contract is not None:
                         matched = match_option_quote_from_chain(
                             selected_contract, full_chain, timestamp=datetime.now(timezone.utc)

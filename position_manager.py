@@ -278,8 +278,7 @@ class PositionManager:
 
             self.active_trades = valid_trades
             self.is_initialized = True
-            if self.get_selected_option_contract() is None:
-                self._cleanup_option_selection_if_terminal()
+            self._cleanup_option_selection_if_terminal()
             print(f"PositionManager initialized. Loaded {len(self.active_trades)} active trades (multi-day carry enabled).")
         except Exception as e:
             self.is_initialized = False
@@ -1484,13 +1483,39 @@ class PositionManager:
         return None
 
     def _cleanup_option_selection_if_terminal(self) -> None:
-        """Clear the selected option quote if no active trades remain open."""
-        if self.get_selected_option_contract() is None:
-            try:
-                from quote_service import get_quote_service
-                get_quote_service().clear_selected_option()
-            except Exception:
-                pass
+        """Reconcile the selected option quote with current active trades.
+
+        If no active trades remain, clear the selected option quote.
+        If active trades remain but the selected contract differs from the cached quote,
+        clear the cached quote so closed contracts do not continue being persisted or served.
+        """
+        try:
+            from quote_service import get_quote_service
+            qs = get_quote_service()
+            selected = self.get_selected_option_contract()
+            cleared = False
+            if hasattr(qs, "reconcile_selected_contract"):
+                cleared = qs.reconcile_selected_contract(selected)
+            elif selected is None:
+                qs.clear_selected_option()
+                cleared = True
+            else:
+                cached = getattr(qs, "get_cached_option_contract", lambda: None)()
+                if cached is not None:
+                    from quote_service import are_option_contracts_equal
+                    if not are_option_contracts_equal(cached, selected):
+                        qs.clear_selected_option()
+                        cleared = True
+            if cleared:
+                try:
+                    import asyncio
+                    loop = asyncio.get_running_loop()
+                    if loop.is_running():
+                        loop.create_task(qs.flush(force=True))
+                except RuntimeError:
+                    pass
+        except Exception:
+            pass
 
     @staticmethod
     def _reference_totals(trade):

@@ -266,3 +266,88 @@ class TestPositionManagerQuoteIntegration:
         pm = PositionManager()
         # Must be called with no arguments so quote_service resolves the service-role client
         mock_get_quote_service.assert_called_with()
+
+    @pytest.mark.asyncio
+    async def test_multiple_trades_closure_reconciles_and_clears_old_option_quote(self, monkeypatch):
+        """Verifies when Trade 1 closes, its cached quote is cleared if Trade 2 has a different contract."""
+        import quote_service
+        from position_manager import PositionManager
+
+        mock_supabase = MagicMock()
+        mock_table = MagicMock()
+        mock_supabase.table.return_value = mock_table
+        mock_table.upsert.return_value = mock_table
+        mock_table.delete.return_value = mock_table
+        mock_table.eq.return_value = mock_table
+        mock_table.execute.return_value = MagicMock(data=[])
+
+        qs = quote_service.QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0.0)
+        quote_service._global_quote_service = qs
+
+        c1 = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        c2 = {"expiry": "2026-11-12", "strike": 23400, "option_type": "PE", "security_id": "53941"}
+
+        # Seed quote service with Trade 1's contract
+        qs.record_option_quote(c1, 125.0, "2026-11-02T05:00:00Z")
+        qs.record_spot_quote(23310.0, "2026-11-02T05:00:00Z")
+        assert qs.get_cached_option_contract()["security_id"] == "53940"
+
+        # PositionManager with Trade 1 (CLOSED) and Trade 2 (ACTIVE with contract c2)
+        pm = MagicMock(spec=PositionManager)
+        pm.active_trades = [
+            {"id": "trade-1", "state": "CLOSED", "market_context": {"options_sizing": c1}},
+            {"id": "trade-2", "state": "ACTIVE", "market_context": {"options_sizing": c2}},
+        ]
+        # Bind real get_selected_option_contract and _cleanup_option_selection_if_terminal
+        pm.get_selected_option_contract = PositionManager.get_selected_option_contract.__get__(pm, PositionManager)
+        pm._cleanup_option_selection_if_terminal = PositionManager._cleanup_option_selection_if_terminal.__get__(pm, PositionManager)
+
+        # Trade 1 closes -> triggers cleanup
+        pm._cleanup_option_selection_if_terminal()
+
+        # Cached quote for contract 1 MUST be cleared because newly selected contract 2 differs
+        assert qs.get_cached_option_contract() is None
+        assert qs._clear_option_pending is True
+
+        # Now spot quote arrives and flushes
+        qs.record_spot_quote(23315.0, "2026-11-02T05:01:00Z")
+        await qs.flush(force=True)
+
+        # Deletion for OPTION:SELECTED must have been executed, and c1 must NOT have been upserted
+        mock_table.delete.assert_called_once()
+        mock_table.eq.assert_called_with("instrument_id", "OPTION:SELECTED")
+
+        # Verify upsert calls: only UNDERLYING was upserted, never OPTION:SELECTED
+        for call in mock_table.upsert.call_args_list:
+            upserted_row = call[0][0]
+            assert upserted_row["instrument_id"] == "UNDERLYING:NIFTY"
+            assert upserted_row["instrument_id"] != "OPTION:SELECTED"
+
+    def test_multiple_trades_closure_retains_quote_if_same_contract(self):
+        """Verifies when Trade 1 closes, its cached quote is retained if Trade 2 uses the exact same contract."""
+        import quote_service
+        from position_manager import PositionManager
+
+        qs = quote_service.QuotePersistenceService(supabase_client=MagicMock(), throttle_seconds=0.0)
+        quote_service._global_quote_service = qs
+
+        c1 = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        c1_dup = {"expiry": "2026-11-05", "strike": 23300.0, "option_type": "ce", "security_id": "53940"}
+
+        qs.record_option_quote(c1, 125.0, "2026-11-02T05:00:00Z")
+
+        pm = MagicMock(spec=PositionManager)
+        pm.active_trades = [
+            {"id": "trade-1", "state": "CLOSED", "market_context": {"options_sizing": c1}},
+            {"id": "trade-2", "state": "ACTIVE", "market_context": {"options_sizing": c1_dup}},
+        ]
+        pm.get_selected_option_contract = PositionManager.get_selected_option_contract.__get__(pm, PositionManager)
+        pm._cleanup_option_selection_if_terminal = PositionManager._cleanup_option_selection_if_terminal.__get__(pm, PositionManager)
+
+        pm._cleanup_option_selection_if_terminal()
+
+        # Must retain cached quote
+        assert qs.get_cached_option_contract() is not None
+        assert qs.get_cached_option_contract()["security_id"] == "53940"
+        assert qs._clear_option_pending is False
+

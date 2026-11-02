@@ -563,3 +563,78 @@ class TestQuotePersistenceService:
         new_client = MagicMock()
         svc2 = quote_service.get_quote_service(new_client)
         assert svc2 is svc
+
+    def test_are_option_contracts_equal(self):
+        """Verifies are_option_contracts_equal properly checks all 4 contract identifiers."""
+        from quote_service import are_option_contracts_equal
+
+        c1 = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        c2 = {"expiry": "2026-11-05", "strike": 23300.0, "option_type": "ce", "security_id": "53940"}
+        c_diff_strike = {"expiry": "2026-11-05", "strike": 23400, "option_type": "CE", "security_id": "53940"}
+        c_diff_type = {"expiry": "2026-11-05", "strike": 23300, "option_type": "PE", "security_id": "53940"}
+        c_diff_expiry = {"expiry": "2026-11-12", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        c_diff_sec = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53941"}
+
+        assert are_option_contracts_equal(c1, c2) is True
+        assert are_option_contracts_equal(c1, c_diff_strike) is False
+        assert are_option_contracts_equal(c1, c_diff_type) is False
+        assert are_option_contracts_equal(c1, c_diff_expiry) is False
+        assert are_option_contracts_equal(c1, c_diff_sec) is False
+        assert are_option_contracts_equal(c1, None) is False
+        assert are_option_contracts_equal(None, None) is False
+
+    def test_reconcile_selected_contract_clears_differing_contract(self):
+        """Verifies reconciling a differing selected contract clears the cached quote and schedules deletion."""
+        svc = QuotePersistenceService(supabase_client=MagicMock())
+        c1 = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        c2 = {"expiry": "2026-11-12", "strike": 23400, "option_type": "PE", "security_id": "53941"}
+
+        svc.record_option_quote(c1, 125.0, "2026-11-02T05:00:00Z")
+        assert svc.get_cached_option_contract() is not None
+        assert svc.get_cached_option_contract()["security_id"] == "53940"
+
+        # Reconciling with different contract B clears contract A
+        cleared = svc.reconcile_selected_contract(c2)
+        assert cleared is True
+        assert svc.get_cached_option_contract() is None
+        assert svc._clear_option_pending is True
+        assert svc._dirty is True
+
+    def test_reconcile_selected_contract_retains_identical_contract(self):
+        """Verifies reconciling an identical selected contract preserves the cached quote."""
+        svc = QuotePersistenceService(supabase_client=MagicMock())
+        c1 = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        c1_alt = {"expiry": "2026-11-05", "strike": 23300.0, "option_type": "ce", "security_id": "53940"}
+
+        svc.record_option_quote(c1, 125.0, "2026-11-02T05:00:00Z")
+        cleared = svc.reconcile_selected_contract(c1_alt)
+        assert cleared is False
+        assert svc.get_cached_option_contract() is not None
+        assert svc._clear_option_pending is False
+
+    def test_reconcile_selected_contract_clears_when_none(self):
+        """Verifies reconciling with None clears the cached quote and schedules deletion."""
+        svc = QuotePersistenceService(supabase_client=MagicMock())
+        c1 = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+
+        svc.record_option_quote(c1, 125.0, "2026-11-02T05:00:00Z")
+        cleared = svc.reconcile_selected_contract(None)
+        assert cleared is True
+        assert svc.get_cached_option_contract() is None
+        assert svc._clear_option_pending is True
+
+    def test_record_option_quote_allows_different_contract_regardless_of_older_timestamp(self):
+        """Verifies recording a new contract is not blocked by a previous contract's newer observation timestamp."""
+        svc = QuotePersistenceService(supabase_client=MagicMock())
+        c1 = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        c2 = {"expiry": "2026-11-12", "strike": 23400, "option_type": "PE", "security_id": "53941"}
+
+        # Record contract 1 at 10:30 UTC
+        assert svc.record_option_quote(c1, 125.0, "2026-11-02T10:30:00Z") is True
+        # Record contract 2 at 10:25 UTC (older than contract 1, but different contract identity)
+        assert svc.record_option_quote(c2, 85.0, "2026-11-02T10:25:00Z") is True
+        assert svc.get_cached_option_contract()["security_id"] == "53941"
+
+        # Recording contract 2 again with even older timestamp 10:20 UTC is rejected (same contract)
+        assert svc.record_option_quote(c2, 84.0, "2026-11-02T10:20:00Z") is False
+

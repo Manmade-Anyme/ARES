@@ -151,6 +151,23 @@ def validate_option_contract(contract: Optional[Dict[str, Any]]) -> Optional[Dic
     }
 
 
+def are_option_contracts_equal(
+    c1: Optional[Dict[str, Any]],
+    c2: Optional[Dict[str, Any]],
+) -> bool:
+    """Return True if both contract dicts represent the exact same option contract."""
+    v1 = validate_option_contract(c1)
+    v2 = validate_option_contract(c2)
+    if v1 is None or v2 is None:
+        return False
+    return (
+        v1["expiry"] == v2["expiry"]
+        and abs(v1["strike"] - v2["strike"]) < 1e-4
+        and v1["option_type"] == v2["option_type"]
+        and v1["security_id"] == v2["security_id"]
+    )
+
+
 def is_quote_stale(
     observed_at: Any,
     threshold_seconds: float = 10.0,
@@ -365,10 +382,18 @@ class QuotePersistenceService:
         observed_dt = _parse_utc_datetime(observed_iso)
         with self._lock:
             if self._latest_option is not None and observed_dt is not None:
-                existing_iso = self._latest_option.get("observed_at")
-                existing_dt = _parse_utc_datetime(existing_iso)
-                if existing_dt is not None and observed_dt < existing_dt:
-                    return False
+                # Reject older observations only when updating the exact same contract
+                is_same_contract = (
+                    str(self._latest_option.get("security_id") or "") == validated["security_id"]
+                    and str(self._latest_option.get("expiry") or "") == validated["expiry"]
+                    and abs(float(self._latest_option.get("strike") or 0.0) - validated["strike"]) < 1e-4
+                    and str(self._latest_option.get("option_type") or "").upper() == validated["option_type"]
+                )
+                if is_same_contract:
+                    existing_iso = self._latest_option.get("observed_at")
+                    existing_dt = _parse_utc_datetime(existing_iso)
+                    if existing_dt is not None and observed_dt < existing_dt:
+                        return False
             self._latest_option = {
                 "instrument_id": "OPTION:SELECTED",
                 "instrument_type": "OPTION",
@@ -386,12 +411,63 @@ class QuotePersistenceService:
             self._dirty = True
         return True
 
+    def get_cached_option_contract(self) -> Optional[Dict[str, Any]]:
+        """Return validated contract identifiers of currently cached option quote, if any."""
+        with self._lock:
+            if self._latest_option is None:
+                return None
+            return {
+                "expiry": self._latest_option.get("expiry"),
+                "strike": self._latest_option.get("strike"),
+                "option_type": self._latest_option.get("option_type"),
+                "security_id": self._latest_option.get("security_id"),
+            }
+
     def clear_selected_option(self) -> None:
         """Clear currently selected option quote when an active trade terminates."""
         with self._lock:
             self._latest_option = None
             self._clear_option_pending = True
             self._dirty = True
+
+    def reconcile_selected_contract(self, selected_contract: Optional[Dict[str, Any]]) -> bool:
+        """Reconcile cached option quote with current active trade selection.
+
+        If selected_contract is None:
+            Clears cached option quote and schedules deletion of OPTION:SELECTED.
+        If selected_contract differs from the cached option contract:
+            Clears the previous quote and schedules deletion so closed/replaced
+            contracts are not persisted or served.
+        Returns True if a cached quote was cleared or deletion scheduled, False otherwise.
+        """
+        validated_selected = validate_option_contract(selected_contract) if selected_contract else None
+        with self._lock:
+            if validated_selected is None:
+                if self._latest_option is not None or not self._clear_option_pending:
+                    self._latest_option = None
+                    self._clear_option_pending = True
+                    self._dirty = True
+                    return True
+                return False
+
+            if self._latest_option is not None:
+                cached_expiry = str(self._latest_option.get("expiry") or "")
+                cached_strike = float(self._latest_option.get("strike") or 0.0)
+                cached_type = str(self._latest_option.get("option_type") or "").upper()
+                cached_sec_id = str(self._latest_option.get("security_id") or "")
+
+                matches = (
+                    cached_expiry == validated_selected["expiry"]
+                    and abs(cached_strike - validated_selected["strike"]) < 1e-4
+                    and cached_type == validated_selected["option_type"]
+                    and cached_sec_id == validated_selected["security_id"]
+                )
+                if not matches:
+                    self._latest_option = None
+                    self._clear_option_pending = True
+                    self._dirty = True
+                    return True
+            return False
 
     def get_latest_quotes_payload(self) -> Dict[str, Any]:
         """Return the stable frontend quote contract representing current in-memory quotes."""
