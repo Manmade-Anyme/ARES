@@ -191,6 +191,7 @@ async def test_new_policy_tick_uses_recent_receipt_and_skips_stale_lifecycle(mon
     feed._on_ticks(None,{"LTP":22470})
     if not fresh:
         feed._latest_received_at=datetime.now(timezone.utc)-timedelta(seconds=6)
+        feed._ticks[-1]["received_at"] = feed._latest_received_at
     receipt=feed._latest_received_at
     trade={"state":"T1_HIT","market_context":{"option_trailing":{
         "policy_version":"option_atr_v1","contract":{"security_id":"51333"}}}}
