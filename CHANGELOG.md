@@ -4,6 +4,16 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **TASK-20261102 Live market quotes persistence for SpanQuant frontend:**
+  - Persist real-time NIFTY underlying spot and selected active option contract LTP into `latest_quotes` Supabase table.
+  - Added schema migration `migrations/20261102_latest_quotes.sql` with primary key keyed by instrument (`UNDERLYING:NIFTY`, `OPTION:SELECTED`), RLS policies (public SELECT, service_role ALL), and `get_latest_market_quotes()` RPC helper.
+  - Throttled in-memory cache and batch upserts to eliminate per-tick row insertion overhead while guaranteeing table size <= 2 rows.
+  - Strict 4-point option contract validation: requires `expiry` (YYYY-MM-DD), `strike` (positive float), `option_type` (`CE` | `PE`), and broker `security_id` (digits); never infers or guesses missing identifiers.
+  - Clear isolation between live spot/premium and entry spot/premium.
+  - Real-time quote freshness tiering: FRESH (<=10s), STALE (10s–60s), and EXPIRED (>60s).
+  - Integrated into ARES pipeline: tick listener, REST fallback monitor, completed candle ingestion, and OI chain fetcher.
+  - Comprehensive unit and integration test coverage (`tests/unit/test_quote_service.py`, `tests/unit/test_quote_integration.py`).
+
 - **Weekly option-reference performance reporting (TASK-20261030):** Keep spot points as the spot outcome and calculate one-lot option premium points from the pinned contract's observed entry and final-exit marks. Show the one-lot rupee equivalent, exact/approximate coverage, and spot T1/T2 hit counts. Missing evidence remains unavailable; setup breakdowns remain spot-only. Validate quote and minute-history evidence against a fresh post-fetch cutoff while preserving provider timestamps and provenance. Persist terminal-exit markers promptly, but defer exit-price capture until entry evidence exists and retry any chronologically incompatible exit. Retry provider cooldown deferrals in a bounded background task, rotate queued active-trade rows, and advance the database cursor only for rows consumed so queued local and database work can progress. The capture flag defaults off until the additive migration is installed and separately approved for activation. A guarded, dry-run-first backfill is limited to the approved 26–30 Oct 2026 cohort; current exact-contract Dhan coverage is 11/16, so the all-or-nothing Supabase write remains blocked. Other historical rows remain unavailable.
 
 - **Weekly performance report timing:** Begin weekly and month-end report attempts at 15:28 IST and keep them eligible until 15:30 (exclusive), adding another poll opportunity before shutdown. Trades closed after delivery remain outside that report.

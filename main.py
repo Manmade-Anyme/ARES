@@ -340,6 +340,18 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                 await dispatcher.on_spot(price)
             except Exception as e:
                 print(f"[-] Pending order spot update failed: {e}")
+        if price is not None:
+            try:
+                from quote_service import get_quote_service
+                qs = get_quote_service()
+                qs.record_spot_quote(
+                    price,
+                    tick_kwargs.get("event_time") or datetime.now(timezone.utc),
+                    source="dhan_websocket_tick",
+                )
+                await qs.flush()
+            except Exception:
+                pass
         if price is not None and position_manager.active_trades:
             try:
                 events = await position_manager.update_trades(price, **tick_kwargs)
@@ -383,6 +395,13 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
         await _monitor_completed_atr(price_fetcher.watch_candles, position_manager,
                                      dispatcher, price_fetcher=price_fetcher, engine=engine)
     spot = await price_fetcher.fetch_latest_spot()
+    try:
+        from quote_service import get_quote_service
+        qs = get_quote_service()
+        qs.record_spot_quote(spot, datetime.now(timezone.utc), source="dhan_rest_ltp")
+        await qs.flush()
+    except Exception:
+        pass
     # Risk checks must survive an independent option-chain outage.
     try:
         events = await position_manager.update_trades(spot)
@@ -395,6 +414,17 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
         return
     expiry = await oi_fetcher.get_nearest_expiry()
     _, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry)
+    try:
+        selected_contract = position_manager.get_selected_option_contract()
+        if selected_contract is not None:
+            from quote_service import get_quote_service, match_option_quote_from_chain
+            matched = match_option_quote_from_chain(selected_contract, full_chain)
+            if matched is not None:
+                qs = get_quote_service()
+                qs.record_option_quote(selected_contract, matched["price"], matched["observed_at"], source="dhan_option_chain")
+                await qs.flush()
+    except Exception:
+        pass
     if _session_now().time() < time(15, 30):
         await dispatcher.on_snapshot(full_chain, spot)
 
@@ -485,6 +515,14 @@ async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatc
         candle = await asyncio.wait_for(request, timeout=10) if finalizing else await request
         return candle
     finally:
+        if candle is not None:
+            try:
+                from quote_service import get_quote_service
+                qs = get_quote_service()
+                qs.record_spot_quote(candle.close, candle.timestamp, source="completed_candle")
+                await qs.flush()
+            except Exception:
+                pass
         if candle is not None or _has_option_policy_trades(position_manager):
             index_ticks = None
             if tick_feed is not None and position_manager.active_trades:
@@ -792,6 +830,27 @@ async def run():
                     session_closed = session_closed or _session_now().time() >= time(15, 30)
                     if not session_closed:
                         await order_dispatcher.on_snapshot(full_chain, spot)
+
+                try:
+                    from quote_service import get_quote_service, match_option_quote_from_chain
+                    qs = get_quote_service()
+                    qs.record_spot_quote(
+                        spot,
+                        candle.timestamp if candle else datetime.now(timezone.utc),
+                        source="completed_candle" if candle else "dhan_option_chain",
+                    )
+                    selected_contract = position_manager.get_selected_option_contract()
+                    if selected_contract is not None:
+                        matched = match_option_quote_from_chain(
+                            selected_contract, full_chain, timestamp=candle.timestamp if candle else None
+                        )
+                        if matched is not None:
+                            qs.record_option_quote(
+                                selected_contract, matched["price"], matched["observed_at"], source="dhan_option_chain"
+                            )
+                    await qs.flush()
+                except Exception as quote_err:
+                    logger.warning("Quote persistence sync failed: %s", quote_err)
             
                 # Build and update dynamic levels
                 levels = level_fetcher.build_levels(

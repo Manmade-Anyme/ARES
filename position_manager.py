@@ -1260,6 +1260,12 @@ class PositionManager:
             terminal = data["state"] in ["CLOSED", "STOPPED_OUT"]
             if terminal:
                 self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                if self.get_selected_option_contract() is None:
+                    try:
+                        from quote_service import get_quote_service
+                        get_quote_service().clear_selected_option()
+                    except Exception:
+                        pass
             self._persist_trade_context(t_id, snapshot, milestone, target, refs)
             if not terminal:
                 self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
@@ -1444,7 +1450,33 @@ class PositionManager:
         quotes.sort(key=lambda item: parse_candle_timestamp(item["observed_at"]))
         cache["spot_quotes"] = quotes[-1000:]
         self._reference_price_evidence = cache
+        try:
+            from quote_service import get_quote_service
+            get_quote_service().record_spot_quote(value, at, source=source.strip())
+        except Exception:
+            pass
         return True
+
+    def get_selected_option_contract(self) -> Optional[dict]:
+        """Return the strictly validated option contract for the active trade, or None."""
+        from quote_service import validate_option_contract
+        for trade in self.active_trades:
+            if trade.get("state") in {"CLOSED", "STOPPED_OUT"}:
+                continue
+            context = trade.get("market_context") or {}
+            sizing = context.get("options_sizing") or {}
+            validated = validate_option_contract(sizing)
+            if validated:
+                return validated
+            ref = (context.get("option_reference") or {}).get("contract") or {}
+            validated_ref = validate_option_contract(ref)
+            if validated_ref:
+                return validated_ref
+            trailing = (context.get("option_trailing") or {}).get("contract") or {}
+            validated_trailing = validate_option_contract(trailing)
+            if validated_trailing:
+                return validated_trailing
+        return None
 
     @staticmethod
     def _reference_totals(trade):
