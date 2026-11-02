@@ -278,6 +278,8 @@ class PositionManager:
 
             self.active_trades = valid_trades
             self.is_initialized = True
+            if self.get_selected_option_contract() is None:
+                self._cleanup_option_selection_if_terminal()
             print(f"PositionManager initialized. Loaded {len(self.active_trades)} active trades (multi-day carry enabled).")
         except Exception as e:
             self.is_initialized = False

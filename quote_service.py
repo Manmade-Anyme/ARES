@@ -321,7 +321,13 @@ class QuotePersistenceService:
             return False
 
         observed_iso = _to_utc_iso(timestamp) or _to_utc_iso(datetime.now(timezone.utc))
+        observed_dt = _parse_utc_datetime(observed_iso)
         with self._lock:
+            if self._latest_underlying is not None and observed_dt is not None:
+                existing_iso = self._latest_underlying.get("observed_at")
+                existing_dt = _parse_utc_datetime(existing_iso)
+                if existing_dt is not None and observed_dt < existing_dt:
+                    return False
             self._latest_underlying = {
                 "instrument_id": f"UNDERLYING:{symbol.upper()}",
                 "instrument_type": "UNDERLYING",
@@ -356,7 +362,13 @@ class QuotePersistenceService:
             return False
 
         observed_iso = _to_utc_iso(timestamp) or _to_utc_iso(datetime.now(timezone.utc))
+        observed_dt = _parse_utc_datetime(observed_iso)
         with self._lock:
+            if self._latest_option is not None and observed_dt is not None:
+                existing_iso = self._latest_option.get("observed_at")
+                existing_dt = _parse_utc_datetime(existing_iso)
+                if existing_dt is not None and observed_dt < existing_dt:
+                    return False
             self._latest_option = {
                 "instrument_id": "OPTION:SELECTED",
                 "instrument_type": "OPTION",
@@ -377,10 +389,9 @@ class QuotePersistenceService:
     def clear_selected_option(self) -> None:
         """Clear currently selected option quote when an active trade terminates."""
         with self._lock:
-            if self._latest_option is not None:
-                self._latest_option = None
-                self._clear_option_pending = True
-                self._dirty = True
+            self._latest_option = None
+            self._clear_option_pending = True
+            self._dirty = True
 
     def get_latest_quotes_payload(self) -> Dict[str, Any]:
         """Return the stable frontend quote contract representing current in-memory quotes."""

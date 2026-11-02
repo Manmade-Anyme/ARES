@@ -652,7 +652,10 @@ async def run():
     position_manager = PositionManager()
     try:
         from quote_service import get_quote_service
-        get_quote_service(storage.supabase)
+        qs = get_quote_service(storage.supabase)
+        if position_manager.get_selected_option_contract() is None:
+            qs.clear_selected_option()
+            await qs.flush(force=True)
     except Exception:
         pass
     await _retry_option_lifecycle_outbox(position_manager)

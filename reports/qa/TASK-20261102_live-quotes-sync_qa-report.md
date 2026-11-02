@@ -4,7 +4,7 @@ Date: 2026-11-02. Verdict: PASS for local implementation and pipeline regression
 
 | Check | Result |
 |---|---|
-| Quote Service Unit Tests (`test_quote_service.py`) | 31 passed |
+| Quote Service Unit Tests (`test_quote_service.py`) | 34 passed |
 | Quote Integration Tests (`test_quote_integration.py`) | 9 passed |
 | Related Pipeline Suite (`test_quote_*.py`, `test_tick_feed.py`, `test_position_manager.py`, `test_main.py`) | 149 passed |
 | Confirmed-signal + System-one Coverage Gate (`test_task210*.py`, `test_task211*.py`) | 398 passed, 35 subtests (100% statements, 100% branches) |
@@ -21,6 +21,9 @@ Date: 2026-11-02. Verdict: PASS for local implementation and pipeline regression
 | PR #153 Review Fix: Stale Feed Preservation | Passed: stalled ticks do not refresh timestamp with current time; old quotes age naturally |
 | PR #153 Review Fix: Pending Deletion Retention | Passed: transient Supabase delete failures preserve `_clear_option_pending` until successful |
 | PR #153 Review Fix: Nonblocking Persistence | Passed: synchronous Supabase `.execute()` offloaded from event loop via `run_in_executor` |
+| PR #153 Review Fix: Older Observation Rejection | Passed: older historical candle closes cannot overwrite newer live tick quotes |
+| PR #153 Review Fix: Empty Memory Cache Deletion | Passed: `clear_selected_option()` schedules deletion even when local cache is empty |
+| PR #153 Review Fix: Startup Reconciliation | Passed: worker startup purges orphaned `OPTION:SELECTED` row if no active trade exists |
 
 ## Commands Executed
 

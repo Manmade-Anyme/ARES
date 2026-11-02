@@ -71,3 +71,9 @@ Date: 2026-11-02. Status: VERIFIED & CLEAN.
 8. **Nonblocking Quote Persistence (P1):**
    - *Issue:* Synchronous `.execute()` HTTP calls inside `async def flush()` blocked the asyncio event loop during network requests.
    - *Fix:* Offloaded database operations to worker threads via `loop.run_in_executor(None, _do_persist)`.
+9. **Reject Older Observations (P2):**
+   - *Issue:* Ingestion of older completed candles or historical REST quotes could overwrite newer live tick quotes in memory.
+   - *Fix:* Added timestamp comparison in `record_spot_quote()` and `record_option_quote()` rejecting older observations (`observed_dt < existing_dt`).
+10. **Clear Selected Options on Empty Memory (P2):**
+    - *Issue:* After worker restart, `_latest_option` is empty, so `clear_selected_option()` previously skipped scheduling deletion, leaving orphan `OPTION:SELECTED` rows in Supabase.
+    - *Fix:* Unconditionally schedule deletion in `clear_selected_option()` and added startup reconciliation in `main()` and `PositionManager._initialize_db()` when no active contract exists.
