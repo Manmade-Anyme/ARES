@@ -59,3 +59,15 @@ Date: 2026-11-02. Status: VERIFIED & CLEAN.
 4. **Option Policy Terminal Cleanup (P2):**
    - *Issue:* Trades using `option_atr_v1` delegated to `_record_option_transition()` and returned before `clear_selected_option()` was called.
    - *Fix:* Added `_cleanup_option_selection_if_terminal()` helper on `PositionManager` and hooked into `_record_trade_update()`, `_record_option_transition()`, `_flush_option_trade()`, and `_update()` for all terminal paths.
+5. **Non-Null Metadata in Bulk Upsert (P1):**
+   - *Issue:* Combined upserts omitted `raw_metadata` on the underlying row, causing PostgREST to union columns with null and violate the `NOT NULL` constraint.
+   - *Fix:* Ensured `raw_metadata: {}` on all rows and upserted rows individually to avoid heterogeneous column unions.
+6. **Stale Feed Timestamp Preservation (P2):**
+   - *Issue:* When ticks stopped arriving, fallback logic repeatedly stamped old prices with `datetime.now(timezone.utc)`, preventing stale quote detection.
+   - *Fix:* Only record spot quotes when fresh `event_time` exists in observation, allowing old quotes to naturally age into `STALE` and `EXPIRED`.
+7. **Pending Option Deletion Retention (P2):**
+   - *Issue:* Transient Supabase failures during deletion cleared `_clear_option_pending`, leaving closed contracts exposed.
+   - *Fix:* Restored `_clear_option_pending = True` in exception handler when no new option was recorded.
+8. **Nonblocking Quote Persistence (P1):**
+   - *Issue:* Synchronous `.execute()` HTTP calls inside `async def flush()` blocked the asyncio event loop during network requests.
+   - *Fix:* Offloaded database operations to worker threads via `loop.run_in_executor(None, _do_persist)`.

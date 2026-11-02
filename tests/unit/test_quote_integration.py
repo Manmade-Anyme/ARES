@@ -221,3 +221,33 @@ class TestPositionManagerQuoteIntegration:
 
         await main._sleep_with_tick_exits(1.0, feed, pm, engine)
         assert mock_qs.flush.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_sleep_with_tick_exits_stale_feed_does_not_refresh_timestamp(self, monkeypatch):
+        """Verifies that a stalled/disconnected feed does not publish old prices with current time."""
+        import main
+        from unittest.mock import AsyncMock
+
+        mock_qs = MagicMock()
+        mock_qs.flush = AsyncMock(return_value=True)
+        monkeypatch.setattr("quote_service.get_quote_service", lambda *args, **kwargs: mock_qs)
+
+        feed = MagicMock()
+        feed.is_active = True
+        # No buffered ticks
+        feed.get_observations_since.return_value = []
+        # Stale observation (> 5s)
+        feed.get_latest_observation.return_value = None
+        # Retains old cached price
+        feed.get_latest_price.return_value = 23350.0
+
+        pm = MagicMock()
+        pm.active_trades = []
+        engine = MagicMock()
+
+        monkeypatch.setattr("main.asyncio.sleep", AsyncMock())
+        monkeypatch.setattr(main.settings, "tick_exit_check_interval_seconds", 1.0)
+
+        await main._sleep_with_tick_exits(1.0, feed, pm, engine)
+        # Stale price must NOT be recorded with refreshed timestamp
+        mock_qs.record_spot_quote.assert_not_called()

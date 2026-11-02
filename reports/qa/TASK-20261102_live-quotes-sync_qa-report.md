@@ -4,8 +4,8 @@ Date: 2026-11-02. Verdict: PASS for local implementation and pipeline regression
 
 | Check | Result |
 |---|---|
-| Quote Service Unit Tests (`test_quote_service.py`) | 30 passed |
-| Quote Integration Tests (`test_quote_integration.py`) | 8 passed |
+| Quote Service Unit Tests (`test_quote_service.py`) | 31 passed |
+| Quote Integration Tests (`test_quote_integration.py`) | 9 passed |
 | Related Pipeline Suite (`test_quote_*.py`, `test_tick_feed.py`, `test_position_manager.py`, `test_main.py`) | 149 passed |
 | Confirmed-signal + System-one Coverage Gate (`test_task210*.py`, `test_task211*.py`) | 398 passed, 35 subtests (100% statements, 100% branches) |
 | SQL Migration Static Verification (`migrations/20261102_latest_quotes.sql`) | Clean syntax, idempotent table & RLS definitions, RPC helper |
@@ -17,6 +17,10 @@ Date: 2026-11-02. Verdict: PASS for local implementation and pipeline regression
 | PR #153 Review Fix: IST Timezone Normalization | Passed: naive candle timestamps properly convert IST to UTC without +5.5h drift |
 | PR #153 Review Fix: Buffered Ticks Flush | Passed: WebSocket tick loop flushes quote cache before loop continuation |
 | PR #153 Review Fix: Terminal Option Cleanup | Passed: `option_atr_v1` trades invoke `clear_selected_option()` on terminal state |
+| PR #153 Review Fix: Non-null Bulk Metadata | Passed: non-null `raw_metadata: {}` on all rows; separate row upserts prevent schema union nulls |
+| PR #153 Review Fix: Stale Feed Preservation | Passed: stalled ticks do not refresh timestamp with current time; old quotes age naturally |
+| PR #153 Review Fix: Pending Deletion Retention | Passed: transient Supabase delete failures preserve `_clear_option_pending` until successful |
+| PR #153 Review Fix: Nonblocking Persistence | Passed: synchronous Supabase `.execute()` offloaded from event loop via `run_in_executor` |
 
 ## Commands Executed
 

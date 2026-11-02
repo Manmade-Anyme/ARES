@@ -345,13 +345,13 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                 await dispatcher.on_spot(price)
             except Exception as e:
                 print(f"[-] Pending order spot update failed: {e}")
-        if price is not None:
+        if price is not None and tick_kwargs.get("event_time") is not None:
             try:
                 from quote_service import get_quote_service
                 qs = get_quote_service()
                 qs.record_spot_quote(
                     price,
-                    tick_kwargs.get("event_time") or datetime.now(timezone.utc),
+                    tick_kwargs["event_time"],
                     source="dhan_websocket_tick",
                 )
                 await qs.flush()

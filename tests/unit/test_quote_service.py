@@ -334,11 +334,10 @@ class TestQuotePersistenceService:
         assert mock_table.upsert.call_count == 1
 
         # Check upsert payload structure
-        upserted_rows = mock_table.upsert.call_args[0][0]
-        assert len(upserted_rows) == 1
-        assert upserted_rows[0]["instrument_id"] == "UNDERLYING:NIFTY"
-        assert upserted_rows[0]["instrument_type"] == "UNDERLYING"
-        assert upserted_rows[0]["price"] == 23300.0
+        upserted_row = mock_table.upsert.call_args[0][0]
+        assert upserted_row["instrument_id"] == "UNDERLYING:NIFTY"
+        assert upserted_row["instrument_type"] == "UNDERLYING"
+        assert upserted_row["price"] == 23300.0
 
         # Tick 2 immediately after: throttled!
         service.record_spot_quote(23300.5, now + timedelta(milliseconds=100))
@@ -351,7 +350,7 @@ class TestQuotePersistenceService:
         flushed_3 = await service.flush(force=False)
         assert flushed_3 is True
         assert mock_table.upsert.call_count == 2
-        assert mock_table.upsert.call_args[0][0][0]["price"] == 23300.5
+        assert mock_table.upsert.call_args[0][0]["price"] == 23300.5
 
     @pytest.mark.asyncio
     async def test_option_quote_upsert_payload(self):
@@ -375,12 +374,13 @@ class TestQuotePersistenceService:
         service.record_option_quote(contract, 125.5, now)
 
         await service.flush(force=True)
-        upserted_rows = mock_table.upsert.call_args[0][0]
-        assert len(upserted_rows) == 2
+        assert mock_table.upsert.call_count == 2
+        upserted_rows = [call.args[0] for call in mock_table.upsert.call_args_list]
 
         underlying_row = next(r for r in upserted_rows if r["instrument_id"] == "UNDERLYING:NIFTY")
         assert underlying_row["price"] == 23300.8
         assert underlying_row["instrument_type"] == "UNDERLYING"
+        assert isinstance(underlying_row["raw_metadata"], dict)
 
         option_row = next(r for r in upserted_rows if r["instrument_id"] == "OPTION:SELECTED")
         assert option_row["price"] == 125.5
@@ -389,6 +389,36 @@ class TestQuotePersistenceService:
         assert option_row["strike"] == 23300.0
         assert option_row["option_type"] == "CE"
         assert option_row["security_id"] == "53940"
+        assert isinstance(option_row["raw_metadata"], dict)
+
+    @pytest.mark.asyncio
+    async def test_pending_option_deletion_retained_on_failure(self):
+        """Verifies that transient Supabase failures do not lose pending option deletion."""
+        mock_supabase = MagicMock()
+        mock_table = MagicMock()
+        mock_supabase.table.return_value = mock_table
+        mock_table.delete.side_effect = RuntimeError("Delete network failure")
+
+        service = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0.0)
+        contract = {
+            "expiry": "2026-11-03",
+            "strike": 23300,
+            "option_type": "CE",
+            "security_id": "53940",
+        }
+        service.record_option_quote(contract, 125.5, "2026-11-02T04:52:00Z")
+        service.clear_selected_option()
+        assert service._clear_option_pending is True
+
+        # Flush fails due to delete failure
+        success = await service.flush(force=True)
+        assert success is False
+        # Deletion flag must be preserved so next retry deletes it
+        assert service._clear_option_pending is True
+
+        # But if a new option is recorded before next retry, don't delete new option
+        service.record_option_quote(contract, 130.0, "2026-11-02T04:53:00Z")
+        assert service._clear_option_pending is False
 
     @pytest.mark.asyncio
     async def test_clear_selected_option(self):

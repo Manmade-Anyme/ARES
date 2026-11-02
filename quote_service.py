@@ -29,6 +29,7 @@ Security & Architecture:
 - Keeps live market quotes distinct from trade entry prices and detector signal spots.
 """
 
+import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 import logging
@@ -328,6 +329,7 @@ class QuotePersistenceService:
                 "price": p,
                 "observed_at": observed_iso,
                 "source": str(source or "dhan_websocket_tick"),
+                "raw_metadata": {},
             }
             self._dirty = True
         return True
@@ -405,26 +407,44 @@ class QuotePersistenceService:
 
             rows_to_upsert = []
             if self._latest_underlying is not None:
-                rows_to_upsert.append(deepcopy(self._latest_underlying))
+                underlying_row = deepcopy(self._latest_underlying)
+                underlying_row.setdefault("raw_metadata", {})
+                rows_to_upsert.append(underlying_row)
             if self._latest_option is not None:
-                rows_to_upsert.append(deepcopy(self._latest_option))
+                option_row = deepcopy(self._latest_option)
+                option_row.setdefault("raw_metadata", {})
+                rows_to_upsert.append(option_row)
 
             should_delete_option = self._clear_option_pending
             self._dirty = False
             self._clear_option_pending = False
             self._last_persist_time = now
 
-        try:
+        def _do_persist():
             if rows_to_upsert:
-                # Perform atomic upsert on instrument_id primary key
-                self.supabase.table("latest_quotes").upsert(rows_to_upsert).execute()
+                # Upsert rows individually to satisfy non-null metadata constraints and prevent schema-union nulls
+                for row in rows_to_upsert:
+                    self.supabase.table("latest_quotes").upsert(row).execute()
             if should_delete_option:
                 self.supabase.table("latest_quotes").delete().eq("instrument_id", "OPTION:SELECTED").execute()
+
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop is not None and loop.is_running():
+                await loop.run_in_executor(None, _do_persist)
+            else:
+                _do_persist()
             return True
         except Exception as exc:
             logger.warning("Failed to persist latest quotes to Supabase: %s", exc)
             with self._lock:
                 self._dirty = True  # Re-mark dirty on failure so next cycle retries
+                if should_delete_option and self._latest_option is None:
+                    self._clear_option_pending = True
             return False
 
 
