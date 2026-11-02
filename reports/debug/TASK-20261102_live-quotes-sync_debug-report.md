@@ -77,3 +77,6 @@ Date: 2026-11-02. Status: VERIFIED & CLEAN.
 10. **Clear Selected Options on Empty Memory (P2):**
     - *Issue:* After worker restart, `_latest_option` is empty, so `clear_selected_option()` previously skipped scheduling deletion, leaving orphan `OPTION:SELECTED` rows in Supabase.
     - *Fix:* Unconditionally schedule deletion in `clear_selected_option()` and added startup reconciliation in `main()` and `PositionManager._initialize_db()` when no active contract exists.
+11. **Service-Role Client Initialization (P1):**
+    - *Issue:* `PositionManager` and `main.py` explicitly passed `self.supabase` / `storage.supabase` (initialized with `settings.supabase_key`, typically the public anon key) into `get_quote_service()`, locking in a client unable to mutate `latest_quotes` due to RLS restrictions.
+    - *Fix:* Removed explicit anon client passing in `PositionManager.__init__` and `main.py`, invoking `get_quote_service()` with no arguments so it resolves via `storage.get_supabase_client()` using `settings.supabase_service_role_key`. Added unit test `test_position_manager_init_does_not_pass_anon_client_to_quote_service`.

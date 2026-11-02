@@ -34,7 +34,7 @@ class PositionManager:
         )
         try:
             from quote_service import get_quote_service
-            get_quote_service(self.supabase)
+            get_quote_service()
         except Exception:
             pass
         self.analytics = AnalyticsLogger()

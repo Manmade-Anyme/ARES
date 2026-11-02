@@ -251,3 +251,18 @@ class TestPositionManagerQuoteIntegration:
         await main._sleep_with_tick_exits(1.0, feed, pm, engine)
         # Stale price must NOT be recorded with refreshed timestamp
         mock_qs.record_spot_quote.assert_not_called()
+
+    def test_position_manager_init_does_not_pass_anon_client_to_quote_service(self, monkeypatch):
+        """Verifies PositionManager initializes quote service via service-role helper without passing its anon client."""
+        import quote_service
+        quote_service._global_quote_service = None
+
+        mock_get_quote_service = MagicMock()
+        monkeypatch.setattr("quote_service.get_quote_service", mock_get_quote_service)
+        monkeypatch.setattr("position_manager.create_client", MagicMock())
+        monkeypatch.setattr("position_manager.PositionManager._initialize_db", MagicMock())
+
+        from position_manager import PositionManager
+        pm = PositionManager()
+        # Must be called with no arguments so quote_service resolves the service-role client
+        mock_get_quote_service.assert_called_with()
