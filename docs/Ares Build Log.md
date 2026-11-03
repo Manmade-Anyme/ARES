@@ -2,6 +2,35 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-11-03 · Tuesday Expiry Profile Sensitivity Tuning (TASK-20261103)
+
+Applied the approved 16-value expiry-only configuration bundle in `config_profiles.py`. The non-expiry profile, expiry candle-body ratio, persistence count, and per-setup SL/T1/T2 remain unchanged. Existing detector and level-fetcher code consumes these settings; no detector logic changed.
+
+**Configuration**
+- OI wall: minimum OI 10,000,000 → 6,000,000; minimum cycle growth 15% → 2.5%; approach/test/excursion/retest distances 50/10/10/10 → 60/15/15/15 points.
+- Failed breakout: writer-growth 15% → 5%; IV-fall threshold −5.0 → −3.0; weak-volume ratio 0.70 → 0.75.
+- Exhaustion: volume multiplier 3.5 → 2.5; IV score threshold 6.0 → 3.5; body ratio stays 0.30.
+- Trend continuation: minimum score 3 → 2; resumption-volume ratio 1.3 → 1.2; max pullback 6 → 8 candles. The expiry profile already runs continuation live after TASK-180; this change does not flip its enable switch.
+- Level scan 300 → 400 points; signal cooldown 20 → 15 minutes.
+
+**Dhan/Supabase evidence available before this change**
+- Dhan's 2026-11-03 minute replay covered approximately 09:16–12:05 IST: 168 index minutes, 167 option-chain minutes, ATM−2 through ATM+2, 10/10 option-history requests successful, no duplicate OI conflicts. The replay ran `OIWallDetector` and `OIWallEntryFilter`; it did not run the complete ARES engine, other detectors, risk/reward/priority/cooldown gates, or trade P&L.
+- Current expiry OI settings (10M, 15%, original distances): 3 wall-active minutes, 2 candidate episodes, 0 qualified entries. 5% alone (10M floor, original distances): 18 minutes, 7 episodes, 0 qualified entries.
+- Proposed OI settings with the 10M floor and 2.5% growth: 48 wall-active minutes, 26 episodes, 1 qualified entry at 09:23 (CE 23600; OI 19,144,320; 3.164% growth). Adding the proposed distances produced 2 qualified entries: CE 23600 at 09:23 and PE 23600 at 09:31 (OI 20,851,675; 5.020% growth).
+- The full OI subset with the 6M floor produced the same two qualified entries as retaining 10M. Thus, lowering the OI floor added candidate episodes in this sample but no additional qualified entry. Today's stored p85 OI was about 3.88M CE and 9.93M PE; 6M is not p85 for both sides.
+- Dhan candle replay found 0 raw exhaustion candidates under both 3.5× and 2.5× volume with the unchanged 0.30 body ratio through the same partial session. Supabase held 156 snapshots through 12:04:49 IST with no generated signal under the then-active configuration.
+- Recorded Tuesday analytics contained 32 rows totaling −49 spot points (Exhaustion −68, Failed Breakout −16, Trend Continuation +35). Continuation's +35 came from 11 rows, only 2 positive. These descriptive stored outcomes are not a counterfactual replay of this 16-setting bundle or broker-fill P&L.
+
+**Limits**
+- This is a configuration sensitivity trial, not evidence of improved net P&L or win rate. Only the OI-wall subset and exhaustion volume/body gate were replayed on one partial Tuesday.
+- The OI-wall replay sampled ATM±2. It does not validate the 400-point outer level scan or the breakout/continuation effects of additional levels.
+- Qualified OI-wall states are not guaranteed emitted signals: ARES still applies breakout priority, cooldown, and the R:R gate.
+- TASK-177 originally proposed expiry continuation disabled; TASK-180 later explicitly enabled it. Current `EXPIRY_CONFIG` inherits `continuation_enabled=True`; this tuning changes continuation score inputs only.
+
+**Validation**: Focused profile tests: 18 passed. Full repository test suite: 2122 passed (fixed legacy assertion in `test_task174_oi_scoring.py` expecting pre-tuned 15.0% writer growth). System One 100% coverage suite: 398 passed. `git diff --check` — clean.
+
+**CI follow-up (2026-11-03)**: PR CI exposed one obsolete TASK-174 test expectation (`breakout_writers_active_min_pct` expiry value 15.0); updated it to 5.0 and added detector-path tests for 4% and 5% expiry OI growth. Local full suite: **2,124 passed, 45 subtests passed** (Python 3.14.6). `config_profiles.py`: **100% line and branch coverage** (79 statements, 0 missed; 8 branches, 0 partial). GitHub Actions must still pass on the updated PR head (Python 3.10).
+
 ## 2026-10-17 00:50 · CI Deploy Pipeline Transient Gateway Failure Fix (TASK-63030447fb93)
 
 Fixed GitHub Actions deploy workflow failure triggered after merging PR #136 (`428a9d5f074515b760757295880a73880c451a1d`).

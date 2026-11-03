@@ -250,44 +250,44 @@ NON_EXPIRY_CONFIG = TuningConfig(
 )
 
 EXPIRY_CONFIG = TuningConfig(
-    signal_cooldown_minutes=20,
+    signal_cooldown_minutes=15,
 
     # Trade quality gates
     min_rr_ratio=1.0,
 
-    # Breakout — faster confirmation, stricter filters
+    # Breakout — faster confirmation and expiry-specific score sensitivity
     breakout_confirmation_candles=2,
-    breakout_weak_volume_ratio=0.70,
-    breakout_iv_falling_threshold=-5.0,
-    breakout_writers_active_min_pct=15.0,
+    breakout_weak_volume_ratio=0.75,
+    breakout_iv_falling_threshold=-3.0,
+    breakout_writers_active_min_pct=5.0,
 
-    # OI Wall — only massive walls matter, tighter proximity
-    oi_wall_min_oi=10000000,
-    oi_wall_min_oi_change_pct=15.0,
-    oi_wall_approach_distance=50.0,
-    oi_wall_test_distance=10.0,
+    # OI Wall — lower OI gates with wider expiry interaction/retest geometry
+    oi_wall_min_oi=6000000,
+    oi_wall_min_oi_change_pct=2.5,
+    oi_wall_approach_distance=60.0,
+    oi_wall_test_distance=15.0,
     oi_wall_wick_rejection_ratio=0.4,
     oi_wall_persistence_snapshots=3,
-    oi_wall_min_excursion_pts=10.0,
-    oi_wall_retest_distance_pts=10.0,
+    oi_wall_min_excursion_pts=15.0,
+    oi_wall_retest_distance_pts=15.0,
     oi_wall_enable_watchlist_alert=True,
 
-    # Exhaustion — higher bar
-    exhaustion_volume_multiplier=3.5,
+    # Exhaustion — expiry candle-shape gate with lower volume/IV thresholds
+    exhaustion_volume_multiplier=2.5,
     exhaustion_body_ratio=0.30,
-    exhaustion_iv_spike_threshold=6.0,
+    exhaustion_iv_spike_threshold=3.5,
 
     # Per-type SL/T1/T2 — identical to NON_EXPIRY for now (TASK-185). Replace
     # this line with an explicit dict to give expiry its own tuned levels.
     per_type_levels=dict(_PER_TYPE_LEVELS_DEFAULT),
-    level_scan_range=300.0,
+    level_scan_range=400.0,
 
     # Trend Continuation — runs on expiry too, using the class-default
     # continuation_enabled; only the expiry-specific speed knobs below (tuned
     # for expiry's faster candles since TASK-177) need overriding.
     continuation_regime_min_candles=10,
     continuation_pullback_vwap_pts=8.0,
-    continuation_pullback_max_candles=6,
-    continuation_resume_volume_ratio=1.3,
-    continuation_min_score=3,
+    continuation_pullback_max_candles=8,
+    continuation_resume_volume_ratio=1.2,
+    continuation_min_score=2,
 )
