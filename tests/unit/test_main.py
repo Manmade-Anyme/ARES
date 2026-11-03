@@ -328,6 +328,107 @@ class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(call_args[3])
 
 
+@pytest.mark.asyncio
+async def test_selected_option_quote_uses_exact_security_id_when_expiry_differs(monkeypatch):
+    selected = {
+        "expiry": "2026-11-12", "strike": 23400.0,
+        "option_type": "PE", "security_id": "53941",
+    }
+    position_manager = MagicMock()
+    position_manager.get_selected_option_contract.return_value = selected
+    price_fetcher = MagicMock()
+    price_fetcher.fetch_option_observation = AsyncMock(return_value={
+        "price": 151.25, "observed_at": "2026-11-03T04:55:01+00:00", "source": "dhan_last_trade",
+    })
+    quote_service = MagicMock()
+    matcher = MagicMock()
+    monkeypatch.setattr("quote_service.match_option_quote_from_chain", matcher)
+
+    await main._record_selected_option_quote(
+        position_manager, price_fetcher, quote_service, "2026-11-05", [{"nearest": True}]
+    )
+
+    price_fetcher.fetch_option_observation.assert_awaited_once_with({
+        **selected, "exchange_segment": "NSE_FNO",
+    })
+    matcher.assert_not_called()
+    quote_service.reconcile_selected_contract.assert_called_once_with(selected)
+    quote_service.record_option_quote.assert_called_once_with(
+        selected, 151.25, "2026-11-03T04:55:01+00:00", source="dhan_last_trade",
+    )
+
+
+@pytest.mark.asyncio
+async def test_selected_option_quote_skips_unvalidated_contract_mocks(monkeypatch):
+    position_manager = MagicMock()
+    quote_service = MagicMock()
+    price_fetcher = MagicMock()
+    price_fetcher.fetch_option_observation = AsyncMock()
+    matcher = MagicMock()
+    monkeypatch.setattr("quote_service.match_option_quote_from_chain", matcher)
+
+    await main._record_selected_option_quote(
+        position_manager, price_fetcher, quote_service, "2026-11-05", []
+    )
+
+    quote_service.reconcile_selected_contract.assert_called_once()
+    matcher.assert_not_called()
+    price_fetcher.fetch_option_observation.assert_not_awaited()
+    quote_service.record_option_quote.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_selected_option_quote_keeps_nearest_expiry_chain_path(monkeypatch):
+    selected = {
+        "expiry": "2026-11-05", "strike": 23400.0,
+        "option_type": "PE", "security_id": "53941",
+    }
+    quote = {"price": 148.5, "observed_at": "2026-11-03T04:55:01+00:00"}
+    position_manager = MagicMock()
+    position_manager.get_selected_option_contract.return_value = selected
+    price_fetcher = MagicMock()
+    price_fetcher.fetch_option_observation = AsyncMock()
+    quote_service = MagicMock()
+    matcher = MagicMock(return_value=quote)
+    monkeypatch.setattr("quote_service.match_option_quote_from_chain", matcher)
+    chain = [{"expiry_date": "2026-11-05"}]
+
+    await main._record_selected_option_quote(
+        position_manager, price_fetcher, quote_service, "2026-11-05", chain
+    )
+
+    matcher.assert_called_once()
+    assert matcher.call_args.args[:2] == (selected, chain)
+    price_fetcher.fetch_option_observation.assert_not_awaited()
+    quote_service.record_option_quote.assert_called_once_with(
+        selected, 148.5, "2026-11-03T04:55:01+00:00", source="dhan_option_chain",
+    )
+
+
+@pytest.mark.asyncio
+async def test_selected_option_quote_tolerates_protective_request_priority(monkeypatch):
+    from fetchers.price_fetcher import ReferencePriceDeferred
+
+    selected = {
+        "expiry": "2026-11-12", "strike": 23400.0,
+        "option_type": "PE", "security_id": "53941",
+    }
+    position_manager = MagicMock()
+    position_manager.get_selected_option_contract.return_value = selected
+    price_fetcher = MagicMock()
+    price_fetcher.fetch_option_observation = AsyncMock(
+        side_effect=ReferencePriceDeferred("protective request active")
+    )
+    quote_service = MagicMock()
+
+    await main._record_selected_option_quote(
+        position_manager, price_fetcher, quote_service, "2026-11-05", []
+    )
+
+    quote_service.reconcile_selected_contract.assert_called_once_with(selected)
+    quote_service.record_option_quote.assert_not_called()
+
+
 class TestComputeIVChangePct(unittest.TestCase):
     def test_both_none(self):
         iv_change, next_prev = main.compute_iv_change_pct(None, None)

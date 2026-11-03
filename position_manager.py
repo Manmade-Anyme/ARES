@@ -32,6 +32,11 @@ class PositionManager:
             settings.supabase_url,
             settings.supabase_key
         )
+        try:
+            from quote_service import get_quote_service
+            get_quote_service()
+        except Exception:
+            pass
         self.analytics = AnalyticsLogger()
         self.active_trades: List[Dict[str, Any]] = []
         self._trade_writes: Dict[str, asyncio.Task] = {}
@@ -273,6 +278,7 @@ class PositionManager:
 
             self.active_trades = valid_trades
             self.is_initialized = True
+            self._cleanup_option_selection_if_terminal()
             print(f"PositionManager initialized. Loaded {len(self.active_trades)} active trades (multi-day carry enabled).")
         except Exception as e:
             self.is_initialized = False
@@ -1223,6 +1229,9 @@ class PositionManager:
 
     async def _record_trade_update(self, trade, event_price, update_type, event_ts, pnl_points_override=None):
         """Persist each lifecycle transition through the existing ordered writer."""
+        terminal = trade.get("state") in ["CLOSED", "STOPPED_OUT"]
+        if terminal:
+            self._cleanup_option_selection_if_terminal()
         opt = (trade.get("market_context") or {}).get("option_trailing")
         if opt and opt.get("policy_version") == "option_atr_v1":
             await self._record_option_transition(trade, event_price, update_type, event_ts)
@@ -1270,6 +1279,7 @@ class PositionManager:
             terminal = data["state"] in ["CLOSED", "STOPPED_OUT"]
             if terminal:
                 self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                self._cleanup_option_selection_if_terminal()
             self._persist_trade_context(t_id, snapshot, milestone, target, refs)
             if not terminal:
                 self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
@@ -1485,7 +1495,68 @@ class PositionManager:
         quotes.sort(key=lambda item: parse_candle_timestamp(item["observed_at"]))
         cache["spot_quotes"] = quotes[-1000:]
         self._reference_price_evidence = cache
+        try:
+            from quote_service import get_quote_service
+            get_quote_service().record_spot_quote(value, at, source=source.strip())
+        except Exception:
+            pass
         return True
+
+    def get_selected_option_contract(self) -> Optional[dict]:
+        """Return the strictly validated option contract for the active trade, or None."""
+        from quote_service import validate_option_contract
+        for trade in self.active_trades:
+            if trade.get("state") in {"CLOSED", "STOPPED_OUT"}:
+                continue
+            context = trade.get("market_context") or {}
+            sizing = context.get("options_sizing") or {}
+            validated = validate_option_contract(sizing)
+            if validated:
+                return validated
+            ref = (context.get("option_reference") or {}).get("contract") or {}
+            validated_ref = validate_option_contract(ref)
+            if validated_ref:
+                return validated_ref
+            trailing = (context.get("option_trailing") or {}).get("contract") or {}
+            validated_trailing = validate_option_contract(trailing)
+            if validated_trailing:
+                return validated_trailing
+        return None
+
+    def _cleanup_option_selection_if_terminal(self) -> None:
+        """Reconcile the selected option quote with current active trades.
+
+        If no active trades remain, clear the selected option quote.
+        If active trades remain but the selected contract differs from the cached quote,
+        clear the cached quote so closed contracts do not continue being persisted or served.
+        """
+        try:
+            from quote_service import get_quote_service
+            qs = get_quote_service()
+            selected = self.get_selected_option_contract()
+            cleared = False
+            if hasattr(qs, "reconcile_selected_contract"):
+                cleared = qs.reconcile_selected_contract(selected)
+            elif selected is None:
+                qs.clear_selected_option()
+                cleared = True
+            else:
+                cached = getattr(qs, "get_cached_option_contract", lambda: None)()
+                if cached is not None:
+                    from quote_service import are_option_contracts_equal
+                    if not are_option_contracts_equal(cached, selected):
+                        qs.clear_selected_option()
+                        cleared = True
+            if cleared:
+                try:
+                    import asyncio
+                    loop = asyncio.get_running_loop()
+                    if loop.is_running():
+                        loop.create_task(qs.flush(force=True))
+                except RuntimeError:
+                    pass
+        except Exception:
+            pass
 
     @staticmethod
     def _reference_totals(trade):
@@ -1785,6 +1856,7 @@ class PositionManager:
         terminal = trade["state"] in {"CLOSED", "STOPPED_OUT"}
         if terminal:
             opt["monitoring_status"] = "CLOSED"
+            self._cleanup_option_selection_if_terminal()
         reference_accounting = opt.get("accounting_formula_version") == "one_lot_reference_v1"
         accounting = self._enrich_reference_trade(trade) if reference_accounting else {}
         snapshot = deepcopy(opt)
@@ -1868,6 +1940,7 @@ class PositionManager:
                                     opt.update(persisted_opt)
                                     trade["state"] = "CLOSED"
                                     pending.clear()
+                                    self._cleanup_option_selection_if_terminal()
                                 else:
                                     # Drop observations superseded by a newer committed milestone/stop.
                                     kept = []
@@ -2037,6 +2110,8 @@ class PositionManager:
                 if "alert_events" in committed_opt:
                     opt["alert_events"] = deepcopy(committed_opt["alert_events"])
                 pending.pop(0)
+                if opt.get("phase") == "CLOSED" or trade.get("state") in {"CLOSED", "STOPPED_OUT"}:
+                    self._cleanup_option_selection_if_terminal()
                 if opt.get("accounting_formula_version") == "one_lot_reference_v1":
                     try:
                         # The RPC may return evidence merged by another writer,

@@ -1,4 +1,6 @@
 import asyncio
+from asyncio import sleep as _quote_retry_sleep
+import datetime as datetime_module
 from datetime import datetime, time, timedelta, timezone
 import logging
 from math import isfinite
@@ -6,7 +8,7 @@ from inspect import iscoroutinefunction
 from typing import Optional, Tuple
 
 from engine import AresEngine
-from fetchers.price_fetcher import PriceFetcher
+from fetchers.price_fetcher import PriceFetcher, ReferencePriceDeferred
 from fetchers.oi_fetcher import OIFetcher
 from fetchers.level_fetcher import LevelFetcher
 from fetchers.tick_feed import TickFeed
@@ -168,9 +170,12 @@ def _read_buffered_spot_ticks(tick_feed, position_manager):
                 ordered_ticks.append(item)
     quote_recorder = getattr(position_manager, "record_reference_spot_quote", None)
     if callable(quote_recorder):
-        for tick in ordered_ticks:
-            quote_recorder(float(tick["price"]), tick["exchange_at"],
-                           tick.get("source") or "dhan_websocket_tick")
+        for tick in ordered_ticks + receipt_ticks:
+            observed_at = tick.get("exchange_at") or tick["received_at"]
+            source = tick.get("source") or (
+                "dhan_websocket_tick" if tick.get("exchange_at") else "dhan_websocket_receipt"
+            )
+            quote_recorder(float(tick["price"]), observed_at, source)
     return tick_batch, ordered_ticks, receipt_ticks
 
 
@@ -266,6 +271,59 @@ def _schedule_reference_recovery(position_manager, price_fetcher):
     position_manager._reference_recovery_last = loop.time()
     position_manager._reference_recovery_task = loop.create_task(
         run_reference_recovery(position_manager, price_fetcher, analytics))
+
+
+def _schedule_quote_flush(position_manager, quote_service):
+    """Flush quote writes in one coalesced task, outside protective checks."""
+    task = getattr(position_manager, "_quote_flush_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        position_manager._quote_flush_requested = True
+        return task
+
+    async def flush_pending_quotes():
+        while True:
+            position_manager._quote_flush_requested = False
+            try:
+                await quote_service.flush(wait_for_throttle=True)
+            except Exception as exc:
+                logger.warning("Quote persistence flush failed: %s", exc)
+            if not position_manager._quote_flush_requested:
+                return
+            # Updates arriving during a write need a later snapshot.
+
+    position_manager._quote_flush_requested = False
+    task = asyncio.create_task(flush_pending_quotes())
+    position_manager._quote_flush_task = task
+    return task
+
+
+async def _drain_quote_flush(position_manager, timeout_seconds=5.0):
+    """Give pending quote writes one bounded chance to finish during shutdown."""
+    task = getattr(position_manager, "_quote_flush_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            logger.warning("Quote persistence shutdown drain timed out")
+            return False
+
+    try:
+        from quote_service import get_quote_service
+        await asyncio.wait_for(
+            get_quote_service().flush(force=True), timeout=timeout_seconds
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Final quote persistence flush timed out")
+        return False
+    except Exception as exc:
+        logger.warning("Final quote persistence flush failed: %s", exc)
+        return False
+    return True
 
 
 def _schedule_option_reference_capture(position_manager, price_fetcher, analytics=None):
@@ -365,6 +423,11 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                 if position_manager.active_trades:
                     _schedule_reference_recovery(position_manager, price_fetcher)
                 await _resolve_reference_ambiguities(position_manager, tick_feed)
+                try:
+                    from quote_service import get_quote_service
+                    _schedule_quote_flush(position_manager, get_quote_service())
+                except Exception:
+                    pass
                 continue
         from datetime import datetime as real_datetime
         observation_fn = getattr(tick_feed, "get_latest_observation", None)
@@ -388,6 +451,19 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                 await dispatcher.on_spot(price)
             except Exception as e:
                 print(f"[-] Pending order spot update failed: {e}")
+        if price is not None and tick_kwargs.get("event_time") is not None:
+            try:
+                from quote_service import get_quote_service
+                qs = get_quote_service()
+                market_event_time = tick_kwargs.get("market_event_time")
+                qs.record_spot_quote(
+                    price,
+                    market_event_time or tick_kwargs["event_time"],
+                    source="dhan_websocket_tick" if market_event_time else "dhan_websocket_receipt",
+                )
+                _schedule_quote_flush(position_manager, qs)
+            except Exception:
+                pass
         if price is not None and position_manager.active_trades:
             try:
                 events = await position_manager.update_trades(price, **tick_kwargs)
@@ -425,12 +501,120 @@ def _mark_signal_session_closed(signal):
         signal.reasons.append(reason)
 
 
+async def _record_selected_option_quote(position_manager, price_fetcher, quote_service, nearest_expiry, full_chain, *, observed_at=None):
+    """Record a matching quote; report deferral or selection changes for retry."""
+    from quote_service import are_option_contracts_equal, match_option_quote_from_chain
+
+    selected_contract = position_manager.get_selected_option_contract()
+    quote_service.reconcile_selected_contract(selected_contract)
+    if not isinstance(selected_contract, dict) or not selected_contract.get("expiry"):
+        return
+
+    if selected_contract["expiry"] == nearest_expiry:
+        observation = match_option_quote_from_chain(
+            selected_contract, full_chain, timestamp=observed_at or datetime_module.datetime.now(timezone.utc)
+        )
+        source = "dhan_option_chain"
+    else:
+        # The strategy chain is NIFTY NSE_FNO; query this pinned security ID directly
+        # so an alternate expiry cannot mutate OI baselines or supply a wrong premium.
+        quote_contract = {**selected_contract, "exchange_segment": "NSE_FNO"}
+        try:
+            observation = await price_fetcher.fetch_option_observation(quote_contract)
+        except ReferencePriceDeferred as exc:
+            logger.debug("Selected option quote deferred: %s", exc)
+            return ("deferred", selected_contract)
+        except Exception as exc:
+            logger.warning("Selected option quote fetch failed: %s", exc)
+            return
+        current_contract = position_manager.get_selected_option_contract()
+        if not are_option_contracts_equal(selected_contract, current_contract):
+            quote_service.reconcile_selected_contract(current_contract)
+            return ("selection_changed", current_contract)
+        source = (observation or {}).get("source") or "dhan_last_trade"
+
+    if observation is not None:
+        quote_service.record_option_quote(
+            selected_contract, observation["price"], observation["observed_at"], source=source
+        )
+
+
+def _schedule_selected_option_quote(position_manager, price_fetcher, quote_service, expiry, chain):
+    """Coalesce dashboard quote requests without delaying trade monitoring."""
+    position_manager._selected_option_quote_pending = (
+        price_fetcher, quote_service, expiry, chain, datetime_module.datetime.now(timezone.utc)
+    )
+    task = getattr(position_manager, "_selected_option_quote_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        return task
+
+    async def capture_latest():
+        while position_manager._selected_option_quote_pending is not None:
+            fetcher, service, current_expiry, current_chain, observed_at = position_manager._selected_option_quote_pending
+            position_manager._selected_option_quote_pending = None
+            try:
+                result = await _record_selected_option_quote(
+                    position_manager, fetcher, service, current_expiry, current_chain,
+                    observed_at=observed_at,
+                )
+                _schedule_quote_flush(position_manager, service)
+                if result is not None and position_manager._selected_option_quote_pending is None:
+                    status, previous_contract = result
+                    if status == "deferred":
+                        await _quote_retry_sleep(1.1)
+                    if position_manager._selected_option_quote_pending is None:
+                        from quote_service import are_option_contracts_equal, validate_option_contract
+                        current = position_manager.get_selected_option_contract()
+                        if status == "deferred" and are_option_contracts_equal(previous_contract, current):
+                            position_manager._selected_option_quote_pending = (
+                                fetcher, service, current_expiry, current_chain, observed_at
+                            )
+                        else:
+                            service.reconcile_selected_contract(current)
+                            _schedule_quote_flush(position_manager, service)
+                            if validate_option_contract(current) is not None:
+                                position_manager._selected_option_quote_pending = (
+                                    fetcher, service, None, None, datetime_module.datetime.now(timezone.utc)
+                                )
+            except Exception as exc:
+                logger.warning("Selected option quote capture failed: %s", exc)
+
+    task = asyncio.create_task(capture_latest())
+    position_manager._selected_option_quote_task = task
+    return task
+
+
+async def _drain_selected_option_quote(position_manager, timeout_seconds=5.0):
+    """Allow an outstanding dashboard quote to finish before persistence drains."""
+    task = getattr(position_manager, "_selected_option_quote_task", None)
+    if not isinstance(task, asyncio.Task) or task.done():
+        return True
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
+        return True
+    except asyncio.TimeoutError:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        logger.warning("Selected option quote shutdown drain timed out")
+        return False
+
+
 async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manager, engine, dispatcher):
     """Keep exits and pending orders live without replaying a detector candle."""
     if _has_option_policy_trades(position_manager):
         await _monitor_completed_atr(price_fetcher.watch_candles, position_manager,
                                      dispatcher, price_fetcher=price_fetcher, engine=engine)
     spot = await price_fetcher.fetch_latest_spot()
+    try:
+        from quote_service import get_quote_service
+        qs = get_quote_service()
+        qs.record_spot_quote(spot, datetime_module.datetime.now(timezone.utc), source="dhan_rest_ltp")
+        _schedule_quote_flush(position_manager, qs)
+    except Exception:
+        pass
     # Risk checks must survive an independent option-chain outage.
     try:
         events = await position_manager.update_trades(spot)
@@ -441,8 +625,29 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
     await dispatcher.on_spot(spot)
     if _session_now().time() >= time(15, 30):
         return
-    expiry = await oi_fetcher.get_nearest_expiry()
-    _, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry)
+    expiry = None
+    full_chain = None
+    try:
+        expiry = await oi_fetcher.get_nearest_expiry()
+        _, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry)
+    except Exception:
+        # A selected contract can still be quoted by pinned security ID if the
+        # strategy's nearest-expiry chain is unavailable.
+        try:
+            from quote_service import get_quote_service
+            qs = get_quote_service()
+            _schedule_selected_option_quote(
+                position_manager, price_fetcher, qs, None, None
+            )
+        except Exception:
+            pass
+        raise
+    try:
+        from quote_service import get_quote_service
+        qs = get_quote_service()
+        _schedule_selected_option_quote(position_manager, price_fetcher, qs, expiry, full_chain)
+    except Exception:
+        pass
     if _session_now().time() < time(15, 30):
         await dispatcher.on_snapshot(full_chain, spot)
 
@@ -535,6 +740,14 @@ async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatc
         candle = await asyncio.wait_for(request, timeout=10) if finalizing else await request
         return candle
     finally:
+        if candle is not None:
+            try:
+                from quote_service import get_quote_service
+                qs = get_quote_service()
+                qs.record_spot_quote(candle.close, candle.timestamp, source="completed_candle")
+                _schedule_quote_flush(position_manager, qs)
+            except Exception:
+                pass
         if candle is not None or _has_option_policy_trades(position_manager):
             buffered_ticks = []
             if tick_feed is not None and position_manager.active_trades:
@@ -663,6 +876,14 @@ async def run():
     level_fetcher = LevelFetcher()
     storage = Storage()
     position_manager = PositionManager()
+    try:
+        from quote_service import get_quote_service
+        qs = get_quote_service()
+        selected_contract = position_manager.get_selected_option_contract()
+        if qs.reconcile_selected_contract(selected_contract):
+            await qs.flush(force=True)
+    except Exception:
+        pass
     await _retry_option_lifecycle_outbox(position_manager)
     # Explicit paper execution: no broker account is activated by deployment.
     order_dispatcher = SignalDispatcher(OrderManager(), position_manager)
@@ -850,6 +1071,21 @@ async def run():
                     session_closed = session_closed or _session_now().time() >= time(15, 30)
                     if not session_closed:
                         await order_dispatcher.on_snapshot(full_chain, spot)
+
+                try:
+                    from quote_service import get_quote_service
+                    qs = get_quote_service()
+                    qs.record_spot_quote(
+                        spot,
+                        candle.timestamp if candle else datetime_module.datetime.now(timezone.utc),
+                        source="completed_candle" if candle else "dhan_option_chain",
+                    )
+                    _schedule_quote_flush(position_manager, qs)
+                    _schedule_selected_option_quote(
+                        position_manager, price_fetcher, qs, expiry_date, full_chain
+                    )
+                except Exception as quote_err:
+                    logger.warning("Quote persistence sync failed: %s", quote_err)
             
                 # Build and update dynamic levels
                 levels = level_fetcher.build_levels(
@@ -1131,6 +1367,8 @@ async def run():
                             except asyncio.CancelledError:
                                 pass
                     await position_manager.flush_pending_trade_updates()
+                    await _drain_selected_option_quote(position_manager)
+                    await _drain_quote_flush(position_manager)
                 except Exception as drain_err:
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)
                 finally:

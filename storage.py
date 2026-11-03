@@ -57,6 +57,13 @@ def to_utc_iso(ts: Any) -> str:
     return ts.astimezone(timezone.utc).isoformat()
 
 
+def get_supabase_client() -> Client:
+    """Return an authenticated Supabase client for backend persistence operations."""
+    url = getattr(settings, "supabase_url", "")
+    key = getattr(settings, "supabase_service_role_key", "") or getattr(settings, "supabase_key", "")
+    if not url or not key:
+        raise ValueError("Supabase URL and Key must be configured.")
+    return create_client(url, key)
 
 
 class Storage:

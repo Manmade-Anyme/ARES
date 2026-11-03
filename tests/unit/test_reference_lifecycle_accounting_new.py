@@ -609,6 +609,7 @@ async def test_tick_loop_applies_receipt_only_tick_in_mixed_batch(monkeypatch):
     assert [call.args for call in pm.record_reference_spot_quote.call_args_list] == [
         (22472.0, second_arrival["exchange_at"], "dhan_tick"),
         (22470.0, first_arrival["exchange_at"], "dhan_tick"),
+        (22471.0, receipt_at, "dhan_websocket_receipt"),
     ]
     pm.update_trades.assert_not_awaited()
 

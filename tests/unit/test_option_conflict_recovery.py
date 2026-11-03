@@ -51,6 +51,65 @@ def exit_bar(close):
     return OptionCandle(end-timedelta(minutes=5), end, 200, 201, close-1, close, 1, '51333')
 
 
+@pytest.mark.parametrize('replacement_active', [False, True])
+@pytest.mark.asyncio
+async def test_closed_revision_conflict_clears_selected_quote(monkeypatch, replacement_active):
+    """A remotely closed trade must no longer supply a dashboard quote."""
+    import asyncio
+    from quote_service import QuotePersistenceService
+    from tests.unit.test_quote_service import _stateful_quote_supabase
+
+    pm, trade, _ = make_pm(monkeypatch)
+    option = post_t1(trade)
+    closed = {**deepcopy(option), 'phase': 'CLOSED', 'remaining_fraction': 0}
+    pm.analytics = ConflictLedger(closed, state='CLOSED')
+    original = pm.get_selected_option_contract()
+    client, rows = _stateful_quote_supabase([])
+    quotes = QuotePersistenceService(supabase_client=client, throttle_seconds=0)
+    monkeypatch.setattr('quote_service.get_quote_service', lambda *args, **kwargs: quotes)
+    quotes.record_option_quote(original, 125, '2026-10-23T05:00:00Z')
+    await quotes.flush(force=True)
+    original_flush = quotes.flush
+    cleanup_flushed = asyncio.Event()
+
+    async def track_cleanup_flush(*args, **kwargs):
+        try:
+            return await original_flush(*args, **kwargs)
+        finally:
+            cleanup_flushed.set()
+
+    quotes.flush = track_cleanup_flush
+
+    replacement = {'expiry': '2026-11-05', 'strike': 22600,
+                   'option_type': 'CE', 'security_id': '51334'}
+    if replacement_active:
+        other = deepcopy(trade)
+        other['id'] = 'replacement'
+        other['market_context']['options_sizing'] = replacement
+        pm.active_trades.append(other)
+
+    pm._option_runtime()
+    pm._option_pending[trade['id']] = [('pending-event', {'option_trailing': deepcopy(option)})]
+    await pm._flush_option_trade(trade)
+    await asyncio.wait_for(cleanup_flushed.wait(), timeout=1.0)
+
+    assert pm.analytics.conflicts == 1
+    assert trade['state'] == 'CLOSED'
+    assert pm._option_pending[trade['id']] == []
+    assert quotes.get_latest_quotes_payload()['selectedOption'] is None
+    assert 'OPTION:SELECTED' not in rows
+    quotes.record_spot_quote(22550, '2026-10-23T05:00:01Z')
+    await original_flush(force=True)
+    assert 'OPTION:SELECTED' not in rows
+    if replacement_active:
+        assert pm.get_selected_option_contract()['security_id'] == replacement['security_id']
+        quotes.record_option_quote(replacement, 150, '2026-10-23T05:01:00Z')
+        await original_flush(force=True)
+        assert rows['OPTION:SELECTED']['security_id'] == replacement['security_id']
+    else:
+        assert pm.get_selected_option_contract() is None
+
+
 @pytest.mark.parametrize('retry_after_outage', [False, True])
 @pytest.mark.parametrize('earlier_option_exit', [False, True])
 @pytest.mark.asyncio
