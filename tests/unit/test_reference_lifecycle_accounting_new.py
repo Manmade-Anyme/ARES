@@ -58,6 +58,23 @@ async def test_same_candle_t2_and_guard_remains_unresolved():
     assert opt["ambiguous_index_touch"]["status"] == "ORDER_UNKNOWN"
 
 
+@pytest.mark.parametrize("fresh", [True, False])
+@pytest.mark.asyncio
+async def test_option_policy_uses_only_fresh_receipt_fallback_ticks(monkeypatch, fresh):
+    pm = _make_pm()
+    trade = reference_trade()
+    trade["state"] = "OPEN"
+    pm.active_trades = [trade]
+    receipt_at = datetime(2026, 10, 23, 10, 9, 1, tzinfo=IST)
+    current_time = receipt_at + timedelta(seconds=2 if fresh else 6)
+    tick = {"price": trade["target_1"], "exchange_at": None,
+            "received_at": receipt_at, "source": "dhan_websocket_receipt"}
+
+    await pm.update_option_market_events([], {}, current_time=current_time, index_ticks=[tick])
+
+    assert trade["state"] == ("T1_HIT" if fresh else "OPEN")
+
+
 @pytest.mark.asyncio
 async def test_t2_wick_in_the_minute_t1_was_observed_is_not_discarded():
     pm = _make_pm()
@@ -415,7 +432,11 @@ async def test_protection_poll_drains_spot_ticks_before_option_history_replay(mo
     source_close = datetime(2026, 10, 23, 10, 55, tzinfo=IST)
     tick = {"price": trade["target_2"], "exchange_at": source_close - timedelta(seconds=1),
             "received_at": source_close + timedelta(seconds=6), "source": "dhan_tick"}
-    feed = SimpleNamespace(get_observations_since=MagicMock(return_value=[tick]))
+    sign = 1 if trade["direction"] == "BULLISH" else -1
+    receipt_tick = {"price": trade["entry_price"] - sign,
+                    "exchange_at": None, "received_at": source_close + timedelta(seconds=6),
+                    "source": "dhan_websocket_receipt"}
+    feed = SimpleNamespace(get_observations_since=MagicMock(return_value=[tick, receipt_tick]))
     start = datetime(2026, 10, 23, 9, 15, tzinfo=IST)
     history = [
         OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
@@ -440,6 +461,8 @@ async def test_protection_poll_drains_spot_ticks_before_option_history_replay(mo
     assert trade["state"] == "CLOSED"
     assert option["highest_milestone"] == 2
     assert option["exit"]["reason"] == "ATR_SL_HIT"
+    assert not option.get("pending_index_observations")
+    assert not option.get("observed_index_guard_exit")
     assert pm.analytics.rows[-1]["score"] == 2
 
 
@@ -539,6 +562,114 @@ async def test_tick_loop_sends_buffered_option_ticks_to_chronological_replay(mon
     assert replay.await_args.kwargs["index_ticks"] == [tick]
     pm.record_reference_spot_quote.assert_called_once_with(22470.0, tick["exchange_at"], "dhan_tick")
     pm.update_trades.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tick_loop_applies_receipt_only_tick_in_mixed_batch(monkeypatch):
+    pm = _make_pm()
+    pm.active_trades = [{"id": "legacy-runner"}]
+    pm.update_trades = AsyncMock(return_value=[])
+    pm.update_atr_trailing = AsyncMock(return_value=[])
+    pm.record_reference_spot_quote = MagicMock()
+    receipt_at = datetime.now(timezone.utc)
+    first_arrival = {
+        "price": 22470.0,
+        "exchange_at": receipt_at - timedelta(seconds=4),
+        "received_at": receipt_at - timedelta(seconds=2),
+        "source": "dhan_tick",
+    }
+    second_arrival = {
+        "price": 22472.0,
+        "exchange_at": receipt_at - timedelta(seconds=8),
+        "received_at": receipt_at - timedelta(seconds=1),
+        "source": "dhan_tick",
+    }
+    receipt_tick = {
+        "price": 22471.0, "exchange_at": None,
+        "received_at": receipt_at,
+        "source": "dhan_websocket_receipt",
+    }
+    feed = SimpleNamespace(is_active=True, get_latest_price=lambda: receipt_tick["price"],
+                           get_observations_since=lambda: [receipt_tick, second_arrival, first_arrival])
+    fetcher = SimpleNamespace(watch_candles=[])
+    replay_args = {}
+    async def replay(*args, **kwargs):
+        replay_args.update(kwargs)
+        return True
+    monkeypatch.setattr(main_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(main_module, "_monitor_completed_atr", replay)
+    monkeypatch.setattr(main_module, "_schedule_reference_recovery", lambda *args: None)
+    monkeypatch.setattr(main_module, "_resolve_reference_ambiguities", AsyncMock())
+
+    await main_module._sleep_with_tick_exits(
+        0.01, feed, pm, SimpleNamespace(clear_cooldown=MagicMock()),
+        price_fetcher=fetcher, respect_close=False)
+
+    assert replay_args["index_ticks"] == [second_arrival, first_arrival, receipt_tick]
+    assert [call.args for call in pm.record_reference_spot_quote.call_args_list] == [
+        (22472.0, second_arrival["exchange_at"], "dhan_tick"),
+        (22470.0, first_arrival["exchange_at"], "dhan_tick"),
+    ]
+    pm.update_trades.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_candle_protection_applies_receipt_only_tick(monkeypatch):
+    pm = _make_pm()
+    pm.active_trades = [{"id": "legacy-runner"}]
+    pm.update_trades = AsyncMock(return_value=[])
+    pm.update_atr_trailing = AsyncMock(return_value=[])
+    receipt_at = datetime.now(timezone.utc)
+    receipt_tick = {
+        "price": 22471.0, "exchange_at": None,
+        "received_at": receipt_at,
+        "source": "dhan_websocket_receipt",
+    }
+    feed = SimpleNamespace(get_observations_since=lambda: [receipt_tick])
+    candle = SimpleNamespace(timestamp=receipt_at)
+    fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=candle), watch_candles=[])
+    replay_calls = []
+    async def replay(*args, **kwargs):
+        replay_calls.append(kwargs)
+        return True
+    monkeypatch.setattr(main_module, "_monitor_completed_atr", replay)
+    monkeypatch.setattr(main_module, "_schedule_reference_recovery", lambda *args: None)
+
+    await main_module._fetch_candle_with_protection(fetcher, pm, None, tick_feed=feed)
+
+    assert len(replay_calls) == 1
+    assert replay_calls[0]["index_ticks"] == [receipt_tick]
+    pm.update_trades.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_candle_protection_applies_receipt_only_tick_to_option_trade():
+    pm = _make_pm()
+    trade = reference_trade()
+    trade["state"] = "OPEN"
+    # BEARISH trade: entry ~22552.1, SL = 22577.1
+    pm.active_trades = [trade]
+    engine = SimpleNamespace(clear_cooldown=MagicMock())
+
+    receipt_at = datetime.now(timezone.utc)
+    receipt_tick = {
+        "price": 22590.0,
+        "exchange_at": None,
+        "received_at": receipt_at,
+        "source": "dhan_websocket_receipt",
+    }
+    feed = SimpleNamespace(get_observations_since=lambda: [receipt_tick])
+    candle = SimpleNamespace(timestamp=receipt_at)
+    fetcher = SimpleNamespace(
+        fetch_latest_candle=AsyncMock(return_value=candle),
+        watch_candles=[],
+        fetch_option_candles=AsyncMock(return_value=[]),
+    )
+
+    await main_module._fetch_candle_with_protection(fetcher, pm, None, engine=engine, tick_feed=feed)
+
+    assert trade["state"] == "CLOSED"
+    engine.clear_cooldown.assert_called_once()
 
 
 @pytest.mark.asyncio

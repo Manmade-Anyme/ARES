@@ -142,10 +142,8 @@ class TestTickFeedReferenceHistory(unittest.TestCase):
 
     def test_dhan_ticks_preserve_arrival_order_but_do_not_certify_minute_completeness(self):
         minute = datetime(2026, 10, 23, 9, 32, tzinfo=timezone.utc)
-        clock = [minute - timedelta(seconds=2), minute - timedelta(seconds=1),
-                 minute + timedelta(seconds=1), minute + timedelta(seconds=2),
-                 minute + timedelta(seconds=59), minute + timedelta(minutes=1),
-                 minute + timedelta(minutes=1, seconds=1)]
+        clock = [minute, minute + timedelta(seconds=2), minute + timedelta(seconds=3),
+                 minute + timedelta(minutes=1), minute + timedelta(minutes=1, seconds=1)]
         with patch.object(self.feed, "_now_utc", side_effect=clock):
             for ltt, price in (("09:31:59", 100), ("09:32:01", 101),
                                ("09:32:01", 102), ("09:32:59", 103),
@@ -162,9 +160,7 @@ class TestTickFeedReferenceHistory(unittest.TestCase):
 
     def test_tick_sequence_is_delivered_once_and_dhan_never_certifies_minute_history(self):
         minute = datetime(2026, 10, 23, 9, 32, tzinfo=timezone.utc)
-        clock = [minute - timedelta(seconds=3), minute - timedelta(seconds=1),
-                 minute + timedelta(seconds=1), minute + timedelta(seconds=30),
-                 minute + timedelta(seconds=40), minute + timedelta(minutes=1, seconds=1),
+        clock = [minute, minute + timedelta(seconds=2), minute + timedelta(seconds=31),
                  minute + timedelta(minutes=1, seconds=2)]
         with patch.object(self.feed, "_now_utc", side_effect=clock):
             for ltt in ("09:31:59", "09:32:01", "09:32:30"):
@@ -179,6 +175,16 @@ class TestTickFeedReferenceHistory(unittest.TestCase):
         _, complete = self.feed.get_complete_minute_observations(
             minute.isoformat(), now=minute + timedelta(minutes=1, seconds=1))
         self.assertFalse(complete)
+
+    def test_future_ltt_is_rejected_and_buffered_tick_uses_receipt_time(self):
+        received_at = datetime(2026, 11, 2, 4, 56, tzinfo=timezone.utc)
+        with patch.object(self.feed, "_now_utc", return_value=received_at):
+            self.feed._on_ticks(MagicMock(), {"LTP": 23326.55, "LTT": "10:26:05"})
+
+        [tick] = self.feed.get_observations_since()
+        self.assertEqual(tick["received_at"], received_at)
+        self.assertIsNone(tick["exchange_at"])
+        self.assertEqual(tick["source"], "dhan_websocket_receipt")
 
 
 if __name__ == "__main__":

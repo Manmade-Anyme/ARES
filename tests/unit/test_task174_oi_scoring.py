@@ -3,8 +3,9 @@ Tests for TASK-174 breakout OI scoring fix:
 
 - The writers_active OI-growth threshold moves from a hardcoded 3.0% into
   config (`breakout_writers_active_min_pct`), defaulting to 10.0% on normal
-  days and 15.0% on expiry days. Intraminute ATM OI drift of 3-5% is common
-  noise and was awarding a near-free point.
+  days and 5.0% on expiry days (tuned in TASK-20261103; originally 15.0%).
+  Intraminute ATM OI drift of 3-5% is common noise and was awarding a near-free
+  point.
 - writers_holding (OI >= previous OI, including zero change) is no longer a
   scored condition — any OI growth >= the active threshold already implies
   "holding", so scoring both double-counted a single OI reading. It remains
@@ -31,8 +32,8 @@ class TestWritersActiveThresholdConfig(unittest.TestCase):
     def test_non_expiry_default_is_ten_percent(self):
         self.assertEqual(NON_EXPIRY_CONFIG.breakout_writers_active_min_pct, 10.0)
 
-    def test_expiry_profile_is_fifteen_percent(self):
-        self.assertEqual(EXPIRY_CONFIG.breakout_writers_active_min_pct, 15.0)
+    def test_expiry_profile_is_five_percent(self):
+        self.assertEqual(EXPIRY_CONFIG.breakout_writers_active_min_pct, 5.0)
 
 
 class BreakoutScoringHarness(unittest.TestCase):
@@ -130,6 +131,30 @@ class TestWritersActiveScored(BreakoutScoringHarness):
         signal = self._fail_back(ce_oi=112, ce_oi_prev=100)
         self.assertIsNotNone(signal)
         self.assertTrue(any("did not cover" in r for r in signal.reasons))
+
+
+class TestExpiryWritersActiveThreshold(BreakoutScoringHarness):
+    """Expiry's 5% threshold is used by the real breakout scoring path."""
+
+    def setUp(self):
+        super().setUp()
+        settings.apply_profile(EXPIRY_CONFIG)
+
+    def test_five_percent_growth_is_active_at_expiry_threshold(self):
+        self._breakout_up()
+        signal = self._fail_back(ce_oi=105, ce_oi_prev=100)
+
+        self.assertIsNotNone(signal)
+        active_reasons = [reason for reason in signal.reasons if "OI growth" in reason]
+        self.assertEqual(len(active_reasons), 1)
+        self.assertIn("5.0%", active_reasons[0])
+
+    def test_growth_below_expiry_threshold_is_not_active(self):
+        self._breakout_up()
+        signal = self._fail_back(ce_oi=104, ce_oi_prev=100)
+
+        self.assertIsNotNone(signal)
+        self.assertFalse(any("OI growth" in reason for reason in signal.reasons))
 
 
 if __name__ == "__main__":

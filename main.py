@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 import logging
 from math import isfinite
 from inspect import iscoroutinefunction
@@ -136,24 +136,72 @@ def _has_option_policy_trades(position_manager):
 
 
 def _read_buffered_spot_ticks(tick_feed, position_manager):
-    """Drain valid exchange-timestamped ticks once and retain price evidence."""
+    """Drain ticks once, separating exchange-time replay from receipt fallback."""
+    from options_candles import parse_candle_timestamp
+
     tick_reader = getattr(tick_feed, "get_observations_since", None)
     tick_batch = tick_reader() if callable(tick_reader) else None
     ordered_ticks = []
+    receipt_ticks = []
     if isinstance(tick_batch, list):
-        ordered_ticks = [item for item in tick_batch if isinstance(item, dict)
-                         and item.get("exchange_at") is not None
-                         and isinstance(item.get("received_at"), datetime)
-                         and item["received_at"].tzinfo is not None
-                         and isinstance(item.get("price"), (int, float))
-                         and not isinstance(item.get("price"), bool)
-                         and isfinite(item["price"]) and item["price"] > 0]
+        valid_ticks = [item for item in tick_batch if isinstance(item, dict)
+                       and isinstance(item.get("received_at"), datetime)
+                       and item["received_at"].tzinfo is not None
+                       and isinstance(item.get("price"), (int, float))
+                       and not isinstance(item.get("price"), bool)
+                       and isfinite(item["price"]) and item["price"] > 0]
+        for original in valid_ticks:
+            item = dict(original)
+            source_at = item.get("exchange_at")
+            if source_at is not None:
+                try:
+                    receipt_at = parse_candle_timestamp(item["received_at"])
+                    source_at = parse_candle_timestamp(source_at)
+                    if source_at > receipt_at + timedelta(seconds=5):
+                        source_at = None
+                except (TypeError, ValueError, OverflowError, OSError):
+                    source_at = None
+            item["exchange_at"] = source_at
+            if source_at is None:
+                receipt_ticks.append(item)
+            else:
+                ordered_ticks.append(item)
     quote_recorder = getattr(position_manager, "record_reference_spot_quote", None)
     if callable(quote_recorder):
         for tick in ordered_ticks:
             quote_recorder(float(tick["price"]), tick["exchange_at"],
                            tick.get("source") or "dhan_websocket_tick")
-    return tick_batch, ordered_ticks
+    return tick_batch, ordered_ticks, receipt_ticks
+
+
+def _buffered_spot_event_time(tick):
+    from options_candles import parse_candle_timestamp
+    try:
+        return parse_candle_timestamp(tick.get("exchange_at") or tick["received_at"])
+    except (TypeError, ValueError, OverflowError, OSError):
+        return parse_candle_timestamp(tick["received_at"])
+
+
+def _is_fresh_receipt_tick(tick):
+    age = (datetime.now(timezone.utc) - tick["received_at"].astimezone(timezone.utc)).total_seconds()
+    return 0 <= age <= 5
+
+
+async def _apply_buffered_spot_ticks_in_event_order(ticks, position_manager, engine=None):
+    """Apply buffered checks when candle history is unavailable."""
+    for tick in sorted(ticks, key=_buffered_spot_event_time):
+        if not position_manager.active_trades:
+            continue
+        received_at = tick["received_at"]
+        source_at = tick.get("exchange_at")
+        kwargs = {"event_time": received_at}
+        if source_at is not None:
+            kwargs["market_event_time"] = source_at
+        elif not _is_fresh_receipt_tick(tick):
+            kwargs.update(include_option_policy=False, allow_t2_milestone=False)
+        events = await position_manager.update_trades(float(tick["price"]), **kwargs)
+        if engine is not None and any(event == "SL_HIT" for _, event in events):
+            engine.clear_cooldown()
 
 
 def _completed_spot_candles_through(candles, event_at):
@@ -174,22 +222,19 @@ def _completed_spot_candles_through(candles, event_at):
 
 
 async def _replay_spot_atr_with_ticks(candles, position_manager, index_ticks):
-    """Replay ordinary spot runners and ticks in their shared source-time order."""
-    from options_candles import parse_candle_timestamp
-
-    ticks = []
-    for tick in index_ticks or ():
-        try:
-            ticks.append((parse_candle_timestamp(tick["exchange_at"]), tick))
-        except (KeyError, TypeError, ValueError, OverflowError, OSError):
-            continue
+    """Replay spot runners with candles and both tick timestamp classes."""
+    ticks = [(_buffered_spot_event_time(tick), tick) for tick in index_ticks or ()]
     events = []
     for event_at, tick in sorted(ticks, key=lambda item: item[0]):
         events.extend(await position_manager.update_atr_trailing(
             _completed_spot_candles_through(candles, event_at)))
+        tick_kwargs = {"event_time": tick["received_at"], "include_option_policy": False}
+        if tick.get("exchange_at") is not None:
+            tick_kwargs["market_event_time"] = event_at
+        elif not _is_fresh_receipt_tick(tick):
+            tick_kwargs["allow_t2_milestone"] = False
         events.extend(await position_manager.update_trades(
-            float(tick["price"]), event_time=tick["received_at"],
-            market_event_time=event_at, include_option_policy=False))
+            float(tick["price"]), **tick_kwargs))
     events.extend(await position_manager.update_atr_trailing(candles))
     return events
 
@@ -282,36 +327,39 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
 
         price = tick_feed.get_latest_price()
         option_policy = _has_option_policy_trades(position_manager)
-        tick_batch, ordered_ticks = _read_buffered_spot_ticks(tick_feed, position_manager)
-        ticks_replayed = False
+        tick_batch, ordered_ticks, receipt_ticks = _read_buffered_spot_ticks(tick_feed, position_manager)
+        buffered_ticks = ordered_ticks + receipt_ticks
         option_ticks_replayed = False
-        if price_fetcher is not None and (ordered_ticks or option_policy):
-            ticks_replayed = bool(ordered_ticks)
+        if buffered_ticks and price_fetcher is None:
+            try:
+                await _apply_buffered_spot_ticks_in_event_order(buffered_ticks, position_manager, engine)
+            except Exception as exc:
+                print(f"[-] Buffered tick exit check failed: {exc}")
+        if price_fetcher is not None and (buffered_ticks or option_policy):
             option_ticks_replayed = await _monitor_completed_atr(
                 price_fetcher.watch_candles, position_manager,
                 dispatcher, price_fetcher=price_fetcher, engine=engine,
-                index_ticks=ordered_ticks,
+                index_ticks=buffered_ticks if buffered_ticks else None,
             )
-        if isinstance(tick_batch, list):
-            if ordered_ticks:
-                for tick in ordered_ticks:
-                    price = float(tick["price"])
-                    if not position_manager.active_trades:
+            if option_policy and buffered_ticks and not option_ticks_replayed:
+                for tick in sorted(buffered_ticks, key=_buffered_spot_event_time):
+                    if tick.get("exchange_at") is None and not _is_fresh_receipt_tick(tick):
                         continue
-                    if ticks_replayed and not (option_policy and not option_ticks_replayed):
-                        continue
+                    kwargs = {"event_time": tick["received_at"], "only_option_policy": True}
+                    if tick.get("exchange_at") is not None:
+                        kwargs["market_event_time"] = tick["exchange_at"]
                     try:
-                        events = await position_manager.update_trades(
-                            price, event_time=tick["received_at"], market_event_time=tick["exchange_at"],
-                            only_option_policy=ticks_replayed,
-                            include_option_policy=not option_ticks_replayed)
-                        if any(event == "SL_HIT" for _, event in events):
+                        events = await position_manager.update_trades(float(tick["price"]), **kwargs)
+                        if engine is not None and any(event == "SL_HIT" for _, event in events):
                             engine.clear_cooldown()
                     except Exception as exc:
-                        print(f"[-] Tick-driven exit check failed: {exc}")
+                        print(f"[-] Buffered option tick fallback deferred: {exc}")
+        if isinstance(tick_batch, list):
+            if buffered_ticks:
                 if dispatcher is not None:
+                    latest_tick = max(buffered_ticks, key=lambda item: item["received_at"])
                     try:
-                        await dispatcher.on_spot(float(ordered_ticks[-1]["price"]))
+                        await dispatcher.on_spot(float(latest_tick["price"]))
                     except Exception as exc:
                         print(f"[-] Pending order spot update failed: {exc}")
                 if position_manager.active_trades:
@@ -479,18 +527,20 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                 if existing_from and (not history_from or existing_from < history_from):
                     history_from = existing_from
                 contracts[security_id] = {**contract, "history_from": history_from}
-        if contracts:
-            now = current_time or datetime.now(IST)
-            histories = {}
-            for security_id, contract in contracts.items():
-                try:
-                    histories[security_id] = await price_fetcher.fetch_option_candles(contract, observed_at=now)
-                except Exception as exc:
-                    histories[security_id] = []
-                    logger.warning("Pinned option history unavailable for %s: %s", security_id, exc)
+        if contracts or index_ticks is not None:
             try:
+                observed_at = current_time or datetime.now(IST)
+                histories = {}
+                for security_id, contract in contracts.items():
+                    try:
+                        histories[security_id] = await price_fetcher.fetch_option_candles(
+                            contract, observed_at=observed_at)
+                    except Exception as exc:
+                        histories[security_id] = []
+                        logger.warning("Pinned option history unavailable for %s: %s", security_id, exc)
+                replayed_at = current_time or datetime.now(IST)
                 events = await position_manager.update_option_market_events(
-                    candles, histories, current_time=now, index_ticks=index_ticks)
+                    candles, histories, current_time=replayed_at, index_ticks=index_ticks)
                 option_ticks_replayed = index_ticks is not None
                 if engine is not None and any(event == "SL_HIT" for _, event in events):
                     engine.clear_cooldown()
@@ -532,26 +582,34 @@ async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatc
             except Exception:
                 pass
         if candle is not None or _has_option_policy_trades(position_manager):
-            index_ticks = None
+            buffered_ticks = []
             if tick_feed is not None and position_manager.active_trades:
-                _, index_ticks = _read_buffered_spot_ticks(tick_feed, position_manager)
+                _, ordered_ticks, receipt_ticks = _read_buffered_spot_ticks(tick_feed, position_manager)
+                buffered_ticks = ordered_ticks + receipt_ticks
+            option_policy = _has_option_policy_trades(position_manager)
             option_ticks_replayed = await _monitor_completed_atr(
                 price_fetcher.watch_candles, position_manager, dispatcher,
-                price_fetcher=price_fetcher, engine=engine, index_ticks=index_ticks,
+                price_fetcher=price_fetcher, engine=engine,
+                index_ticks=buffered_ticks if buffered_ticks else None,
             )
-            if index_ticks and not option_ticks_replayed:
-                for tick in index_ticks:
+            if option_policy and buffered_ticks and not option_ticks_replayed:
+                for tick in sorted(buffered_ticks, key=_buffered_spot_event_time):
+                    if tick.get("exchange_at") is None and not _is_fresh_receipt_tick(tick):
+                        continue
                     try:
+                        kwargs = {"event_time": tick["received_at"], "only_option_policy": True}
+                        if tick.get("exchange_at") is not None:
+                            kwargs["market_event_time"] = tick["exchange_at"]
                         events = await position_manager.update_trades(
-                            float(tick["price"]), event_time=tick["received_at"],
-                            market_event_time=tick["exchange_at"], only_option_policy=True)
+                            float(tick["price"]), **kwargs)
                         if engine is not None and any(event == "SL_HIT" for _, event in events):
                             engine.clear_cooldown()
                     except Exception as exc:
                         logger.warning("Option tick replay deferred: %s", exc)
-            if index_ticks and dispatcher is not None:
+            if buffered_ticks and dispatcher is not None:
+                latest_tick = max(buffered_ticks, key=lambda item: item["received_at"])
                 try:
-                    await dispatcher.on_spot(float(index_ticks[-1]["price"]))
+                    await dispatcher.on_spot(float(latest_tick["price"]))
                 except Exception as exc:
                     logger.warning("Pending order spot update failed: %s", exc)
 

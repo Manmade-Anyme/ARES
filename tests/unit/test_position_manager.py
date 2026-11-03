@@ -840,11 +840,19 @@ def test_position_manager_clamps_early_event_ts():
 # ATR lifecycle tests use completed source minutes through the real aggregation helper.
 
 
+class _AtrTestDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        instant = datetime(2099, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+
 @pytest.fixture
 def atr_position_manager():
     client = MockSupabaseClient()
     with patch("position_manager.settings"), patch("position_manager.create_client", return_value=client), \
-         patch("position_manager.send_trade_update") as alert:
+         patch("position_manager.send_trade_update") as alert, \
+         patch("position_manager.datetime", _AtrTestDateTime):
         pm = PositionManager()
         pm.analytics.log_exit = MagicMock()
         yield pm, client, alert
@@ -1308,24 +1316,151 @@ async def test_completed_atr_before_latest_candle_reports_t2_then_exit(atr_posit
 
 
 @pytest.mark.asyncio
+async def test_receipt_tick_records_t2_before_later_completed_atr_close(atr_position_manager, monkeypatch):
+    from types import SimpleNamespace
+    import main
+    import position_manager as position_manager_module
+
+    pm, _, alert = atr_position_manager
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2099, 1, 1, 10, 30, tzinfo=ist)
+
+    class TickTestDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(main, "datetime", TickTestDateTime)
+    monkeypatch.setattr(position_manager_module, "datetime", TickTestDateTime)
+    trade = _atr_trade(
+        state="T1_HIT", stop_loss=24000, entry_timestamp="2099-01-01T09:15:00+05:30",
+        market_context={"tracking_mode": "SIGNAL_REFERENCE",
+                        "atr_trailing": {"last_bar": "2099-01-01T10:25:00+05:30"}},
+    )
+    pm.active_trades = [trade]
+    tick_at = TickTestDateTime(2099, 1, 1, 10, 29, 59, tzinfo=ist)
+    feed = SimpleNamespace(get_observations_since=lambda: [{
+        "price": trade["target_2"], "exchange_at": None, "received_at": tick_at,
+        "source": "dhan_websocket_receipt",
+    }])
+    candles = _atr_minutes(70, 5, close=-1, low=-5, high=5)
+    fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=SimpleNamespace()),
+                              watch_candles=candles)
+
+    await main._fetch_candle_with_protection(fetcher, pm, None, tick_feed=feed)
+    await _flush_trade_writes(pm)
+
+    assert trade["market_context"]["target_milestones"]["t2"]["touched_at"] == tick_at.astimezone(timezone.utc).isoformat()
+    assert trade["state"] == "CLOSED"
+    assert [call.args[2] for call in alert.call_args_list] == ["T2_TOUCHED", "ATR_SL_HIT"]
+
+
+@pytest.mark.asyncio
+async def test_mixed_tick_replay_keeps_exchange_stop_before_later_receipt_t1(atr_position_manager, monkeypatch):
+    from types import SimpleNamespace
+    import main
+    import position_manager as position_manager_module
+
+    pm, _, alert = atr_position_manager
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2099, 1, 1, 10, 30, 2, tzinfo=ist)
+
+    class TickTestDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(main, "datetime", TickTestDateTime)
+    monkeypatch.setattr(position_manager_module, "datetime", TickTestDateTime)
+    trade = _atr_trade(entry_timestamp="2099-01-01T09:15:00+05:30")
+    pm.active_trades = [trade]
+    exchange_tick = {
+        "price": trade["stop_loss"] - 1,
+        "exchange_at": TickTestDateTime(2099, 1, 1, 10, 29, 58, tzinfo=ist),
+        "received_at": TickTestDateTime(2099, 1, 1, 10, 30, 0, tzinfo=ist),
+        "source": "dhan_websocket_tick",
+    }
+    receipt_tick = {
+        "price": trade["target_1"], "exchange_at": None,
+        "received_at": TickTestDateTime(2099, 1, 1, 10, 30, 1, tzinfo=ist),
+        "source": "dhan_websocket_receipt",
+    }
+    feed = SimpleNamespace(get_observations_since=lambda: [receipt_tick, exchange_tick])
+    fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=SimpleNamespace()),
+                              watch_candles=[])
+
+    await main._fetch_candle_with_protection(fetcher, pm, None, tick_feed=feed)
+    await _flush_trade_writes(pm)
+
+    assert trade["state"] == "CLOSED"
+    assert [call.args[2] for call in alert.call_args_list] == ["SL_HIT"]
+
+
+@pytest.mark.asyncio
+async def test_stale_receipt_tick_before_entry_cannot_close_new_trade(atr_position_manager, monkeypatch):
+    from types import SimpleNamespace
+    import main
+    import position_manager as position_manager_module
+
+    pm, _, alert = atr_position_manager
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2099, 1, 1, 12, 0, tzinfo=ist)
+
+    class TickTestDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(main, "datetime", TickTestDateTime)
+    monkeypatch.setattr(position_manager_module, "datetime", TickTestDateTime)
+    trade = _atr_trade(entry_timestamp="2099-01-01T11:59:55+05:30")
+    pm.active_trades = [trade]
+    tick_at = TickTestDateTime(2099, 1, 1, 11, 59, 45, tzinfo=ist)
+    feed = SimpleNamespace(get_observations_since=lambda: [{
+        "price": trade["stop_loss"] - 1, "exchange_at": None, "received_at": tick_at,
+        "source": "dhan_websocket_receipt",
+    }])
+    fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=SimpleNamespace()),
+                              watch_candles=[])
+
+    await main._fetch_candle_with_protection(fetcher, pm, None, tick_feed=feed)
+    await _flush_trade_writes(pm)
+
+    assert trade["state"] == "OPEN"
+    alert.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_protection_poll_replays_spot_atr_closes_between_buffered_ticks(atr_position_manager, monkeypatch):
     import main
     from types import SimpleNamespace
 
     pm, _, alert = atr_position_manager
-    start = datetime(2099, 1, 1, 9, 15, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    ist = timezone(timedelta(hours=5, minutes=30))
+    start = datetime(2099, 1, 1, 9, 15, tzinfo=ist)
     trade = _atr_trade(entry_timestamp=start.isoformat())
     pm.active_trades = [trade]
     candles = _atr_minutes(0, 25)
     for candle in candles[15:20]:
         candle.update(open=24000, high=24005, low=23990, close=23999)
-    t1_at = start + timedelta(minutes=16, seconds=10)
-    t2_at = start + timedelta(minutes=20, seconds=1)
+    tick_now = datetime(2099, 1, 1, 9, 35, 5, tzinfo=ist)
+
+    class TickTestDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return tick_now.astimezone(tz) if tz else tick_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(main, "datetime", TickTestDateTime)
+    t1_at = TickTestDateTime(2099, 1, 1, 9, 31, 10, tzinfo=ist)
+    t2_at = TickTestDateTime(2099, 1, 1, 9, 35, 1, tzinfo=ist)
     ticks = [
         {"price": trade["target_1"], "exchange_at": t1_at,
-         "received_at": t1_at + timedelta(seconds=1), "source": "dhan_tick"},
+         "received_at": TickTestDateTime(2099, 1, 1, 9, 31, 11, tzinfo=ist), "source": "dhan_tick"},
         {"price": trade["target_2"], "exchange_at": t2_at,
-         "received_at": t2_at + timedelta(seconds=1), "source": "dhan_tick"},
+         "received_at": TickTestDateTime(2099, 1, 1, 9, 35, 2, tzinfo=ist), "source": "dhan_tick"},
+        {"price": trade["target_2"], "exchange_at": None,
+         "received_at": TickTestDateTime(2099, 1, 1, 9, 35, 3, tzinfo=ist),
+         "source": "dhan_websocket_receipt"},
     ]
     feed = SimpleNamespace(get_observations_since=MagicMock(return_value=ticks))
     fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=SimpleNamespace()),
@@ -1518,6 +1653,59 @@ async def test_atr_legacy_runner_anchors_without_replaying_old_closes(atr_positi
     candles += _atr_minutes(50, 5, close=-30, low=-40, high=-20)
     assert await pm.update_atr_trailing(candles) == [(trade["id"], "ATR_SL_HIT")]
     await _flush_trade_writes(pm)
+
+
+@pytest.mark.asyncio
+async def test_future_atr_watermark_recovers_from_trusted_t1_anchor(atr_position_manager):
+    pm, _, _ = atr_position_manager
+    t1_anchor = "2099-01-01T09:19:00+05:30"
+    trade = _atr_trade(state="T1_HIT", stop_loss=24000, market_context={
+        "atr_trailing": {"last_bar": "2099-01-01T23:00:00+05:30"},
+        "option_reference": {"milestones": {"T1": {"event_at": t1_anchor}}},
+    })
+    pm.active_trades = [trade]
+
+    assert await pm.update_atr_trailing(_atr_minutes(0, 50, close=-1, low=-5, high=5)) == [
+        (trade["id"], "ATR_SL_HIT"),
+    ]
+    await _flush_trade_writes(pm)
+    assert trade["state"] == "CLOSED"
+    assert trade["market_context"]["atr_trailing"]["activated_at"] == t1_anchor
+    assert trade["market_context"]["atr_trailing"]["last_bar"] == "2099-01-01T09:20:00+05:30"
+
+
+@pytest.mark.asyncio
+async def test_ratcheted_stop_with_invalid_watermark_resumes_without_false_historical_exit(atr_position_manager):
+    pm, _, _ = atr_position_manager
+    t1_anchor = "2099-01-01T09:19:00+05:30"
+    candles = _atr_minutes(0, 150, close=65, low=60, high=70)
+    for candle in candles[:5]:
+        candle.update(open=24010, high=24020, low=24000, close=24010)
+
+    valid = _atr_trade(state="T1_HIT", stop_loss=24000, market_context={
+        "atr_trailing": {"activated_at": t1_anchor, "last_bar": t1_anchor},
+    })
+    pm.active_trades = [valid]
+    valid_events = await pm.update_atr_trailing(candles)
+    await _flush_trade_writes(pm)
+    assert valid["state"] == "T1_HIT"
+    assert all(event != "ATR_SL_HIT" for _, event in valid_events)
+    persisted_stop = valid["stop_loss"]
+    assert persisted_stop > 24010
+
+    invalid = _atr_trade(state="T1_HIT", stop_loss=persisted_stop, market_context={
+        "atr_trailing": {**valid["market_context"]["atr_trailing"],
+                         "last_bar": "2099-01-01T23:00:00+05:30"},
+    })
+    pm.active_trades = [invalid]
+
+    assert await pm.update_atr_trailing(candles) == []
+    await _flush_trade_writes(pm)
+
+    assert invalid["state"] == "T1_HIT"
+    assert invalid["stop_loss"] == persisted_stop
+    assert invalid["market_context"]["atr_trailing"]["last_bar"] == \
+        "2099-01-01T11:45:00+05:30"
 
 
 def test_atr_startup_restores_context_stop_and_t1_state():

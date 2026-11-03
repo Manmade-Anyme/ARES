@@ -630,6 +630,15 @@ class PositionManager:
         low = candle_low if candle_low is not None else spot_price
         observation_time = event_time or candle_timestamp or datetime.now(timezone.utc)
         base_event_ts = __import__("storage").to_utc_iso(observation_time)
+        if market_event_time is not None:
+            try:
+                source_at = parse_candle_timestamp(market_event_time)
+                receipt_at = (parse_candle_timestamp(event_time) if event_time is not None
+                              else datetime.now(timezone.utc))
+                if source_at > receipt_at + timedelta(seconds=5):
+                    market_event_time = None
+            except (TypeError, ValueError, OverflowError, OSError):
+                market_event_time = None
 
         for trade in self.active_trades:
             if trade["state"] in ["CLOSED", "STOPPED_OUT"] or (only_trade_id is not None and trade["id"] != only_trade_id):
@@ -945,6 +954,7 @@ class PositionManager:
                 else:
                     activated = datetime.now(timezone.utc)
                 trade.setdefault("market_context", {})["atr_trailing"] = {
+                    "activated_at": activated.isoformat(),
                     "last_bar": activated.isoformat(),
                 }
                 if is_option_atr:
@@ -1345,15 +1355,46 @@ class PositionManager:
                 continue
             context = trade.setdefault("market_context", {})
             atr = context.setdefault("atr_trailing", {})
-            # Old carried runners lack a T1 timestamp. Resume from the latest
-            # complete bar without replaying their unknown historical lifecycle.
-            if not atr.get("last_bar"):
-                if bars:
+            try:
+                watermark = parse_candle_timestamp(atr["last_bar"]) if atr.get("last_bar") else None
+            except (TypeError, ValueError, OverflowError, OSError):
+                watermark = None
+            now = datetime.now(timezone.utc)
+            if watermark is None or watermark > now + timedelta(seconds=5):
+                activation_value = atr.get("activated_at")
+                if not activation_value:
+                    activation_value = (((context.get("option_reference") or {}).get("milestones") or {})
+                                        .get("T1", {}).get("event_at"))
+                try:
+                    activation = parse_candle_timestamp(activation_value) if activation_value else None
+                except (TypeError, ValueError, OverflowError, OSError):
+                    activation = None
+                if activation is not None and activation <= now + timedelta(seconds=5):
+                    atr["activated_at"] = activation.isoformat()
+                    try:
+                        entry_stop = float(trade["entry_price"])
+                        active_stop = float(trade["stop_loss"])
+                        can_replay_from_t1 = isfinite(entry_stop) and active_stop == entry_stop
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        can_replay_from_t1 = False
+                    if not can_replay_from_t1:
+                        # A ratcheted live stop has no recoverable per-bar history
+                        # once its watermark is corrupt; preserve it and resume prospectively.
+                        if bars:
+                            atr["last_bar"] = bars[-1]["timestamp"]
+                            await self._record_trade_update(
+                                trade, bars[-1]["close"], None, bars[-1]["timestamp"])
+                        continue
+                    atr["last_bar"] = activation.isoformat()
+                    watermark = activation
+                elif bars:
+                    # Legacy runners without a T1 anchor resume at trusted history.
                     atr["last_bar"] = bars[-1]["timestamp"]
                     await self._record_trade_update(trade, bars[-1]["close"], None, bars[-1]["timestamp"])
-                continue
+                    continue
+                else:
+                    continue
             sign = 1 if trade["direction"] == "BULLISH" else -1
-            watermark = parse_candle_timestamp(atr["last_bar"])
             eligible = [(at, values) for at, values in source_minutes if at + timedelta(minutes=1) > watermark]
             cursor = 0
             for bar in [*bars, None]:
@@ -2390,15 +2431,23 @@ class PositionManager:
                 continue
             try:
                 price = float(tick["price"])
-                source_at = tick["exchange_at"]
-                event_at = parse_candle_timestamp(source_at)
+                received_at = parse_candle_timestamp(tick.get("received_at") or tick["exchange_at"])
+                source_at = tick.get("exchange_at")
+                event_at = parse_candle_timestamp(source_at) if source_at is not None else received_at
             except (KeyError, TypeError, ValueError, OverflowError, OSError):
                 continue
             if not isfinite(price) or price <= 0:
                 continue
+            if source_at is not None and event_at > received_at + timedelta(seconds=5):
+                source_at = None
+                event_at = received_at
+            if source_at is None and not 0 <= (now - received_at).total_seconds() <= 5:
+                # A stale fallback may still protect legacy spot trades, but
+                # cannot advance option-policy lifecycle state.
+                continue
             live_ticks.setdefault(event_at, []).append({
                 "price": price, "exchange_at": source_at,
-                "received_at": tick.get("received_at") or source_at,
+                "received_at": received_at,
             })
             timeline.setdefault(event_at, [])
         for trade in self.active_trades:
