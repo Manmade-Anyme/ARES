@@ -3,8 +3,9 @@ Tests for TASK-174 breakout OI scoring fix:
 
 - The writers_active OI-growth threshold moves from a hardcoded 3.0% into
   config (`breakout_writers_active_min_pct`), defaulting to 10.0% on normal
-  days and 15.0% on expiry days. Intraminute ATM OI drift of 3-5% is common
-  noise and was awarding a near-free point.
+  days and 5.0% on expiry days (tuned in TASK-20261103; originally 15.0%).
+  Intraminute ATM OI drift of 3-5% is common noise and was awarding a near-free
+  point.
 - writers_holding (OI >= previous OI, including zero change) is no longer a
   scored condition — any OI growth >= the active threshold already implies
   "holding", so scoring both double-counted a single OI reading. It remains
@@ -31,8 +32,8 @@ class TestWritersActiveThresholdConfig(unittest.TestCase):
     def test_non_expiry_default_is_ten_percent(self):
         self.assertEqual(NON_EXPIRY_CONFIG.breakout_writers_active_min_pct, 10.0)
 
-    def test_expiry_profile_is_fifteen_percent(self):
-        self.assertEqual(EXPIRY_CONFIG.breakout_writers_active_min_pct, 15.0)
+    def test_expiry_profile_is_five_percent(self):
+        self.assertEqual(EXPIRY_CONFIG.breakout_writers_active_min_pct, 5.0)
 
 
 class BreakoutScoringHarness(unittest.TestCase):

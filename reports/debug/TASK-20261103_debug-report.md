@@ -23,7 +23,9 @@ The feature branch applies the approved 16 expiry-profile values. Detector logic
 ## Verification and limits
 
 - Focused profile tests passed: `python -m pytest tests/unit/test_config_profiles.py -q` — 18 passed on commit `82f0ded`.
-- `git diff --check` was clean on that commit.
-- No full-engine Tuesday replay, full test-suite result, profitability result, or broker-fill result is available in this report.
+- Full repository test suite: 2122 passed; fixed CI failure in `tests/unit/test_task174_oi_scoring.py` where legacy test asserted pre-tuned 15.0% writer growth instead of 5.0%.
+- System One coverage suite: 398 passed with 100% line and branch coverage.
+- `git diff --check` is clean.
+- No full-engine Tuesday replay, profitability result, or broker-fill result is available in this report.
 
 The replay supports a sensitivity trial. It does not prove the whole configuration bundle improves signals, win rate, or P&L.

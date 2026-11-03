@@ -27,7 +27,7 @@ Applied the approved 16-value expiry-only configuration bundle in `config_profil
 - Qualified OI-wall states are not guaranteed emitted signals: ARES still applies breakout priority, cooldown, and the R:R gate.
 - TASK-177 originally proposed expiry continuation disabled; TASK-180 later explicitly enabled it. Current `EXPIRY_CONFIG` inherits `continuation_enabled=True`; this tuning changes continuation score inputs only.
 
-**Validation**: `python -m pytest tests/unit/test_config_profiles.py -q` — **18 passed**. `git diff --check` — clean.
+**Validation**: Focused profile tests: 18 passed. Full repository test suite: 2122 passed (fixed legacy assertion in `test_task174_oi_scoring.py` expecting pre-tuned 15.0% writer growth). System One 100% coverage suite: 398 passed. `git diff --check` — clean.
 
 ## 2026-10-17 00:50 · CI Deploy Pipeline Transient Gateway Failure Fix (TASK-63030447fb93)
 
