@@ -7,7 +7,7 @@ A chronological log of session updates, technical decisions, and validation step
 Applied the approved 16-value expiry-only configuration bundle in `config_profiles.py`. The non-expiry profile, expiry candle-body ratio, persistence count, and per-setup SL/T1/T2 remain unchanged. Existing detector and level-fetcher code consumes these settings; no detector logic changed.
 
 **Configuration**
-- OI wall: minimum OI 10,000,000 → 6,000,000; minimum cycle growth 15% → 2.5%; approach/test/excursion/retest distances 50/10/10/10 → 60/15/15/15 points.
+- OI wall: minimum OI 10,000,000 → 6,000,000; minimum cycle growth 15% → 5.0% (calibrated from 2.5% to filter out fragile borderline watch alerts observed at 14:21 IST); approach/test/excursion/retest distances 50/10/10/10 → 60/15/15/15 points.
 - Failed breakout: writer-growth 15% → 5%; IV-fall threshold −5.0 → −3.0; weak-volume ratio 0.70 → 0.75.
 - Exhaustion: volume multiplier 3.5 → 2.5; IV score threshold 6.0 → 3.5; body ratio stays 0.30.
 - Trend continuation: minimum score 3 → 2; resumption-volume ratio 1.3 → 1.2; max pullback 6 → 8 candles. The expiry profile already runs continuation live after TASK-180; this change does not flip its enable switch.
