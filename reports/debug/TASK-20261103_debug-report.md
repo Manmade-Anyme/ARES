@@ -25,6 +25,7 @@ The feature branch applies the approved 16 expiry-profile values. Detector logic
 - Focused profile tests passed: `python -m pytest tests/unit/test_config_profiles.py -q` — 18 passed on commit `82f0ded`.
 - Full repository test suite: 2,124 passed, 45 subtests passed on Python 3.14.6 after the stale threshold assertion was corrected.
 - `config_profiles.py` line and branch coverage: 100% (79 statements, 0 missed; 8 branches, 0 partial).
+- GitHub Actions run #550 passed on commit `2cbe809` (Python 3.10): 2,124 tests and 45 subtests passed; System One coverage 100% (888 statements, 266 branches); database integration checks passed.
 - `git diff --check` is clean.
 - No full-engine Tuesday replay, profitability result, or broker-fill result is available in this report.
 

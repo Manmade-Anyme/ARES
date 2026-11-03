@@ -29,7 +29,7 @@ Applied the approved 16-value expiry-only configuration bundle in `config_profil
 
 **Validation**: Focused profile tests: 18 passed. Full repository test suite: 2122 passed (fixed legacy assertion in `test_task174_oi_scoring.py` expecting pre-tuned 15.0% writer growth). System One 100% coverage suite: 398 passed. `git diff --check` — clean.
 
-**CI follow-up (2026-11-03)**: PR CI exposed one obsolete TASK-174 test expectation (`breakout_writers_active_min_pct` expiry value 15.0); updated it to 5.0 and added detector-path tests for 4% and 5% expiry OI growth. Local full suite: **2,124 passed, 45 subtests passed** (Python 3.14.6). `config_profiles.py`: **100% line and branch coverage** (79 statements, 0 missed; 8 branches, 0 partial). GitHub Actions must still pass on the updated PR head (Python 3.10).
+**CI follow-up (2026-11-03)**: PR CI exposed one obsolete TASK-174 test expectation (`breakout_writers_active_min_pct` expiry value 15.0); updated it to 5.0 and added detector-path tests for 4% and 5% expiry OI growth. Local full suite: **2,124 passed, 45 subtests passed** (Python 3.14.6). `config_profiles.py`: **100% line and branch coverage** (79 statements, 0 missed; 8 branches, 0 partial). GitHub Actions run **#550 passed** on `2cbe809` (Python 3.10): **2,124 passed, 45 subtests passed**; System One coverage **100%** (888 statements, 266 branches); PostgreSQL lifecycle integration checks passed.
 
 ## 2026-10-17 00:50 · CI Deploy Pipeline Transient Gateway Failure Fix (TASK-63030447fb93)
 
