@@ -58,6 +58,23 @@ async def test_same_candle_t2_and_guard_remains_unresolved():
     assert opt["ambiguous_index_touch"]["status"] == "ORDER_UNKNOWN"
 
 
+@pytest.mark.parametrize("fresh", [True, False])
+@pytest.mark.asyncio
+async def test_option_policy_uses_only_fresh_receipt_fallback_ticks(monkeypatch, fresh):
+    pm = _make_pm()
+    trade = reference_trade()
+    trade["state"] = "OPEN"
+    pm.active_trades = [trade]
+    receipt_at = datetime(2026, 10, 23, 10, 9, 1, tzinfo=IST)
+    current_time = receipt_at + timedelta(seconds=2 if fresh else 6)
+    tick = {"price": trade["target_1"], "exchange_at": None,
+            "received_at": receipt_at, "source": "dhan_websocket_receipt"}
+
+    await pm.update_option_market_events([], {}, current_time=current_time, index_ticks=[tick])
+
+    assert trade["state"] == ("T1_HIT" if fresh else "OPEN")
+
+
 @pytest.mark.asyncio
 async def test_t2_wick_in_the_minute_t1_was_observed_is_not_discarded():
     pm = _make_pm()
@@ -415,7 +432,11 @@ async def test_protection_poll_drains_spot_ticks_before_option_history_replay(mo
     source_close = datetime(2026, 10, 23, 10, 55, tzinfo=IST)
     tick = {"price": trade["target_2"], "exchange_at": source_close - timedelta(seconds=1),
             "received_at": source_close + timedelta(seconds=6), "source": "dhan_tick"}
-    feed = SimpleNamespace(get_observations_since=MagicMock(return_value=[tick]))
+    sign = 1 if trade["direction"] == "BULLISH" else -1
+    receipt_tick = {"price": trade["entry_price"] - sign,
+                    "exchange_at": None, "received_at": source_close + timedelta(seconds=6),
+                    "source": "dhan_websocket_receipt"}
+    feed = SimpleNamespace(get_observations_since=MagicMock(return_value=[tick, receipt_tick]))
     start = datetime(2026, 10, 23, 9, 15, tzinfo=IST)
     history = [
         OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
@@ -440,6 +461,8 @@ async def test_protection_poll_drains_spot_ticks_before_option_history_replay(mo
     assert trade["state"] == "CLOSED"
     assert option["highest_milestone"] == 2
     assert option["exit"]["reason"] == "ATR_SL_HIT"
+    assert not option.get("pending_index_observations")
+    assert not option.get("observed_index_guard_exit")
     assert pm.analytics.rows[-1]["score"] == 2
 
 
@@ -571,7 +594,6 @@ async def test_tick_loop_applies_receipt_only_tick_in_mixed_batch(monkeypatch):
     fetcher = SimpleNamespace(watch_candles=[])
     replay_args = {}
     async def replay(*args, **kwargs):
-        assert pm.update_trades.await_count == 3
         replay_args.update(kwargs)
         return True
     monkeypatch.setattr(main_module.asyncio, "sleep", AsyncMock())
@@ -583,18 +605,12 @@ async def test_tick_loop_applies_receipt_only_tick_in_mixed_batch(monkeypatch):
         0.01, feed, pm, SimpleNamespace(clear_cooldown=MagicMock()),
         price_fetcher=fetcher, respect_close=False)
 
-    assert replay_args["index_ticks"] is None
+    assert replay_args["index_ticks"] == [second_arrival, first_arrival, receipt_tick]
     assert [call.args for call in pm.record_reference_spot_quote.call_args_list] == [
         (22472.0, second_arrival["exchange_at"], "dhan_tick"),
         (22470.0, first_arrival["exchange_at"], "dhan_tick"),
     ]
-    assert [(call.args, call.kwargs) for call in pm.update_trades.await_args_list] == [
-        ((22472.0,), {"event_time": second_arrival["received_at"],
-                      "market_event_time": second_arrival["exchange_at"]}),
-        ((22470.0,), {"event_time": first_arrival["received_at"],
-                      "market_event_time": first_arrival["exchange_at"]}),
-        ((22471.0,), {"event_time": receipt_tick["received_at"]}),
-    ]
+    pm.update_trades.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -614,17 +630,16 @@ async def test_fetch_candle_protection_applies_receipt_only_tick(monkeypatch):
     fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=candle), watch_candles=[])
     replay_calls = []
     async def replay(*args, **kwargs):
-        assert pm.update_trades.await_count == 1
         replay_calls.append(kwargs)
-        return False
+        return True
     monkeypatch.setattr(main_module, "_monitor_completed_atr", replay)
     monkeypatch.setattr(main_module, "_schedule_reference_recovery", lambda *args: None)
 
     await main_module._fetch_candle_with_protection(fetcher, pm, None, tick_feed=feed)
 
     assert len(replay_calls) == 1
-    pm.update_trades.assert_awaited_once_with(
-        22471.0, event_time=receipt_tick["received_at"])
+    assert replay_calls[0]["index_ticks"] == [receipt_tick]
+    pm.update_trades.assert_not_awaited()
 
 
 @pytest.mark.asyncio

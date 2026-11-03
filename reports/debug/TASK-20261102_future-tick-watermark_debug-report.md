@@ -1,34 +1,35 @@
 # Debug Review — TASK-20261102 Future Tick Watermark
 
-**Date:** 2026-11-02  
-**Scope:** Read-only review of TickFeed future-timestamp fallback, main-loop tick replay, and post-T1 ATR watermark recovery.
+**Date:** 2026-11-03
+**Scope:** PR #152 review findings for mixed tick/bar ordering and stale receipt timestamps, alongside the future-tick and post-T1 watermark protections.
 
-## Follow-up Re-review
+## Findings addressed
 
-**Status:** Resolved. The earlier limitations around receipt-only option-policy protection and mixed-batch interleaving have been addressed and verified with tests (`158 passed` in focused suite).
+### Mixed ticks and completed bars share one event timeline
 
-### Resolved — Receipt-only ticks protect option-policy trades
+`_sleep_with_tick_exits()` and `_fetch_candle_with_protection()` now pass accepted exchange-time and receipt-time observations into `_monitor_completed_atr()`. `_replay_spot_atr_with_ticks()` applies only completed spot candles through each tick's event time before applying that tick, then drains remaining completed candles. Option-policy replay receives the same ticks, and `PositionManager.update_option_market_events()` orders them with spot and premium candles. This prevents a later T2 tick from advancing a trade after an earlier completed ATR bar closed it.
 
-`_apply_buffered_spot_ticks_in_event_order()` (`main.py:165-188`) replaces the earlier receipt-only helper. For fresh receipt-only ticks (`0 <= age <= 5s`), `update_trades()` runs with full option-policy evaluation enabled (`include_option_policy=True`), protecting `option_atr_v1` trades against index stop crosses or detecting transitions. For stale receipt ticks (`age > 5s`), `include_option_policy=False, allow_t2_milestone=False` is enforced so out-of-date prices cannot advance option lifecycle state.
+Option-history requests use the initial observation time for the provider query, then receipt-tick freshness is evaluated against a new timestamp sampled after those requests finish. A slow history fetch cannot make an old receipt fallback appear fresh.
 
-### Resolved — Event-order interleaving in mixed batches
+### Stale receipt observations retain their timestamps
 
-In mixed batches (`ordered_ticks and receipt_ticks`), both `_sleep_with_tick_exits` (`main.py:321-325`) and `_fetch_candle_with_protection` (`main.py:546-550`) sort all buffered ticks by event time (`_buffered_spot_event_time`) and apply them in unified causal order before completed-bar replay (`_monitor_completed_atr`). When mixed batches are handled up front, `_monitor_completed_atr` receives `index_ticks=None` to avoid duplicate replay.
+Every buffered tick keeps its receipt time as `event_time`; accepted exchange timestamps remain separate `market_event_time` values. Stale receipt-only observations still reach ordinary spot protection with T2 milestone and option-policy progression disabled. Their original receipt time lets `PositionManager` exclude observations received before trade entry. Stale observations are also excluded from option-policy timeline replay.
 
-### Verification & Coverage
+## Regression coverage
 
-- `test_fetch_candle_protection_applies_receipt_only_tick_to_option_trade`: Verified receipt-only tick closes an active `option_atr_v1` trade upon hitting index stop loss.
-- `test_mixed_tick_replay_keeps_exchange_stop_before_later_receipt_t1`: Verified earlier exchange stop is processed before later receipt-time T1 in a mixed batch.
-- `test_new_policy_tick_uses_recent_receipt_and_skips_stale_lifecycle`: Verified fresh receipt tick evaluates option policy while stale receipt tick skips it.
-- `test_receipt_tick_records_t2_before_later_completed_atr_close`: Verified receipt tick marks T2 before later ATR close.
+- `test_protection_poll_replays_spot_atr_closes_between_buffered_ticks`: an earlier ATR stop closes before later exchange and receipt-only T2 observations.
+- `test_stale_receipt_tick_before_entry_cannot_close_new_trade`: a stale below-stop observation from before entry cannot close the newer trade.
+- `test_option_policy_uses_only_fresh_receipt_fallback_ticks`: fresh receipt ticks progress option policy; stale receipt ticks do not.
+- `test_option_tick_freshness_uses_replay_time_after_history_fetch`: a receipt tick that ages past five seconds during an option-history fetch is evaluated at replay time.
+- Mixed-batch protection tests verify exchange-time and receipt-time ticks reach the shared spot and option timelines rather than being applied ahead of candle replay.
 
-## Confirmed Path
+## Verification
 
-- The implementation rejects provider times more than five seconds ahead of receipt and preserves the price with receipt-time provenance (`fetchers/tick_feed.py:39-66, 76-90`).
-- PositionManager independently rejects a far-future source time and can record T1 activation at receipt time (`position_manager.py:627-635, 941-965`).
-- A future `atr_trailing.last_bar` is repaired from `activated_at` or the recorded T1 milestone, then completed bars after that anchor are replayed (`position_manager.py:1346-1391`).
-- DhanHQ's Python SDK converts LTT epoch values to UTC `HH:MM:SS`; this supports rejecting an actually future timestamp rather than reinterpreting it as India local time ([official SDK source](https://github.com/dhan-oss/DhanHQ-py/blob/main/src/dhanhq/marketfeed.py)).
+- Focused tick, position, lifecycle, and source-validation suite: **190 passed**.
+- Session/manual tracking regressions: **50 passed**.
+- Full repository suite: **2,133 passed, 12 warnings, 45 subtests**.
+- `git diff --check`: passed.
 
-## Verification Limits
+## Limits
 
-The QA report records 155 focused unit tests passing. This re-review inspected the revised call paths and tests but did not rerun them, run the full repository suite, or exercise live Dhan, Fly, or Supabase behavior. No implementation code or tests were changed in this review.
+No live Dhan feed, Fly worker, or Supabase runtime was exercised. These results verify local replay and persistence tests only; they do not establish deployed-worker or live-market behavior.

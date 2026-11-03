@@ -2343,15 +2343,23 @@ class PositionManager:
                 continue
             try:
                 price = float(tick["price"])
-                source_at = tick["exchange_at"]
-                event_at = parse_candle_timestamp(source_at)
+                received_at = parse_candle_timestamp(tick.get("received_at") or tick["exchange_at"])
+                source_at = tick.get("exchange_at")
+                event_at = parse_candle_timestamp(source_at) if source_at is not None else received_at
             except (KeyError, TypeError, ValueError, OverflowError, OSError):
                 continue
             if not isfinite(price) or price <= 0:
                 continue
+            if source_at is not None and event_at > received_at + timedelta(seconds=5):
+                source_at = None
+                event_at = received_at
+            if source_at is None and not 0 <= (now - received_at).total_seconds() <= 5:
+                # A stale fallback may still protect legacy spot trades, but
+                # cannot advance option-policy lifecycle state.
+                continue
             live_ticks.setdefault(event_at, []).append({
                 "price": price, "exchange_at": source_at,
-                "received_at": tick.get("received_at") or source_at,
+                "received_at": received_at,
             })
             timeline.setdefault(event_at, [])
         for trade in self.active_trades:

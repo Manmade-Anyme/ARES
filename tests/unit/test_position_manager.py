@@ -1397,24 +1397,70 @@ async def test_mixed_tick_replay_keeps_exchange_stop_before_later_receipt_t1(atr
 
 
 @pytest.mark.asyncio
+async def test_stale_receipt_tick_before_entry_cannot_close_new_trade(atr_position_manager, monkeypatch):
+    from types import SimpleNamespace
+    import main
+    import position_manager as position_manager_module
+
+    pm, _, alert = atr_position_manager
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2099, 1, 1, 12, 0, tzinfo=ist)
+
+    class TickTestDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(main, "datetime", TickTestDateTime)
+    monkeypatch.setattr(position_manager_module, "datetime", TickTestDateTime)
+    trade = _atr_trade(entry_timestamp="2099-01-01T11:59:55+05:30")
+    pm.active_trades = [trade]
+    tick_at = TickTestDateTime(2099, 1, 1, 11, 59, 45, tzinfo=ist)
+    feed = SimpleNamespace(get_observations_since=lambda: [{
+        "price": trade["stop_loss"] - 1, "exchange_at": None, "received_at": tick_at,
+        "source": "dhan_websocket_receipt",
+    }])
+    fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=SimpleNamespace()),
+                              watch_candles=[])
+
+    await main._fetch_candle_with_protection(fetcher, pm, None, tick_feed=feed)
+    await _flush_trade_writes(pm)
+
+    assert trade["state"] == "OPEN"
+    alert.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_protection_poll_replays_spot_atr_closes_between_buffered_ticks(atr_position_manager, monkeypatch):
     import main
     from types import SimpleNamespace
 
     pm, _, alert = atr_position_manager
-    start = datetime(2099, 1, 1, 9, 15, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    ist = timezone(timedelta(hours=5, minutes=30))
+    start = datetime(2099, 1, 1, 9, 15, tzinfo=ist)
     trade = _atr_trade(entry_timestamp=start.isoformat())
     pm.active_trades = [trade]
     candles = _atr_minutes(0, 25)
     for candle in candles[15:20]:
         candle.update(open=24000, high=24005, low=23990, close=23999)
-    t1_at = start + timedelta(minutes=16, seconds=10)
-    t2_at = start + timedelta(minutes=20, seconds=1)
+    tick_now = datetime(2099, 1, 1, 9, 35, 5, tzinfo=ist)
+
+    class TickTestDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return tick_now.astimezone(tz) if tz else tick_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(main, "datetime", TickTestDateTime)
+    t1_at = TickTestDateTime(2099, 1, 1, 9, 31, 10, tzinfo=ist)
+    t2_at = TickTestDateTime(2099, 1, 1, 9, 35, 1, tzinfo=ist)
     ticks = [
         {"price": trade["target_1"], "exchange_at": t1_at,
-         "received_at": t1_at + timedelta(seconds=1), "source": "dhan_tick"},
+         "received_at": TickTestDateTime(2099, 1, 1, 9, 31, 11, tzinfo=ist), "source": "dhan_tick"},
         {"price": trade["target_2"], "exchange_at": t2_at,
-         "received_at": t2_at + timedelta(seconds=1), "source": "dhan_tick"},
+         "received_at": TickTestDateTime(2099, 1, 1, 9, 35, 2, tzinfo=ist), "source": "dhan_tick"},
+        {"price": trade["target_2"], "exchange_at": None,
+         "received_at": TickTestDateTime(2099, 1, 1, 9, 35, 3, tzinfo=ist),
+         "source": "dhan_websocket_receipt"},
     ]
     feed = SimpleNamespace(get_observations_since=MagicMock(return_value=ticks))
     fetcher = SimpleNamespace(fetch_latest_candle=AsyncMock(return_value=SimpleNamespace()),
