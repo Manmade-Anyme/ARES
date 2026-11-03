@@ -56,7 +56,8 @@ python -m pytest tests/ -q
 | Quote and tick regression suite | 161 passed across quote service, quote integration, main loop, option-source validation, and reference lifecycle tests. |
 | Full regression suite | 2,195 passed, 45 subtests, 0 failures. |
 | Configured system-one coverage gate | 398 passed, 35 subtests; 100% statement and branch coverage. |
-| CI PostgreSQL checks | PGlite lifecycle (77 checks), option lifecycle (66 checks), and option-reference capture scripts passed; container-backed watch-generation check not run because Docker is unavailable locally. |
+| Local PGlite checks | Watch lifecycle (77 checks), option lifecycle (66 checks), and option-reference capture scripts passed; Docker-backed watch-generation check was not run locally because Docker is unavailable. |
+| GitHub Actions run #556 | Passed Python tests, coverage, all PGlite checks, and Docker-backed watch-generation; deploy was skipped on the feature branch. |
 | Static diff hygiene | `git diff --check` clean. |
 
 No live Dhan feed, Fly worker, or production Supabase write was exercised; persistence behavior was checked with a mocked Supabase client.
