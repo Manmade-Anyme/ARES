@@ -536,6 +536,29 @@ class TestQuotePersistenceService:
         assert service.get_latest_quotes_payload()["underlying"]["currentSpot"] == 23310.0
         assert service.get_latest_quotes_payload()["underlying"]["updatedAt"] == "2026-11-02T04:55:10Z"
 
+    @pytest.mark.asyncio
+    async def test_record_spot_quote_orders_subsecond_observations_before_frontend_truncation(self):
+        """Keep subsecond precision for ordering and persistence, while formatting UI time to seconds."""
+        mock_supabase = MagicMock()
+        service = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0.0)
+        newer_time = datetime(2026, 11, 3, 5, 0, 0, 900000, tzinfo=timezone.utc)
+        older_time = datetime(2026, 11, 3, 5, 0, 0, 100000, tzinfo=timezone.utc)
+
+        assert service.record_spot_quote(24020.0, newer_time) is True
+        assert service.record_spot_quote(24000.0, older_time) is False
+        assert service.get_latest_quotes_payload()["underlying"]["currentSpot"] == 24020.0
+        assert service.get_latest_quotes_payload()["underlying"]["updatedAt"] == "2026-11-03T05:00:00Z"
+
+        await service.flush(force=True)
+
+        persisted = mock_supabase.table.return_value.upsert.call_args.args[0]
+        assert persisted["observed_at"] == "2026-11-03T05:00:00.900000Z"
+
+        older_first = QuotePersistenceService()
+        assert older_first.record_spot_quote(24000.0, older_time) is True
+        assert older_first.record_spot_quote(24020.0, newer_time) is True
+        assert older_first.get_latest_quotes_payload()["underlying"]["currentSpot"] == 24020.0
+
     def test_record_option_quote_rejects_older_observation(self):
         """Reject older historical option quotes from overwriting newer live quotes."""
         service = QuotePersistenceService()
@@ -556,6 +579,35 @@ class TestQuotePersistenceService:
         assert service.record_option_quote(contract, 120.0, older_time) is False
         assert service.get_latest_quotes_payload()["selectedOption"]["currentPremium"] == 125.5
         assert service.get_latest_quotes_payload()["selectedOption"]["updatedAt"] == "2026-11-02T04:55:10Z"
+
+    @pytest.mark.asyncio
+    async def test_record_option_quote_orders_subsecond_observations_before_frontend_truncation(self):
+        """Do not let an older same-second option quote replace the newer cached premium."""
+        mock_supabase = MagicMock()
+        service = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0.0)
+        contract = {
+            "expiry": "2026-11-03",
+            "strike": 23300,
+            "option_type": "CE",
+            "security_id": "53940",
+        }
+        newer_time = datetime(2026, 11, 3, 5, 0, 0, 900000, tzinfo=timezone.utc)
+        older_time = datetime(2026, 11, 3, 5, 0, 0, 100000, tzinfo=timezone.utc)
+
+        assert service.record_option_quote(contract, 125.5, newer_time) is True
+        assert service.record_option_quote(contract, 120.0, older_time) is False
+        assert service.get_latest_quotes_payload()["selectedOption"]["currentPremium"] == 125.5
+        assert service.get_latest_quotes_payload()["selectedOption"]["updatedAt"] == "2026-11-03T05:00:00Z"
+
+        await service.flush(force=True)
+
+        persisted = mock_supabase.table.return_value.upsert.call_args.args[0]
+        assert persisted["observed_at"] == "2026-11-03T05:00:00.900000Z"
+
+        older_first = QuotePersistenceService()
+        assert older_first.record_option_quote(contract, 120.0, older_time) is True
+        assert older_first.record_option_quote(contract, 125.5, newer_time) is True
+        assert older_first.get_latest_quotes_payload()["selectedOption"]["currentPremium"] == 125.5
 
     @pytest.mark.asyncio
     async def test_supabase_error_does_not_crash(self):

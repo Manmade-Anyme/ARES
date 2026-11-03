@@ -44,10 +44,11 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _to_utc_iso(ts: Any) -> Optional[str]:
-    """Convert any datetime, epoch, or ISO timestamp into a normalized UTC ISO 8601 string.
+    """Convert a datetime, epoch, or ISO timestamp into precise normalized UTC ISO 8601.
 
     If the timestamp arrives as a naive datetime or string (e.g. from Dhan candle feed),
     it is explicitly treated as IST (UTC+5:30) per exchange convention, then converted to UTC.
+    Fractional seconds are retained for quote ordering and persistence.
     """
     if ts is None:
         return None
@@ -55,12 +56,10 @@ def _to_utc_iso(ts: Any) -> Optional[str]:
         if not isfinite(ts) or ts <= 0:
             return None
         dt = datetime.fromtimestamp(float(ts), timezone.utc)
-        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    if isinstance(ts, datetime):
+    elif isinstance(ts, datetime):
         dt = ts.replace(tzinfo=IST) if ts.tzinfo is None else ts
         dt = dt.astimezone(timezone.utc)
-        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    if isinstance(ts, str):
+    elif isinstance(ts, str):
         text = ts.strip()
         if not text:
             return None
@@ -71,10 +70,14 @@ def _to_utc_iso(ts: Any) -> Optional[str]:
             dt = datetime.fromisoformat(text)
             dt = dt.replace(tzinfo=IST) if dt.tzinfo is None else dt
             dt = dt.astimezone(timezone.utc)
-            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         except (ValueError, TypeError):
             return None
-    return None
+    else:
+        return None
+
+    if dt.microsecond:
+        return dt.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_utc_datetime(ts: Any) -> Optional[datetime]:
@@ -88,6 +91,14 @@ def _parse_utc_datetime(ts: Any) -> Optional[datetime]:
     if iso_str:
         return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
     return None
+
+
+def _to_frontend_utc_iso(ts: Any) -> Optional[str]:
+    """Format a quote timestamp for the frontend at whole-second precision."""
+    dt = _parse_utc_datetime(ts)
+    if dt is None:
+        return None
+    return dt.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def validate_option_contract(contract: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -237,7 +248,8 @@ def format_frontend_quote_contract(
             underlying_obj = {
                 "symbol": str(underlying.get("symbol") or "NIFTY"),
                 "currentSpot": price,
-                "updatedAt": _to_utc_iso(underlying.get("observed_at")) or _to_utc_iso(datetime.now(timezone.utc)),
+                "updatedAt": _to_frontend_utc_iso(underlying.get("observed_at"))
+                or _to_frontend_utc_iso(datetime.now(timezone.utc)),
             }
 
     selected_option_obj = None
@@ -252,7 +264,8 @@ def format_frontend_quote_contract(
                     "optionType": validated["option_type"],
                     "securityId": validated["security_id"],
                     "currentPremium": price,
-                    "updatedAt": _to_utc_iso(option.get("observed_at")) or _to_utc_iso(datetime.now(timezone.utc)),
+                    "updatedAt": _to_frontend_utc_iso(option.get("observed_at"))
+                    or _to_frontend_utc_iso(datetime.now(timezone.utc)),
                 }
 
     return {
