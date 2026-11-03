@@ -271,6 +271,47 @@ class TestPositionManagerQuoteIntegration:
         assert datetime.fromisoformat(evidence[1]["observed_at"]) == received_at
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("exchange_age_seconds", [45, None])
+    async def test_sleep_with_tick_exits_uses_best_timestamp_for_fallback_quote(
+        self, monkeypatch, mock_supabase, exchange_age_seconds
+    ):
+        """Preserve exchange time when present and use receipt time only without it."""
+        import main
+        from datetime import timedelta
+        from unittest.mock import AsyncMock
+
+        quote_service = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0)
+        monkeypatch.setattr("quote_service.get_quote_service", lambda *args, **kwargs: quote_service)
+        received_at = datetime.now(timezone.utc)
+        exchange_at = (
+            received_at - timedelta(seconds=exchange_age_seconds)
+            if exchange_age_seconds is not None else None
+        )
+        expected_at = exchange_at or received_at
+
+        feed = MagicMock()
+        feed.is_active = True
+        feed.get_observations_since.return_value = []
+        feed.get_latest_price.return_value = 23350.0
+        feed.get_latest_observation.return_value = (23350.0, received_at, exchange_at)
+        pm = PositionManager.__new__(PositionManager)
+        pm.active_trades = []
+        pm.resolve_reference_ambiguities_from_feed = AsyncMock(return_value=0)
+
+        monkeypatch.setattr("main.asyncio.sleep", AsyncMock())
+        monkeypatch.setattr(main.settings, "tick_exit_check_interval_seconds", 1.0)
+
+        await main._sleep_with_tick_exits(1.0, feed, pm, MagicMock())
+
+        persisted = mock_supabase.table.return_value.upsert.call_args.args[0]
+        assert datetime.fromisoformat(persisted["observed_at"].replace("Z", "+00:00")) == expected_at
+        expected_source = "dhan_websocket_tick" if exchange_at else "dhan_websocket_receipt"
+        assert persisted["source"] == expected_source
+        assert is_quote_stale(
+            persisted["observed_at"], reference_time=received_at
+        ) is (exchange_at is not None)
+
+    @pytest.mark.asyncio
     async def test_rest_fallback_quotes_selected_contract_when_nearest_chain_fails(self, monkeypatch):
         import main
         from unittest.mock import AsyncMock

@@ -401,10 +401,11 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
             try:
                 from quote_service import get_quote_service
                 qs = get_quote_service()
+                market_event_time = tick_kwargs.get("market_event_time")
                 qs.record_spot_quote(
                     price,
-                    tick_kwargs["event_time"],
-                    source="dhan_websocket_tick",
+                    market_event_time or tick_kwargs["event_time"],
+                    source="dhan_websocket_tick" if market_event_time else "dhan_websocket_receipt",
                 )
                 await qs.flush()
             except Exception:
