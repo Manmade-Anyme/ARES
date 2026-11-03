@@ -1361,6 +1361,20 @@ class PositionManager:
                     activation = None
                 if activation is not None and activation <= now + timedelta(seconds=5):
                     atr["activated_at"] = activation.isoformat()
+                    try:
+                        entry_stop = float(trade["entry_price"])
+                        active_stop = float(trade["stop_loss"])
+                        can_replay_from_t1 = isfinite(entry_stop) and active_stop == entry_stop
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        can_replay_from_t1 = False
+                    if not can_replay_from_t1:
+                        # A ratcheted live stop has no recoverable per-bar history
+                        # once its watermark is corrupt; preserve it and resume prospectively.
+                        if bars:
+                            atr["last_bar"] = bars[-1]["timestamp"]
+                            await self._record_trade_update(
+                                trade, bars[-1]["close"], None, bars[-1]["timestamp"])
+                        continue
                     atr["last_bar"] = activation.isoformat()
                     watermark = activation
                 elif bars:

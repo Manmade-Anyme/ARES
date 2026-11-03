@@ -1674,6 +1674,40 @@ async def test_future_atr_watermark_recovers_from_trusted_t1_anchor(atr_position
     assert trade["market_context"]["atr_trailing"]["last_bar"] == "2099-01-01T09:20:00+05:30"
 
 
+@pytest.mark.asyncio
+async def test_ratcheted_stop_with_invalid_watermark_resumes_without_false_historical_exit(atr_position_manager):
+    pm, _, _ = atr_position_manager
+    t1_anchor = "2099-01-01T09:19:00+05:30"
+    candles = _atr_minutes(0, 150, close=65, low=60, high=70)
+    for candle in candles[:5]:
+        candle.update(open=24010, high=24020, low=24000, close=24010)
+
+    valid = _atr_trade(state="T1_HIT", stop_loss=24000, market_context={
+        "atr_trailing": {"activated_at": t1_anchor, "last_bar": t1_anchor},
+    })
+    pm.active_trades = [valid]
+    valid_events = await pm.update_atr_trailing(candles)
+    await _flush_trade_writes(pm)
+    assert valid["state"] == "T1_HIT"
+    assert all(event != "ATR_SL_HIT" for _, event in valid_events)
+    persisted_stop = valid["stop_loss"]
+    assert persisted_stop > 24010
+
+    invalid = _atr_trade(state="T1_HIT", stop_loss=persisted_stop, market_context={
+        "atr_trailing": {**valid["market_context"]["atr_trailing"],
+                         "last_bar": "2099-01-01T23:00:00+05:30"},
+    })
+    pm.active_trades = [invalid]
+
+    assert await pm.update_atr_trailing(candles) == []
+    await _flush_trade_writes(pm)
+
+    assert invalid["state"] == "T1_HIT"
+    assert invalid["stop_loss"] == persisted_stop
+    assert invalid["market_context"]["atr_trailing"]["last_bar"] == \
+        "2099-01-01T11:45:00+05:30"
+
+
 def test_atr_startup_restores_context_stop_and_t1_state():
     client = MockSupabaseClient()
     client.execute_mock.return_value.data = [_atr_trade(state="OPEN", stop_loss=23975)]
