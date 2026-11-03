@@ -191,6 +191,7 @@ async def test_new_policy_tick_uses_recent_receipt_and_skips_stale_lifecycle(mon
     feed._on_ticks(None,{"LTP":22470})
     if not fresh:
         feed._latest_received_at=datetime.now(timezone.utc)-timedelta(seconds=6)
+        feed._ticks[-1]["received_at"] = feed._latest_received_at
     receipt=feed._latest_received_at
     trade={"state":"T1_HIT","market_context":{"option_trailing":{
         "policy_version":"option_atr_v1","contract":{"security_id":"51333"}}}}
@@ -202,7 +203,51 @@ async def test_new_policy_tick_uses_recent_receipt_and_skips_stale_lifecycle(mon
     monkeypatch.setattr(main.settings,"tick_exit_check_interval_seconds",1)
     await main._sleep_with_tick_exits(1,feed,positions,SimpleNamespace(),dispatcher,price_fetcher=fetcher)
     assert positions.update_trades.await_args.args == (22470,)
-    assert positions.update_trades.await_args.kwargs == ({"event_time":receipt} if fresh else {"include_option_policy":False,"allow_t2_milestone":False})
+    expected_kwargs = {"event_time": receipt, "include_option_policy": False}
+    if not fresh:
+        expected_kwargs["allow_t2_milestone"] = False
+    assert positions.update_trades.await_args.kwargs == expected_kwargs
+    assert positions.update_option_market_events.await_args.kwargs["index_ticks"][0]["received_at"] == receipt
+
+
+@pytest.mark.asyncio
+async def test_option_tick_freshness_uses_replay_time_after_history_fetch(monkeypatch):
+    from datetime import timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import main
+
+    received_at = datetime(2026, 10, 23, 10, 0, 0, tzinfo=timezone.utc)
+    clock = [received_at + timedelta(seconds=1)]
+
+    class TickTestDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0].astimezone(tz) if tz else clock[0].replace(tzinfo=None)
+
+    async def fetch_option_candles(_contract, *, observed_at):
+        assert observed_at == clock[0]
+        clock[0] = received_at + timedelta(seconds=6)
+        return []
+
+    tick = {"price": 22470.0, "exchange_at": None, "received_at": received_at,
+            "source": "dhan_websocket_receipt"}
+    positions = SimpleNamespace(
+        active_trades=[{"state": "T1_HIT", "market_context": {"option_trailing": {
+            "policy_version": "option_atr_v1", "contract": {"security_id": "51333"}}}}],
+        update_option_market_events=AsyncMock(return_value=[]),
+        update_atr_trailing=AsyncMock(return_value=[]),
+        update_trades=AsyncMock(return_value=[]),
+    )
+    fetcher = SimpleNamespace(fetch_option_candles=fetch_option_candles)
+    monkeypatch.setattr(main, "datetime", TickTestDateTime)
+    monkeypatch.setattr(main, "_schedule_reference_recovery", lambda *_: None)
+
+    await main._monitor_completed_atr([], positions, None, price_fetcher=fetcher,
+                                      index_ticks=[tick])
+
+    assert positions.update_option_market_events.await_args.kwargs["current_time"] == clock[0]
+    assert positions.update_option_market_events.await_args.kwargs["current_time"] - received_at == timedelta(seconds=6)
 
 
 @pytest.mark.asyncio

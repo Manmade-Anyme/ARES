@@ -37,8 +37,10 @@ class TickFeed:
 
     @staticmethod
     def _market_time(value, received_at):
-        """Decode the SDK's UTC LTT string or the API's epoch timestamp."""
+        """Decode UTC LTT or epoch time, rejecting values ahead of receipt."""
         try:
+            receipt_at = (received_at.replace(tzinfo=timezone.utc) if received_at.tzinfo is None
+                          else received_at.astimezone(timezone.utc))
             if isinstance(value, bool) or value is None:
                 return None
             if isinstance(value, (int, float)):
@@ -52,11 +54,13 @@ class TickFeed:
                     result = result.replace(tzinfo=timezone.utc) if result.tzinfo is None else result.astimezone(timezone.utc)
                 except ValueError:
                     parsed_time = datetime.strptime(text, "%H:%M:%S").time()
-                    result = datetime.combine(received_at.date(), parsed_time, tzinfo=timezone.utc)
-                    if (result - received_at).total_seconds() > 12 * 3600:
+                    result = datetime.combine(receipt_at.date(), parsed_time, tzinfo=timezone.utc)
+                    if (result - receipt_at).total_seconds() > 12 * 3600:
                         result -= timedelta(days=1)
-                    elif (received_at - result).total_seconds() > 12 * 3600:
+                    elif (receipt_at - result).total_seconds() > 12 * 3600:
                         result += timedelta(days=1)
+            if result > receipt_at + timedelta(seconds=5):
+                return None
             return result
         except (TypeError, ValueError, OverflowError, OSError):
             return None
