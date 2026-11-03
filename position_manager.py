@@ -1940,6 +1940,7 @@ class PositionManager:
                                     opt.update(persisted_opt)
                                     trade["state"] = "CLOSED"
                                     pending.clear()
+                                    self._cleanup_option_selection_if_terminal()
                                 else:
                                     # Drop observations superseded by a newer committed milestone/stop.
                                     kept = []
