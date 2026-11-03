@@ -319,6 +319,7 @@ class QuotePersistenceService:
         self._flush_lock_loop: Optional[asyncio.AbstractEventLoop] = None
         self._latest_underlying: Optional[Dict[str, Any]] = None
         self._latest_option: Optional[Dict[str, Any]] = None
+        self._selection_reconciled = False
         self._clear_option_pending: bool = False
         self._last_persist_time: float = 0.0
         self._dirty: bool = False
@@ -441,10 +442,15 @@ class QuotePersistenceService:
         If selected_contract differs from the cached option contract:
             Clears the previous quote and schedules deletion so closed/replaced
             contracts are not persisted or served.
+        On the first reconciliation after startup, an empty cache has unknown
+        persisted identity, so schedule one deletion before any quote is available.
         Returns True if a cached quote was cleared or deletion scheduled, False otherwise.
         """
         validated_selected = validate_option_contract(selected_contract) if selected_contract else None
         with self._lock:
+            startup_cache_unknown = self._latest_option is None and not self._selection_reconciled
+            self._selection_reconciled = True
+
             if validated_selected is None:
                 if self._latest_option is not None or not self._clear_option_pending:
                     self._latest_option = None
@@ -452,6 +458,12 @@ class QuotePersistenceService:
                     self._dirty = True
                     return True
                 return False
+
+            if startup_cache_unknown:
+                self._latest_option = None
+                self._clear_option_pending = True
+                self._dirty = True
+                return True
 
             if self._latest_option is not None:
                 cached_expiry = str(self._latest_option.get("expiry") or "")

@@ -15,6 +15,54 @@ from quote_service import (
 )
 
 
+def _stateful_quote_supabase(initial_rows):
+    """Provide a small Supabase double that exposes writes through the quotes RPC."""
+    persisted_rows = {row["instrument_id"]: dict(row) for row in initial_rows}
+    client = MagicMock()
+    table = MagicMock()
+    client.table.return_value = table
+
+    def upsert(row):
+        query = MagicMock()
+
+        def execute():
+            persisted_rows[row["instrument_id"]] = dict(row)
+            return MagicMock(data=[])
+
+        query.execute.side_effect = execute
+        return query
+
+    def delete():
+        query = MagicMock()
+        query.eq.return_value = query
+
+        def execute():
+            persisted_rows.pop("OPTION:SELECTED", None)
+            return MagicMock(data=[])
+
+        query.execute.side_effect = execute
+        return query
+
+    query = MagicMock()
+
+    def execute_rpc():
+        option = persisted_rows.get("OPTION:SELECTED")
+        selected_option = None
+        if option and option.get("security_id"):
+            selected_option = {
+                "securityId": option["security_id"],
+                "currentPremium": option["price"],
+            }
+        return MagicMock(data={"selectedOption": selected_option})
+
+    query.execute.side_effect = execute_rpc
+
+    table.upsert.side_effect = upsert
+    table.delete.side_effect = delete
+    client.rpc.return_value = query
+    return client, persisted_rows
+
+
 class TestOptionContractValidation:
     """Rigorous tests ensuring option contracts are strictly identified without guessing."""
 
@@ -622,6 +670,76 @@ class TestQuotePersistenceService:
         assert cleared is True
         assert svc.get_cached_option_contract() is None
         assert svc._clear_option_pending is True
+
+    @pytest.mark.asyncio
+    async def test_reconcile_selected_contract_deletes_unknown_persisted_quote_once(self):
+        """Startup removes a persisted old selection until a quote for the restored contract arrives."""
+        old_row = {
+            "instrument_id": "OPTION:SELECTED", "instrument_type": "OPTION", "symbol": "NIFTY",
+            "price": 125.0, "observed_at": "2026-11-03T04:54:00Z", "source": "dhan_quote_api",
+            "expiry": "2026-11-05", "strike": 23300.0, "option_type": "CE",
+            "security_id": "53940", "raw_metadata": {},
+        }
+        mock_supabase, persisted_rows = _stateful_quote_supabase([old_row])
+        svc = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0.0)
+        selected = {
+            "expiry": "2026-11-12", "strike": 23400,
+            "option_type": "PE", "security_id": "53941",
+        }
+
+        assert mock_supabase.rpc("get_latest_market_quotes").execute().data["selectedOption"]["securityId"] == "53940"
+        assert svc.reconcile_selected_contract(selected) is True
+        assert svc.get_cached_option_contract() is None
+        assert svc._clear_option_pending is True
+        assert svc.reconcile_selected_contract(selected) is False
+
+        await svc.flush(force=True)
+
+        mock_supabase.table.return_value.delete.assert_called_once()
+        assert persisted_rows == {}
+        assert mock_supabase.rpc("get_latest_market_quotes").execute().data["selectedOption"] is None
+        assert svc._clear_option_pending is False
+        assert svc.reconcile_selected_contract(selected) is False
+
+        assert svc.record_option_quote(selected, 151.25, "2026-11-03T04:55:01+00:00") is True
+        await svc.flush(force=True)
+        selected_option = mock_supabase.rpc("get_latest_market_quotes").execute().data["selectedOption"]
+        assert selected_option["securityId"] == "53941"
+        assert selected_option["currentPremium"] == 151.25
+
+        svc.record_spot_quote(23401.0, "2026-11-03T04:55:02+00:00")
+        await svc.flush(force=True)
+        selected_option = mock_supabase.rpc("get_latest_market_quotes").execute().data["selectedOption"]
+        assert selected_option["securityId"] == "53941"
+        assert persisted_rows["OPTION:SELECTED"]["security_id"] == "53941"
+
+    @pytest.mark.asyncio
+    async def test_reconcile_selected_contract_preserves_quote_arriving_before_delete_flush(self):
+        """A fresh quote supersedes the startup deletion and is persisted as selected."""
+        old_row = {
+            "instrument_id": "OPTION:SELECTED", "instrument_type": "OPTION", "symbol": "NIFTY",
+            "price": 125.0, "observed_at": "2026-11-03T04:54:00Z", "source": "dhan_quote_api",
+            "expiry": "2026-11-05", "strike": 23300.0, "option_type": "CE",
+            "security_id": "53940", "raw_metadata": {},
+        }
+        mock_supabase, persisted_rows = _stateful_quote_supabase([old_row])
+        svc = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0.0)
+        selected = {
+            "expiry": "2026-11-12", "strike": 23400,
+            "option_type": "PE", "security_id": "53941",
+        }
+
+        assert svc.reconcile_selected_contract(selected) is True
+        assert svc.record_option_quote(selected, 151.25, "2026-11-03T04:55:01+00:00") is True
+        assert svc._clear_option_pending is False
+
+        await svc.flush(force=True)
+
+        mock_supabase.table.return_value.delete.assert_not_called()
+        selected_option = mock_supabase.rpc("get_latest_market_quotes").execute().data["selectedOption"]
+        assert selected_option["securityId"] == selected["security_id"]
+        assert selected_option["currentPremium"] == 151.25
+        assert persisted_rows["OPTION:SELECTED"]["security_id"] == selected["security_id"]
 
     def test_record_option_quote_allows_different_contract_regardless_of_older_timestamp(self):
         """Verifies recording a new contract is not blocked by a previous contract's newer observation timestamp."""
