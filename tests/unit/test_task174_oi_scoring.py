@@ -133,5 +133,29 @@ class TestWritersActiveScored(BreakoutScoringHarness):
         self.assertTrue(any("did not cover" in r for r in signal.reasons))
 
 
+class TestExpiryWritersActiveThreshold(BreakoutScoringHarness):
+    """Expiry's 5% threshold is used by the real breakout scoring path."""
+
+    def setUp(self):
+        super().setUp()
+        settings.apply_profile(EXPIRY_CONFIG)
+
+    def test_five_percent_growth_is_active_at_expiry_threshold(self):
+        self._breakout_up()
+        signal = self._fail_back(ce_oi=105, ce_oi_prev=100)
+
+        self.assertIsNotNone(signal)
+        active_reasons = [reason for reason in signal.reasons if "OI growth" in reason]
+        self.assertEqual(len(active_reasons), 1)
+        self.assertIn("5.0%", active_reasons[0])
+
+    def test_growth_below_expiry_threshold_is_not_active(self):
+        self._breakout_up()
+        signal = self._fail_back(ce_oi=104, ce_oi_prev=100)
+
+        self.assertIsNotNone(signal)
+        self.assertFalse(any("OI growth" in reason for reason in signal.reasons))
+
+
 if __name__ == "__main__":
     unittest.main()

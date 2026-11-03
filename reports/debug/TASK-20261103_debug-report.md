@@ -23,9 +23,13 @@ The feature branch applies the approved 16 expiry-profile values. Detector logic
 ## Verification and limits
 
 - Focused profile tests passed: `python -m pytest tests/unit/test_config_profiles.py -q` — 18 passed on commit `82f0ded`.
-- Full repository test suite: 2122 passed; fixed CI failure in `tests/unit/test_task174_oi_scoring.py` where legacy test asserted pre-tuned 15.0% writer growth instead of 5.0%.
-- System One coverage suite: 398 passed with 100% line and branch coverage.
+- Full repository test suite: 2,124 passed, 45 subtests passed on Python 3.14.6 after the stale threshold assertion was corrected.
+- `config_profiles.py` line and branch coverage: 100% (79 statements, 0 missed; 8 branches, 0 partial).
 - `git diff --check` is clean.
 - No full-engine Tuesday replay, profitability result, or broker-fill result is available in this report.
+
+## CI failure diagnosis
+
+The first PR-wide CI failure was a stale assertion in `tests/unit/test_task174_oi_scoring.py`: `test_expiry_profile_is_fifteen_percent` expected 15.0%, while the approved expiry setting is 5.0%. The run had 2,121 passing tests, 1 failing test, and 45 subtests. No production-code failure was reported. Updated the expectation and description, and added expiry scoring checks immediately below and at the 5% boundary.
 
 The replay supports a sensitivity trial. It does not prove the whole configuration bundle improves signals, win rate, or P&L.
