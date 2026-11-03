@@ -263,7 +263,7 @@ EXPIRY_CONFIG = TuningConfig(
 
     # OI Wall — lower OI gates with wider expiry interaction/retest geometry
     oi_wall_min_oi=6000000,
-    oi_wall_min_oi_change_pct=2.5,
+    oi_wall_min_oi_change_pct=5.0,
     oi_wall_approach_distance=60.0,
     oi_wall_test_distance=15.0,
     oi_wall_wick_rejection_ratio=0.4,

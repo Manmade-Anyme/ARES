@@ -43,7 +43,7 @@ class TestTuningConfig:
         assert EXPIRY_CONFIG.breakout_iv_falling_threshold == -3.0
         assert EXPIRY_CONFIG.breakout_weak_volume_ratio == 0.75
         assert EXPIRY_CONFIG.oi_wall_min_oi == 6_000_000
-        assert EXPIRY_CONFIG.oi_wall_min_oi_change_pct == 2.5
+        assert EXPIRY_CONFIG.oi_wall_min_oi_change_pct == 5.0
         assert EXPIRY_CONFIG.oi_wall_approach_distance == 60.0
         assert EXPIRY_CONFIG.oi_wall_test_distance == 15.0
         assert EXPIRY_CONFIG.oi_wall_min_excursion_pts == 15.0
@@ -103,7 +103,7 @@ class TestSettings:
         assert s.signal_cooldown_minutes == 15
         assert s.level_scan_range == 400.0
         assert s.oi_wall_min_oi == 6_000_000
-        assert s.oi_wall_min_oi_change_pct == 2.5
+        assert s.oi_wall_min_oi_change_pct == 5.0
         assert s.continuation_min_score == 2
 
         s.apply_profile(NON_EXPIRY_CONFIG)
