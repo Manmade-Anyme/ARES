@@ -1,4 +1,5 @@
 import asyncio
+import datetime as datetime_module
 from datetime import datetime, time, timedelta, timezone
 import logging
 from math import isfinite
@@ -6,7 +7,7 @@ from inspect import iscoroutinefunction
 from typing import Optional, Tuple
 
 from engine import AresEngine
-from fetchers.price_fetcher import PriceFetcher
+from fetchers.price_fetcher import PriceFetcher, ReferencePriceDeferred
 from fetchers.oi_fetcher import OIFetcher
 from fetchers.level_fetcher import LevelFetcher
 from fetchers.tick_feed import TickFeed
@@ -168,9 +169,12 @@ def _read_buffered_spot_ticks(tick_feed, position_manager):
                 ordered_ticks.append(item)
     quote_recorder = getattr(position_manager, "record_reference_spot_quote", None)
     if callable(quote_recorder):
-        for tick in ordered_ticks:
-            quote_recorder(float(tick["price"]), tick["exchange_at"],
-                           tick.get("source") or "dhan_websocket_tick")
+        for tick in ordered_ticks + receipt_ticks:
+            observed_at = tick.get("exchange_at") or tick["received_at"]
+            source = tick.get("source") or (
+                "dhan_websocket_tick" if tick.get("exchange_at") else "dhan_websocket_receipt"
+            )
+            quote_recorder(float(tick["price"]), observed_at, source)
     return tick_batch, ordered_ticks, receipt_ticks
 
 
@@ -442,6 +446,40 @@ def _mark_signal_session_closed(signal):
         signal.reasons.append(reason)
 
 
+async def _record_selected_option_quote(position_manager, price_fetcher, quote_service, nearest_expiry, full_chain):
+    """Record the selected contract quote without substituting a different expiry."""
+    from quote_service import match_option_quote_from_chain
+
+    selected_contract = position_manager.get_selected_option_contract()
+    quote_service.reconcile_selected_contract(selected_contract)
+    if not isinstance(selected_contract, dict) or not selected_contract.get("expiry"):
+        return
+
+    if selected_contract["expiry"] == nearest_expiry:
+        observation = match_option_quote_from_chain(
+            selected_contract, full_chain, timestamp=datetime_module.datetime.now(timezone.utc)
+        )
+        source = "dhan_option_chain"
+    else:
+        # The strategy chain is NIFTY NSE_FNO; query this pinned security ID directly
+        # so an alternate expiry cannot mutate OI baselines or supply a wrong premium.
+        quote_contract = {**selected_contract, "exchange_segment": "NSE_FNO"}
+        try:
+            observation = await price_fetcher.fetch_option_observation(quote_contract)
+        except ReferencePriceDeferred as exc:
+            logger.debug("Selected option quote deferred: %s", exc)
+            return
+        except Exception as exc:
+            logger.warning("Selected option quote fetch failed: %s", exc)
+            return
+        source = (observation or {}).get("source") or "dhan_last_trade"
+
+    if observation is not None:
+        quote_service.record_option_quote(
+            selected_contract, observation["price"], observation["observed_at"], source=source
+        )
+
+
 async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manager, engine, dispatcher):
     """Keep exits and pending orders live without replaying a detector candle."""
     if _has_option_policy_trades(position_manager):
@@ -451,7 +489,7 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
     try:
         from quote_service import get_quote_service
         qs = get_quote_service()
-        qs.record_spot_quote(spot, datetime.now(timezone.utc), source="dhan_rest_ltp")
+        qs.record_spot_quote(spot, datetime_module.datetime.now(timezone.utc), source="dhan_rest_ltp")
         await qs.flush()
     except Exception:
         pass
@@ -465,20 +503,29 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
     await dispatcher.on_spot(spot)
     if _session_now().time() >= time(15, 30):
         return
-    expiry = await oi_fetcher.get_nearest_expiry()
-    _, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry)
+    expiry = None
+    full_chain = None
     try:
-        selected_contract = position_manager.get_selected_option_contract()
-        from quote_service import get_quote_service, match_option_quote_from_chain
-        qs = get_quote_service()
-        qs.reconcile_selected_contract(selected_contract)
-        if selected_contract is not None:
-            matched = match_option_quote_from_chain(
-                selected_contract, full_chain, timestamp=datetime.now(timezone.utc)
+        expiry = await oi_fetcher.get_nearest_expiry()
+        _, full_chain = await oi_fetcher.fetch_chain(spot, expiry=expiry)
+    except Exception:
+        # A selected contract can still be quoted by pinned security ID if the
+        # strategy's nearest-expiry chain is unavailable.
+        try:
+            from quote_service import get_quote_service
+            qs = get_quote_service()
+            await _record_selected_option_quote(
+                position_manager, price_fetcher, qs, None, None
             )
-            if matched is not None:
-                qs.record_option_quote(selected_contract, matched["price"], matched["observed_at"], source="dhan_option_chain")
             await qs.flush()
+        except Exception:
+            pass
+        raise
+    try:
+        from quote_service import get_quote_service
+        qs = get_quote_service()
+        await _record_selected_option_quote(position_manager, price_fetcher, qs, expiry, full_chain)
+        await qs.flush()
     except Exception:
         pass
     if _session_now().time() < time(15, 30):
@@ -906,23 +953,16 @@ async def run():
                         await order_dispatcher.on_snapshot(full_chain, spot)
 
                 try:
-                    from quote_service import get_quote_service, match_option_quote_from_chain
+                    from quote_service import get_quote_service
                     qs = get_quote_service()
                     qs.record_spot_quote(
                         spot,
-                        candle.timestamp if candle else datetime.now(timezone.utc),
+                        candle.timestamp if candle else datetime_module.datetime.now(timezone.utc),
                         source="completed_candle" if candle else "dhan_option_chain",
                     )
-                    selected_contract = position_manager.get_selected_option_contract()
-                    qs.reconcile_selected_contract(selected_contract)
-                    if selected_contract is not None:
-                        matched = match_option_quote_from_chain(
-                            selected_contract, full_chain, timestamp=datetime.now(timezone.utc)
-                        )
-                        if matched is not None:
-                            qs.record_option_quote(
-                                selected_contract, matched["price"], matched["observed_at"], source="dhan_option_chain"
-                            )
+                    await _record_selected_option_quote(
+                        position_manager, price_fetcher, qs, expiry_date, full_chain
+                    )
                     await qs.flush()
                 except Exception as quote_err:
                     logger.warning("Quote persistence sync failed: %s", quote_err)

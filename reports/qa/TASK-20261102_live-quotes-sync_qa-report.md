@@ -47,6 +47,20 @@ python -m pytest tests/unit/test_task210*.py tests/unit/test_task211*.py -q --co
 python -m pytest tests/ -q
 ```
 
+## PR #153 Review Follow-up — 2026-11-03
+
+| Check | Result |
+|---|---|
+| Selected option expiry lookup | Passed: different-expiry contracts use validated NSE_FNO security IDs; REST fallback also requests the selected contract when the nearest-expiry chain fails. |
+| Receipt-only buffered tick regression | Passed: `test_sleep_with_tick_exits_persists_receipt_only_quote_before_flush` verified mocked Supabase receives the tick price, `dhan_websocket_receipt` source, and original `received_at`; exchange-time evidence retained its provider timestamp. |
+| Quote and tick regression suite | 161 passed across quote service, quote integration, main loop, option-source validation, and reference lifecycle tests. |
+| Full regression suite | 2,195 passed, 45 subtests, 0 failures. |
+| Configured system-one coverage gate | 398 passed, 35 subtests; 100% statement and branch coverage. |
+| CI PostgreSQL checks | PGlite lifecycle (77 checks), option lifecycle (66 checks), and option-reference capture scripts passed; container-backed watch-generation check not run because Docker is unavailable locally. |
+| Static diff hygiene | `git diff --check` clean. |
+
+No live Dhan feed, Fly worker, or production Supabase write was exercised; persistence behavior was checked with a mocked Supabase client.
+
 ## Behavior Verified
 
 1. **Exact Frontend Contract:**

@@ -223,6 +223,98 @@ class TestPositionManagerQuoteIntegration:
         assert mock_qs.flush.await_count >= 1
 
     @pytest.mark.asyncio
+    async def test_sleep_with_tick_exits_persists_receipt_only_quote_before_flush(self, monkeypatch, mock_supabase):
+        """Receipt ticks update the persisted quote with receipt time before the buffered continue."""
+        import main
+        from unittest.mock import AsyncMock
+
+        quote_service = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0)
+        monkeypatch.setattr("quote_service.get_quote_service", lambda *args, **kwargs: quote_service)
+
+        from datetime import timedelta
+        received_at = datetime.now(timezone.utc).replace(microsecond=0)
+        exchange_at = received_at - timedelta(milliseconds=1)
+        feed = MagicMock()
+        feed.is_active = True
+        feed.get_observations_since.return_value = [
+            {
+                "price": 23349.0,
+                "exchange_at": exchange_at,
+                "received_at": received_at,
+                "source": "dhan_websocket_tick",
+            },
+            {
+                "price": 23350.0,
+                "exchange_at": None,
+                "received_at": received_at,
+                "source": "dhan_websocket_receipt",
+            },
+        ]
+        pm = PositionManager.__new__(PositionManager)
+        pm.active_trades = []
+        pm._reference_price_evidence = {}
+        pm.resolve_reference_ambiguities_from_feed = AsyncMock(return_value=0)
+
+        monkeypatch.setattr("main.asyncio.sleep", AsyncMock())
+        monkeypatch.setattr(main.settings, "tick_exit_check_interval_seconds", 1.0)
+
+        await main._sleep_with_tick_exits(1.0, feed, pm, MagicMock())
+
+        persisted = mock_supabase.table.return_value.upsert.call_args.args[0]
+        assert persisted["price"] == 23350.0
+        assert persisted["source"] == "dhan_websocket_receipt"
+        assert datetime.fromisoformat(persisted["observed_at"].replace("Z", "+00:00")) == received_at
+        evidence = pm._reference_price_evidence["spot_quotes"]
+        assert evidence[0]["price"] == 23349.0
+        assert datetime.fromisoformat(evidence[0]["observed_at"]) == exchange_at
+        assert evidence[1]["price"] == 23350.0
+        assert datetime.fromisoformat(evidence[1]["observed_at"]) == received_at
+
+    @pytest.mark.asyncio
+    async def test_rest_fallback_quotes_selected_contract_when_nearest_chain_fails(self, monkeypatch):
+        import main
+        from unittest.mock import AsyncMock
+
+        selected = {
+            "expiry": "2026-11-12", "strike": 23400.0,
+            "option_type": "PE", "security_id": "53941",
+        }
+        observation = {
+            "price": 151.25, "observed_at": "2026-11-03T04:55:01+00:00",
+            "source": "dhan_last_trade",
+        }
+        price_fetcher = MagicMock()
+        price_fetcher.fetch_latest_spot = AsyncMock(return_value=23350.0)
+        price_fetcher.fetch_option_observation = AsyncMock(return_value=observation)
+        oi_fetcher = MagicMock()
+        oi_fetcher.get_nearest_expiry = AsyncMock(return_value="2026-11-05")
+        oi_fetcher.fetch_chain = AsyncMock(side_effect=ValueError("chain unavailable"))
+        position_manager = MagicMock()
+        position_manager.active_trades = []
+        position_manager.get_selected_option_contract.return_value = selected
+        position_manager.update_trades = AsyncMock(return_value=[])
+        dispatcher = MagicMock()
+        dispatcher.on_spot = AsyncMock()
+        dispatcher.on_snapshot = AsyncMock()
+        quote_service = MagicMock()
+        quote_service.flush = AsyncMock(return_value=True)
+        monkeypatch.setattr("quote_service.get_quote_service", lambda *args, **kwargs: quote_service)
+        monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 3, 10, 0))
+
+        with pytest.raises(ValueError, match="chain unavailable"):
+            await main._monitor_rest_without_candle(
+                price_fetcher, oi_fetcher, position_manager, MagicMock(), dispatcher
+            )
+
+        price_fetcher.fetch_option_observation.assert_awaited_once_with({
+            **selected, "exchange_segment": "NSE_FNO",
+        })
+        quote_service.record_option_quote.assert_called_once_with(
+            selected, 151.25, observation["observed_at"], source="dhan_last_trade"
+        )
+        assert quote_service.flush.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_sleep_with_tick_exits_stale_feed_does_not_refresh_timestamp(self, monkeypatch):
         """Verifies that a stalled/disconnected feed does not publish old prices with current time."""
         import main
