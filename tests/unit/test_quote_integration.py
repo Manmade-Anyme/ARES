@@ -220,6 +220,7 @@ class TestPositionManagerQuoteIntegration:
         monkeypatch.setattr(main.settings, "tick_exit_check_interval_seconds", 1.0)
 
         await main._sleep_with_tick_exits(1.0, feed, pm, engine)
+        await pm._quote_flush_task
         assert mock_qs.flush.await_count >= 1
 
     @pytest.mark.asyncio
@@ -259,6 +260,7 @@ class TestPositionManagerQuoteIntegration:
         monkeypatch.setattr(main.settings, "tick_exit_check_interval_seconds", 1.0)
 
         await main._sleep_with_tick_exits(1.0, feed, pm, MagicMock())
+        await pm._quote_flush_task
 
         persisted = mock_supabase.table.return_value.upsert.call_args.args[0]
         assert persisted["price"] == 23350.0
@@ -302,6 +304,7 @@ class TestPositionManagerQuoteIntegration:
         monkeypatch.setattr(main.settings, "tick_exit_check_interval_seconds", 1.0)
 
         await main._sleep_with_tick_exits(1.0, feed, pm, MagicMock())
+        await pm._quote_flush_task
 
         persisted = mock_supabase.table.return_value.upsert.call_args.args[0]
         assert datetime.fromisoformat(persisted["observed_at"].replace("Z", "+00:00")) == expected_at
@@ -346,6 +349,7 @@ class TestPositionManagerQuoteIntegration:
             await main._monitor_rest_without_candle(
                 price_fetcher, oi_fetcher, position_manager, MagicMock(), dispatcher
             )
+        await position_manager._quote_flush_task
 
         price_fetcher.fetch_option_observation.assert_awaited_once_with({
             **selected, "exchange_segment": "NSE_FNO",
@@ -353,7 +357,168 @@ class TestPositionManagerQuoteIntegration:
         quote_service.record_option_quote.assert_called_once_with(
             selected, 151.25, observation["observed_at"], source="dhan_last_trade"
         )
-        assert quote_service.flush.await_count == 2
+        assert quote_service.flush.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_rest_fallback_runs_protective_check_while_quote_flush_is_blocked(self, monkeypatch):
+        """A slow quote write must not hold up the REST-based exit check."""
+        import asyncio
+        import main
+        from unittest.mock import AsyncMock
+
+        flush_started = asyncio.Event()
+        release_flush = asyncio.Event()
+        protective_check_done = asyncio.Event()
+
+        async def slow_flush():
+            flush_started.set()
+            await release_flush.wait()
+            return True
+
+        async def update_trades(*args, **kwargs):
+            await asyncio.sleep(0)
+            protective_check_done.set()
+            return []
+
+        quote_service = MagicMock()
+        quote_service.flush = AsyncMock(side_effect=slow_flush)
+        monkeypatch.setattr("quote_service.get_quote_service", lambda *args, **kwargs: quote_service)
+
+        price_fetcher = MagicMock()
+        price_fetcher.fetch_latest_spot = AsyncMock(return_value=23350.0)
+        position_manager = MagicMock()
+        position_manager.active_trades = []
+        position_manager.update_trades = AsyncMock(side_effect=update_trades)
+        dispatcher = MagicMock()
+        dispatcher.on_spot = AsyncMock()
+        monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 3, 15, 31))
+
+        monitoring_task = asyncio.create_task(main._monitor_rest_without_candle(
+            price_fetcher, MagicMock(), position_manager, MagicMock(), dispatcher
+        ))
+        await asyncio.wait_for(flush_started.wait(), timeout=1.0)
+        try:
+            await asyncio.wait_for(protective_check_done.wait(), timeout=0.25)
+            protected_before_flush = True
+        except asyncio.TimeoutError:
+            protected_before_flush = False
+        release_flush.set()
+        await asyncio.wait_for(monitoring_task, timeout=1.0)
+        quote_flush_task = getattr(position_manager, "_quote_flush_task", None)
+        if quote_flush_task is not None:
+            await quote_flush_task
+
+        assert protected_before_flush is True
+
+    @pytest.mark.asyncio
+    async def test_completed_candle_runs_protection_while_quote_flush_is_blocked(self, monkeypatch):
+        """A slow candle quote write must not hold up option ATR monitoring."""
+        import asyncio
+        import main
+        from unittest.mock import AsyncMock
+
+        flush_started = asyncio.Event()
+        release_flush = asyncio.Event()
+        protective_check_done = asyncio.Event()
+
+        async def slow_flush():
+            flush_started.set()
+            await release_flush.wait()
+            return True
+
+        async def monitor_completed_atr(*args, **kwargs):
+            await asyncio.sleep(0)
+            protective_check_done.set()
+            return False
+
+        quote_service = MagicMock()
+        quote_service.flush = AsyncMock(side_effect=slow_flush)
+        monkeypatch.setattr("quote_service.get_quote_service", lambda *args, **kwargs: quote_service)
+        monkeypatch.setattr(main, "_monitor_completed_atr", monitor_completed_atr)
+
+        candle = MagicMock()
+        candle.close = 23350.0
+        candle.timestamp = datetime.now(timezone.utc)
+        price_fetcher = MagicMock()
+        price_fetcher.fetch_latest_candle = AsyncMock(return_value=candle)
+        position_manager = MagicMock()
+        position_manager.active_trades = []
+
+        monitoring_task = asyncio.create_task(main._fetch_candle_with_protection(
+            price_fetcher, position_manager, dispatcher=None
+        ))
+        await asyncio.wait_for(flush_started.wait(), timeout=1.0)
+        try:
+            await asyncio.wait_for(protective_check_done.wait(), timeout=0.25)
+            protected_before_flush = True
+        except asyncio.TimeoutError:
+            protected_before_flush = False
+        release_flush.set()
+        result = await asyncio.wait_for(monitoring_task, timeout=1.0)
+        quote_flush_task = getattr(position_manager, "_quote_flush_task", None)
+        if quote_flush_task is not None:
+            await quote_flush_task
+
+        assert result is candle
+        assert protected_before_flush is True
+
+    @pytest.mark.asyncio
+    async def test_quote_flush_shutdown_drain_cancels_timed_out_task(self):
+        """A quote flush that exceeds the shutdown budget is cancelled cleanly."""
+        import asyncio
+        import main
+        from unittest.mock import AsyncMock
+
+        flush_started = asyncio.Event()
+        never_release = asyncio.Event()
+
+        async def slow_flush():
+            flush_started.set()
+            await never_release.wait()
+
+        quote_service = MagicMock()
+        quote_service.flush = AsyncMock(side_effect=slow_flush)
+        pm = MagicMock()
+        task = main._schedule_quote_flush(pm, quote_service)
+        await asyncio.wait_for(flush_started.wait(), timeout=1.0)
+
+        drained = await main._drain_quote_flush(pm, timeout_seconds=0.01)
+
+        assert drained is False
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_scheduled_quote_flush_coalesces_updates_during_inflight_write(self):
+        """A quote recorded during a slow flush gets a follow-up snapshot."""
+        import asyncio
+        import main
+        from unittest.mock import AsyncMock
+
+        flush_started = asyncio.Event()
+        release_flush = asyncio.Event()
+        latest_price = {"value": 24000.0}
+        snapshots = []
+
+        async def flush_snapshot():
+            snapshots.append(latest_price["value"])
+            if len(snapshots) == 1:
+                flush_started.set()
+                await release_flush.wait()
+
+        quote_service = MagicMock()
+        quote_service.flush = AsyncMock(side_effect=flush_snapshot)
+        quote_service.throttle_seconds = 0.05
+        quote_service._last_persist_time = asyncio.get_running_loop().time()
+        pm = MagicMock()
+        task = main._schedule_quote_flush(pm, quote_service)
+        await asyncio.wait_for(flush_started.wait(), timeout=1.0)
+
+        latest_price["value"] = 24020.0
+        assert main._schedule_quote_flush(pm, quote_service) is task
+        release_flush.set()
+        await task
+
+        assert snapshots == [24000.0, 24020.0]
 
     @pytest.mark.asyncio
     async def test_sleep_with_tick_exits_stale_feed_does_not_refresh_timestamp(self, monkeypatch):

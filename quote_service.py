@@ -580,6 +580,15 @@ class QuotePersistenceService:
             else:
                 _do_persist()
             return True
+        except asyncio.CancelledError:
+            # Cancelling run_in_executor() does not stop its worker thread. Keep
+            # this snapshot dirty so a later flush can safely retry an upsert
+            # or selected-option deletion if the in-flight request fails.
+            with self._lock:
+                self._dirty = True
+                if should_delete_option and self._latest_option is None:
+                    self._clear_option_pending = True
+            raise
         except Exception as exc:
             logger.warning("Failed to persist latest quotes to Supabase: %s", exc)
             with self._lock:

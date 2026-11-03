@@ -872,6 +872,51 @@ class TestQuotePersistenceService:
         assert svc.get_cached_option_contract() is None
 
     @pytest.mark.asyncio
+    async def test_cancelled_flush_restores_pending_option_delete_for_retry(self):
+        """Cancelling an executor-backed delete must preserve its retry state."""
+        import threading
+
+        mock_supabase = MagicMock()
+        mock_table = MagicMock()
+        mock_supabase.table.return_value = mock_table
+        mock_table.delete.return_value = mock_table
+        mock_table.eq.return_value = mock_table
+
+        delete_started = threading.Event()
+        release_delete = threading.Event()
+        delete_finished = threading.Event()
+
+        def fail_after_release():
+            delete_started.set()
+            release_delete.wait(timeout=2.0)
+            delete_finished.set()
+            raise RuntimeError("simulated Supabase delete failure")
+
+        mock_table.execute.side_effect = fail_after_release
+        svc = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0.0)
+        svc.clear_selected_option()
+
+        flush_task = asyncio.create_task(svc.flush(force=True))
+        try:
+            assert await asyncio.wait_for(asyncio.to_thread(delete_started.wait, 1.0), timeout=1.5)
+            flush_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await flush_task
+
+            assert svc._dirty is True
+            assert svc._clear_option_pending is True
+
+            release_delete.set()
+            assert await asyncio.wait_for(asyncio.to_thread(delete_finished.wait, 1.0), timeout=1.5)
+            mock_table.execute.side_effect = lambda: MagicMock(data=[])
+
+            assert await svc.flush(force=True) is True
+            assert mock_table.execute.call_count == 2
+            assert svc._clear_option_pending is False
+        finally:
+            release_delete.set()
+
+    @pytest.mark.asyncio
     async def test_inflight_flush_drops_option_if_cleared_before_persist(self):
         """Verifies if option is cleared while flush is queuing, it drops OPTION:SELECTED from upsert."""
         from unittest.mock import MagicMock

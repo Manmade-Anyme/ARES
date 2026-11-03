@@ -4,6 +4,7 @@ from datetime import datetime, time, timedelta, timezone
 import logging
 from math import isfinite
 from inspect import iscoroutinefunction
+from time import monotonic
 from typing import Optional, Tuple
 
 from engine import AresEngine
@@ -272,6 +273,73 @@ def _schedule_reference_recovery(position_manager, price_fetcher):
         run_reference_recovery(position_manager, price_fetcher, analytics))
 
 
+def _schedule_quote_flush(position_manager, quote_service):
+    """Flush quote writes in one coalesced task, outside protective checks."""
+    task = getattr(position_manager, "_quote_flush_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        position_manager._quote_flush_requested = True
+        return task
+
+    async def flush_pending_quotes():
+        follow_up = False
+        while True:
+            if follow_up:
+                try:
+                    throttle_seconds = max(0.0, float(quote_service.throttle_seconds))
+                    last_flush = float(quote_service._last_persist_time)
+                    throttle_delay = max(
+                        0.0, throttle_seconds - (monotonic() - last_flush)
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    throttle_delay = 0.0
+                if throttle_delay:
+                    await asyncio.sleep(throttle_delay)
+            position_manager._quote_flush_requested = False
+            try:
+                await quote_service.flush()
+            except Exception as exc:
+                logger.warning("Quote persistence flush failed: %s", exc)
+            if not position_manager._quote_flush_requested:
+                return
+            # Updates that arrived during a throttled/in-flight write need one
+            # later snapshot once the service's normal write interval permits it.
+            follow_up = True
+
+    position_manager._quote_flush_requested = False
+    task = asyncio.create_task(flush_pending_quotes())
+    position_manager._quote_flush_task = task
+    return task
+
+
+async def _drain_quote_flush(position_manager, timeout_seconds=5.0):
+    """Give pending quote writes one bounded chance to finish during shutdown."""
+    task = getattr(position_manager, "_quote_flush_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            logger.warning("Quote persistence shutdown drain timed out")
+            return False
+
+    try:
+        from quote_service import get_quote_service
+        await asyncio.wait_for(
+            get_quote_service().flush(force=True), timeout=timeout_seconds
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Final quote persistence flush timed out")
+        return False
+    except Exception as exc:
+        logger.warning("Final quote persistence flush failed: %s", exc)
+        return False
+    return True
+
+
 def _schedule_option_reference_capture(position_manager, price_fetcher, analytics=None):
     """Schedule report-only premium capture outside trade protection updates."""
     if (not settings.option_reference_accounting_enabled or price_fetcher is None):
@@ -371,7 +439,7 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                 await _resolve_reference_ambiguities(position_manager, tick_feed)
                 try:
                     from quote_service import get_quote_service
-                    await get_quote_service().flush()
+                    _schedule_quote_flush(position_manager, get_quote_service())
                 except Exception:
                     pass
                 continue
@@ -407,7 +475,7 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                     market_event_time or tick_kwargs["event_time"],
                     source="dhan_websocket_tick" if market_event_time else "dhan_websocket_receipt",
                 )
-                await qs.flush()
+                _schedule_quote_flush(position_manager, qs)
             except Exception:
                 pass
         if price is not None and position_manager.active_trades:
@@ -491,7 +559,7 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
         from quote_service import get_quote_service
         qs = get_quote_service()
         qs.record_spot_quote(spot, datetime_module.datetime.now(timezone.utc), source="dhan_rest_ltp")
-        await qs.flush()
+        _schedule_quote_flush(position_manager, qs)
     except Exception:
         pass
     # Risk checks must survive an independent option-chain outage.
@@ -518,7 +586,7 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
             await _record_selected_option_quote(
                 position_manager, price_fetcher, qs, None, None
             )
-            await qs.flush()
+            _schedule_quote_flush(position_manager, qs)
         except Exception:
             pass
         raise
@@ -526,7 +594,7 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
         from quote_service import get_quote_service
         qs = get_quote_service()
         await _record_selected_option_quote(position_manager, price_fetcher, qs, expiry, full_chain)
-        await qs.flush()
+        _schedule_quote_flush(position_manager, qs)
     except Exception:
         pass
     if _session_now().time() < time(15, 30):
@@ -626,7 +694,7 @@ async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatc
                 from quote_service import get_quote_service
                 qs = get_quote_service()
                 qs.record_spot_quote(candle.close, candle.timestamp, source="completed_candle")
-                await qs.flush()
+                _schedule_quote_flush(position_manager, qs)
             except Exception:
                 pass
         if candle is not None or _has_option_policy_trades(position_manager):
@@ -964,7 +1032,7 @@ async def run():
                     await _record_selected_option_quote(
                         position_manager, price_fetcher, qs, expiry_date, full_chain
                     )
-                    await qs.flush()
+                    _schedule_quote_flush(position_manager, qs)
                 except Exception as quote_err:
                     logger.warning("Quote persistence sync failed: %s", quote_err)
             
@@ -1248,6 +1316,7 @@ async def run():
                             except asyncio.CancelledError:
                                 pass
                     await position_manager.flush_pending_trade_updates()
+                    await _drain_quote_flush(position_manager)
                 except Exception as drain_err:
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)
                 finally:
