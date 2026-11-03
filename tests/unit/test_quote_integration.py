@@ -349,6 +349,7 @@ class TestPositionManagerQuoteIntegration:
             await main._monitor_rest_without_candle(
                 price_fetcher, oi_fetcher, position_manager, MagicMock(), dispatcher
             )
+        await position_manager._selected_option_quote_task
         await position_manager._quote_flush_task
 
         price_fetcher.fetch_option_observation.assert_awaited_once_with({
@@ -415,6 +416,210 @@ class TestPositionManagerQuoteIntegration:
             assert all(call.args[0]["price"] != 151.25 for call in later_upserts)
         finally:
             release.set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("chain_failure", [False, True])
+    async def test_rest_monitor_returns_while_selected_option_fetch_is_blocked(self, monkeypatch, chain_failure):
+        """Dashboard quote latency must not hold up the monitoring loop."""
+        import asyncio
+        import main
+        from unittest.mock import AsyncMock
+
+        started, release = asyncio.Event(), asyncio.Event()
+        selected = {"expiry": "2026-11-12", "strike": 23400.0,
+                    "option_type": "PE", "security_id": "53941"}
+
+        async def slow_fetch(contract):
+            started.set()
+            await release.wait()
+            return {"price": 151.25, "observed_at": "2026-11-03T04:55:01+00:00"}
+
+        fetcher = MagicMock()
+        fetcher.fetch_latest_spot = AsyncMock(return_value=23350)
+        fetcher.fetch_option_observation = AsyncMock(side_effect=slow_fetch)
+        oi_fetcher = MagicMock()
+        oi_fetcher.get_nearest_expiry = AsyncMock(return_value="2026-11-05")
+        oi_fetcher.fetch_chain = AsyncMock(return_value=(None, {}))
+        if chain_failure:
+            oi_fetcher.fetch_chain.side_effect = ValueError("chain unavailable")
+        pm = MagicMock()
+        pm.active_trades = []
+        pm.get_selected_option_contract.return_value = selected
+        pm.update_trades = AsyncMock(return_value=[])
+        dispatcher = MagicMock()
+        dispatcher.on_spot = AsyncMock()
+        dispatcher.on_snapshot = AsyncMock()
+        qs = MagicMock()
+        qs.flush = AsyncMock(return_value=True)
+        monkeypatch.setattr("quote_service.get_quote_service", lambda *args, **kwargs: qs)
+        monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 3, 10, 0))
+
+        monitoring = asyncio.create_task(main._monitor_rest_without_candle(
+            fetcher, oi_fetcher, pm, MagicMock(), dispatcher
+        ))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            if chain_failure:
+                with pytest.raises(ValueError, match="chain unavailable"):
+                    await asyncio.wait_for(asyncio.shield(monitoring), timeout=0.25)
+            else:
+                await asyncio.wait_for(asyncio.shield(monitoring), timeout=0.25)
+                dispatcher.on_snapshot.assert_awaited_once()
+        finally:
+            release.set()
+            await asyncio.gather(monitoring, return_exceptions=True)
+            quote_task = getattr(pm, "_selected_option_quote_task", None)
+            if isinstance(quote_task, asyncio.Task):
+                await quote_task
+            flush_task = getattr(pm, "_quote_flush_task", None)
+            if isinstance(flush_task, asyncio.Task):
+                await flush_task
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("queue_new_request", [False, True])
+    async def test_background_option_requests_coalesce_and_use_new_selection(self, mock_supabase, queue_new_request):
+        import asyncio
+        import main
+        from unittest.mock import AsyncMock
+
+        first = {"expiry": "2026-11-12", "strike": 23400.0, "option_type": "PE", "security_id": "53941"}
+        second = {"expiry": "2026-11-19", "strike": 23500.0, "option_type": "CE", "security_id": "53942"}
+        started, release = asyncio.Event(), asyncio.Event()
+        requested = []
+
+        async def fetch(contract):
+            requested.append(contract["security_id"])
+            if len(requested) == 1:
+                started.set()
+                await release.wait()
+            return {"price": 151.25, "observed_at": "2026-11-03T04:55:01+00:00"}
+
+        fetcher = MagicMock()
+        fetcher.fetch_option_observation = AsyncMock(side_effect=fetch)
+        pm = MagicMock()
+        pm.get_selected_option_contract.return_value = first
+        qs = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0)
+        task = main._schedule_selected_option_quote(pm, fetcher, qs, "2026-11-05", {})
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            pm.get_selected_option_contract.return_value = second
+            if queue_new_request:
+                assert main._schedule_selected_option_quote(pm, fetcher, qs, "2026-11-05", {}) is task
+                assert main._schedule_selected_option_quote(pm, fetcher, qs, "2026-11-05", {}) is task
+            release.set()
+            await asyncio.wait_for(task, timeout=1.0)
+            await pm._quote_flush_task
+            assert requested == ["53941", "53942"]
+            assert qs.get_latest_quotes_payload()["selectedOption"]["securityId"] == "53942"
+        finally:
+            release.set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("selection", ["same", "none", "replacement"])
+    async def test_background_option_quote_retries_deferral_only_for_current_selection(
+        self, mock_supabase, monkeypatch, selection
+    ):
+        import asyncio
+        import main
+        from fetchers.price_fetcher import ReferencePriceDeferred
+        from unittest.mock import AsyncMock
+
+        selected = {"expiry": "2026-11-12", "strike": 23400.0, "option_type": "PE", "security_id": "53941"}
+        replacement = {"expiry": "2026-11-19", "strike": 23500.0, "option_type": "CE", "security_id": "53942"}
+        waiting, release = asyncio.Event(), asyncio.Event()
+
+        async def wait_for_cooldown(delay):
+            waiting.set()
+            await release.wait()
+
+        monkeypatch.setattr(main, "_quote_retry_sleep", wait_for_cooldown)
+        fetcher = MagicMock()
+        fetcher.fetch_option_observation = AsyncMock(side_effect=[
+            ReferencePriceDeferred("protective cooldown"),
+            {"price": 151.25, "observed_at": "2026-11-03T04:55:01+00:00"},
+        ])
+        pm = MagicMock()
+        pm.get_selected_option_contract.return_value = selected
+        qs = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0)
+        task = main._schedule_selected_option_quote(pm, fetcher, qs, "2026-11-05", {})
+        try:
+            await asyncio.wait_for(waiting.wait(), timeout=1.0)
+            if selection == "none":
+                pm.get_selected_option_contract.return_value = None
+            elif selection == "replacement":
+                pm.get_selected_option_contract.return_value = replacement
+            release.set()
+            await asyncio.wait_for(task, timeout=1.0)
+            await pm._quote_flush_task
+            assert fetcher.fetch_option_observation.await_count == (1 if selection == "none" else 2)
+            option = qs.get_latest_quotes_payload()["selectedOption"]
+            if selection == "none":
+                assert option is None
+            else:
+                assert option["securityId"] == ("53942" if selection == "replacement" else "53941")
+        finally:
+            release.set()
+
+    @pytest.mark.asyncio
+    async def test_queued_chain_quote_keeps_its_original_observation_time(self, mock_supabase, monkeypatch):
+        import asyncio
+        import main
+        from unittest.mock import AsyncMock
+
+        first = {"expiry": "2026-11-12", "strike": 23400.0, "option_type": "PE", "security_id": "53941"}
+        second = {"expiry": "2026-11-19", "strike": 23500.0, "option_type": "CE", "security_id": "53942"}
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def fetch(contract):
+            started.set()
+            await release.wait()
+            return {"price": 151.25, "observed_at": "2026-11-03T04:55:01+00:00"}
+
+        def chain_quote(contract, chain, *, timestamp):
+            return {"price": 180, "observed_at": timestamp}
+
+        monkeypatch.setattr("quote_service.match_option_quote_from_chain", chain_quote)
+        fetcher = MagicMock()
+        fetcher.fetch_option_observation = AsyncMock(side_effect=fetch)
+        pm = MagicMock()
+        pm.get_selected_option_contract.return_value = first
+        qs = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0)
+        task = main._schedule_selected_option_quote(pm, fetcher, qs, "2026-11-05", {})
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            pm.get_selected_option_contract.return_value = second
+            before = datetime.now(timezone.utc)
+            main._schedule_selected_option_quote(pm, fetcher, qs, second["expiry"], {})
+            after = datetime.now(timezone.utc)
+            release.set()
+            await asyncio.wait_for(task, timeout=1.0)
+            await pm._quote_flush_task
+            observed = datetime.fromisoformat(qs._latest_option["observed_at"].replace("Z", "+00:00"))
+            assert before <= observed <= after
+            assert qs.get_latest_quotes_payload()["selectedOption"]["securityId"] == "53942"
+        finally:
+            release.set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("timeout", [False, True])
+    async def test_selected_option_quote_shutdown_drain(self, timeout):
+        import asyncio
+        import main
+
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def capture():
+            started.set()
+            await release.wait()
+
+        pm = MagicMock()
+        task = asyncio.create_task(capture())
+        pm._selected_option_quote_task = task
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        if not timeout:
+            release.set()
+        assert await main._drain_selected_option_quote(pm, timeout_seconds=0.01) is not timeout
+        assert task.cancelled() is timeout
 
     @pytest.mark.asyncio
     async def test_rest_fallback_runs_protective_check_while_quote_flush_is_blocked(self, monkeypatch):
