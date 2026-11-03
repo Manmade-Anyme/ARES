@@ -370,7 +370,7 @@ class TestPositionManagerQuoteIntegration:
         release_flush = asyncio.Event()
         protective_check_done = asyncio.Event()
 
-        async def slow_flush():
+        async def slow_flush(**kwargs):
             flush_started.set()
             await release_flush.wait()
             return True
@@ -421,7 +421,7 @@ class TestPositionManagerQuoteIntegration:
         release_flush = asyncio.Event()
         protective_check_done = asyncio.Event()
 
-        async def slow_flush():
+        async def slow_flush(**kwargs):
             flush_started.set()
             await release_flush.wait()
             return True
@@ -472,7 +472,7 @@ class TestPositionManagerQuoteIntegration:
         flush_started = asyncio.Event()
         never_release = asyncio.Event()
 
-        async def slow_flush():
+        async def slow_flush(**kwargs):
             flush_started.set()
             await never_release.wait()
 
@@ -488,6 +488,65 @@ class TestPositionManagerQuoteIntegration:
         assert task.cancelled()
 
     @pytest.mark.asyncio
+    async def test_new_scheduled_flush_waits_out_throttle_and_persists_option(self):
+        """A second task persists a new option even without another market event."""
+        import asyncio
+        import main
+        from quote_service import QuotePersistenceService
+
+        supabase = MagicMock()
+        service = QuotePersistenceService(supabase_client=supabase, throttle_seconds=0.2)
+        pm = MagicMock()
+        service.record_spot_quote(24000, "2026-11-03T05:00:00Z")
+        await main._schedule_quote_flush(pm, service)
+
+        contract = {"expiry": "2026-11-05", "strike": 24000, "option_type": "CE", "security_id": "53940"}
+        service.record_option_quote(contract, 150, "2026-11-03T05:00:01Z")
+        await asyncio.wait_for(main._schedule_quote_flush(pm, service), timeout=2.0)
+
+        rows = [call.args[0] for call in supabase.table.return_value.upsert.call_args_list]
+        assert any(row["instrument_id"] == "OPTION:SELECTED" and row["price"] == 150 for row in rows)
+        assert service._dirty is False
+
+    @pytest.mark.asyncio
+    async def test_scheduled_flush_rechecks_throttle_after_forced_write(self, monkeypatch):
+        """A forced write during the wait must not strand the next snapshot."""
+        import asyncio
+        import main
+        import quote_service
+        from quote_service import QuotePersistenceService
+
+        wait_started = asyncio.Event()
+        release_wait = asyncio.Event()
+        real_sleep = asyncio.sleep
+
+        async def controlled_sleep(delay):
+            if not wait_started.is_set():
+                wait_started.set()
+                await release_wait.wait()
+            else:
+                await real_sleep(delay)
+
+        monkeypatch.setattr(quote_service, "async_sleep", controlled_sleep)
+        supabase = MagicMock()
+        service = QuotePersistenceService(supabase_client=supabase, throttle_seconds=0.2)
+        pm = MagicMock()
+        service.record_spot_quote(24000, "2026-11-03T05:00:00Z")
+        await service.flush(force=True)
+        service.record_spot_quote(24001, "2026-11-03T05:00:01Z")
+        task = main._schedule_quote_flush(pm, service)
+        await asyncio.wait_for(wait_started.wait(), timeout=1.0)
+        await service.flush(force=True)
+        service.record_spot_quote(24002, "2026-11-03T05:00:02Z")
+        release_wait.set()
+
+        await asyncio.wait_for(task, timeout=2.0)
+
+        rows = [call.args[0] for call in supabase.table.return_value.upsert.call_args_list]
+        assert rows[-1]["price"] == 24002
+        assert service._dirty is False
+
+    @pytest.mark.asyncio
     async def test_scheduled_quote_flush_coalesces_updates_during_inflight_write(self):
         """A quote recorded during a slow flush gets a follow-up snapshot."""
         import asyncio
@@ -499,7 +558,7 @@ class TestPositionManagerQuoteIntegration:
         latest_price = {"value": 24000.0}
         snapshots = []
 
-        async def flush_snapshot():
+        async def flush_snapshot(**kwargs):
             snapshots.append(latest_price["value"])
             if len(snapshots) == 1:
                 flush_started.set()
@@ -507,8 +566,6 @@ class TestPositionManagerQuoteIntegration:
 
         quote_service = MagicMock()
         quote_service.flush = AsyncMock(side_effect=flush_snapshot)
-        quote_service.throttle_seconds = 0.05
-        quote_service._last_persist_time = asyncio.get_running_loop().time()
         pm = MagicMock()
         task = main._schedule_quote_flush(pm, quote_service)
         await asyncio.wait_for(flush_started.wait(), timeout=1.0)

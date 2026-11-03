@@ -4,7 +4,6 @@ from datetime import datetime, time, timedelta, timezone
 import logging
 from math import isfinite
 from inspect import iscoroutinefunction
-from time import monotonic
 from typing import Optional, Tuple
 
 from engine import AresEngine
@@ -281,29 +280,15 @@ def _schedule_quote_flush(position_manager, quote_service):
         return task
 
     async def flush_pending_quotes():
-        follow_up = False
         while True:
-            if follow_up:
-                try:
-                    throttle_seconds = max(0.0, float(quote_service.throttle_seconds))
-                    last_flush = float(quote_service._last_persist_time)
-                    throttle_delay = max(
-                        0.0, throttle_seconds - (monotonic() - last_flush)
-                    )
-                except (AttributeError, TypeError, ValueError):
-                    throttle_delay = 0.0
-                if throttle_delay:
-                    await asyncio.sleep(throttle_delay)
             position_manager._quote_flush_requested = False
             try:
-                await quote_service.flush()
+                await quote_service.flush(wait_for_throttle=True)
             except Exception as exc:
                 logger.warning("Quote persistence flush failed: %s", exc)
             if not position_manager._quote_flush_requested:
                 return
-            # Updates that arrived during a throttled/in-flight write need one
-            # later snapshot once the service's normal write interval permits it.
-            follow_up = True
+            # Updates arriving during a write need a later snapshot.
 
     position_manager._quote_flush_requested = False
     task = asyncio.create_task(flush_pending_quotes())

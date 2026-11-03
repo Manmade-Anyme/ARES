@@ -30,6 +30,7 @@ Security & Architecture:
 """
 
 import asyncio
+from asyncio import sleep as async_sleep
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 import logging
@@ -504,12 +505,14 @@ class QuotePersistenceService:
             option = deepcopy(self._latest_option)
         return format_frontend_quote_contract(underlying, option)
 
-    async def flush(self, force: bool = False) -> bool:
+    async def flush(self, force: bool = False, wait_for_throttle: bool = False) -> bool:
         """Persist dirty quotes to Supabase table latest_quotes with throttling.
 
         Avoids per-tick database inserts by respecting the throttle duration.
         Serializes flushes across snapshot creation and database completion so
         older writes cannot complete out of order or undo newer selection changes.
+        When requested, wait for the throttle window rather than skipping the
+        pending snapshot, then recheck the window under the serialization lock.
         Returns True if a flush was performed, False otherwise.
         """
         if self.supabase is None:
@@ -527,8 +530,15 @@ class QuotePersistenceService:
                     self._flush_lock_loop = loop
                 flush_lock = self._async_flush_lock
 
-            async with flush_lock:
-                return await self._execute_flush(force=force, loop=loop)
+            while True:
+                async with flush_lock:
+                    delay = 0.0
+                    if wait_for_throttle and not force:
+                        with self._lock:
+                            delay = max(0.0, self.throttle_seconds - (time.monotonic() - self._last_persist_time))
+                    if not delay:
+                        return await self._execute_flush(force=force, loop=loop)
+                await async_sleep(delay)
         else:
             with self._sync_flush_lock:
                 return await self._execute_flush(force=force, loop=None)
