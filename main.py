@@ -502,7 +502,7 @@ def _mark_signal_session_closed(signal):
 
 async def _record_selected_option_quote(position_manager, price_fetcher, quote_service, nearest_expiry, full_chain):
     """Record the selected contract quote without substituting a different expiry."""
-    from quote_service import match_option_quote_from_chain
+    from quote_service import are_option_contracts_equal, match_option_quote_from_chain
 
     selected_contract = position_manager.get_selected_option_contract()
     quote_service.reconcile_selected_contract(selected_contract)
@@ -525,6 +525,10 @@ async def _record_selected_option_quote(position_manager, price_fetcher, quote_s
             return
         except Exception as exc:
             logger.warning("Selected option quote fetch failed: %s", exc)
+            return
+        current_contract = position_manager.get_selected_option_contract()
+        if not are_option_contracts_equal(selected_contract, current_contract):
+            quote_service.reconcile_selected_contract(current_contract)
             return
         source = (observation or {}).get("source") or "dhan_last_trade"
 

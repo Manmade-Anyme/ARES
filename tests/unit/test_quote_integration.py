@@ -360,6 +360,63 @@ class TestPositionManagerQuoteIntegration:
         assert quote_service.flush.await_count >= 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("replacement", [
+        None,
+        {"expiry": "2026-11-19", "strike": 23400.0, "option_type": "PE", "security_id": "53941"},
+        {"expiry": "2026-11-12", "strike": 23500.0, "option_type": "PE", "security_id": "53941"},
+        {"expiry": "2026-11-12", "strike": 23400.0, "option_type": "CE", "security_id": "53941"},
+        {"expiry": "2026-11-12", "strike": 23400.0, "option_type": "PE", "security_id": "53942"},
+    ])
+    async def test_selected_quote_fetch_does_not_restore_old_selection(self, mock_supabase, replacement):
+        """A response for a closed or replaced selection must not resurrect it."""
+        import asyncio
+        import main
+        from unittest.mock import AsyncMock
+
+        selected = {"expiry": "2026-11-12", "strike": 23400.0,
+                    "option_type": "PE", "security_id": "53941"}
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def fetch_observation(contract):
+            started.set()
+            await release.wait()
+            return {"price": 151.25, "observed_at": "2026-11-03T04:55:01+00:00"}
+
+        fetcher = MagicMock()
+        fetcher.fetch_option_observation = AsyncMock(side_effect=fetch_observation)
+        pm = MagicMock()
+        pm.get_selected_option_contract.return_value = selected
+        qs = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0)
+        qs.record_option_quote(selected, 120, "2026-11-03T04:54:00Z")
+        await qs.flush(force=True)
+        task = asyncio.create_task(main._record_selected_option_quote(pm, fetcher, qs, "2026-11-05", {}))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            pm.get_selected_option_contract.return_value = replacement
+            qs.reconcile_selected_contract(replacement)
+            if replacement:
+                qs.record_option_quote(replacement, 180, "2026-11-03T04:55:00Z")
+            await qs.flush(force=True)
+            previous_upserts = mock_supabase.table.return_value.upsert.call_count
+            release.set()
+            await asyncio.wait_for(task, timeout=1.0)
+            await qs.flush(force=True)
+
+            option = qs.get_latest_quotes_payload()["selectedOption"]
+            if replacement is None:
+                assert option is None
+            else:
+                assert option["expiry"] == replacement["expiry"]
+                assert option["strike"] == replacement["strike"]
+                assert option["optionType"] == replacement["option_type"]
+                assert option["securityId"] == replacement["security_id"]
+                assert option["currentPremium"] == 180
+            later_upserts = mock_supabase.table.return_value.upsert.call_args_list[previous_upserts:]
+            assert all(call.args[0]["price"] != 151.25 for call in later_upserts)
+        finally:
+            release.set()
+
+    @pytest.mark.asyncio
     async def test_rest_fallback_runs_protective_check_while_quote_flush_is_blocked(self, monkeypatch):
         """A slow quote write must not hold up the REST-based exit check."""
         import asyncio
