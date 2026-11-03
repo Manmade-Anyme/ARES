@@ -313,7 +313,10 @@ class QuotePersistenceService:
     def __init__(self, supabase_client: Any = None, throttle_seconds: float = 1.0):
         self.supabase = supabase_client
         self.throttle_seconds = max(0.0, float(throttle_seconds))
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._sync_flush_lock = threading.RLock()
+        self._async_flush_lock: Optional[asyncio.Lock] = None
+        self._flush_lock_loop: Optional[asyncio.AbstractEventLoop] = None
         self._latest_underlying: Optional[Dict[str, Any]] = None
         self._latest_option: Optional[Dict[str, Any]] = None
         self._clear_option_pending: bool = False
@@ -480,11 +483,32 @@ class QuotePersistenceService:
         """Persist dirty quotes to Supabase table latest_quotes with throttling.
 
         Avoids per-tick database inserts by respecting the throttle duration.
+        Serializes flushes across snapshot creation and database completion so
+        older writes cannot complete out of order or undo newer selection changes.
         Returns True if a flush was performed, False otherwise.
         """
         if self.supabase is None:
             return False
 
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None and loop.is_running():
+            with self._lock:
+                if self._async_flush_lock is None or self._flush_lock_loop is not loop:
+                    self._async_flush_lock = asyncio.Lock()
+                    self._flush_lock_loop = loop
+                flush_lock = self._async_flush_lock
+
+            async with flush_lock:
+                return await self._execute_flush(force=force, loop=loop)
+        else:
+            with self._sync_flush_lock:
+                return await self._execute_flush(force=force, loop=None)
+
+    async def _execute_flush(self, force: bool, loop: Optional[asyncio.AbstractEventLoop]) -> bool:
         now = time.monotonic()
         with self._lock:
             if not self._dirty and not force:
@@ -507,20 +531,25 @@ class QuotePersistenceService:
             self._clear_option_pending = False
             self._last_persist_time = now
 
+        if not rows_to_upsert and not should_delete_option:
+            return False
+
         def _do_persist():
-            if rows_to_upsert:
-                # Upsert rows individually to satisfy non-null metadata constraints and prevent schema-union nulls
-                for row in rows_to_upsert:
-                    self.supabase.table("latest_quotes").upsert(row).execute()
-            if should_delete_option:
-                self.supabase.table("latest_quotes").delete().eq("instrument_id", "OPTION:SELECTED").execute()
+            with self._sync_flush_lock:
+                nonlocal rows_to_upsert
+                with self._lock:
+                    if self._latest_option is None:
+                        rows_to_upsert = [
+                            r for r in rows_to_upsert if r.get("instrument_id") != "OPTION:SELECTED"
+                        ]
+                if rows_to_upsert:
+                    # Upsert rows individually to satisfy non-null metadata constraints and prevent schema-union nulls
+                    for row in rows_to_upsert:
+                        self.supabase.table("latest_quotes").upsert(row).execute()
+                if should_delete_option:
+                    self.supabase.table("latest_quotes").delete().eq("instrument_id", "OPTION:SELECTED").execute()
 
         try:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
             if loop is not None and loop.is_running():
                 await loop.run_in_executor(None, _do_persist)
             else:

@@ -638,3 +638,95 @@ class TestQuotePersistenceService:
         # Recording contract 2 again with even older timestamp 10:20 UTC is rejected (same contract)
         assert svc.record_option_quote(c2, 84.0, "2026-11-02T10:20:00Z") is False
 
+    @pytest.mark.asyncio
+    async def test_flushes_are_serialized_across_database_completion(self):
+        """Verifies flushes serialize across snapshot creation and database completion to prevent stale resurrection."""
+        import asyncio
+        import threading
+        from unittest.mock import MagicMock
+
+        mock_supabase = MagicMock()
+        mock_table = MagicMock()
+        mock_supabase.table.return_value = mock_table
+        mock_table.upsert.return_value = mock_table
+        mock_table.delete.return_value = mock_table
+        mock_table.eq.return_value = mock_table
+
+        svc = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0.0)
+        c1 = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        svc.record_option_quote(c1, 125.0, "2026-11-02T05:00:00Z")
+
+        op_log = []
+        upsert_in_progress = threading.Event()
+        allow_upsert_finish = threading.Event()
+
+        def custom_execute():
+            # Check if this execute call is for delete or upsert
+            if mock_table.delete.call_count > 0 and len([op for op in op_log if op == "delete"]) < mock_table.delete.call_count:
+                op_log.append("delete")
+            else:
+                op_log.append("upsert_start")
+                upsert_in_progress.set()
+                allow_upsert_finish.wait(timeout=2.0)
+                op_log.append("upsert_end")
+            return MagicMock(data=[])
+
+        mock_table.execute.side_effect = custom_execute
+
+        # 1. Start Flush 1 (upserts option)
+        flush1_task = asyncio.create_task(svc.flush(force=True))
+
+        # Wait until Flush 1's worker thread is executing upsert
+        while not upsert_in_progress.is_set():
+            await asyncio.sleep(0.01)
+
+        # 2. While Flush 1 is in-flight, terminal cleanup clears option and schedules Flush 2 (delete)
+        svc.clear_selected_option()
+        flush2_task = asyncio.create_task(svc.flush(force=True))
+
+        # Yield to event loop to let flush2_task attempt to run
+        await asyncio.sleep(0.05)
+
+        # Flush 2 MUST NOT have executed delete yet because flush 1 holds the flush lock!
+        assert "delete" not in op_log
+
+        # 3. Release Flush 1 upsert
+        allow_upsert_finish.set()
+        await flush1_task
+        await flush2_task
+
+        # Flush 2 must have executed AFTER Flush 1
+        assert "upsert_end" in op_log
+        assert "delete" in op_log
+        assert op_log.index("upsert_end") < op_log.index("delete")
+        assert svc.get_cached_option_contract() is None
+
+    @pytest.mark.asyncio
+    async def test_inflight_flush_drops_option_if_cleared_before_persist(self):
+        """Verifies if option is cleared while flush is queuing, it drops OPTION:SELECTED from upsert."""
+        from unittest.mock import MagicMock
+
+        mock_supabase = MagicMock()
+        mock_table = MagicMock()
+        mock_supabase.table.return_value = mock_table
+        mock_table.upsert.return_value = mock_table
+        mock_table.delete.return_value = mock_table
+        mock_table.eq.return_value = mock_table
+        mock_table.execute.return_value = MagicMock(data=[])
+
+        svc = QuotePersistenceService(supabase_client=mock_supabase, throttle_seconds=0.0)
+        c1 = {"expiry": "2026-11-05", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        svc.record_spot_quote(23300.0, "2026-11-02T05:00:00Z")
+        svc.record_option_quote(c1, 125.0, "2026-11-02T05:00:00Z")
+
+        # Clear option
+        svc.clear_selected_option()
+        await svc.flush(force=True)
+
+        # Verify no call to upsert with OPTION:SELECTED occurred
+        for call in mock_table.upsert.call_args_list:
+            row = call[0][0]
+            assert row["instrument_id"] != "OPTION:SELECTED"
+        mock_table.delete.assert_called_with()
+
+
