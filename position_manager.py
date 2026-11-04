@@ -2632,16 +2632,19 @@ class PositionManager:
         opt.update(phase="CLOSED", remaining_fraction=0.0, index_guard_enabled=False,
                    monitoring_status="CLOSED")
         trade["state"] = "CLOSED"
+        exit_index_price = None
         if opt.get("accounting_formula_version") == "one_lot_reference_v1":
             self._capture_reference_leg(trade, "EXIT", None, observed_at, option_close=float(price))
             exit_leg = opt["accounting"]["legs"]["EXIT"]
             exit_leg.update(option_source=source, option_observed_at=observed_at,
                             option_approximate=False, trigger_price=float(price),
                             effective_stop=stop, stop_source=stop_source)
+            exit_index_price = exit_leg.get("spot_price")
+            opt["exit"]["index_price"] = exit_index_price
             opt["exit"]["runner_option_points"] = (
                 0.0 if reason == "STOPPED_OUT_AT_BE" else runner_points)
         opt.setdefault("event_history", []).append(trigger)
-        await self._record_trade_update(trade, None, reason, observed_at)
+        await self._record_trade_update(trade, exit_index_price, reason, observed_at)
         return reason
 
     async def _reject_quote_before_active_stop(self, trade, observed_at, received_at):

@@ -453,7 +453,12 @@ class PriceFetcher:
         requested = parse_candle_timestamp(datetime.now(timezone.utc))
         pins = {}
         for contract in contracts or []:
-            security_id, exchange, _ = self._reference_contract(contract, requested)
+            try:
+                security_id, exchange, _ = self._reference_contract(contract, requested)
+            except ValueError:
+                # One expired or malformed restored pin must not suppress fresh
+                # protective quotes for every other active option trade.
+                continue
             pins[security_id] = (exchange, dict(contract))
         if not pins:
             return []

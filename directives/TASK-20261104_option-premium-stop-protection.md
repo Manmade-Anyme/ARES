@@ -66,6 +66,8 @@ Current source also gates `option_trailing` enrollment on option-ATR configurati
 - An ATR candidate above the protected stop tightens protection; a later falling candidate cannot loosen it. A subsequent breach exits as `ATR_SL_HIT`.
 - Bought CE and PE have identical long-premium stop comparisons.
 - Wrong-contract or invalid-time data cannot alter stop state; restart restores phase, effective stop, contract identity, and processed-event/candle watermarks.
+- An expired or malformed restored contract is skipped individually during protective quote-batch construction; it must not block quote requests for other valid active contracts. If no valid pins remain, make no provider request.
+- When contemporaneous spot evidence is available for a premium-triggered exit, persist that spot mark as the lifecycle `exit_price` in both accounting ledgers; leave it null when no evidence is available.
 - Duplicate or concurrent events cannot duplicate terminal closure or reopen a closed trade.
 - A gap through a stop records the stop trigger separately from observed/reference price and actual fill.
 - T1/stop source chronology is respected without lookahead; unresolved candle ordering remains explicitly unknown.

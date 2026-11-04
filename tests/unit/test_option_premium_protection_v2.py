@@ -97,6 +97,40 @@ async def test_post_t1_cost_stop_equality_is_break_even_and_zero_runner_points()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("has_spot_evidence", [True, False])
+async def test_premium_exit_persists_contemporaneous_spot_exit_price_when_available(has_spot_evidence):
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt["accounting_formula_version"] = "one_lot_reference_v1"
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    opt["accounting"] = {"legs": {"T1": {
+        "event_at": "2026-11-04T10:06:00+05:30", "spot_price": 23928.20,
+        "spot_source": "touched_level", "option_price": 177.10,
+        "option_source": "dhan_last_trade",
+    }}}
+    quote = _quote(166.0, 21)
+    quote.update(observed_at=at.isoformat(), received_at=at.isoformat())
+    if has_spot_evidence:
+        pm.set_reference_price_evidence(spot_quotes=[{
+            "observed_at": at.isoformat(), "price": 23915.0, "source": "dhan_websocket_tick",
+        }])
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events([], {}, current_time=at, option_quotes=[quote])
+
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in events
+    expected_exit_price = 23915.0 if has_spot_evidence else None
+    assert opt["accounting"]["legs"]["EXIT"].get("spot_price") == expected_exit_price
+    assert opt["exit"]["index_price"] == expected_exit_price
+    assert pm.analytics.rows[-1]["exit_price"] == expected_exit_price
+    assert (pm.analytics.rows[-1]["pnl_points"] is not None) is has_spot_evidence
+    assert pm.analytics.rows[-1]["option_pnl_points"] == pytest.approx(4.35)
+    if has_spot_evidence:
+        assert pm.analytics.rows[-1]["pnl_points"] == pytest.approx(11.70)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("with_accounting", [True, False])
 async def test_same_batch_t2_and_premium_stop_quote_retain_ambiguity_and_route_protection(with_accounting):
     trade = _trade(phase="POST_T1")

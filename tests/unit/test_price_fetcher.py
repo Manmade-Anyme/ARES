@@ -225,6 +225,26 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({item["contract"]["option_type"] for item in observations}, {"CE", "PE"})
         self.assertEqual({item["price"] for item in observations}, {101.5, 99.5})
 
+    async def test_expired_pin_does_not_block_quotes_for_other_contracts(self):
+        contracts = [
+            {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry_date": "2026-06-28",
+             "strike": 24000, "option_type": "CE"},
+            {"security_id": "456", "exchange_segment": "NSE_FNO", "expiry_date": "2026-07-01",
+             "strike": 24000, "option_type": "PE"},
+        ]
+        stamp = datetime(2026, 6, 29, 15, 29, tzinfo=ZoneInfo("Asia/Kolkata")).strftime("%d/%m/%Y %H:%M:%S")
+        self.mock_dhan.quote_data.return_value = {"status": "success", "data": {"NSE_FNO": {
+            "456": {"last_price": 99.5, "last_trade_time": stamp},
+        }}}
+        with patch.object(self.fetcher, "_protective_request",
+                          new=AsyncMock(side_effect=lambda request: request())) as protective:
+            observations = await self.fetcher.fetch_option_observations(contracts)
+
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0]["contract"]["security_id"], "456")
+        self.assertEqual(self.mock_dhan.quote_data.call_args.args[0], {"NSE_FNO": [456]})
+        protective.assert_awaited_once()
+
     @patch('fetchers.price_fetcher.settings')
     async def test_fetch_latest_candle_data_type_errors(self, mock_settings):
         # data is not a dict (line 138)
