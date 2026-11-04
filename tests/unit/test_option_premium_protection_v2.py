@@ -501,6 +501,60 @@ async def test_same_batch_t2_and_premium_stop_quote_retain_ambiguity_and_route_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ambiguity_field", "cost_only"),
+    [("ambiguous_premium_quote", False), ("ambiguous_premium_bar", False),
+     ("ambiguous_premium_bar", True)],
+)
+async def test_index_resolution_waits_for_unresolved_t1_premium_ordering(ambiguity_field, cost_only):
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(accounting_formula_version="one_lot_reference_v1", execution_status="REFERENCE_ONLY")
+    start = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    trigger_at = start + timedelta(milliseconds=500)
+    premium_ambiguity = {
+        "status": "T1_ORDER_UNKNOWN", "event_at": trigger_at.isoformat(),
+    }
+    if cost_only:
+        premium_ambiguity.update(
+            price=165.0, ordering_reason="COST_STOP_ONLY_BREACH",
+        )
+    else:
+        premium_ambiguity["protective_option_exit"] = {
+            "reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
+            "event_at": trigger_at.isoformat(), "option_close": 160.0,
+            "effective_stop": 161.05, "stop_source": "INITIAL_OPTION_SL",
+        }
+    opt[ambiguity_field] = premium_ambiguity
+    opt["t1_at"] = start.isoformat()
+    opt["ambiguous_index_touch"] = {
+        "kind": "T1_ENTRY", "source_minute": start.isoformat(),
+        "event_at": start.isoformat(), "high": trade["target_1"],
+        "low": trade["entry_price"], "status": "ORDER_UNKNOWN",
+    }
+    ticks = [
+        {"observed_at": (start + timedelta(milliseconds=100)).isoformat(),
+         "price": trade["target_1"], "source": "complete_tick_history"},
+        {"observed_at": (start + timedelta(milliseconds=900)).isoformat(),
+         "price": trade["entry_price"], "source": "complete_tick_history"},
+    ]
+    pm = _manager(trade)
+
+    assert not await pm.resolve_reference_ambiguity(trade["id"], ticks, complete=True)
+
+    assert trade["state"] == "T1_HIT"
+    assert opt.get("ambiguity_resolution") is None
+    assert opt["ambiguous_index_touch"]["status"] == "ORDER_UNKNOWN"
+    assert opt.get("exit") is None
+    assert opt["booked_fraction"] == pytest.approx(0.5)
+    assert opt["remaining_fraction"] == pytest.approx(0.5)
+    assert not opt.get("execution_route_pending")
+    assert opt[ambiguity_field]["status"] == "T1_ORDER_UNKNOWN"
+    if not cost_only:
+        assert opt[ambiguity_field]["protective_option_exit"]["option_close"] == pytest.approx(160.0)
+
+
+@pytest.mark.asyncio
 async def test_resolved_index_guard_ambiguity_persists_paper_exit_route_intent():
     trade = _trade(phase="POST_T1")
     opt = trade["market_context"]["option_trailing"]

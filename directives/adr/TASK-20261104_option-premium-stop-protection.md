@@ -172,6 +172,7 @@ Implementation and QA must exercise the actual lifecycle entry points and persis
 - A premium quote at a wrong contract, with invalid/future/stale time, or out of order cannot mutate the lifecycle.
 - A premium quote tied exactly to T1 at or below the original premium SL preserves order/allocation ambiguity and immediately creates a protective execution intent; advancing the quote watermark cannot discard the breach.
 - Later quotes or ATR bars cannot finalize or rewrite that reference exit while the T1-tied protective trigger remains unresolved.
+- Certified ordered spot/index ticks establish index-touch order only. If a T1-tied premium quote or bar remains unresolved, do not finalize a later index guard/T2 outcome or commit an assumed exit allocation from those ticks; retain the lifecycle ambiguity.
 - Expired or malformed restored pins are isolated while building the protective quote batch; valid contracts continue to receive quotes, and no request is made when every pin is invalid.
 - A contemporaneous spot mark recovered for a premium-triggered exit is persisted as `exit_price` in both lifecycle and accounting ledgers; absent evidence remains null.
 - Bought CE and bought PE use identical long-premium `price <= stop` behavior.

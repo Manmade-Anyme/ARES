@@ -783,6 +783,14 @@ class PositionManager:
             if (versioned and not include_option_policy) or (only_option_policy and not versioned):
                 continue
             observation_high, observation_low = high, low
+            if ((versioned or context.get("execution") or context.get("tracking_mode") == "SIGNAL_REFERENCE")
+                    and candle_timestamp is not None and trade.get("entry_timestamp")):
+                candle_ts = __import__("storage").to_utc_iso(candle_timestamp)
+                activation_ts = opt.get("activated_at") or trade["entry_timestamp"]
+                if parse_candle_timestamp(candle_ts) <= parse_candle_timestamp(activation_ts):
+                    # A limit filled after this candle opened; its earlier wicks
+                    # cannot close the newly filled position retroactively.
+                    observation_high = observation_low = spot_price
             if versioned:
                 phase_boundary_ambiguous = False
                 tracking_start = opt.get("activated_at") or trade.get("entry_timestamp")
@@ -862,12 +870,6 @@ class PositionManager:
                     # Existing option-ATR trades retain their historical rule:
                     # never replay pre-T1 wicks into the new entry guard.
                     observation_high = observation_low = spot_price
-                if ((versioned or context.get("execution") or context.get("tracking_mode") == "SIGNAL_REFERENCE")
-                        and candle_timestamp is not None and trade.get("entry_timestamp")):
-                    candle_ts = __import__("storage").to_utc_iso(candle_timestamp)
-                    if parse_candle_timestamp(candle_ts) <= parse_candle_timestamp(
-                            opt.get("activated_at") or trade["entry_timestamp"]):
-                        observation_high = observation_low = spot_price
                 expected = expected_completed_option_bar_end(observed_at)
                 available = getattr(self, "_option_available_until", {}).get(trade["id"])
                 requires_option_history = (
@@ -1833,6 +1835,10 @@ class PositionManager:
             # close, so second-resolution ticks cannot prove which phase came first.
             return False
         if ambiguity.get("kind") not in {"T1_ENTRY", "T2_ENTRY", "T1_PHASE_ENTRY"}:
+            return False
+        if self._unresolved_t1_premium_ambiguity(opt):
+            # Certified index ticks establish index-touch order only. They do
+            # not order an option quote/bar against those touches at T1.
             return False
         start = parse_candle_timestamp(ambiguity["source_minute"])
         end = start + timedelta(minutes=1)
