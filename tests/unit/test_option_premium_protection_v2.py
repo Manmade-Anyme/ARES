@@ -128,6 +128,30 @@ async def test_post_t1_break_even_stop_is_not_replaced_by_atr_at_or_below_cost()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("spot", "expected_event", "expected_state"), [
+    (23970.0, "T2_HIT", "T2_REACHED"),
+    (23909.90, "STOPPED_OUT_AT_BE", "CLOSED"),
+])
+async def test_post_t1_index_milestones_progress_without_disabled_atr_history(
+        spot, expected_event, expected_state):
+    trade = _trade(phase="POST_T1")
+    option = trade["market_context"]["option_trailing"]
+    option["atr_enabled"] = False
+    pm = _manager(trade)
+    pm._option_available_until = {}
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    tick = {"price": spot, "exchange_at": at.isoformat(), "received_at": at.isoformat(),
+            "source": "dhan_tick"}
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events([], {}, current_time=at, index_ticks=[tick])
+
+    assert ("v2-trade", expected_event) in events
+    assert trade["state"] == expected_state
+    assert not option.get("pending_index_observations")
+
+
+@pytest.mark.asyncio
 async def test_delayed_quote_before_active_atr_stop_revision_cannot_trigger_retroactively():
     trade = _trade(phase="POST_T1")
     opt = trade["market_context"]["option_trailing"]

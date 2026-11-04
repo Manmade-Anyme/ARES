@@ -387,3 +387,38 @@ async def test_v2_premium_stop_creates_pending_exit_until_an_observed_bid_confir
     assert record.realized_pnl == pytest.approx(-6.5)
     assert signal.market_context["execution"]["status"] == "CLOSED"
     assert persisted[-1]["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_premium_stop_expands_pending_t1_exit_to_all_remaining_units():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    record = next(iter(orders.records.values()))
+    assert record.filled_quantity == 130
+
+    orders.on_spot(record.correlation_id, 24020)
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "T1_HIT"
+
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2",
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    }}
+    assert await dispatcher.on_option_stop(trade, "ATR_SL_HIT") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 130
+    assert record.exit_reason == "ATR_SL_HIT"
+    assert record.exited_quantity == 0
+
+    await dispatcher.on_snapshot(chain(99), 24000)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == 130
+    assert record.pending_exit_quantity == 0
+    assert record.exit_reason == "ATR_SL_HIT"

@@ -6,7 +6,10 @@ const db = new PGlite();
 const id = '00000000-0000-0000-0000-000000000001';
 const q = (sql, args = []) => db.query(sql, args);
 const rpc = async (name, args) => (await q(`SELECT public.${name}(${args.map((_, i) => `$${i + 1}`).join(',')}) AS result`, args)).rows[0].result;
-const correction = (revision, event, accounting, spot = null, option = null) => rpc('apply_option_accounting_correction', [id, revision, event, JSON.stringify(accounting), spot, option]);
+const correctionFor = (tradeId, revision, event, accounting, spot = null, option = null) =>
+  rpc('apply_option_accounting_correction', [tradeId, revision, event, JSON.stringify(accounting), spot, option]);
+const correction = (revision, event, accounting, spot = null, option = null) =>
+  correctionFor(id, revision, event, accounting, spot, option);
 try {
   await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;
     CREATE TABLE public.active_trades(id uuid primary key,state text,stop_loss numeric,
@@ -125,6 +128,18 @@ try {
   const v2RecoveryRows = await rpc('list_incomplete_option_accounting', [100, 0]);
   assert.equal(v2RecoveryRows.length, 1);
   assert.equal(v2RecoveryRows[0].option_trailing.policy_version, 'option_premium_protection_v2');
+  const v2Evidence = {legs: {
+    T1: {option_price: 110, option_source: 'recovered_history'},
+    EXIT: {spot_price: 22020, spot_source: 'recovered_history',
+      option_price: 120, option_source: 'recovered_history'},
+  }, spot_total_points: 15, option_total_points: 15};
+  const v2Corrected = await correctionFor(v2Id, 1, 'recover-v2', v2Evidence, 15, 15);
+  assert.equal(v2Corrected.revision, 2);
+  assert.equal(Number(v2Corrected.pnl_points), 15);
+  assert.equal(Number(v2Corrected.option_pnl_points), 15);
+  assert.equal(v2Corrected.option_trailing.policy_version, 'option_premium_protection_v2');
+  assert.equal(v2Corrected.option_trailing.accounting_corrections['recover-v2'].accounting.option_total_points, 15);
+  assert.equal((await correctionFor(v2Id, 1, 'recover-v2', v2Evidence, 15, 15)).idempotent_skip, true);
 
   await assert.rejects(() => correction(4, 'overwrite', {legs: {}}, 71, null), /Cannot overwrite/);
   // A later stale client snapshot cannot erase or rewrite an already committed leg.

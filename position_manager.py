@@ -833,7 +833,11 @@ class PositionManager:
                     observation_high = observation_low = spot_price
                 expected = expected_completed_option_bar_end(observed_at)
                 available = getattr(self, "_option_available_until", {}).get(trade["id"])
-                if (opt.get("phase") == "POST_T1" and expected is not None
+                requires_option_history = (
+                    opt.get("policy_version") != "option_premium_protection_v2"
+                    or opt.get("atr_enabled") is True
+                )
+                if (opt.get("phase") == "POST_T1" and requires_option_history and expected is not None
                         and (available is None or available < expected)):
                     queued = opt.setdefault("pending_index_observations", [])
                     sign = 1 if trade["direction"] == "BULLISH" else -1

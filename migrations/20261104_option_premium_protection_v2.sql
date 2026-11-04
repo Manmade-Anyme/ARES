@@ -387,3 +387,195 @@ END;
 $$;
 REVOKE ALL ON FUNCTION public.list_incomplete_option_accounting(integer, integer) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.list_incomplete_option_accounting(integer, integer) TO service_role;
+
+-- Extend the existing closed-trade correction RPC to v2 while preserving the
+-- same revision, immutable-evidence, formula, and closed-reference safeguards.
+CREATE OR REPLACE FUNCTION public.apply_option_accounting_correction(
+    p_trade_id uuid, p_expected_revision integer, p_event_id text,
+    p_accounting jsonb, p_spot_pnl_points numeric, p_option_pnl_points numeric
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = ''
+AS $$
+DECLARE
+    v_active public.active_trades%ROWTYPE;
+    v_analytics public.trade_analytics%ROWTYPE;
+    v_context jsonb;
+    v_option jsonb;
+    v_accounting jsonb;
+    v_legs jsonb;
+    v_old_leg jsonb;
+    v_new_leg jsonb;
+    v_corrections jsonb;
+    v_request jsonb;
+    v_name text;
+    v_key text;
+    v_value jsonb;
+    v_rev integer;
+    v_highest integer;
+    v_spot numeric;
+    v_premium numeric;
+    v_expected numeric;
+    v_weight numeric;
+    v_entry numeric;
+    v_direction numeric;
+BEGIN
+    IF p_expected_revision IS NULL OR p_expected_revision < 1
+       OR p_event_id IS NULL OR pg_catalog.btrim(p_event_id) = ''
+       OR pg_catalog.jsonb_typeof(p_accounting) IS DISTINCT FROM 'object'
+       OR pg_catalog.jsonb_typeof(p_accounting->'legs') IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION 'A positive expected revision, stable event id and accounting legs are required';
+    END IF;
+    SELECT * INTO STRICT v_active FROM public.active_trades WHERE id = p_trade_id FOR UPDATE;
+    SELECT * INTO STRICT v_analytics FROM public.trade_analytics WHERE id = p_trade_id FOR UPDATE;
+    v_context := COALESCE(v_analytics.market_context, '{}'::jsonb);
+    v_option := v_context->'option_trailing';
+    IF COALESCE(v_option->>'policy_version', '') NOT IN
+       ('option_atr_v1', 'option_premium_protection_v2') THEN
+        RAISE EXCEPTION 'Trade is not enrolled in a supported option reference policy';
+    END IF;
+    IF v_option->>'accounting_formula_version' IS DISTINCT FROM 'one_lot_reference_v1' THEN
+        RAISE EXCEPTION 'Trade is not enrolled in one-lot reference accounting';
+    END IF;
+    v_rev := COALESCE((v_option->>'revision')::integer, 1);
+    v_corrections := COALESCE(v_option->'accounting_corrections', '{}'::jsonb);
+    v_request := pg_catalog.jsonb_build_object('accounting', p_accounting,
+        'spot_pnl_points', p_spot_pnl_points, 'option_pnl_points', p_option_pnl_points);
+    IF v_corrections ? p_event_id THEN
+        IF v_corrections->p_event_id IS DISTINCT FROM v_request THEN
+            RAISE EXCEPTION 'Correction event id already used for different evidence';
+        END IF;
+        RETURN pg_catalog.jsonb_build_object('success', true, 'idempotent_skip', true,
+            'trade_id', p_trade_id, 'revision', v_rev, 'option_trailing', v_option);
+    END IF;
+    IF v_rev <> p_expected_revision THEN
+        RAISE EXCEPTION 'Revision conflict: expected %, found %', p_expected_revision, v_rev
+            USING ERRCODE = '40001';
+    END IF;
+    IF v_active.state NOT IN ('CLOSED', 'STOPPED_OUT')
+       OR v_analytics.result_state IS NULL OR v_analytics.result_state = 'OPEN'
+       OR v_option->>'phase' IS DISTINCT FROM 'CLOSED' THEN
+        RAISE EXCEPTION 'Accounting correction requires a closed trade';
+    END IF;
+    v_highest := (v_option->>'highest_milestone')::integer;
+    v_accounting := COALESCE(v_option->'accounting', '{"legs":{}}'::jsonb);
+    v_legs := COALESCE(v_accounting->'legs', '{}'::jsonb);
+    FOR v_key IN SELECT pg_catalog.jsonb_object_keys(p_accounting) LOOP
+        IF v_key NOT IN ('legs', 'spot_booked_points', 'option_booked_points',
+                         'spot_total_points', 'option_total_points') THEN
+            RAISE EXCEPTION 'Unsupported accounting field %', v_key;
+        END IF;
+    END LOOP;
+    FOR v_name, v_new_leg IN SELECT * FROM pg_catalog.jsonb_each(p_accounting->'legs') LOOP
+        IF v_name NOT IN ('T1', 'T2', 'EXIT')
+           OR (v_name = 'T1' AND v_highest < 1)
+           OR (v_name = 'T2' AND v_highest < 2)
+           OR pg_catalog.jsonb_typeof(v_new_leg) IS DISTINCT FROM 'object' THEN
+            RAISE EXCEPTION 'Invalid accounting leg %', v_name;
+        END IF;
+        v_old_leg := COALESCE(v_legs->v_name, '{}'::jsonb);
+        FOR v_key, v_value IN SELECT * FROM pg_catalog.jsonb_each(v_new_leg) LOOP
+            IF v_key NOT IN ('event_at', 'spot_price', 'spot_source', 'option_price',
+                             'option_source', 'option_observed_at', 'approximate',
+                             'spot_observed_at', 'spot_approximate', 'source_minute') THEN
+                RAISE EXCEPTION 'Unsupported accounting leg field %', v_key;
+            END IF;
+            IF v_value = 'null'::jsonb THEN CONTINUE; END IF;
+            IF v_old_leg->v_key IS NOT NULL AND v_old_leg->v_key <> 'null'::jsonb
+               AND v_old_leg->v_key IS DISTINCT FROM v_value THEN
+                RAISE EXCEPTION 'Cannot overwrite existing accounting evidence %.%', v_name, v_key;
+            END IF;
+            v_old_leg := pg_catalog.jsonb_set(v_old_leg, ARRAY[v_key], v_value, true);
+        END LOOP;
+        v_legs := pg_catalog.jsonb_set(v_legs, ARRAY[v_name], v_old_leg, true);
+    END LOOP;
+    v_accounting := pg_catalog.jsonb_set(v_accounting, '{legs}', v_legs, true);
+    FOR v_key IN SELECT pg_catalog.unnest(ARRAY['spot_booked_points', 'option_booked_points',
+                                               'spot_total_points', 'option_total_points']) LOOP
+        v_value := p_accounting->v_key;
+        IF v_value IS NULL OR v_value = 'null'::jsonb THEN CONTINUE; END IF;
+        IF v_accounting->v_key IS NOT NULL AND v_accounting->v_key <> 'null'::jsonb
+           AND v_accounting->v_key IS DISTINCT FROM v_value THEN
+            RAISE EXCEPTION 'Cannot overwrite existing accounting total %', v_key;
+        END IF;
+        v_accounting := pg_catalog.jsonb_set(v_accounting, ARRAY[v_key], v_value, true);
+    END LOOP;
+    v_spot := COALESCE(v_analytics.pnl_points, p_spot_pnl_points);
+    v_premium := COALESCE(v_analytics.option_pnl_points, p_option_pnl_points);
+    IF (v_accounting->>'spot_total_points' IS NOT NULL AND v_spot IS NULL)
+       OR (v_accounting->>'option_total_points' IS NOT NULL AND v_premium IS NULL) THEN
+        RAISE EXCEPTION 'Accounting totals require matching persisted points';
+    END IF;
+    IF (v_analytics.pnl_points IS NOT NULL AND p_spot_pnl_points IS NOT NULL
+        AND v_analytics.pnl_points <> p_spot_pnl_points)
+       OR (v_analytics.option_pnl_points IS NOT NULL AND p_option_pnl_points IS NOT NULL
+        AND v_analytics.option_pnl_points <> p_option_pnl_points) THEN
+        RAISE EXCEPTION 'Cannot overwrite existing terminal totals';
+    END IF;
+    IF v_spot IS NOT NULL AND (
+        v_legs->'EXIT'->>'spot_price' IS NULL
+        OR (v_highest >= 1 AND v_legs->'T1'->>'spot_price' IS NULL)
+        OR (v_highest >= 2 AND v_legs->'T2'->>'spot_price' IS NULL)) THEN
+        RAISE EXCEPTION 'Spot points require all applicable spot leg prices';
+    END IF;
+    IF v_premium IS NOT NULL AND (
+        v_option->>'original_option_entry' IS NULL OR v_legs->'EXIT'->>'option_price' IS NULL
+        OR (v_highest >= 1 AND v_legs->'T1'->>'option_price' IS NULL)
+        OR (v_highest >= 2 AND v_legs->'T2'->>'option_price' IS NULL)) THEN
+        RAISE EXCEPTION 'Option points require the entry and all applicable option leg prices';
+    END IF;
+    IF v_spot IS NOT NULL THEN
+        IF v_active.entry_price IS NULL OR v_active.direction IS NULL OR v_active.direction NOT IN ('BULLISH', 'BEARISH') THEN
+            RAISE EXCEPTION 'Spot entry and direction are required for spot points';
+        END IF;
+        v_entry := v_active.entry_price;
+        v_direction := CASE WHEN v_active.direction = 'BULLISH' THEN 1 ELSE -1 END;
+        v_weight := CASE v_highest WHEN 0 THEN 1 WHEN 1 THEN .5 ELSE .2 END;
+        v_expected := v_weight * v_direction * ((v_legs->'EXIT'->>'spot_price')::numeric - v_entry);
+        IF v_highest >= 1 THEN
+            v_expected := v_expected + .5 * v_direction * ((v_legs->'T1'->>'spot_price')::numeric - v_entry);
+        END IF;
+        IF v_highest >= 2 THEN
+            v_expected := v_expected + .3 * v_direction * ((v_legs->'T2'->>'spot_price')::numeric - v_entry);
+        END IF;
+        IF v_spot <> pg_catalog.round(v_expected, 8) OR
+           ((v_accounting->>'spot_total_points') IS NOT NULL AND
+            (v_accounting->>'spot_total_points')::numeric <> v_spot) THEN
+            RAISE EXCEPTION 'Spot total does not match weighted leg prices';
+        END IF;
+    END IF;
+    IF v_premium IS NOT NULL THEN
+        v_entry := (v_option->>'original_option_entry')::numeric;
+        v_weight := CASE v_highest WHEN 0 THEN 1 WHEN 1 THEN .5 ELSE .2 END;
+        v_expected := v_weight * ((v_legs->'EXIT'->>'option_price')::numeric - v_entry);
+        IF v_highest >= 1 THEN
+            v_expected := v_expected + .5 * ((v_legs->'T1'->>'option_price')::numeric - v_entry);
+        END IF;
+        IF v_highest >= 2 THEN
+            v_expected := v_expected + .3 * ((v_legs->'T2'->>'option_price')::numeric - v_entry);
+        END IF;
+        IF v_premium <> pg_catalog.round(v_expected, 8) OR
+           ((v_accounting->>'option_total_points') IS NOT NULL AND
+            (v_accounting->>'option_total_points')::numeric <> v_premium) THEN
+            RAISE EXCEPTION 'Option total does not match weighted leg prices';
+        END IF;
+    END IF;
+    v_corrections := pg_catalog.jsonb_set(v_corrections, ARRAY[p_event_id], v_request, true);
+    v_option := pg_catalog.jsonb_set(v_option, '{accounting}', v_accounting, true);
+    v_option := pg_catalog.jsonb_set(v_option, '{accounting_corrections}', v_corrections, true);
+    v_option := pg_catalog.jsonb_set(v_option, '{revision}', pg_catalog.to_jsonb(v_rev + 1), true);
+    v_context := pg_catalog.jsonb_set(v_context, '{option_trailing}', v_option, true);
+    UPDATE public.active_trades SET pnl_points_override = COALESCE(pnl_points_override, v_spot),
+        exit_price = COALESCE(exit_price, (v_legs->'EXIT'->>'spot_price')::numeric)
+        WHERE id = p_trade_id;
+    UPDATE public.trade_analytics SET market_context = v_context,
+        pnl_points = v_spot, option_pnl_points = v_premium,
+        exit_price = COALESCE(exit_price, (v_legs->'EXIT'->>'spot_price')::numeric)
+        WHERE id = p_trade_id;
+    PERFORM public.sync_option_reference_ml_label(p_trade_id);
+    RETURN pg_catalog.jsonb_build_object('success', true, 'trade_id', p_trade_id,
+        'revision', v_rev + 1, 'option_trailing', v_option,
+        'pnl_points', v_spot, 'option_pnl_points', v_premium);
+END;
+$$;
+REVOKE ALL ON FUNCTION public.apply_option_accounting_correction(uuid, integer, text, jsonb, numeric, numeric) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.apply_option_accounting_correction(uuid, integer, text, jsonb, numeric, numeric) TO service_role;

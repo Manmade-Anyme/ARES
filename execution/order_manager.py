@@ -261,6 +261,13 @@ class OrderManager:
             self._save()
             return record
         if record.status == "EXIT_PENDING":
+            remaining = record.filled_quantity - record.exited_quantity
+            if remaining > 0:
+                # A protective premium stop supersedes a pending partial T1
+                # exit and must cover every still-open unit.
+                record.pending_exit_quantity = remaining
+                record.exit_reason = reason
+                self._save()
             return record
         remaining = record.filled_quantity - record.exited_quantity
         if remaining <= 0:
