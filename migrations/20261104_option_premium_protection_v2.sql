@@ -476,7 +476,8 @@ BEGIN
         FOR v_key, v_value IN SELECT * FROM pg_catalog.jsonb_each(v_new_leg) LOOP
             IF v_key NOT IN ('event_at', 'spot_price', 'spot_source', 'option_price',
                              'option_source', 'option_observed_at', 'approximate',
-                             'spot_observed_at', 'spot_approximate', 'source_minute') THEN
+                             'spot_observed_at', 'spot_approximate', 'source_minute',
+                             'option_approximate', 'trigger_price', 'effective_stop', 'stop_source') THEN
                 RAISE EXCEPTION 'Unsupported accounting leg field %', v_key;
             END IF;
             IF v_value = 'null'::jsonb THEN CONTINUE; END IF;

@@ -271,3 +271,45 @@ def test_break_even_alert_names_premium_domain_and_zero_runner_points():
     assert "Premium stop domain: OPTION_PREMIUM" in text
     assert "Runner stop-out points: +0.00" in text
     assert "Confirmed fill: unavailable" in text
+
+
+@pytest.mark.asyncio
+async def test_real_premium_closure_can_enrich_later_contemporaneous_spot_quote():
+    trade = _trade(phase='POST_T1')
+    opt = trade['market_context']['option_trailing']
+    opt['accounting_formula_version'] = 'one_lot_reference_v1'
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 10, 22, 23, tzinfo=IST)
+    with patch('position_manager.send_option_lifecycle_event', new=AsyncMock(return_value='DELIVERED')):
+        await pm._close_option_premium_trade(trade, 166, at, source='dhan_last_trade')
+    leg = opt['accounting']['legs']['EXIT']
+    assert leg['spot_price'] is None
+    pm.set_reference_price_evidence(spot_quotes=[{'observed_at': at.isoformat(), 'price': 23920,
+                                                  'source': 'dhan_tick'}])
+    pm._enrich_reference_trade(trade)
+    assert leg['spot_price'] == 23920
+    assert leg['spot_approximate'] is False
+    assert leg['option_source'] == 'dhan_last_trade'
+    assert leg['trigger_price'] == 166
+    assert opt['exit']['runner_option_points'] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_atr_disabled_quote_health_does_not_flap_for_missing_history():
+    trade = _trade(phase='POST_T1')
+    opt = trade['market_context']['option_trailing']
+    opt['atr_enabled'] = False
+    pm = _manager(trade)
+    pm._option_confirmed_sessions = {datetime(2026, 11, 4).date()}
+    with patch('position_manager.send_option_lifecycle_event', new=AsyncMock(return_value='DELIVERED')):
+        for second in (0, 1):
+            at = datetime(2026, 11, 4, 10, 22, second, tzinfo=IST)
+            quote = _quote(180, 22)
+            quote.update(observed_at=at.isoformat(), received_at=at.isoformat())
+            await pm.update_option_market_events([], {}, current_time=at, option_quotes=[quote])
+            assert opt['monitoring_status'] == 'ACTIVE'
+        assert not any(row.get('update_type') in {'MONITORING_UNAVAILABLE', 'MONITORING_RESTORED'}
+                       for row in pm.analytics.rows)
+        await pm.mark_option_quote_unavailable({'39961': opt['contract']}, 'provider failed', at)
+        await pm.update_option_market_events([], {}, current_time=at)
+        assert opt['monitoring_status'] == 'UNAVAILABLE'

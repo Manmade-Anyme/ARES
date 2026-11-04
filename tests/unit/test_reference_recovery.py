@@ -339,3 +339,32 @@ async def test_persistent_deferral_is_bounded():
             await _retry_deferred(request)
     assert request.await_count == 3
     assert sleep.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source,seconds', [('dhan_last_trade', 23), ('completed_5m_option_close', 0)])
+async def test_premium_trigger_recovery_fetches_missing_spot_without_changing_trigger(source, seconds):
+    pm = _make_pm()
+    row = closed_row()
+    opt = row['option_trailing']
+    opt.update(policy_version='option_premium_protection_v2', exit={'stop_domain': 'OPTION_PREMIUM'})
+    leg = opt['accounting']['legs']['EXIT']
+    event = EXIT + timedelta(seconds=seconds)
+    leg.update(event_at=event.isoformat(), option_source=source, option_approximate=False,
+               trigger_price=155, effective_stop=156, stop_source='ATR_TRAILING')
+    before = deepcopy(leg)
+    logger = SimpleNamespace(list_incomplete_option_accounting=Mock(return_value=[row]),
+                             apply_option_accounting_correction=Mock(return_value={'success': True}),
+                             sync_option_reference_ml_label=Mock())
+    fetcher = client()
+    start = EXIT if seconds else EXIT - timedelta(minutes=1)
+    fetcher.fetch_spot_minutes.return_value = [bar(start, 22520)]
+    result = await run_reference_recovery(pm, fetcher, logger)
+    assert result['corrected'] == 1
+    fetcher.fetch_spot_minutes.assert_awaited_once()
+    recovered = logger.apply_option_accounting_correction.call_args.args[3]['legs']['EXIT']
+    assert recovered['spot_price'] == 22520
+    assert recovered['spot_approximate'] is True
+    for key, value in before.items():
+        if key != 'spot_price':
+            assert recovered[key] == value

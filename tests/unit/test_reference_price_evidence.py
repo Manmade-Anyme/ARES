@@ -191,3 +191,14 @@ def test_quote_timezone_and_provider_epoch_match_same_event():
     assert evidence["price"] == 107
     observation["observed_at"] = (START + timedelta(seconds=6)).timestamp()
     assert option_target_evidence(event, observations=[observation], observed_at=event + timedelta(seconds=6)) is None
+
+
+def test_intraminute_premium_exit_prefers_quote_and_labels_completed_close_approximate():
+    event = START + timedelta(seconds=23)
+    later = START + timedelta(minutes=2)
+    evidence = spot_exit_evidence(event, observations=[quote(event, 102)], spot_minutes=[minute()],
+                                 observed_at=later, allow_intraminute=True)
+    assert evidence['price'] == 102 and evidence['approximate'] is False
+    evidence = spot_exit_evidence(event, spot_minutes=[minute()], observed_at=later, allow_intraminute=True)
+    assert evidence['price'] == 105 and evidence['approximate'] is True
+    assert spot_exit_evidence(event, spot_minutes=[minute()], observed_at=event, allow_intraminute=True) is None

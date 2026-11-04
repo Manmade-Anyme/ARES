@@ -7,7 +7,7 @@ from supabase import create_client, Client
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from options_math import option_sizing_context, option_sizing_summary
-from execution.reference_prices import option_target_evidence, spot_exit_evidence
+from execution.reference_prices import option_target_evidence, spot_exit_evidence, is_premium_trigger_exit
 from math import isfinite
 from models import AresSignal, ATMStrikes, OptionTrailingContract, OptionTrailingContext, OptionTrailingExit
 from config import settings
@@ -1709,9 +1709,11 @@ class PositionManager:
                 if evidence:
                     leg.update(option_price=evidence["price"], option_source=evidence["source"],
                                option_observed_at=evidence["observed_at"], approximate=evidence["approximate"])
-            if name == "EXIT" and leg.get("option_source") == "completed_5m_close" and leg.get("spot_price") is None:
+            if (name == "EXIT" and leg.get("spot_price") is None
+                    and (leg.get("option_source") == "completed_5m_close" or is_premium_trigger_exit(opt, leg))):
                 evidence = spot_exit_evidence(leg.get("event_at"), spot_minutes=cache.get("spot_minutes", []),
-                                              observations=cache.get("spot_quotes", []))
+                                              observations=cache.get("spot_quotes", []),
+                                              allow_intraminute=is_premium_trigger_exit(opt, leg))
                 if evidence:
                     leg.update(spot_price=evidence["price"], spot_source=evidence["source"],
                                spot_observed_at=evidence["observed_at"], spot_approximate=evidence["approximate"])
@@ -2662,7 +2664,7 @@ class PositionManager:
                     events.append((trade["id"], update))
             if trade["state"] == "CLOSED":
                 continue
-            if not _check_monitoring:
+            if not _check_monitoring or (v2 and opt.get("atr_enabled") is not True):
                 continue
             expected = expected_completed_option_bar_end(now)
             valid = parse_candle_timestamp(bars[-1].end_time) if bars else None

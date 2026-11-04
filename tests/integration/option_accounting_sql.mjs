@@ -117,9 +117,12 @@ try {
   assert.equal((await q('SELECT trade_outcome FROM public.ml_collection WHERE id=3')).rows[0].trade_outcome, null);
 
   const v2Id = '00000000-0000-0000-0000-000000000002';
+  const premiumMetadata = {option_approximate: false, trigger_price: 120,
+    effective_stop: 121, stop_source: 'ATR_TRAILING'};
   const v2Closed = {option_trailing: {policy_version: 'option_premium_protection_v2',
     accounting_formula_version: 'one_lot_reference_v1', phase: 'CLOSED', highest_milestone: 1,
-    original_option_entry: 100, accounting: {legs: {T1: {spot_price: 22010}, EXIT: {}}}}};
+    original_option_entry: 100, accounting: {legs: {T1: {spot_price: 22010},
+      EXIT: {...premiumMetadata, option_price: 120, option_source: 'dhan_last_trade'}}}}};
   await db.exec('RESET ROLE;');
   await q("INSERT INTO public.active_trades(id,state,stop_loss,entry_price,direction) VALUES ($1,'CLOSED',22000,22000,'BULLISH')", [v2Id]);
   await q("INSERT INTO public.trade_analytics(id,result_state,market_context) VALUES ($1,'ATR_SL_HIT',$2)",
@@ -130,8 +133,8 @@ try {
   assert.equal(v2RecoveryRows[0].option_trailing.policy_version, 'option_premium_protection_v2');
   const v2Evidence = {legs: {
     T1: {option_price: 110, option_source: 'recovered_history'},
-    EXIT: {spot_price: 22020, spot_source: 'recovered_history',
-      option_price: 120, option_source: 'recovered_history'},
+    EXIT: {...premiumMetadata, spot_price: 22020, spot_source: 'recovered_history',
+      option_price: 120, option_source: 'dhan_last_trade'},
   }, spot_total_points: 15, option_total_points: 15};
   const v2Corrected = await correctionFor(v2Id, 1, 'recover-v2', v2Evidence, 15, 15);
   assert.equal(v2Corrected.revision, 2);
@@ -140,6 +143,12 @@ try {
   assert.equal(v2Corrected.option_trailing.policy_version, 'option_premium_protection_v2');
   assert.equal(v2Corrected.option_trailing.accounting_corrections['recover-v2'].accounting.option_total_points, 15);
   assert.equal((await correctionFor(v2Id, 1, 'recover-v2', v2Evidence, 15, 15)).idempotent_skip, true);
+  for (const [key, value] of Object.entries(premiumMetadata)) {
+    assert.equal(v2Corrected.option_trailing.accounting.legs.EXIT[key], value);
+    const changed = typeof value === 'boolean' ? !value : typeof value === 'number' ? value + 1 : 'BREAK_EVEN_COST';
+    await assert.rejects(() => correctionFor(v2Id, 2, `change-${key}`,
+      {legs: {EXIT: {[key]: changed}}}), /Cannot overwrite existing accounting evidence/);
+  }
 
   await assert.rejects(() => correction(4, 'overwrite', {legs: {}}, 71, null), /Cannot overwrite/);
   // A later stale client snapshot cannot erase or rewrite an already committed leg.
