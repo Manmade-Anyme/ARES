@@ -708,6 +708,7 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
             try:
                 observed_at = current_time or datetime.now(IST)
                 option_quotes = []
+                quote_freshness_at = None
                 if quote_contracts:
                     quote_fetch = getattr(price_fetcher, "fetch_option_observations", None)
                     if callable(quote_fetch):
@@ -715,6 +716,7 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                             option_quotes = await quote_fetch(list(quote_contracts.values())) or []
                         except Exception as exc:
                             logger.error("Pinned option stop quotes unavailable: %s", exc)
+                        quote_freshness_at = current_time or datetime.now(IST)
                         quote_ids = {str((q.get("contract") or {}).get("security_id")) for q in option_quotes
                                      if isinstance(q, dict)}
                         missing_quotes = {security_id: contract for security_id, contract in quote_contracts.items()
@@ -738,7 +740,7 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                 replayed_at = current_time or datetime.now(IST)
                 events = await position_manager.update_option_market_events(
                     candles, histories, current_time=replayed_at, index_ticks=index_ticks,
-                    option_quotes=option_quotes)
+                    option_quotes=option_quotes, quote_freshness_at=quote_freshness_at or replayed_at)
                 option_ticks_replayed = index_ticks is not None
                 if engine is not None and any(event == "SL_HIT" for _, event in events):
                     engine.clear_cooldown()
@@ -751,8 +753,12 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                             trade = terminal_by_id.get(str(trade_id))
                             option = ((trade or {}).get("market_context") or {}).get("option_trailing") or {}
                             exit_state = option.get("exit") or {}
+                            stop_domain = exit_state.get("stop_domain")
+                            execution_stop = (stop_domain == "OPTION_PREMIUM"
+                                              or (stop_domain == "SPOT_INDEX"
+                                                  and reason == "STOPPED_OUT_AT_BE"))
                             if (option.get("policy_version") == "option_premium_protection_v2"
-                                    and exit_state.get("stop_domain") == "OPTION_PREMIUM"
+                                    and execution_stop
                                     and exit_state.get("reason") == reason):
                                 await on_option_stop(trade, reason)
             except Exception as exc:

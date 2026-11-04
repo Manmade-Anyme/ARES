@@ -75,15 +75,18 @@ class SignalDispatcher:
                 logger.exception("Paper candle update failed for %s; will retry", correlation_id)
 
     async def on_option_stop(self, trade, reason):
-        """Route a v2 premium stop to its matching paper execution record."""
+        """Route a v2 premium or post-T1 index break-even stop to paper execution."""
         if not isinstance(trade, dict):
             return False
         trade_signal = str(trade.get("signal_uuid") or trade.get("signal_id") or "")
         option = ((trade.get("market_context") or {}).get("option_trailing") or {})
         contract = option.get("contract") or {}
         exit_state = option.get("exit") or {}
+        stop_domain = exit_state.get("stop_domain")
+        index_break_even = (stop_domain == "SPOT_INDEX" and reason == "STOPPED_OUT_AT_BE"
+                            and option.get("highest_milestone") == 1)
         if (not trade_signal or option.get("policy_version") != "option_premium_protection_v2"
-                or exit_state.get("stop_domain") != "OPTION_PREMIUM"
+                or (stop_domain != "OPTION_PREMIUM" and not index_break_even)
                 or exit_state.get("reason") != reason):
             return False
         for correlation_id, (signal, _) in tuple(self._signals.items()):

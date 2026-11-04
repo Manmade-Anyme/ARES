@@ -422,3 +422,39 @@ async def test_premium_stop_expands_pending_t1_exit_to_all_remaining_units():
     assert record.exited_quantity == 130
     assert record.pending_exit_quantity == 0
     assert record.exit_reason == "ATR_SL_HIT"
+
+
+@pytest.mark.asyncio
+async def test_post_t1_index_break_even_closure_exits_all_remaining_paper_units():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    record = next(iter(orders.records.values()))
+    assert record.filled_quantity == 130
+
+    orders.on_spot(record.correlation_id, 24020)
+    await dispatcher.on_snapshot(chain(99), 24020)
+    assert record.t1_hit is True
+    assert record.exited_quantity == 65
+    assert record.status == "FILLED"
+
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "highest_milestone": 1,
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        "exit": {"reason": "STOPPED_OUT_AT_BE", "stop_domain": "SPOT_INDEX"},
+    }}
+    assert await dispatcher.on_option_stop(trade, "STOPPED_OUT_AT_BE") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "STOPPED_OUT_AT_BE"
+    assert record.exited_quantity == 65
+
+    await dispatcher.on_snapshot(chain(99), 24000)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == record.filled_quantity == 130
+    assert record.pending_exit_quantity == 0
+    assert record.exit_reason == "STOPPED_OUT_AT_BE"

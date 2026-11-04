@@ -97,6 +97,24 @@ async def test_post_t1_cost_stop_equality_is_break_even_and_zero_runner_points()
 
 
 @pytest.mark.asyncio
+async def test_fresh_quote_is_not_discarded_after_history_fetch_finishes_late():
+    trade = _trade(phase="POST_T1")
+    pm = _manager(trade)
+    observed_at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    received_at = observed_at + timedelta(seconds=2)
+    quote = _quote(167.20, 21)
+    quote.update(observed_at=observed_at.isoformat(), received_at=received_at.isoformat())
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=received_at + timedelta(seconds=10),
+            quote_freshness_at=received_at + timedelta(seconds=1), option_quotes=[quote])
+
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in events
+    assert trade["market_context"]["option_trailing"]["exit"]["option_close"] == pytest.approx(167.20)
+
+
+@pytest.mark.asyncio
 async def test_post_t1_break_even_outcome_reports_zero_points_even_if_quote_gaps_below_cost():
     trade = _trade(phase="POST_T1")
     pm = _manager(trade)

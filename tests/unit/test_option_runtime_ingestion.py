@@ -103,7 +103,46 @@ async def test_v2_monitor_polls_pinned_premium_quotes_even_when_atr_is_disabled(
     fetcher.fetch_option_candles.assert_not_awaited()
     positions.update_option_market_events.assert_awaited_once()
     assert positions.update_option_market_events.await_args.kwargs["option_quotes"] == [quote]
+    assert positions.update_option_market_events.await_args.kwargs["quote_freshness_at"] == now
     positions.mark_option_quote_unavailable.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_v2_quote_freshness_is_anchored_before_slow_history_fetch(monkeypatch):
+    import main
+    request_at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    quote_at = request_at + timedelta(seconds=2)
+    history_done_at = request_at + timedelta(seconds=12)
+    clock = iter((request_at, quote_at, history_done_at))
+
+    class Clock:
+        @classmethod
+        def now(cls, tz=None):
+            return next(clock)
+
+    monkeypatch.setattr(main, "datetime", Clock)
+    contract = dict(security_id="39961", exchange_segment="NSE_FNO", expiry="2026-11-09",
+                    strike=23950, option_type="CE")
+    quote = {"contract": contract, "price": 167.0,
+             "observed_at": (quote_at - timedelta(seconds=1)).isoformat(),
+             "received_at": quote_at.isoformat(), "source": "dhan_last_trade"}
+    positions = SimpleNamespace(
+        active_trades=[dict(state="T1_HIT", market_context={"option_trailing": {
+            "policy_version": "option_premium_protection_v2", "atr_enabled": True,
+            "contract": contract}})],
+        update_atr_trailing=AsyncMock(), update_option_market_events=AsyncMock(return_value=[]),
+        mark_option_quote_unavailable=AsyncMock())
+    fetcher = SimpleNamespace(
+        fetch_option_observations=AsyncMock(return_value=[quote]),
+        fetch_option_candles=AsyncMock(return_value=[]))
+
+    await main._monitor_completed_atr([], positions, SimpleNamespace(on_candles=AsyncMock()),
+                                      price_fetcher=fetcher)
+
+    assert fetcher.fetch_option_candles.await_args.kwargs["observed_at"] == request_at
+    kwargs = positions.update_option_market_events.await_args.kwargs
+    assert kwargs["quote_freshness_at"] == quote_at
+    assert kwargs["current_time"] == history_done_at
 
 
 @pytest.mark.asyncio
@@ -132,20 +171,26 @@ async def test_v2_monitor_marks_quote_unavailable_when_protective_poll_fails():
 
 
 @pytest.mark.asyncio
-async def test_v2_premium_terminal_event_is_routed_to_execution_dispatcher():
+@pytest.mark.parametrize(("reason", "stop_domain", "milestone"), [
+    ("ATR_SL_HIT", "OPTION_PREMIUM", 1),
+    ("STOPPED_OUT_AT_BE", "SPOT_INDEX", 1),
+])
+async def test_v2_terminal_option_or_post_t1_be_event_is_routed_to_execution_dispatcher(
+        reason, stop_domain, milestone):
     import main
     now = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
     contract = dict(security_id="39961", exchange_segment="NSE_FNO", expiry="2026-11-09",
                     strike=23950, option_type="CE")
     trade = {"id": "v2-trade", "market_context": {"option_trailing": {
         "policy_version": "option_premium_protection_v2",
+        "highest_milestone": milestone,
         "contract": contract,
-        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+        "exit": {"reason": reason, "stop_domain": stop_domain},
     }}}
     positions = SimpleNamespace(
         active_trades=[trade],
         update_atr_trailing=AsyncMock(),
-        update_option_market_events=AsyncMock(return_value=[("v2-trade", "ATR_SL_HIT")]),
+        update_option_market_events=AsyncMock(return_value=[("v2-trade", reason)]),
         mark_option_quote_unavailable=AsyncMock())
     dispatcher = SimpleNamespace(on_candles=AsyncMock(), on_option_stop=AsyncMock())
     fetcher = SimpleNamespace(fetch_option_observations=AsyncMock(return_value=[]),
@@ -154,7 +199,7 @@ async def test_v2_premium_terminal_event_is_routed_to_execution_dispatcher():
     await main._monitor_completed_atr([], positions, dispatcher, price_fetcher=fetcher,
                                       current_time=now)
 
-    dispatcher.on_option_stop.assert_awaited_once_with(trade, "ATR_SL_HIT")
+    dispatcher.on_option_stop.assert_awaited_once_with(trade, reason)
 
 
 @pytest.mark.asyncio

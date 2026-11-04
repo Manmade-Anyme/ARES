@@ -251,7 +251,7 @@ class OrderManager:
         self._save()
 
     def request_option_exit(self, correlation_id, reason):
-        """Turn an option-premium trigger into an exit intent, never a synthetic fill."""
+        """Turn a protective lifecycle trigger into an intent, never a synthetic fill."""
         record = self.records[correlation_id]
         if record.status in {"CANCELLED", "REJECTED", "CLOSED"}:
             return record

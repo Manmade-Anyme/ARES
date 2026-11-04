@@ -2680,9 +2680,19 @@ class PositionManager:
         return events
 
     async def update_option_market_events(self, index_candles, option_histories, current_time=None, *, index_ticks=None,
-                                          option_quotes=None):
-        """Merge spot events, pinned premium quotes, and completed option bars by source time."""
+                                          option_quotes=None, quote_freshness_at=None):
+        """Merge spot events, pinned premium quotes, and completed option bars by source time.
+
+        ``quote_freshness_at`` anchors receipt-age validation to the quote batch
+        fetch, so later option-history I/O cannot make a fresh stop observation stale.
+        """
         now = current_time or datetime.now(timezone.utc)
+        quote_reference = now
+        if quote_freshness_at is not None:
+            try:
+                quote_reference = parse_candle_timestamp(quote_freshness_at)
+            except (TypeError, ValueError, OverflowError, OSError):
+                quote_reference = now
         histories = self._prepare_option_history(option_histories, now)
         self._option_available_until = {key: parse_candle_timestamp(bars[-1].end_time) for key, bars in histories.items() if bars}
         timeline = {}
@@ -2696,7 +2706,7 @@ class PositionManager:
             try:
                 observed_at = parse_candle_timestamp(quote["observed_at"])
                 received_at = parse_candle_timestamp(quote["received_at"])
-                age = (parse_candle_timestamp(now) - received_at).total_seconds()
+                age = (parse_candle_timestamp(quote_reference) - received_at).total_seconds()
                 source_lag = (received_at - observed_at).total_seconds()
             except (KeyError, TypeError, ValueError, OverflowError, OSError):
                 continue

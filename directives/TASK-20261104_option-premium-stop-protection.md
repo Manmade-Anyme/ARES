@@ -53,6 +53,8 @@ Current source also gates `option_trailing` enrollment on option-ATR configurati
 - T1 immediately and durably protects the remaining position/reference runner at entry cost.
 - ATR candidates below, equal to, or missing against break-even leave the entry-cost stop active.
 - A premium quote touching/crossing break-even exits as `STOPPED_OUT_AT_BE`, with zero modeled premium points at exact cost, even between five-minute candle closes.
+- A post-T1 independent spot/index break-even guard closure also routes a matching v2 paper execution record to an exit intent for every remaining unit; it stays pending until an executable premium bid confirms the paper exit.
+- Quote receipt freshness is anchored to the quote batch fetch, so internal option-history latency cannot discard a quote that was fresh when fetched; accepted quotes retain source-time replay ordering.
 - An ATR candidate above the protected stop tightens protection; a later falling candidate cannot loosen it. A subsequent breach exits as `ATR_SL_HIT`.
 - Bought CE and PE have identical long-premium stop comparisons.
 - Wrong-contract or invalid-time data cannot alter stop state; restart restores phase, effective stop, contract identity, and processed-event/candle watermarks.
