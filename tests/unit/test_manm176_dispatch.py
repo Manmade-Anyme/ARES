@@ -546,7 +546,8 @@ async def test_pre_t1_index_stop_closure_exits_runner_if_paper_already_booked_t1
 
 
 @pytest.mark.asyncio
-async def test_t1_tied_ambiguous_premium_stop_routes_to_paper_execution():
+@pytest.mark.parametrize("ambiguity_field", ["ambiguous_premium_quote", "ambiguous_premium_bar"])
+async def test_t1_tied_ambiguous_premium_stop_routes_to_paper_execution(ambiguity_field):
     positions = Positions()
     orders = OrderManager()
     dispatcher = SignalDispatcher(orders, positions)
@@ -561,7 +562,7 @@ async def test_t1_tied_ambiguous_premium_stop_routes_to_paper_execution():
         "execution_route_pending": True, "execution_route_reason": "SL_HIT",
         "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
                      "strike": 24000, "option_type": "CE"},
-        "ambiguous_premium_quote": {"status": "T1_ORDER_UNKNOWN", "protective_option_exit": {
+        ambiguity_field: {"status": "T1_ORDER_UNKNOWN", "protective_option_exit": {
             "reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
             "option_stop": 95, "effective_stop": 95,
         }},

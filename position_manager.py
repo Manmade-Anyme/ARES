@@ -2535,14 +2535,66 @@ class PositionManager:
                 self._option_history[trade["id"]] = bars
         return result
 
+    @staticmethod
+    def _retained_t1_premium_exit(opt):
+        for key in ("ambiguous_premium_bar", "ambiguous_premium_quote"):
+            protective = ((opt.get(key) or {}).get("protective_option_exit") or {})
+            if protective:
+                return protective
+        return None
+
+    async def _retain_t1_premium_bar_exit(self, trade, bar):
+        """Keep a stop breach tied to T1 protective without choosing its allocation."""
+        opt = trade["market_context"]["option_trailing"]
+        if self._retained_t1_premium_exit(opt):
+            return None
+        try:
+            price = float(bar.close)
+            stop = float(opt["original_option_sl"])
+            event_at = parse_candle_timestamp(bar.end_time)
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError, OSError):
+            return None
+        if not isfinite(price) or price <= 0 or price > stop:
+            return None
+        source = "completed_5m_option_close"
+        protective = {
+            "reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
+            "source": source, "trigger_source": source,
+            "event_at": event_at.isoformat(), "option_close": price,
+            "trigger_price": price, "option_stop": stop,
+            "effective_stop": stop, "stop_source": "INITIAL_OPTION_SL",
+        }
+        opt["ambiguous_premium_bar"] = {
+            "status": "T1_ORDER_UNKNOWN", "event_at": event_at.isoformat(),
+            "source_minute": parse_candle_timestamp(bar.start_time).isoformat(),
+            "option_close": price, "protective_option_exit": protective,
+        }
+        opt["source_candle"] = {"start_time": bar.start_time, "end_time": bar.end_time,
+                                "close": price}
+        opt["last_valid_option_bar_end"] = bar.end_time
+        opt["last_processed_option_bar_end"] = bar.end_time
+        opt["exit_trigger"] = {
+            "domain": "OPTION_PREMIUM", "source": source,
+            "event_at": event_at.isoformat(), "price": price,
+            "effective_stop": stop, "stop_source": "INITIAL_OPTION_SL", "reason": "SL_HIT",
+        }
+        opt["execution_status"] = (
+            "REFERENCE_TRIGGERED_NO_BROKER_FILL"
+            if opt.get("execution_status") in {"REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"}
+            else "EXIT_TRIGGERED_PENDING_CONFIRMATION"
+        )
+        self._mark_option_execution_route_pending(trade, "SL_HIT")
+        opt.setdefault("event_history", []).append(dict(opt["exit_trigger"]))
+        await self._record_trade_update(trade, None, None, event_at.isoformat())
+        return "SL_HIT" if opt.get("execution_route_pending") else None
+
     async def _close_option_premium_trade(self, trade, price, event_at, *, source, received_at=None,
                                           phase_override=None, stop_override=None):
         """Record a premium-domain trigger without manufacturing a spot mark or fill."""
         opt = trade["market_context"]["option_trailing"]
         if trade.get("state") in {"CLOSED", "STOPPED_OUT"}:
             return None
-        t1_quote_ambiguity = opt.get("ambiguous_premium_quote") or {}
-        if t1_quote_ambiguity.get("protective_option_exit"):
+        if self._retained_t1_premium_exit(opt):
             # The first stop breach is already routed, while the T1 allocation
             # remains order-unknown. Later quotes/bars cannot finalize or
             # rewrite that reference exit until its ordering is resolved.
@@ -2736,6 +2788,13 @@ class PositionManager:
                         "status": "T1_ORDER_UNKNOWN", "received_at": received_at.isoformat(),
                     }
                     opt["ambiguous_premium_quote"] = ambiguous_quote
+                    retained_exit = self._retained_t1_premium_exit(opt)
+                    if retained_exit:
+                        # A same-time quote is additional ambiguous evidence;
+                        # it must not replace the first retained bar trigger.
+                        ambiguous_quote["protective_option_exit"] = dict(retained_exit)
+                        await self._record_trade_update(trade, None, None, observed_at.isoformat())
+                        continue
                     original_stop = float(opt["original_option_sl"])
                     if price <= original_stop:
                         # Under either source ordering the original pre-T1
@@ -2889,7 +2948,8 @@ class PositionManager:
             for bar in bars:
                 end = parse_candle_timestamp(bar.end_time)
                 pending_exits = [opt.get("deferred_option_exit"),
-                                 (opt.get("ambiguous_index_touch") or {}).get("protective_option_exit")]
+                                 (opt.get("ambiguous_index_touch") or {}).get("protective_option_exit"),
+                                 self._retained_t1_premium_exit(opt)]
                 pending_exits = [item for item in pending_exits if item]
                 try:
                     if any(end >= parse_candle_timestamp(item["event_at"]) for item in pending_exits):
@@ -2901,6 +2961,13 @@ class PositionManager:
                     break
                 if end < cutoff or (end == cutoff and opt.get("last_processed_option_bar_end")):
                     continue
+                t1_at = parse_candle_timestamp(opt["t1_at"]) if opt.get("t1_at") else None
+                if v2 and end == t1_at:
+                    reason = await self._retain_t1_premium_bar_exit(trade, bar)
+                    if reason:
+                        events.append((trade["id"], reason))
+                    if self._retained_t1_premium_exit(opt):
+                        break
                 opt["source_candle"] = {"start_time": bar.start_time, "end_time": bar.end_time, "close": bar.close}
                 opt["last_valid_option_bar_end"] = bar.end_time
                 active_stop = opt.get("locked_option_sl")
@@ -3160,16 +3227,54 @@ class PositionManager:
         """Preserve spot/option ordering when a premium trigger ties an index touch."""
         events = []
         for trade in self.active_trades:
-            if trade.get("state") != "T1_HIT":
-                continue
             opt = (trade.get("market_context") or {}).get("option_trailing") or {}
             v2 = opt.get("policy_version") == "option_premium_protection_v2"
             if (not _has_option_policy(opt)
                     or (not v2 and opt.get("accounting_formula_version") != "one_lot_reference_v1")
-                    or opt.get("phase") != "POST_T1"
                     or opt.get("ambiguous_index_touch")):
                 continue
-            if not opt.get("t1_at"):
+            bar = next((candidate for candidate in histories.get(trade["id"], [])
+                        if parse_candle_timestamp(candidate.end_time) == event_at), None)
+            spot_ranges = []
+            for candle in timeline.get(event_at, []):
+                start = parse_candle_timestamp(candle["timestamp"])
+                if start + timedelta(minutes=1) == event_at:
+                    spot_ranges.append((candle["high"], candle["low"], start, "completed_candle"))
+            for trade_id, observation in pending_ticks.get(event_at, []):
+                if trade_id == trade["id"]:
+                    spot_ranges.append((observation.get("high", observation["price"]),
+                                        observation.get("low", observation["price"]),
+                                        parse_candle_timestamp(observation.get("candle_timestamp") or event_at),
+                                        "recovered_observation"))
+            ticks = live_ticks.get(event_at, [])
+            if ticks:
+                prices = [tick["price"] for tick in ticks]
+                spot_ranges.append((max(prices), min(prices), event_at, "live_tick"))
+
+            # The detector runs before index milestones. Capture a T1/bar tie
+            # here while the trade is still PRE_T1, using only the original SL.
+            if (v2 and trade.get("state") == "OPEN" and opt.get("phase") == "PRE_T1"
+                    and not opt.get("t1_at") and bar is not None and event_at.microsecond == 0
+                    and not self._retained_t1_premium_exit(opt)):
+                try:
+                    original_stop = float(opt["original_option_sl"])
+                    bar_close = float(bar.close)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if isfinite(bar_close) and 0 < bar_close <= original_stop:
+                    sign = 1 if trade["direction"] == "BULLISH" else -1
+                    for high, low, _, _ in spot_ranges:
+                        touches_t1 = high >= trade["target_1"] if sign == 1 else low <= trade["target_1"]
+                        if not touches_t1:
+                            continue
+                        reason = await self._retain_t1_premium_bar_exit(trade, bar)
+                        if reason:
+                            events.append((trade["id"], reason))
+                        break
+                continue
+
+            if (trade.get("state") != "T1_HIT" or opt.get("phase") != "POST_T1"
+                    or not opt.get("t1_at")):
                 continue
             try:
                 if event_at <= parse_candle_timestamp(opt["t1_at"]):
@@ -3179,8 +3284,6 @@ class PositionManager:
                     continue
             except (TypeError, ValueError, OverflowError, OSError):
                 continue
-            bar = next((candidate for candidate in histories.get(trade["id"], [])
-                        if parse_candle_timestamp(candidate.end_time) == event_at), None)
             active_stop = opt.get("locked_option_sl")
             if active_stop is None:
                 continue
@@ -3216,22 +3319,6 @@ class PositionManager:
                 continue
 
             sign = 1 if trade["direction"] == "BULLISH" else -1
-            spot_ranges = []
-            for candle in timeline.get(event_at, []):
-                start = parse_candle_timestamp(candle["timestamp"])
-                if start + timedelta(minutes=1) == event_at:
-                    spot_ranges.append((candle["high"], candle["low"], start, "completed_candle"))
-            for trade_id, observation in pending_ticks.get(event_at, []):
-                if trade_id == trade["id"]:
-                    spot_ranges.append((observation.get("high", observation["price"]),
-                                        observation.get("low", observation["price"]),
-                                        parse_candle_timestamp(observation.get("candle_timestamp") or event_at),
-                                        "recovered_observation"))
-            ticks = live_ticks.get(event_at, [])
-            if ticks:
-                prices = [tick["price"] for tick in ticks]
-                spot_ranges.append((max(prices), min(prices), event_at, "live_tick"))
-
             for high, low, source_start, source in spot_ranges:
                 touches_t2 = high >= trade["target_2"] if sign == 1 else low <= trade["target_2"]
                 touches_guard = low <= trade["entry_price"] if sign == 1 else high >= trade["entry_price"]

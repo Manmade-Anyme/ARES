@@ -767,6 +767,7 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                 option = ((trade or {}).get("market_context") or {}).get("option_trailing") or {}
                 exit_state = (option.get("exit")
                               or (option.get("ambiguous_index_touch") or {}).get("protective_option_exit")
+                              or (option.get("ambiguous_premium_bar") or {}).get("protective_option_exit")
                               or (option.get("ambiguous_premium_quote") or {}).get("protective_option_exit")
                               or option.get("deferred_option_exit")
                               or {})
