@@ -97,6 +97,38 @@ async def test_post_t1_cost_stop_equality_is_break_even_and_zero_runner_points()
 
 
 @pytest.mark.asyncio
+async def test_t1_tied_quote_below_initial_stop_preserves_ambiguity_and_routes_protection():
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt["execution_status"] = "CONFIRMED_PAPER_FILL"
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    tick = {"price": trade["target_1"], "exchange_at": at.isoformat(),
+            "received_at": at.isoformat(), "source": "dhan_tick"}
+    quote = _quote(160.0, 20)
+    quote.update(observed_at=at.isoformat(), received_at=at.isoformat())
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=at, index_ticks=[tick], option_quotes=[quote])
+
+    assert ("v2-trade", "T1_HIT") in events
+    assert ("v2-trade", "SL_HIT") in events
+    assert trade["state"] == "T1_HIT"
+    assert opt["phase"] == "POST_T1"
+    assert opt["highest_milestone"] == 1
+    assert opt.get("exit") is None
+    assert opt["ambiguous_premium_quote"]["status"] == "T1_ORDER_UNKNOWN"
+    protective = opt["ambiguous_premium_quote"]["protective_option_exit"]
+    assert protective["stop_domain"] == "OPTION_PREMIUM"
+    assert protective["reason"] == "SL_HIT"
+    assert protective["effective_stop"] == pytest.approx(161.05)
+    assert opt["execution_route_pending"] is True
+    assert opt["execution_route_reason"] == "SL_HIT"
+    assert opt["quote_watermark"] == at.isoformat()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("has_spot_evidence", [True, False])
 async def test_premium_exit_persists_contemporaneous_spot_exit_price_when_available(has_spot_evidence):
     trade = _trade(phase="POST_T1")

@@ -2725,10 +2725,42 @@ class PositionManager:
                 t1_at = parse_candle_timestamp(opt["t1_at"]) if opt.get("t1_at") else None
                 if t1_at is not None and observed_at == t1_at:
                     opt["quote_watermark"] = observed_at.isoformat()
-                    opt["ambiguous_premium_quote"] = {
+                    ambiguous_quote = {
                         "event_at": observed_at.isoformat(), "price": price,
                         "status": "T1_ORDER_UNKNOWN", "received_at": received_at.isoformat(),
                     }
+                    opt["ambiguous_premium_quote"] = ambiguous_quote
+                    original_stop = float(opt["original_option_sl"])
+                    if price <= original_stop:
+                        # Under either source ordering the original pre-T1
+                        # premium stop has been breached. Preserve the T1
+                        # allocation ambiguity, but route paper protection now.
+                        source = quote.get("source") or "OPTION_QUOTE"
+                        protective_exit = {
+                            "reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
+                            "source": source, "trigger_source": source,
+                            "event_at": observed_at.isoformat(),
+                            "received_at": received_at.isoformat(),
+                            "option_close": price, "trigger_price": price,
+                            "option_stop": original_stop, "effective_stop": original_stop,
+                            "stop_source": "INITIAL_OPTION_SL",
+                        }
+                        ambiguous_quote["protective_option_exit"] = protective_exit
+                        opt["exit_trigger"] = {
+                            "domain": "OPTION_PREMIUM", "source": source,
+                            "event_at": observed_at.isoformat(), "received_at": received_at.isoformat(),
+                            "price": price, "effective_stop": original_stop,
+                            "stop_source": "INITIAL_OPTION_SL", "reason": "SL_HIT",
+                        }
+                        opt["execution_status"] = (
+                            "REFERENCE_TRIGGERED_NO_BROKER_FILL"
+                            if opt.get("execution_status") in {"REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"}
+                            else "EXIT_TRIGGERED_PENDING_CONFIRMATION"
+                        )
+                        self._mark_option_execution_route_pending(trade, "SL_HIT")
+                        opt.setdefault("event_history", []).append(dict(opt["exit_trigger"]))
+                        if opt.get("execution_route_pending"):
+                            events.append((trade["id"], "SL_HIT"))
                     await self._record_trade_update(trade, None, None, observed_at.isoformat())
                     continue
                 if t1_at is not None and observed_at < t1_at:

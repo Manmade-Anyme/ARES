@@ -170,6 +170,7 @@ Implementation and QA must exercise the actual lifecycle entry points and persis
 - A falling candidate, data refresh, restart, or stale/missing history never lowers/clears a previously protected premium stop.
 - A valid fresh quote at, below, or gapping through the premium stop triggers between 5-minute ATR bars; trigger price/time are not presented as a fill.
 - A premium quote at a wrong contract, with invalid/future/stale time, or out of order cannot mutate the lifecycle.
+- A premium quote tied exactly to T1 at or below the original premium SL preserves order/allocation ambiguity and immediately creates a protective execution intent; advancing the quote watermark cannot discard the breach.
 - Expired or malformed restored pins are isolated while building the protective quote batch; valid contracts continue to receive quotes, and no request is made when every pin is invalid.
 - A contemporaneous spot mark recovered for a premium-triggered exit is persisted as `exit_price` in both lifecycle and accounting ledgers; absent evidence remains null.
 - Bought CE and bought PE use identical long-premium `price <= stop` behavior.

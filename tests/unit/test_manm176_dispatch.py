@@ -543,3 +543,31 @@ async def test_pre_t1_index_stop_closure_exits_runner_if_paper_already_booked_t1
     assert record.exited_quantity == record.filled_quantity == 130
     assert record.pending_exit_quantity == 0
     assert record.exit_reason == "SL_HIT"
+
+
+@pytest.mark.asyncio
+async def test_t1_tied_ambiguous_premium_stop_routes_to_paper_execution():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    record = next(iter(orders.records.values()))
+    assert record.filled_quantity == 130
+
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2",
+        "execution_route_pending": True, "execution_route_reason": "SL_HIT",
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        "ambiguous_premium_quote": {"status": "T1_ORDER_UNKNOWN", "protective_option_exit": {
+            "reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
+            "option_stop": 95, "effective_stop": 95,
+        }},
+    }}
+
+    assert await dispatcher.on_option_stop(trade, "SL_HIT") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == record.filled_quantity == 130
+    assert record.exit_reason == "SL_HIT"
