@@ -1923,12 +1923,16 @@ class PositionManager:
         if kind == "STOPPED_OUT_AT_BE":
             trade["state"] = "CLOSED"
             opt.update(phase="CLOSED", remaining_fraction=0.0, index_guard_enabled=False,
-                exit={"reason": kind, "event_at": stamp, "detected_at": datetime.now(timezone.utc).isoformat(),
+                exit={"reason": kind, "stop_domain": "SPOT_INDEX", "event_at": stamp,
+                      "detected_at": datetime.now(timezone.utc).isoformat(),
                       "received_at": ambiguity.get("received_at"),
                       "index_price": trade["entry_price"], "exited_fraction": .5})
             source = (later_spot.get("candle_timestamp") if t1_entry_only and 'later_spot' in locals() and later_spot else None)
             self._capture_reference_leg(trade, "EXIT", trade["entry_price"], stamp,
                                         parse_candle_timestamp(source) if source else None)
+            # The reference close is also an executable index-guard stop for a
+            # confirmed v2 paper fill; the main monitor drains this durable intent.
+            self._mark_option_execution_route_pending(trade, kind)
             await self._record_trade_update(trade, trade["entry_price"], kind, stamp)
             return True
         trade["state"] = "T2_REACHED"

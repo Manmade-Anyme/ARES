@@ -129,6 +129,38 @@ async def test_same_batch_t2_and_premium_stop_quote_retain_ambiguity_and_route_p
 
 
 @pytest.mark.asyncio
+async def test_resolved_index_guard_ambiguity_persists_paper_exit_route_intent():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(accounting_formula_version="one_lot_reference_v1",
+               execution_status="CONFIRMED_PAPER_FILL")
+    start = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    opt["ambiguous_index_touch"] = {
+        "kind": "T2_ENTRY", "source_minute": start.isoformat(),
+        "event_at": (start + timedelta(minutes=1)).isoformat(),
+        "high": trade["target_2"], "low": trade["entry_price"],
+        "status": "ORDER_UNKNOWN",
+    }
+    ticks = [
+        {"observed_at": (start + timedelta(seconds=5)).isoformat(),
+         "price": trade["entry_price"], "source": "complete_tick_history"},
+        {"observed_at": (start + timedelta(seconds=20)).isoformat(),
+         "price": trade["target_2"], "source": "complete_tick_history"},
+    ]
+    pm = _manager(trade)
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        assert await pm.resolve_reference_ambiguity(trade["id"], ticks, complete=True)
+
+    assert trade["state"] == "CLOSED"
+    assert opt["ambiguity_resolution"]["outcome"] == "STOPPED_OUT_AT_BE"
+    assert opt["exit"]["reason"] == "STOPPED_OUT_AT_BE"
+    assert opt["exit"]["stop_domain"] == "SPOT_INDEX"
+    assert opt["execution_route_pending"] is True
+    assert opt["execution_route_reason"] == "STOPPED_OUT_AT_BE"
+
+
+@pytest.mark.asyncio
 async def test_earlier_queued_t2_is_replayed_before_premium_exit_finalizes_reference():
     trade = _trade(phase="POST_T1")
     opt = trade["market_context"]["option_trailing"]

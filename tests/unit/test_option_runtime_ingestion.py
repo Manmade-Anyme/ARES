@@ -204,6 +204,26 @@ async def test_v2_terminal_premium_or_index_stop_event_is_routed_to_execution_di
 
 
 @pytest.mark.asyncio
+async def test_resolved_v2_index_guard_exit_is_routed_from_durable_pending_marker():
+    import main
+    now = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    reason = "STOPPED_OUT_AT_BE"
+    trade = {"id": "v2-trade", "state": "CLOSED", "market_context": {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "highest_milestone": 1,
+        "exit": {"reason": reason, "stop_domain": "SPOT_INDEX"},
+        "execution_route_pending": True, "execution_route_reason": reason,
+    }}}
+    positions = SimpleNamespace(active_trades=[trade], update_atr_trailing=AsyncMock(),
+                                update_option_market_events=AsyncMock(return_value=[]),
+                                mark_option_quote_unavailable=AsyncMock())
+    dispatcher = SimpleNamespace(on_candles=AsyncMock(), on_option_stop=AsyncMock())
+
+    await main._monitor_completed_atr([], positions, dispatcher, current_time=now)
+
+    dispatcher.on_option_stop.assert_awaited_once_with(trade, reason)
+
+
+@pytest.mark.asyncio
 async def test_v2_deferred_premium_stop_is_routed_while_index_ambiguity_is_open():
     import main
     now = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
