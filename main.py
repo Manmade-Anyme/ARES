@@ -752,7 +752,9 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                         for trade_id, reason in events:
                             trade = terminal_by_id.get(str(trade_id))
                             option = ((trade or {}).get("market_context") or {}).get("option_trailing") or {}
-                            exit_state = option.get("exit") or {}
+                            exit_state = (option.get("exit")
+                                          or (option.get("ambiguous_index_touch") or {}).get("protective_option_exit")
+                                          or {})
                             stop_domain = exit_state.get("stop_domain")
                             index_stop = (stop_domain == "SPOT_INDEX"
                                           and ((reason == "STOPPED_OUT_AT_BE"

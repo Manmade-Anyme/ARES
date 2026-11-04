@@ -62,6 +62,7 @@ Current source also gates `option_trailing` enrollment on option-ATR configurati
 - Duplicate or concurrent events cannot duplicate terminal closure or reopen a closed trade.
 - A gap through a stop records the stop trigger separately from observed/reference price and actual fill.
 - T1/stop source chronology is respected without lookahead; unresolved candle ordering remains explicitly unknown.
+- If a premium stop triggers while an earlier index T2/entry-guard candle is unresolved, retain the first premium trigger and route its execution intent, but keep the reference lifecycle open and ambiguous until certified ordered evidence establishes which event came first. Finalize milestone booking, exit fraction, stop status, and reference accounting only after that ordering is resolved.
 - Option-tracked trades cannot silently fall back to the spot-ATR monitor when ATR is disabled, unavailable, or unapproved.
 - Tests and local lifecycle/replay/persistence checks exercise the actual application path with external order execution disabled. No test, replay, or screenshot is represented as a confirmed broker fill.
 - For #2455 and #4176, report the verified old-path timeline and the limits caused by absent premium history; do not manufacture a corrected historical exit time.

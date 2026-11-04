@@ -69,6 +69,8 @@ T1 and T2 remain spot/index milestones. Preserve existing suggested sizing, mode
 
 Merge source-timestamped spot observations, option-premium observations, and completed option bars in chronological order. At same-minute boundaries, do not assume T1 preceded a stop breach. Preserve unresolved event ordering as ambiguous until source timestamps or finer-grained data resolve it. Deduplicate events by durable event identity so retries/restarts cannot double-close or reopen a trade.
 
+When an option-premium stop triggers while an earlier index T2/entry-guard candle is unresolved, persist the first protective premium event on that ambiguity record and route its paper execution intent without closing the reference lifecycle. Keep the trade in its active post-T1 state until certified ordered index evidence resolves the earlier candle. Then book T2 first and apply the premium exit to the remaining reference fraction if T2 was first; if the entry guard was first, finalize the break-even index exit. If the premium trigger itself predates the first ordered index touch, finalize the premium exit first. Preserve the original quote/bar provenance and do not re-use later observations to rewrite the first protective trigger.
+
 ## 3. Premium Quote Source and Failure Policy
 
 Current evidence establishes that the option candle path can fetch candles for a pinned security ID (`main._monitor_completed_atr`) and that `price_fetcher.fetch_option_observation(contract)` exists in the selected-option quote flow. The latter currently services a selected dashboard contract, not every active trade. `quote_service` persists `OPTION:SELECTED`, so that global selected quote must not be treated as per-trade protection.

@@ -1861,9 +1861,18 @@ class PositionManager:
                 decision = ("T2_HIT" if touches_t2 else "STOPPED_OUT_AT_BE", spot_at)
             else:
                 decision = ("T1_ONLY", end)
+        protective = ambiguity.get("protective_option_exit")
+        if protective and decision[0] in {"T2_HIT", "STOPPED_OUT_AT_BE"}:
+            try:
+                protective_at = parse_candle_timestamp(protective["event_at"])
+            except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                return False
+            if protective_at == decision[1]:
+                return False
+            if protective_at < decision[1]:
+                decision = ("OPTION_EXIT", protective_at)
         kind, at = decision
         stamp = __import__("storage").to_utc_iso(at)
-        protective = ambiguity.get("protective_option_exit")
         opt["ambiguity_resolution"] = {"source_minute": ambiguity["source_minute"],
             "event_at": stamp, "outcome": kind, "evidence_source": observations[0]["source"]}
         # The SQL transition merges JSONB objects. An explicit JSON null is
@@ -1875,14 +1884,7 @@ class PositionManager:
         if t1_entry_only:
             opt["pending_index_observations"] = []
         if kind == "OPTION_EXIT":
-            opt.update(phase="CLOSED", remaining_fraction=0.0, index_guard_enabled=False,
-                exit={"reason": protective["reason"], "event_at": protective["event_at"],
-                      "option_close": protective["option_close"], "option_stop": protective["option_stop"],
-                      "exited_fraction": .5})
-            trade["state"] = "CLOSED"
-            self._capture_reference_leg(trade, "EXIT", None, protective["event_at"], option_close=protective["option_close"])
-            spot = opt["accounting"]["legs"]["EXIT"].get("spot_price")
-            opt["exit"]["index_price"] = spot
+            spot = self._finalize_protective_option_exit(trade, protective, exited_fraction=.5)
             await self._record_trade_update(trade, spot, protective["reason"], protective["event_at"])
             return True
         if kind == "STOPPED_OUT_AT_BE":
@@ -1907,17 +1909,51 @@ class PositionManager:
                                     parse_candle_timestamp(source) if source else None)
         await self._record_trade_update(trade, trade["target_2"], kind, stamp)
         if protective:
-            exit_stamp = protective["event_at"]
-            opt.update(phase="CLOSED", remaining_fraction=0.0, index_guard_enabled=False,
-                exit={"reason": protective["reason"], "event_at": exit_stamp,
-                      "option_close": protective["option_close"], "option_stop": protective["option_stop"],
-                      "exited_fraction": .2})
-            trade["state"] = "CLOSED"
-            self._capture_reference_leg(trade, "EXIT", None, exit_stamp, option_close=protective["option_close"])
-            spot = opt["accounting"]["legs"]["EXIT"].get("spot_price")
-            opt["exit"]["index_price"] = spot
-            await self._record_trade_update(trade, spot, protective["reason"], exit_stamp)
+            spot = self._finalize_protective_option_exit(trade, protective, exited_fraction=.2)
+            await self._record_trade_update(trade, spot, protective["reason"], protective["event_at"])
         return True
+
+    def _finalize_protective_option_exit(self, trade, protective, *, exited_fraction):
+        """Finalize a deferred premium exit after earlier index ordering is known."""
+        opt = trade["market_context"]["option_trailing"]
+        reason = protective["reason"]
+        price = float(protective["option_close"])
+        event_at = protective["event_at"]
+        stop = protective.get("effective_stop", protective.get("option_stop"))
+        stop_source = protective.get("stop_source") or (
+            "ATR_TRAILING" if reason == "ATR_SL_HIT" else
+            "BREAK_EVEN_COST" if reason == "STOPPED_OUT_AT_BE" else "INITIAL_OPTION_SL")
+        source = protective.get("source") or protective.get("trigger_source") or "completed_5m_option_close"
+        opt.update(phase="CLOSED", remaining_fraction=0.0, index_guard_enabled=False,
+                   monitoring_status="CLOSED")
+        opt["exit_trigger"] = {
+            "domain": "OPTION_PREMIUM", "source": source, "event_at": event_at,
+            "received_at": protective.get("received_at"), "price": price,
+            "effective_stop": stop, "stop_source": stop_source, "reason": reason,
+        }
+        opt["execution_status"] = ("REFERENCE_TRIGGERED_NO_BROKER_FILL"
+                                    if opt.get("execution_status") == "REFERENCE_ONLY"
+                                    else "EXIT_TRIGGERED_PENDING_CONFIRMATION")
+        runner_points = round(price - float(opt["original_option_entry"]), 8)
+        opt["exit"] = {
+            "reason": reason, "stop_domain": "OPTION_PREMIUM", "event_at": event_at,
+            "detected_at": protective.get("detected_at") or datetime.now(timezone.utc).isoformat(),
+            "received_at": protective.get("received_at"), "option_close": price,
+            "reference_exit_price": price, "option_stop": stop, "stop_source": stop_source,
+            "trigger_source": source, "trigger_price": protective.get("trigger_price", price),
+            "exited_fraction": exited_fraction,
+            "runner_option_points": 0.0 if reason == "STOPPED_OUT_AT_BE" else runner_points,
+            "fill_price": None,
+        }
+        trade["state"] = "CLOSED"
+        if opt.get("accounting_formula_version") == "one_lot_reference_v1":
+            self._capture_reference_leg(trade, "EXIT", None, event_at, option_close=price)
+            leg = opt["accounting"]["legs"]["EXIT"]
+            leg.update(option_source=source, option_observed_at=event_at, option_approximate=False,
+                       trigger_price=opt["exit"]["trigger_price"], effective_stop=stop,
+                       stop_source=stop_source)
+            opt["exit"]["index_price"] = leg.get("spot_price")
+        return opt.get("exit", {}).get("index_price")
 
     @staticmethod
     def _weighted_option_index_pnl(trade, exit_price):
@@ -2419,6 +2455,41 @@ class PositionManager:
             "price": float(price), "effective_stop": stop,
             "stop_source": stop_source, "reason": reason,
         }
+        ambiguity = opt.get("ambiguous_index_touch")
+        if ambiguity:
+            pending_exit = {
+                "reason": reason, "stop_domain": "OPTION_PREMIUM", "source": source,
+                "event_at": observed_at, "received_at": received_at,
+                "option_close": float(price), "option_stop": stop, "effective_stop": stop,
+                "stop_source": stop_source, "trigger_source": source,
+                "trigger_price": float(price),
+            }
+            # The first observed stop trigger is immutable; later quotes cannot
+            # move its event time or price while index ordering is unresolved.
+            already_pending = ambiguity.get("protective_option_exit") is not None
+            pending_exit = ambiguity.setdefault("protective_option_exit", pending_exit)
+            for key, value in {
+                "stop_domain": "OPTION_PREMIUM", "source": source,
+                "received_at": received_at, "option_close": float(price),
+                "option_stop": stop, "effective_stop": stop,
+                "stop_source": stop_source, "trigger_source": source,
+                "trigger_price": float(price),
+            }.items():
+                pending_exit.setdefault(key, value)
+            opt["exit_trigger"] = {
+                "domain": "OPTION_PREMIUM", "source": pending_exit.get("source"),
+                "event_at": pending_exit["event_at"], "received_at": pending_exit.get("received_at"),
+                "price": pending_exit["option_close"],
+                "effective_stop": pending_exit.get("effective_stop", pending_exit.get("option_stop")),
+                "stop_source": pending_exit.get("stop_source"), "reason": pending_exit["reason"],
+            }
+            opt["execution_status"] = ("REFERENCE_TRIGGERED_NO_BROKER_FILL"
+                                        if opt.get("execution_status") == "REFERENCE_ONLY"
+                                        else "EXIT_TRIGGERED_PENDING_CONFIRMATION")
+            if not already_pending:
+                opt.setdefault("event_history", []).append(dict(opt["exit_trigger"]))
+            await self._record_trade_update(trade, None, None, pending_exit["event_at"])
+            return pending_exit["reason"]
         opt["exit_trigger"] = trigger
         opt["execution_status"] = ("REFERENCE_TRIGGERED_NO_BROKER_FILL"
                                     if opt.get("execution_status") == "REFERENCE_ONLY"

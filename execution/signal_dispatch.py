@@ -81,7 +81,9 @@ class SignalDispatcher:
         trade_signal = str(trade.get("signal_uuid") or trade.get("signal_id") or "")
         option = ((trade.get("market_context") or {}).get("option_trailing") or {})
         contract = option.get("contract") or {}
-        exit_state = option.get("exit") or {}
+        exit_state = (option.get("exit")
+                      or (option.get("ambiguous_index_touch") or {}).get("protective_option_exit")
+                      or {})
         stop_domain = exit_state.get("stop_domain")
         index_break_even = (stop_domain == "SPOT_INDEX" and reason == "STOPPED_OUT_AT_BE"
                             and option.get("highest_milestone") == 1)
