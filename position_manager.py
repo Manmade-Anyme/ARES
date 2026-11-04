@@ -2526,7 +2526,17 @@ class PositionManager:
         if not effective_value or observed_at >= parse_candle_timestamp(effective_value):
             return False
         detail = "Rejected out-of-order option quote before active stop effective time"
-        if opt.get("monitoring_status") != "UNAVAILABLE" or opt.get("monitoring_detail") != detail:
+        if opt.get("policy_version") == "option_premium_protection_v2":
+            before = (opt.get("monitoring_status"), list(opt.get("monitoring_unavailable_sources") or []),
+                      dict(opt.get("monitoring_unavailable_details") or {}))
+            previous, current = self._set_option_monitoring_health(
+                opt, "OPTION_QUOTE", unavailable=True, detail=detail)
+            changed = before != (current, opt.get("monitoring_unavailable_sources"),
+                                 opt.get("monitoring_unavailable_details"))
+            if changed:
+                update = "MONITORING_UNAVAILABLE" if previous != "UNAVAILABLE" and current == "UNAVAILABLE" else None
+                await self._record_trade_update(trade, None, update, received_at.isoformat())
+        elif opt.get("monitoring_status") != "UNAVAILABLE" or opt.get("monitoring_detail") != detail:
             opt["monitoring_status"] = "UNAVAILABLE"
             opt["monitoring_detail"] = detail
             await self._record_trade_update(trade, None, "MONITORING_UNAVAILABLE", received_at.isoformat())
@@ -2605,13 +2615,19 @@ class PositionManager:
                 if active_stop is None:
                     continue
                 opt["quote_watermark"] = observed_at.isoformat()
-                restored = opt.get("monitoring_status") == "UNAVAILABLE"
+                previous_monitoring = opt.get("monitoring_status", "ACTIVE")
                 opt["last_option_quote"] = {
                     "price": price, "observed_at": observed_at.isoformat(),
                     "received_at": received_at.isoformat(), "source": quote.get("source"),
                 }
-                opt["monitoring_status"] = "ACTIVE"
-                opt["monitoring_detail"] = None
+                if opt.get("policy_version") == "option_premium_protection_v2":
+                    _, current_monitoring = self._set_option_monitoring_health(
+                        opt, "OPTION_QUOTE", unavailable=False)
+                else:
+                    opt["monitoring_status"] = "ACTIVE"
+                    opt["monitoring_detail"] = None
+                    current_monitoring = "ACTIVE"
+                restored = previous_monitoring == "UNAVAILABLE" and current_monitoring == "ACTIVE"
                 if phase == "PRE_T1" and price <= float(opt["original_option_sl"]):
                     reason = await self._close_option_premium_trade(
                         trade, price, observed_at, source=quote.get("source") or "OPTION_QUOTE",
@@ -2630,6 +2646,33 @@ class PositionManager:
                         trade, None, "MONITORING_RESTORED" if restored else None, observed_at.isoformat())
         return events
 
+    @staticmethod
+    def _set_option_monitoring_health(opt, source, *, unavailable, detail=None):
+        """Combine quote and ATR-history health without allowing either to mask the other."""
+        previous = opt.get("monitoring_status", "ACTIVE")
+        sources = list(dict.fromkeys(opt.get("monitoring_unavailable_sources") or []))
+        details = dict(opt.get("monitoring_unavailable_details") or {})
+        if previous == "UNAVAILABLE" and not sources:
+            sources.append("UNCLASSIFIED")
+            details["UNCLASSIFIED"] = opt.get("monitoring_detail") or "Previous monitoring outage"
+        if unavailable:
+            if source not in sources:
+                sources.append(source)
+            details[source] = str(detail or f"{source} unavailable")[:240]
+        else:
+            sources = [item for item in sources if item != source]
+            details.pop(source, None)
+            if source == "OPTION_QUOTE":
+                # A fresh quote is the only evidence that can clear an older
+                # unclassified outage persisted before source tracking existed.
+                sources = [item for item in sources if item != "UNCLASSIFIED"]
+                details.pop("UNCLASSIFIED", None)
+        opt["monitoring_unavailable_sources"] = sources
+        opt["monitoring_unavailable_details"] = details
+        opt["monitoring_status"] = "UNAVAILABLE" if sources else "ACTIVE"
+        opt["monitoring_detail"] = "; ".join(details[key] for key in sources if details.get(key)) or None
+        return previous, opt["monitoring_status"]
+
     async def mark_option_quote_unavailable(self, contracts, detail, observed_at=None):
         """Persist a visible quote-monitoring gap while retaining each active stop."""
         stamp = parse_candle_timestamp(observed_at or datetime.now(timezone.utc)).isoformat()
@@ -2639,12 +2682,17 @@ class PositionManager:
             contract = opt.get("contract") or {}
             if (opt.get("policy_version") != "option_premium_protection_v2"
                     or trade.get("state") in {"CLOSED", "STOPPED_OUT"}
-                    or str(contract.get("security_id")) not in requested
-                    or opt.get("monitoring_status") == "UNAVAILABLE"):
+                    or str(contract.get("security_id")) not in requested):
                 continue
-            opt["monitoring_status"] = "UNAVAILABLE"
-            opt["monitoring_detail"] = str(detail)[:240]
-            await self._record_trade_update(trade, None, "MONITORING_UNAVAILABLE", stamp)
+            previous_sources = list(opt.get("monitoring_unavailable_sources") or [])
+            previous_details = dict(opt.get("monitoring_unavailable_details") or {})
+            if ("OPTION_QUOTE" in previous_sources
+                    and previous_details.get("OPTION_QUOTE") == str(detail)[:240]):
+                continue
+            previous, current = self._set_option_monitoring_health(
+                opt, "OPTION_QUOTE", unavailable=True, detail=detail)
+            update = "MONITORING_UNAVAILABLE" if previous != "UNAVAILABLE" and current == "UNAVAILABLE" else None
+            await self._record_trade_update(trade, None, update, stamp)
 
     async def update_option_atr_trailing(self, candles, current_time=None, *, _check_monitoring=True):
         """Process native completed premium bars; old stop is checked before a raise."""
@@ -2740,14 +2788,38 @@ class PositionManager:
             expected = expected_completed_option_bar_end(now)
             valid = parse_candle_timestamp(bars[-1].end_time) if bars else None
             unavailable = expected is not None and expected.date() in self._option_confirmed_sessions and now > expected + timedelta(seconds=60) and (valid is None or valid < expected)
-            status = opt.get("monitoring_status", "ACTIVE")
-            if unavailable and status != "UNAVAILABLE":
-                opt["monitoring_status"] = "UNAVAILABLE"
-                opt["monitoring_detail"] = "Missing, invalid, stale, or discontinuous pinned option history; stop retained"
-                await self._record_trade_update(trade, None, "MONITORING_UNAVAILABLE", now.isoformat())
-            elif not unavailable and valid is not None and expected is not None and valid >= expected and status == "UNAVAILABLE":
-                opt["monitoring_status"] = "RESTORED"
-                await self._record_trade_update(trade, None, "MONITORING_RESTORED", now.isoformat())
+            if v2:
+                previous_sources = list(opt.get("monitoring_unavailable_sources") or [])
+                previous_details = dict(opt.get("monitoring_unavailable_details") or {})
+                recovered = (not unavailable and valid is not None and expected is not None and valid >= expected)
+                if unavailable:
+                    previous, current = self._set_option_monitoring_health(
+                        opt, "OPTION_HISTORY", unavailable=True,
+                        detail="Missing, invalid, stale, or discontinuous pinned option history; stop retained")
+                elif recovered:
+                    previous, current = self._set_option_monitoring_health(
+                        opt, "OPTION_HISTORY", unavailable=False)
+                else:
+                    previous = current = opt.get("monitoring_status", "ACTIVE")
+                sources_changed = (previous_sources != opt.get("monitoring_unavailable_sources")
+                                   or previous_details != opt.get("monitoring_unavailable_details"))
+                if previous != "UNAVAILABLE" and current == "UNAVAILABLE":
+                    update = "MONITORING_UNAVAILABLE"
+                elif previous == "UNAVAILABLE" and current == "ACTIVE":
+                    update = "MONITORING_RESTORED"
+                else:
+                    update = None
+                if update or sources_changed:
+                    await self._record_trade_update(trade, None, update, now.isoformat())
+            else:
+                status = opt.get("monitoring_status", "ACTIVE")
+                if unavailable and status != "UNAVAILABLE":
+                    opt["monitoring_status"] = "UNAVAILABLE"
+                    opt["monitoring_detail"] = "Missing, invalid, stale, or discontinuous pinned option history; stop retained"
+                    await self._record_trade_update(trade, None, "MONITORING_UNAVAILABLE", now.isoformat())
+                elif not unavailable and valid is not None and expected is not None and valid >= expected and status == "UNAVAILABLE":
+                    opt["monitoring_status"] = "RESTORED"
+                    await self._record_trade_update(trade, None, "MONITORING_RESTORED", now.isoformat())
         return events
 
     async def update_option_market_events(self, index_candles, option_histories, current_time=None, *, index_ticks=None,

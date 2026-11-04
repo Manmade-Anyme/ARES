@@ -331,3 +331,56 @@ async def test_atr_disabled_quote_health_does_not_flap_for_missing_history():
         await pm.mark_option_quote_unavailable({'39961': opt['contract']}, 'provider failed', at)
         await pm.update_option_market_events([], {}, current_time=at)
         assert opt['monitoring_status'] == 'UNAVAILABLE'
+
+
+@pytest.mark.asyncio
+async def test_healthy_atr_history_does_not_restore_an_unavailable_quote_monitor():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt["atr_enabled"] = True
+    pm = _manager(trade)
+    now = datetime(2026, 11, 4, 10, 30, 1, tzinfo=IST)
+    pm._option_confirmed_sessions = {now.date()}
+    bar = OptionCandle(now.replace(minute=25, second=0, microsecond=0),
+                       now.replace(second=0, microsecond=0), 180, 181, 179, 180, 1, "39961")
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.mark_option_quote_unavailable({"39961": opt["contract"]}, "provider failed", now)
+        await pm.update_option_atr_trailing({"39961": [bar]}, current_time=now)
+
+    assert opt["monitoring_status"] == "UNAVAILABLE"
+    assert opt["monitoring_unavailable_sources"] == ["OPTION_QUOTE"]
+    assert opt["monitoring_detail"] == "provider failed"
+    assert opt.get("last_option_quote") is None
+    assert [row.get("update_type") for row in pm.analytics.rows].count("MONITORING_UNAVAILABLE") == 1
+    assert not any(row.get("update_type") == "MONITORING_RESTORED" for row in pm.analytics.rows)
+
+    quote = _quote(180, 30)
+    quote.update(observed_at=now.isoformat(), received_at=now.isoformat())
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events([], {}, current_time=now, option_quotes=[quote])
+
+    assert opt["monitoring_status"] == "ACTIVE"
+    assert opt["monitoring_unavailable_sources"] == []
+    assert opt["last_option_quote"]["price"] == 180
+    assert [row.get("update_type") for row in pm.analytics.rows].count("MONITORING_RESTORED") == 1
+
+    later = now + timedelta(minutes=2)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_atr_trailing({}, current_time=later)
+    assert opt["monitoring_status"] == "UNAVAILABLE"
+    assert opt["monitoring_unavailable_sources"] == ["OPTION_HISTORY"]
+
+    quote = _quote(180, 32)
+    quote.update(observed_at=later.isoformat(), received_at=later.isoformat())
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events([], {}, current_time=later, option_quotes=[quote])
+    assert opt["monitoring_status"] == "UNAVAILABLE"
+    assert opt["monitoring_unavailable_sources"] == ["OPTION_HISTORY"]
+    assert [row.get("update_type") for row in pm.analytics.rows].count("MONITORING_RESTORED") == 1
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_atr_trailing({"39961": [bar]}, current_time=later + timedelta(seconds=1))
+    assert opt["monitoring_status"] == "ACTIVE"
+    assert opt["monitoring_unavailable_sources"] == []
+    assert [row.get("update_type") for row in pm.analytics.rows].count("MONITORING_RESTORED") == 2
