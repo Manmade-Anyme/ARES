@@ -1,0 +1,332 @@
+-- TASK-20261104: versioned option-premium stop protection.
+-- Idempotent function replacement only. No existing trade is enrolled or rewritten.
+-- ATR calculation remains governed by option_atr_enabled and the approved option_atr_v1 gate.
+--
+-- Read-only rollout preview for operator review before any separate backfill:
+-- SELECT id, state, market_context->'options_sizing' AS option_bracket,
+--        market_context->'option_trailing' AS current_protection
+-- FROM public.active_trades
+-- WHERE state NOT IN ('CLOSED', 'STOPPED_OUT')
+--   AND market_context->'options_sizing' IS NOT NULL
+-- ORDER BY id;
+-- This migration intentionally performs no row enrollment, retrofit, or historical correction.
+
+CREATE OR REPLACE FUNCTION public.sync_option_reference_ml_label(p_trade_id uuid)
+RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+DECLARE
+    v_active public.active_trades%ROWTYPE;
+    v_analytics public.trade_analytics%ROWTYPE;
+    v_option jsonb;
+    v_signal_uuid text;
+    v_signal_id text;
+    v_count integer;
+BEGIN
+    SELECT * INTO STRICT v_active FROM public.active_trades WHERE id = p_trade_id FOR UPDATE;
+    SELECT * INTO STRICT v_analytics FROM public.trade_analytics WHERE id = p_trade_id FOR UPDATE;
+    v_option := v_analytics.market_context->'option_trailing';
+    IF v_active.state NOT IN ('CLOSED', 'STOPPED_OUT')
+       OR v_analytics.result_state IS NULL OR v_analytics.result_state = 'OPEN'
+       OR v_option->>'phase' IS DISTINCT FROM 'CLOSED'
+       OR COALESCE(v_option->>'policy_version', '') NOT IN ('option_atr_v1', 'option_premium_protection_v2')
+       OR v_option->>'accounting_formula_version' IS DISTINCT FROM 'one_lot_reference_v1' THEN
+        RAISE EXCEPTION 'ML label sync requires a closed one-lot reference trade';
+    END IF;
+    v_signal_uuid := COALESCE(pg_catalog.to_jsonb(v_analytics)->>'signal_uuid',
+                              pg_catalog.to_jsonb(v_active)->>'signal_uuid');
+    v_signal_id := COALESCE(pg_catalog.to_jsonb(v_analytics)->>'signal_id',
+                            pg_catalog.to_jsonb(v_active)->>'signal_id');
+    UPDATE public.ml_collection AS m SET
+        trade_outcome = COALESCE(m.trade_outcome, v_analytics.result_state),
+        trade_score = COALESCE(m.trade_score, v_analytics.score),
+        trade_pnl = COALESCE(m.trade_pnl, v_analytics.pnl_points)
+    WHERE m.trade_id::text = p_trade_id::text
+      AND CASE WHEN v_signal_uuid IS NOT NULL THEN pg_catalog.to_jsonb(m)->>'signal_uuid' = v_signal_uuid
+               WHEN v_signal_id IS NOT NULL THEN pg_catalog.to_jsonb(m)->>'signal_id' = v_signal_id
+               ELSE true END
+      AND (m.trade_outcome IS NULL OR m.trade_outcome = v_analytics.result_state)
+      AND (m.trade_score IS NULL OR m.trade_score = v_analytics.score)
+      AND (m.trade_pnl IS NULL OR (v_analytics.pnl_points IS NOT NULL AND m.trade_pnl = v_analytics.pnl_points))
+      AND (m.trade_outcome IS NULL OR m.trade_score IS NULL
+           OR (m.trade_pnl IS NULL AND v_analytics.pnl_points IS NOT NULL));
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN pg_catalog.jsonb_build_object('success', true, 'matched', v_count);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.apply_option_lifecycle_transition(
+    p_trade_id uuid, p_expected_revision integer, p_event_id text, p_transition jsonb
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = ''
+AS $$
+DECLARE
+    v_active public.active_trades%ROWTYPE;
+    v_analytics public.trade_analytics%ROWTYPE;
+    v_context jsonb;
+    v_old jsonb;
+    v_option jsonb;
+    v_events jsonb;
+    v_rev integer;
+    v_highest integer;
+    v_remaining numeric;
+    v_phase text;
+    v_state text;
+    v_score integer;
+    v_result text;
+    v_now timestamptz := pg_catalog.clock_timestamp();
+    v_old_accounting jsonb;
+    v_new_accounting jsonb;
+    v_merged_legs jsonb;
+    v_merged_leg jsonb;
+    v_incoming_leg jsonb;
+    v_leg_name text;
+    v_field text;
+    v_value jsonb;
+BEGIN
+    IF p_expected_revision IS NULL OR p_expected_revision < 1
+       OR p_event_id IS NULL OR pg_catalog.btrim(p_event_id) = ''
+       OR pg_catalog.jsonb_typeof(p_transition) IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION 'A positive expected revision, stable event id and object transition are required';
+    END IF;
+
+    -- Same lock order for every lifecycle writer. An absent row is an error,
+    -- never permission to advance only the other half of the ledger.
+    SELECT * INTO STRICT v_active FROM public.active_trades WHERE id = p_trade_id FOR UPDATE;
+    SELECT * INTO STRICT v_analytics FROM public.trade_analytics WHERE id = p_trade_id FOR UPDATE;
+    v_context := COALESCE(v_analytics.market_context, '{}'::jsonb);
+    v_old := COALESCE(v_context->'option_trailing', '{}'::jsonb);
+    IF COALESCE(v_old->>'policy_version', '') NOT IN ('option_atr_v1', 'option_premium_protection_v2') THEN
+        RAISE EXCEPTION 'Trade % is not enrolled in a supported option lifecycle policy', p_trade_id;
+    END IF;
+    v_rev := COALESCE((v_old->>'revision')::integer, 1);
+    v_events := COALESCE(v_old->'alert_events', '{}'::jsonb);
+    -- A replay can carry the old revision after a successful commit whose
+    -- response was lost. Its immutable event identity makes that safe.
+    IF v_events ? p_event_id OR v_old->>'last_non_alert_event_id' = p_event_id THEN
+        RETURN pg_catalog.jsonb_build_object('success', true, 'idempotent_skip', true,
+            'trade_id', p_trade_id, 'revision', v_rev, 'option_trailing', v_old,
+            'active_state', v_active.state, 'result_state', v_analytics.result_state,
+            'score', v_analytics.score);
+    END IF;
+    IF v_rev <> p_expected_revision THEN
+        RAISE EXCEPTION 'Revision conflict: expected %, found %', p_expected_revision, v_rev
+            USING ERRCODE = '40001';
+    END IF;
+    IF v_active.state IN ('CLOSED', 'STOPPED_OUT')
+       OR v_analytics.result_state IS DISTINCT FROM 'OPEN'
+       OR v_old->>'phase' = 'CLOSED' THEN
+        RAISE EXCEPTION 'Terminal trade cannot receive a new lifecycle transition';
+    END IF;
+    IF pg_catalog.jsonb_typeof(p_transition->'option_trailing') IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION 'Canonical option state is required';
+    END IF;
+    v_option := v_old || (p_transition->'option_trailing');
+    -- Client snapshots must not erase acknowledgements committed meanwhile.
+    v_option := pg_catalog.jsonb_set(v_option, '{alert_events}', v_events);
+    IF v_option->>'policy_version' IS DISTINCT FROM v_old->>'policy_version'
+       OR v_option->'contract' IS DISTINCT FROM v_old->'contract'
+       OR v_option->>'original_option_sl' IS DISTINCT FROM v_old->>'original_option_sl'
+       OR v_option->>'original_option_entry' IS DISTINCT FROM v_old->>'original_option_entry'
+       OR v_option->>'entry_premium_basis_source' IS DISTINCT FROM v_old->>'entry_premium_basis_source'
+       OR v_option->>'entry_premium_basis_at' IS DISTINCT FROM v_old->>'entry_premium_basis_at' THEN
+        RAISE EXCEPTION 'Pinned contract and original premium bracket are immutable';
+    END IF;
+    -- Legacy contexts may serialize a previously absent optional key as null.
+    IF v_option->>'accounting_formula_version' IS DISTINCT FROM v_old->>'accounting_formula_version' THEN
+        RAISE EXCEPTION 'Accounting formula version is immutable';
+    END IF;
+    IF v_old->>'accounting_formula_version' = 'one_lot_reference_v1' THEN
+        v_old_accounting := COALESCE(v_old->'accounting', '{}'::jsonb);
+        v_new_accounting := COALESCE(v_option->'accounting', '{}'::jsonb);
+        IF pg_catalog.jsonb_typeof(v_old_accounting) IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(v_new_accounting) IS DISTINCT FROM 'object'
+           OR (v_new_accounting ? 'legs' AND pg_catalog.jsonb_typeof(v_new_accounting->'legs') IS DISTINCT FROM 'object')
+           OR (v_old_accounting ? 'legs' AND pg_catalog.jsonb_typeof(v_old_accounting->'legs') IS DISTINCT FROM 'object') THEN
+            RAISE EXCEPTION 'Accounting and leg snapshots must be objects';
+        END IF;
+        v_merged_legs := COALESCE(v_old_accounting->'legs', '{}'::jsonb);
+        FOR v_leg_name, v_incoming_leg IN SELECT * FROM pg_catalog.jsonb_each(
+            COALESCE(v_new_accounting->'legs', '{}'::jsonb)) LOOP
+            IF v_leg_name NOT IN ('T1', 'T2', 'EXIT')
+               OR pg_catalog.jsonb_typeof(v_incoming_leg) IS DISTINCT FROM 'object' THEN
+                RAISE EXCEPTION 'Invalid accounting leg %', v_leg_name;
+            END IF;
+            v_merged_leg := COALESCE(v_merged_legs->v_leg_name, '{}'::jsonb);
+            FOR v_field, v_value IN SELECT * FROM pg_catalog.jsonb_each(v_incoming_leg) LOOP
+                IF v_value = 'null'::jsonb THEN CONTINUE; END IF;
+                IF v_merged_leg->v_field IS NOT NULL AND v_merged_leg->v_field <> 'null'::jsonb
+                   AND v_merged_leg->v_field IS DISTINCT FROM v_value THEN
+                    RAISE EXCEPTION 'Cannot overwrite existing accounting evidence %.%', v_leg_name, v_field;
+                END IF;
+                v_merged_leg := pg_catalog.jsonb_set(v_merged_leg, ARRAY[v_field], v_value, true);
+            END LOOP;
+            v_merged_legs := pg_catalog.jsonb_set(v_merged_legs, ARRAY[v_leg_name], v_merged_leg, true);
+        END LOOP;
+        v_new_accounting := v_old_accounting || v_new_accounting;
+        v_new_accounting := pg_catalog.jsonb_set(v_new_accounting, '{legs}', v_merged_legs, true);
+        -- An old same-milestone snapshot may not know a booked total already
+        -- derived from canonical evidence; do not erase it with null.
+        IF (v_option->>'highest_milestone')::integer = (v_old->>'highest_milestone')::integer THEN
+            FOR v_field IN SELECT pg_catalog.unnest(ARRAY['spot_booked_points', 'option_booked_points']) LOOP
+                IF v_new_accounting->>v_field IS NULL AND v_old_accounting->>v_field IS NOT NULL THEN
+                    v_new_accounting := pg_catalog.jsonb_set(v_new_accounting, ARRAY[v_field], v_old_accounting->v_field, true);
+                END IF;
+            END LOOP;
+        END IF;
+        v_option := pg_catalog.jsonb_set(v_option, '{accounting}', v_new_accounting, true);
+    END IF;
+    v_highest := (v_option->>'highest_milestone')::integer;
+    v_remaining := (v_option->>'remaining_fraction')::numeric;
+    v_phase := v_option->>'phase';
+    v_state := p_transition->>'active_state';
+    IF v_phase IS NULL OR v_state IS NULL OR v_highest IS NULL OR v_highest NOT BETWEEN 0 AND 2
+       OR v_highest < COALESCE((v_old->>'highest_milestone')::integer, 0)
+       OR v_remaining IS NULL OR v_remaining NOT BETWEEN 0 AND 1
+       OR v_remaining > COALESCE((v_old->>'remaining_fraction')::numeric, 1)
+       OR NOT ((v_phase = 'PRE_T1' AND v_highest = 0 AND v_remaining = 1 AND v_state = 'OPEN')
+           OR (v_phase = 'POST_T1' AND v_highest = 1 AND v_remaining = .5 AND v_state = 'T1_HIT')
+           OR (v_phase = 'POST_T2' AND v_highest = 2 AND v_remaining = .2 AND v_state = 'T2_REACHED')
+           OR (v_phase = 'CLOSED' AND v_remaining = 0 AND v_state = 'CLOSED')) THEN
+        RAISE EXCEPTION 'Invalid lifecycle phase, milestone or allocation';
+    END IF;
+    IF (v_old->>'locked_option_sl') IS NOT NULL AND
+       ((v_option->>'locked_option_sl') IS NULL OR
+        (v_option->>'locked_option_sl')::numeric < (v_old->>'locked_option_sl')::numeric) THEN
+        RAISE EXCEPTION 'Locked premium stop cannot decrease';
+    END IF;
+    IF (v_option->>'locked_option_sl') IS NOT NULL AND
+       (v_option->>'locked_option_sl')::numeric < (v_old->>'original_option_sl')::numeric THEN
+        RAISE EXCEPTION 'Locked premium stop cannot be below the original floor';
+    END IF;
+    IF v_old->>'policy_version' = 'option_premium_protection_v2' THEN
+        IF v_highest >= 1 AND (v_option->>'locked_option_sl')::numeric < (v_option->>'original_option_entry')::numeric THEN
+            RAISE EXCEPTION 'Post-T1 premium stop cannot be below entry cost';
+        END IF;
+        IF v_option->>'premium_stop_source' = 'BREAK_EVEN_COST'
+           AND (v_option->>'locked_option_sl')::numeric <> (v_option->>'original_option_entry')::numeric THEN
+            RAISE EXCEPTION 'Break-even stop source must equal the entry premium basis';
+        END IF;
+        IF v_option->>'premium_stop_source' = 'ATR_TRAILING'
+           AND (v_option->>'locked_option_sl')::numeric <= (v_option->>'original_option_entry')::numeric THEN
+            RAISE EXCEPTION 'ATR stop must be strictly above the entry premium basis';
+        END IF;
+        IF v_old->>'quote_watermark' IS NOT NULL AND
+           (v_option->>'quote_watermark' IS NULL OR
+            (v_option->>'quote_watermark')::timestamptz < (v_old->>'quote_watermark')::timestamptz) THEN
+            RAISE EXCEPTION 'Option quote watermark cannot move backward';
+        END IF;
+    END IF;
+    v_score := CASE WHEN v_highest = 0 AND v_remaining > 0 THEN NULL ELSE v_highest END;
+    IF (p_transition ? 'score') AND (p_transition->>'score')::integer IS DISTINCT FROM v_score THEN
+        RAISE EXCEPTION 'Score must equal canonical highest milestone';
+    END IF;
+    IF v_analytics.score IS NOT NULL AND (v_score IS NULL OR v_score < v_analytics.score) THEN
+        RAISE EXCEPTION 'Recorded milestone score cannot decrease';
+    END IF;
+    v_result := CASE WHEN v_remaining > 0 THEN 'OPEN' ELSE p_transition->>'exit_reason' END;
+    IF v_remaining = 0 AND (v_result IS NULL OR v_result NOT IN
+        ('SL_HIT', 'STOPPED_OUT', 'STOPPED_OUT_AT_BE', 'ATR_SL_HIT', 'OPTION_SL_FLOOR_HIT')) THEN
+        RAISE EXCEPTION 'A supported terminal exit reason is required';
+    END IF;
+    IF v_remaining = 0 AND (
+        (v_result IN ('SL_HIT', 'STOPPED_OUT') AND v_highest <> 0
+            AND NOT (v_old->>'policy_version' = 'option_premium_protection_v2'
+                     AND v_option #>> '{exit,stop_domain}' = 'OPTION_PREMIUM'
+                     AND v_option #>> '{exit,stop_source}' = 'INITIAL_OPTION_SL'))
+        OR (v_result = 'STOPPED_OUT_AT_BE' AND
+            CASE WHEN v_old->>'policy_version' = 'option_premium_protection_v2' THEN v_highest < 1 ELSE v_highest <> 1 END)
+        OR (v_result = 'ATR_SL_HIT' AND v_highest < 1)
+        OR (v_result = 'OPTION_SL_FLOOR_HIT' AND v_highest <> 2)) THEN
+        RAISE EXCEPTION 'Exit reason is inconsistent with highest milestone';
+    END IF;
+    IF v_remaining = 0 AND NULLIF(p_transition->>'exit_timestamp', '') IS NULL THEN
+        RAISE EXCEPTION 'A source event exit timestamp is required';
+    END IF;
+    IF v_remaining = 0 AND v_option->>'accounting_formula_version' = 'one_lot_reference_v1' THEN
+        IF p_transition->>'pnl_points' IS NOT NULL AND (
+            v_option #>> '{accounting,legs,EXIT,spot_price}' IS NULL
+            OR (v_highest >= 1 AND v_option #>> '{accounting,legs,T1,spot_price}' IS NULL)
+            OR (v_highest >= 2 AND v_option #>> '{accounting,legs,T2,spot_price}' IS NULL)) THEN
+            RAISE EXCEPTION 'Spot points require all applicable spot leg prices';
+        END IF;
+        IF p_transition->>'option_pnl_points' IS NOT NULL AND (
+            v_option->>'original_option_entry' IS NULL
+            OR v_option #>> '{accounting,legs,EXIT,option_price}' IS NULL
+            OR (v_highest >= 1 AND v_option #>> '{accounting,legs,T1,option_price}' IS NULL)
+            OR (v_highest >= 2 AND v_option #>> '{accounting,legs,T2,option_price}' IS NULL)) THEN
+            RAISE EXCEPTION 'Option points require the entry and all applicable option leg prices';
+        END IF;
+    END IF;
+
+    -- Only deliverable snapshots belong in the outbox. Silent source-watermark
+    -- writes still need bounded retry identity after a lost commit response.
+    -- Keep that server-owned marker separate from pending/delivered alerts.
+    v_option := pg_catalog.jsonb_set(v_option, '{last_non_alert_event_id}',
+        COALESCE(v_old->'last_non_alert_event_id', 'null'::jsonb));
+    IF pg_catalog.jsonb_typeof(p_transition->'alert_snapshot') = 'object'
+       AND p_transition->'alert_snapshot' <> '{}'::jsonb THEN
+        v_events := pg_catalog.jsonb_set(v_events, ARRAY[p_event_id], pg_catalog.jsonb_build_object(
+            'status', 'PENDING', 'recorded_at', v_now, 'transition', p_transition->>'update_type',
+            'snapshot', p_transition->'alert_snapshot'));
+    ELSE
+        v_option := pg_catalog.jsonb_set(v_option, '{last_non_alert_event_id}', pg_catalog.to_jsonb(p_event_id));
+    END IF;
+    v_option := pg_catalog.jsonb_set(v_option, '{revision}', pg_catalog.to_jsonb(v_rev + 1));
+    v_option := pg_catalog.jsonb_set(v_option, '{alert_events}', v_events);
+    v_context := pg_catalog.jsonb_set(v_context, '{option_trailing}', v_option);
+
+    UPDATE public.active_trades SET
+        state = v_state,
+        stop_loss = COALESCE((p_transition->>'stop_loss')::numeric, stop_loss),
+        exit_price = CASE WHEN v_remaining = 0 THEN (p_transition->>'exit_price')::numeric ELSE exit_price END,
+        exit_type = CASE WHEN v_remaining = 0 THEN v_result ELSE exit_type END,
+        exit_timestamp = CASE WHEN v_remaining = 0 THEN (p_transition->>'exit_timestamp')::timestamptz ELSE exit_timestamp END,
+        pnl_points_override = CASE WHEN v_remaining = 0 THEN (p_transition->>'pnl_points')::numeric ELSE pnl_points_override END
+    WHERE id = p_trade_id;
+    UPDATE public.trade_analytics SET
+        score = v_score, result_state = v_result, market_context = v_context,
+        exit_price = CASE WHEN v_remaining = 0 THEN (p_transition->>'exit_price')::numeric ELSE exit_price END,
+        exit_timestamp = CASE WHEN v_remaining = 0 THEN (p_transition->>'exit_timestamp')::timestamptz ELSE exit_timestamp END,
+        pnl_points = CASE WHEN v_remaining = 0 THEN (p_transition->>'pnl_points')::numeric ELSE pnl_points END,
+        option_pnl_points = CASE WHEN v_remaining = 0 THEN (p_transition->>'option_pnl_points')::numeric ELSE option_pnl_points END
+    WHERE id = p_trade_id;
+    IF v_remaining = 0 AND v_option->>'accounting_formula_version' = 'one_lot_reference_v1' THEN
+        PERFORM public.sync_option_reference_ml_label(p_trade_id);
+    END IF;
+    RETURN pg_catalog.jsonb_build_object('success', true, 'trade_id', p_trade_id,
+        'revision', v_rev + 1, 'option_trailing', v_option, 'active_state', v_state,
+        'result_state', v_result, 'score', v_score, 'remaining_fraction', v_remaining);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.option_premium_protection_capabilities()
+RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = '' AS $$
+    SELECT pg_catalog.jsonb_build_object(
+        'schema_version', 'option_premium_protection_v2',
+        'ready',
+        EXISTS (SELECT 1 FROM pg_catalog.pg_attribute
+                WHERE attrelid = pg_catalog.to_regclass('public.trade_analytics')
+                  AND attname = 'market_context' AND NOT attisdropped)
+        AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute
+                WHERE attrelid = pg_catalog.to_regclass('public.trade_analytics')
+                  AND attname = 'option_pnl_points' AND NOT attisdropped)
+        AND pg_catalog.to_regprocedure('public.apply_option_lifecycle_transition(uuid,integer,text,jsonb)') IS NOT NULL
+        AND pg_catalog.to_regprocedure('public.acknowledge_option_lifecycle_alert(uuid,text,text,text)') IS NOT NULL
+        AND pg_catalog.to_regprocedure('public.sync_option_reference_ml_label(uuid)') IS NOT NULL
+        AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.trade_analytics', 'SELECT')
+        AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.trade_analytics', 'UPDATE')
+        AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.active_trades', 'SELECT')
+        AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.active_trades', 'UPDATE')
+        AND pg_catalog.has_function_privilege(CURRENT_USER,
+            pg_catalog.to_regprocedure('public.apply_option_lifecycle_transition(uuid,integer,text,jsonb)'), 'EXECUTE')
+        AND pg_catalog.has_function_privilege(CURRENT_USER,
+            pg_catalog.to_regprocedure('public.acknowledge_option_lifecycle_alert(uuid,text,text,text)'), 'EXECUTE')
+        AND pg_catalog.has_function_privilege(CURRENT_USER,
+            pg_catalog.to_regprocedure('public.sync_option_reference_ml_label(uuid)'), 'EXECUTE')
+    );
+$$;
+REVOKE ALL ON FUNCTION public.option_premium_protection_capabilities() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.option_premium_protection_capabilities() TO service_role;
+REVOKE ALL ON FUNCTION public.apply_option_lifecycle_transition(uuid, integer, text, jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.apply_option_lifecycle_transition(uuid, integer, text, jsonb) TO service_role;
+REVOKE ALL ON FUNCTION public.sync_option_reference_ml_label(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.sync_option_reference_ml_label(uuid) TO service_role;

@@ -132,7 +132,8 @@ def _has_option_policy_trades(position_manager):
             continue
         context = trade.get("market_context")
         option = context.get("option_trailing") if isinstance(context, dict) else None
-        if isinstance(option, dict) and option.get("policy_version") == "option_atr_v1":
+        if isinstance(option, dict) and option.get("policy_version") in {
+                "option_atr_v1", "option_premium_protection_v2"}:
             return True
     return False
 
@@ -682,21 +683,56 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
     if price_fetcher is not None:
         from options_candles import IST
         contracts = {}
+        quote_contracts = {}
         for trade in position_manager.active_trades:
             option = (trade.get("market_context") or {}).get("option_trailing") or {}
-            if trade.get("state") in {"CLOSED", "STOPPED_OUT"} or option.get("policy_version") != "option_atr_v1":
+            if (trade.get("state") in {"CLOSED", "STOPPED_OUT"}
+                    or option.get("policy_version") not in {"option_atr_v1", "option_premium_protection_v2"}):
                 continue
             contract = option.get("contract") or {}
             security_id = str(contract.get("security_id") or "")
             if security_id:
+                if option.get("policy_version") == "option_premium_protection_v2":
+                    quote_contracts[security_id] = contract
+                needs_atr_history = (option.get("policy_version") == "option_atr_v1"
+                                     or (option.get("policy_version") == "option_premium_protection_v2"
+                                         and option.get("atr_enabled") is True))
+                if not needs_atr_history:
+                    continue
                 history_from = option.get("indicator_history_from")
                 existing_from = (contracts.get(security_id) or {}).get("history_from")
                 if existing_from and (not history_from or existing_from < history_from):
                     history_from = existing_from
                 contracts[security_id] = {**contract, "history_from": history_from}
-        if contracts or index_ticks is not None:
+        if contracts or quote_contracts or index_ticks is not None:
             try:
                 observed_at = current_time or datetime.now(IST)
+                option_quotes = []
+                quote_fetch_deferred = False
+                if quote_contracts:
+                    quote_fetch = getattr(price_fetcher, "fetch_option_observations", None)
+                    if callable(quote_fetch):
+                        try:
+                            option_quotes = await quote_fetch(list(quote_contracts.values())) or []
+                        except Exception as exc:
+                            from fetchers.price_fetcher import ReferencePriceDeferred
+                            if isinstance(exc, ReferencePriceDeferred):
+                                quote_fetch_deferred = True
+                                logger.debug("Pinned option quote poll deferred by provider pacing")
+                            else:
+                                logger.warning("Pinned option stop quotes unavailable: %s", exc)
+                        quote_ids = {str((q.get("contract") or {}).get("security_id")) for q in option_quotes
+                                     if isinstance(q, dict)}
+                        missing_quotes = {security_id: contract for security_id, contract in quote_contracts.items()
+                                          if security_id not in quote_ids}
+                        if missing_quotes and not quote_fetch_deferred:
+                            marker = getattr(position_manager, "mark_option_quote_unavailable", None)
+                            if callable(marker):
+                                await marker(missing_quotes, "No fresh quote for the pinned contract", observed_at)
+                    else:
+                        marker = getattr(position_manager, "mark_option_quote_unavailable", None)
+                        if callable(marker):
+                            await marker(quote_contracts, "Quote provider has no pinned-contract batch API", observed_at)
                 histories = {}
                 for security_id, contract in contracts.items():
                     try:
@@ -707,7 +743,8 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                         logger.warning("Pinned option history unavailable for %s: %s", security_id, exc)
                 replayed_at = current_time or datetime.now(IST)
                 events = await position_manager.update_option_market_events(
-                    candles, histories, current_time=replayed_at, index_ticks=index_ticks)
+                    candles, histories, current_time=replayed_at, index_ticks=index_ticks,
+                    option_quotes=option_quotes)
                 option_ticks_replayed = index_ticks is not None
                 if engine is not None and any(event == "SL_HIT" for _, event in events):
                     engine.clear_cooldown()

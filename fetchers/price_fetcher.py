@@ -446,6 +446,63 @@ class PriceFetcher:
             return None
         return {"price": price, "observed_at": at.isoformat(), "source": "dhan_last_trade"}
 
+    async def fetch_option_observations(self, contracts):
+        """Fetch one timestamped quote per distinct pinned NSE_FNO security ID."""
+        from oi_watch_context import parse_candle_timestamp
+
+        requested = parse_candle_timestamp(datetime.now(timezone.utc))
+        pins = {}
+        for contract in contracts or []:
+            security_id, exchange, _ = self._reference_contract(contract, requested)
+            pins[security_id] = (exchange, dict(contract))
+        if not pins:
+            return []
+        exchanges = {}
+        for security_id, (exchange, _) in pins.items():
+            exchanges.setdefault(exchange, []).append(int(security_id))
+        response = await self._reference_request(lambda: self.dhan.quote_data(exchanges))
+        received = parse_candle_timestamp(datetime.now(timezone.utc))
+        if not isinstance(response, dict) or response.get("status") != "success":
+            raise ValueError("Pinned option quote request failed")
+        data = response.get("data")
+        if isinstance(data, dict) and "data" in data:
+            if data.get("status", "success") != "success":
+                raise ValueError("Pinned option quote payload failed")
+            data = data["data"]
+        observations = []
+        for security_id, (exchange, contract) in pins.items():
+            try:
+                quote = data[exchange][security_id]
+                value = quote["last_price"]
+                if isinstance(value, bool):
+                    continue
+                price = float(value)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if not isfinite(price) or price <= 0:
+                continue
+            trade_time = quote.get("last_trade_time")
+            try:
+                if isinstance(trade_time, str) and "/" in trade_time:
+                    at = datetime.strptime(trade_time, "%d/%m/%Y %H:%M:%S").replace(tzinfo=IST)
+                else:
+                    at = parse_candle_timestamp(trade_time)
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
+            if not 0 <= (received - at).total_seconds() <= 5:
+                continue
+            observations.append({
+                "contract": {
+                    "security_id": security_id, "exchange_segment": exchange,
+                    "expiry": contract.get("expiry") or contract.get("expiry_date"),
+                    "strike": int(contract["strike"]),
+                    "option_type": str(contract["option_type"]).upper(),
+                },
+                "price": price, "observed_at": at.isoformat(),
+                "received_at": received.isoformat(), "source": "dhan_last_trade",
+            })
+        return observations
+
     async def fetch_previous_day_ohlc(self) -> Tuple[float, float]:
         """
         Fetch the previous trading day's high and low for the target asset

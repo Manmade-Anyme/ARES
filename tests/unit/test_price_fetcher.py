@@ -199,6 +199,25 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
             await self.fetcher.fetch_latest_candle()
         self.assertIn("Unknown API error (Empty Remarks)", str(ctx.exception))
 
+    async def test_fetch_option_observations_batches_distinct_pinned_contracts(self):
+        contracts = [
+            {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry_date": "2026-07-01",
+             "strike": 24000, "option_type": "CE"},
+            {"security_id": "456", "exchange_segment": "NSE_FNO", "expiry_date": "2026-07-01",
+             "strike": 24000, "option_type": "PE"},
+        ]
+        stamp = datetime(2026, 6, 29, 15, 29, tzinfo=ZoneInfo("Asia/Kolkata")).strftime("%d/%m/%Y %H:%M:%S")
+        self.mock_dhan.quote_data.return_value = {"status": "success", "data": {"NSE_FNO": {
+            "123": {"last_price": 101.5, "last_trade_time": stamp},
+            "456": {"last_price": 99.5, "last_trade_time": stamp},
+        }}}
+        observations = await self.fetcher.fetch_option_observations(contracts)
+        self.assertEqual(len(observations), 2)
+        self.assertEqual(self.mock_dhan.quote_data.call_count, 1)
+        self.assertEqual(self.mock_dhan.quote_data.call_args.args[0], {"NSE_FNO": [123, 456]})
+        self.assertEqual({item["contract"]["option_type"] for item in observations}, {"CE", "PE"})
+        self.assertEqual({item["price"] for item in observations}, {101.5, 99.5})
+
     @patch('fetchers.price_fetcher.settings')
     async def test_fetch_latest_candle_data_type_errors(self, mock_settings):
         # data is not a dict (line 138)

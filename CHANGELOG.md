@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Option-premium stop protection v2 (TASK-20261104):** Add an independent premium stop lifecycle for pinned option contracts. The initial option SL protects before T1; T1 moves the premium stop to the sourced entry cost; only a valid approved five-minute option ATR candidate strictly above that cost can raise it. Batch fresh option LTP observations enforce equality/gap stop triggers between ATR bars. Spot/index stops remain independent, option instruments are excluded from spot ATR, and reference triggers remain distinct from broker fills. Any hit of the moved cost stop uses `STOPPED_OUT_AT_BE` and 0.00 runner stop-out points while preserving the observed exit mark; ATR-raised exits keep `ATR_SL_HIT`. ATR remains default-off. Added the idempotent v2 capability/transaction migration and local unit/SQL coverage; production migration, config, worker, and deployment are unchanged.
+
 - **Tuesday expiry profile sensitivity tuning (TASK-20261103):** Set expiry OI-wall minimum OI/change to 6,000,000/5.0%, widen approach/test/excursion/retest distances to 60/15/15/15 points, and set breakout writer/IV/weak-volume thresholds to 5%/−3.0/0.75. Set exhaustion volume/IV thresholds to 2.5/3.5, continuation score/resumption-volume/pullback-window to 2/1.2/8 candles, level scan to 400 points, and signal cooldown to 15 minutes. Non-expiry settings and expiry candle-body ratio remain unchanged. Multi-Tuesday replay confirms 5.0% growth eliminates fragile 2.7% false-alarm watches while delivering 1 disciplined trade per session. Dhan replay evidence and limits are in the Ares Build Log.
 
 - **TASK-20261102 Live market quotes persistence for SpanQuant frontend:**

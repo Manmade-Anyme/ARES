@@ -1006,7 +1006,7 @@ async def test_legacy_option_trade_keeps_target_first_and_legacy_points():
 
 
 @pytest.mark.asyncio
-async def test_new_trade_includes_accounting_version_marker(monkeypatch):
+async def test_new_trade_uses_v2_protection_with_independent_atr_gate(monkeypatch):
     from config import settings
     from position_manager import PositionManager
     from tests.unit.test_manm176_review_persistence import MemoryDatabase, make_signal
@@ -1019,10 +1019,13 @@ async def test_new_trade_includes_accounting_version_marker(monkeypatch):
     signal.option_sl = 95
     signal.market_context = {"tracking_mode": "SIGNAL_REFERENCE"}
     with patch("position_manager.create_client", return_value=MemoryDatabase()), patch("position_manager.AnalyticsLogger") as logger:
-        logger.return_value.option_reference_accounting_ready.return_value = True
+        logger.return_value.option_premium_protection_ready.return_value = True
         pm = PositionManager()
         await pm.add_trade(signal, 24000)
-    assert pm.active_trades[0]["market_context"]["option_trailing"]["accounting_formula_version"] == "one_lot_reference_v1"
+    option = pm.active_trades[0]["market_context"]["option_trailing"]
+    assert option["policy_version"] == "option_premium_protection_v2"
+    assert option["accounting_formula_version"] == "one_lot_reference_v1"
+    assert option["atr_enabled"] is True
 
 
 @pytest.mark.asyncio

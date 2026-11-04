@@ -17,7 +17,8 @@ try {
     CREATE TABLE public.ml_collection(id integer primary key,trade_id uuid,signal_uuid uuid,signal_id text,trade_outcome text,trade_score integer,trade_pnl numeric);
     GRANT USAGE ON SCHEMA public TO service_role,anon,authenticated;
     GRANT SELECT,UPDATE ON public.active_trades,public.trade_analytics,public.ml_collection TO service_role;`);
-  for (const name of ['20261023_option_lifecycle_transition.sql', '20261029_option_trade_accounting.sql']) {
+  for (const name of ['20261023_option_lifecycle_transition.sql', '20261029_option_trade_accounting.sql',
+    '20261104_option_premium_protection_v2.sql']) {
     const sql = await readFile(new URL(`../../migrations/${name}`, import.meta.url), 'utf8');
     await db.exec(sql); await db.exec(sql);
   }
@@ -165,6 +166,51 @@ try {
   await db.exec('SET ROLE service_role;');
   assert.equal((await rpc('list_incomplete_option_accounting', [100, 0])).length, 0);
   await assert.rejects(() => correction(6, 'old-trade', {legs: {}}), /not enrolled in one-lot/);
+  // The new policy commits break-even premium protection atomically and keeps
+  // its status/fill evidence distinct from the reference mark.
+  await db.exec('RESET ROLE; TRUNCATE public.active_trades, public.trade_analytics, public.ml_collection;');
+  const v2 = {option_trailing: {policy_version: 'option_premium_protection_v2',
+    accounting_formula_version: 'one_lot_reference_v1', revision: 1, phase: 'PRE_T1',
+    highest_milestone: 0, remaining_fraction: 1, original_option_sl: 90,
+    original_option_entry: 100, entry_premium_basis_source: 'REFERENCE_ENTRY_LIMIT',
+    locked_option_sl: 90, premium_stop_source: 'INITIAL_OPTION_SL',
+    contract: {security_id: '123', exchange_segment: 'NSE_FNO', expiry: '2026-11-09', strike: 23950, option_type: 'CE'},
+    quote_watermark: null, accounting: {legs: {}, spot_booked_points: null, option_booked_points: null}}};
+  await q("INSERT INTO public.active_trades(id,state,stop_loss,entry_price,direction,signal_uuid) VALUES ($1,'OPEN',22000,22000,'BULLISH','00000000-0000-0000-0000-000000000099')", [id]);
+  await q("INSERT INTO public.trade_analytics(id,result_state,market_context,signal_uuid) VALUES ($1,'OPEN',$2,'00000000-0000-0000-0000-000000000099')", [id, JSON.stringify(v2)]);
+  await db.exec('SET ROLE service_role');
+  assert.deepEqual(await rpc('option_premium_protection_capabilities', []),
+    {schema_version: 'option_premium_protection_v2', ready: true});
+  const v2T1 = {active_state: 'T1_HIT', score: 1, option_trailing: {
+    phase: 'POST_T1', highest_milestone: 1, booked_fraction: .5, remaining_fraction: .5,
+    locked_option_sl: 100, protection_mode: 'BREAK_EVEN_COST', premium_stop_source: 'BREAK_EVEN_COST',
+    t1_at: '2026-11-04T04:00:00Z',
+    accounting: {legs: {T1: {event_at: '2026-11-04T04:00:00Z', spot_price: null,
+      option_price: 110, option_source: 'reference_quote'}}, spot_booked_points: null, option_booked_points: 5}}};
+  const v2Transition = (revision, event, payload) => rpc('apply_option_lifecycle_transition',
+    [id, revision, event, JSON.stringify(payload)]);
+  const committedT1 = await v2Transition(1, 'v2-t1', v2T1);
+  assert.equal(committedT1.option_trailing.locked_option_sl, 100);
+  const watermark = await v2Transition(2, 'v2-quote-watermark', {active_state: 'T1_HIT', score: 1,
+    option_trailing: {...v2T1.option_trailing, quote_watermark: '2026-11-04T04:07:00Z'}});
+  await assert.rejects(() => v2Transition(3, 'v2-backward-watermark', {active_state: 'T1_HIT', score: 1,
+    option_trailing: {...v2T1.option_trailing, quote_watermark: '2026-11-04T04:06:00Z'}}), /watermark cannot move backward/);
+  assert.equal(watermark.revision, 3);
+  const v2Exit = {active_state: 'CLOSED', score: 1, exit_reason: 'STOPPED_OUT_AT_BE',
+    exit_timestamp: '2026-11-04T04:08:00Z', exit_price: null, pnl_points: null, option_pnl_points: 5,
+    option_trailing: {phase: 'CLOSED', highest_milestone: 1, booked_fraction: .5, remaining_fraction: 0,
+      locked_option_sl: 100, protection_mode: 'BREAK_EVEN_COST', premium_stop_source: 'BREAK_EVEN_COST',
+      quote_watermark: '2026-11-04T04:08:00Z', exit_trigger: {domain: 'OPTION_PREMIUM', price: 100},
+      exit: {reason: 'STOPPED_OUT_AT_BE', stop_domain: 'OPTION_PREMIUM', stop_source: 'BREAK_EVEN_COST',
+        option_close: 100, reference_exit_price: 100, runner_option_points: 0},
+      accounting: {legs: {T1: {event_at: '2026-11-04T04:00:00Z', option_price: 110, option_source: 'reference_quote'},
+        EXIT: {event_at: '2026-11-04T04:08:00Z', spot_price: null, option_price: 100, option_source: 'dhan_last_trade'}},
+        spot_booked_points: null, option_booked_points: 5}}};
+  const committedExit = await v2Transition(3, 'v2-premium-be-exit', v2Exit);
+  assert.equal(committedExit.result_state, 'STOPPED_OUT_AT_BE');
+  assert.equal(committedExit.option_trailing.exit.runner_option_points, 0);
+  assert.equal(Number((await q('SELECT option_pnl_points FROM public.trade_analytics WHERE id=$1', [id])).rows[0].option_pnl_points), 5);
+  await assert.rejects(() => v2Transition(4, 'v2-reopen', v2Exit), /Terminal trade/);
   await db.exec('RESET ROLE; REVOKE UPDATE ON public.trade_analytics FROM service_role; SET ROLE service_role;');
   assert.equal((await rpc('option_reference_accounting_capabilities', [])).ready, false);
   console.log('Option accounting isolated PostgreSQL checks passed');

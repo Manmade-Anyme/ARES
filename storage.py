@@ -498,6 +498,19 @@ class AnalyticsLogger:
             logger.warning("Option reference accounting capability check failed", exc_info=True)
             return False
 
+    def option_premium_protection_ready(self) -> bool:
+        """Check the dedicated v2 stop lifecycle contract before enrollment."""
+        if not getattr(self, "_option_backend_configured", False):
+            return False
+        try:
+            response = self.supabase.rpc("option_premium_protection_capabilities", {}).execute()
+            result = getattr(response, "data", None)
+            return (isinstance(result, dict) and result.get("ready") is True
+                    and result.get("schema_version") == "option_premium_protection_v2")
+        except Exception:
+            logger.warning("Option premium protection capability check failed", exc_info=True)
+            return False
+
     def option_reference_capture_ready(self) -> bool:
         """Check the independent hold-to-exit capture schema and backend privileges."""
         if not getattr(self, "_option_backend_configured", False):

@@ -373,12 +373,20 @@ class OptionTrailingContext:
     remaining_fraction: float = 1.0
     original_option_sl: Optional[float] = None
     original_option_entry: Optional[float] = None
+    entry_premium_basis_source: Optional[str] = None
+    entry_premium_basis_at: Optional[str] = None
     index_guard_enabled: bool = True
     index_guard_stop: Optional[float] = None
     atr_period: int = 5
     hhv_period: int = 10
     multiplier: float = 2.5
     atr_eligible: bool = False
+    atr_enabled: bool = False
+    premium_stop_source: Optional[str] = None
+    last_option_quote: Optional[Dict[str, Any]] = None
+    quote_watermark: Optional[str] = None
+    exit_trigger: Optional[Dict[str, Any]] = None
+    execution_status: str = "REFERENCE_ONLY"
     protection_mode: str = "NONE"             # NONE | ATR | ORIGINAL_OPTION_SL_FLOOR
     raw_line: Optional[float] = None
     locked_option_sl: Optional[float] = None
@@ -421,12 +429,20 @@ class OptionTrailingContext:
             "remaining_fraction": self.remaining_fraction,
             "original_option_sl": self.original_option_sl,
             "original_option_entry": self.original_option_entry,
+            "entry_premium_basis_source": self.entry_premium_basis_source,
+            "entry_premium_basis_at": self.entry_premium_basis_at,
             "index_guard_enabled": self.index_guard_enabled,
             "index_guard_stop": self.index_guard_stop,
             "atr_period": self.atr_period,
             "hhv_period": self.hhv_period,
             "multiplier": self.multiplier,
             "atr_eligible": self.atr_eligible,
+            "atr_enabled": self.atr_enabled,
+            "premium_stop_source": self.premium_stop_source,
+            "last_option_quote": self.last_option_quote,
+            "quote_watermark": self.quote_watermark,
+            "exit_trigger": self.exit_trigger,
+            "execution_status": self.execution_status,
             "protection_mode": self.protection_mode,
             "raw_line": self.raw_line,
             "locked_option_sl": self.locked_option_sl,
@@ -497,12 +513,20 @@ class OptionTrailingContext:
             remaining_fraction=float(data.get("remaining_fraction", 1.0)),
             original_option_sl=data.get("original_option_sl"),
             original_option_entry=data.get("original_option_entry"),
+            entry_premium_basis_source=data.get("entry_premium_basis_source"),
+            entry_premium_basis_at=data.get("entry_premium_basis_at"),
             index_guard_enabled=bool(data.get("index_guard_enabled", True)),
             index_guard_stop=data.get("index_guard_stop"),
             atr_period=int(data.get("atr_period", 5)),
             hhv_period=int(data.get("hhv_period", 10)),
             multiplier=float(data.get("multiplier", 2.5)),
             atr_eligible=bool(data.get("atr_eligible", False)),
+            atr_enabled=bool(data.get("atr_enabled", False)),
+            premium_stop_source=data.get("premium_stop_source"),
+            last_option_quote=data.get("last_option_quote"),
+            quote_watermark=data.get("quote_watermark"),
+            exit_trigger=data.get("exit_trigger"),
+            execution_status=data.get("execution_status", "REFERENCE_ONLY"),
             protection_mode=data.get("protection_mode", "NONE"),
             raw_line=data.get("raw_line"),
             locked_option_sl=data.get("locked_option_sl"),

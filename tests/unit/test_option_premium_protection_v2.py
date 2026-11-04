@@ -1,0 +1,218 @@
+"""Regressions for the independent option-premium stop lifecycle."""
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from models import OptionTrailingContext, OptionTrailingContract
+from options_candles import OptionCandle
+from position_manager import PositionManager
+from tests.unit.test_option_lifecycle_commit_boundary import Ledger
+from alerts import render_option_lifecycle_event
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _trade(*, phase="PRE_T1", entry=167.20, stop=161.05, option_type="CE"):
+    ctx = OptionTrailingContext(
+        policy_version="option_premium_protection_v2",
+        contract=OptionTrailingContract("39961", "NSE_FNO", "2026-11-09", 23950, option_type),
+        phase=phase,
+        highest_milestone=1 if phase == "POST_T1" else 0,
+        booked_fraction=0.5 if phase == "POST_T1" else 0.0,
+        remaining_fraction=0.5 if phase == "POST_T1" else 1.0,
+        original_option_sl=stop,
+        original_option_entry=entry,
+        locked_option_sl=entry if phase == "POST_T1" else stop,
+        protection_mode="BREAK_EVEN_COST" if phase == "POST_T1" else "INITIAL_OPTION_SL",
+        index_guard_stop=23909.90,
+        t1_at=datetime(2026, 11, 4, 10, 6, tzinfo=IST).isoformat() if phase == "POST_T1" else None,
+        atr_eligible=False,
+    ).to_dict()
+    return {
+        "id": "v2-trade", "display_id": "V2", "direction": "BULLISH",
+        "entry_price": 23909.90, "stop_loss": 23896.20,
+        "target_1": 23928.20, "target_2": 23963.20,
+        "state": "T1_HIT" if phase == "POST_T1" else "OPEN",
+        "entry_timestamp": "2026-11-04T03:00:00+00:00",
+        "market_context": {"tracking_mode": "SIGNAL_REFERENCE", "option_trailing": ctx},
+    }
+
+
+def _manager(trade):
+    pm = object.__new__(PositionManager)
+    pm.is_initialized = True
+    pm.active_trades = [trade]
+    pm._trade_writes = {}
+    pm._context_locks = {}
+    pm.analytics = Ledger()
+    pm._option_available_until = defaultdict(lambda: datetime(2099, 1, 1, tzinfo=IST))
+    pm._option_available_until[trade["id"]] = datetime(2099, 1, 1, tzinfo=IST)
+    return pm
+
+
+def _quote(price, minute, *, option_type="CE", security_id="39961"):
+    at = datetime(2026, 11, 4, 9, minute, tzinfo=IST)
+    return {
+        "contract": {
+            "security_id": security_id, "exchange_segment": "NSE_FNO",
+            "expiry": "2026-11-09", "strike": 23950, "option_type": option_type,
+        },
+        "price": price, "observed_at": at.isoformat(), "received_at": at.isoformat(),
+        "source": "dhan_last_trade",
+    }
+
+
+@pytest.mark.asyncio
+async def test_pre_t1_option_quote_at_initial_stop_closes_in_premium_domain():
+    trade = _trade()
+    pm = _manager(trade)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events([], {}, current_time=datetime(2026, 11, 4, 9, 20, tzinfo=IST),
+                                                       option_quotes=[_quote(161.05, 20)])
+    assert ("v2-trade", "SL_HIT") in events
+    opt = trade["market_context"]["option_trailing"]
+    assert trade["state"] == "CLOSED"
+    assert opt["exit"]["stop_domain"] == "OPTION_PREMIUM"
+    assert opt["exit"]["reason"] == "SL_HIT"
+
+
+@pytest.mark.asyncio
+async def test_post_t1_cost_stop_equality_is_break_even_and_zero_runner_points():
+    trade = _trade(phase="POST_T1")
+    pm = _manager(trade)
+    quote = _quote(167.20, 21)
+    quote["observed_at"] = "2026-11-04T10:21:00+05:30"
+    quote["received_at"] = quote["observed_at"]
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events([], {}, current_time=datetime(2026, 11, 4, 10, 21, tzinfo=IST),
+                                                       option_quotes=[quote])
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in events
+    opt = trade["market_context"]["option_trailing"]
+    assert opt["exit"]["reason"] == "STOPPED_OUT_AT_BE"
+    assert opt["exit"]["option_close"] == pytest.approx(167.20)
+    assert opt["exit"]["runner_option_points"] == pytest.approx(0.0)
+    assert opt["highest_milestone"] == 1
+
+
+@pytest.mark.asyncio
+async def test_post_t1_break_even_outcome_reports_zero_points_even_if_quote_gaps_below_cost():
+    trade = _trade(phase="POST_T1")
+    pm = _manager(trade)
+    quote = _quote(160.0, 21)
+    quote["observed_at"] = "2026-11-04T10:21:00+05:30"
+    quote["received_at"] = quote["observed_at"]
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=datetime(2026, 11, 4, 10, 21, tzinfo=IST), option_quotes=[quote])
+
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in events
+    exit_info = trade["market_context"]["option_trailing"]["exit"]
+    assert exit_info["runner_option_points"] == pytest.approx(0.0)
+    assert exit_info["reference_exit_price"] == pytest.approx(160.0)
+
+
+@pytest.mark.asyncio
+async def test_post_t1_break_even_stop_is_not_replaced_by_atr_at_or_below_cost():
+    trade = _trade(phase="POST_T1")
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 10, 25, tzinfo=IST)
+    bar = {"timestamp": (at - timedelta(minutes=5)).isoformat(), "end_time": at.isoformat(),
+           "open": 167.2, "high": 168.0, "low": 165.0, "close": 166.5,
+           "volume": 1, "security_id": "39961", "complete": True}
+    await pm.update_option_atr_trailing({"39961": [bar]}, current_time=at)
+    opt = trade["market_context"]["option_trailing"]
+    assert opt["locked_option_sl"] >= 167.20
+
+
+@pytest.mark.asyncio
+async def test_t1_moves_premium_stop_to_entry_cost_without_changing_spot_guard():
+    trade = _trade()
+    pm = _manager(trade)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_trades(23930.0, event_time=datetime(2026, 11, 4, 9, 25, tzinfo=IST))
+    assert ("v2-trade", "T1_HIT") in events
+    opt = trade["market_context"]["option_trailing"]
+    assert opt["locked_option_sl"] == pytest.approx(167.20)
+    assert opt["premium_stop_source"] == "BREAK_EVEN_COST"
+    assert trade["stop_loss"] == pytest.approx(trade["entry_price"])
+
+
+@pytest.mark.asyncio
+async def test_valid_post_t1_atr_candidate_can_only_raise_cost_floor():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt["atr_enabled"] = True
+    pm = _manager(trade)
+    start = datetime(2026, 11, 4, 9, 15, tzinfo=IST)
+    bars = [OptionCandle(start + timedelta(minutes=5*i), start + timedelta(minutes=5*(i+1)),
+                         200, 201, 199, 200, 1, "39961") for i in range(16)]
+    await pm.update_option_atr_trailing({"39961": bars}, current_time=bars[-1].end_time)
+    assert opt["locked_option_sl"] > 167.20
+    assert opt["premium_stop_source"] == "ATR_TRAILING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+async def test_long_premium_stop_comparison_is_same_for_calls_and_puts(option_type):
+    trade = _trade(option_type=option_type)
+    pm = _manager(trade)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events([], {}, current_time=datetime(2026, 11, 4, 9, 20, tzinfo=IST),
+                                                       option_quotes=[_quote(160.0, 20, option_type=option_type)])
+    assert ("v2-trade", "SL_HIT") in events
+
+
+@pytest.mark.asyncio
+async def test_wrong_contract_and_stale_quotes_do_not_change_protection_state():
+    trade = _trade()
+    pm = _manager(trade)
+    wrong_contract = _quote(150.0, 20)
+    wrong_contract["contract"]["strike"] = 23900
+    stale = _quote(150.0, 20)
+    stale["received_at"] = "2026-11-04T09:19:00+05:30"
+    before = trade["market_context"]["option_trailing"].copy()
+    await pm.update_option_market_events([], {}, current_time=datetime(2026, 11, 4, 9, 20, tzinfo=IST),
+                                         option_quotes=[wrong_contract, stale])
+    after = trade["market_context"]["option_trailing"]
+    assert trade["state"] == "OPEN"
+    assert after["quote_watermark"] == before["quote_watermark"] is None
+    assert after["locked_option_sl"] == before["locked_option_sl"] == 161.05
+
+
+@pytest.mark.asyncio
+async def test_expired_contract_quote_cannot_trigger_premium_stop():
+    trade = _trade(phase="POST_T1")
+    pm = _manager(trade)
+    quote = _quote(160.0, 21)
+    quote["observed_at"] = "2026-11-10T09:21:00+05:30"
+    quote["received_at"] = quote["observed_at"]
+
+    events = await pm.update_option_market_events(
+        [], {}, current_time=datetime(2026, 11, 10, 9, 21, tzinfo=IST), option_quotes=[quote])
+
+    assert events == []
+    assert trade["state"] == "T1_HIT"
+    assert trade["market_context"]["option_trailing"].get("quote_watermark") is None
+
+
+def test_break_even_alert_names_premium_domain_and_zero_runner_points():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(phase="CLOSED", monitoring_status="CLOSED", remaining_fraction=0.0,
+               exit={"reason": "STOPPED_OUT_AT_BE", "stop_domain": "OPTION_PREMIUM",
+                     "event_at": "2026-11-04T10:21:00+05:30", "option_close": 167.2,
+                     "reference_exit_price": 167.2, "option_stop": 167.2,
+                     "runner_option_points": 0.0, "fill_price": None},
+               exit_trigger={"domain": "OPTION_PREMIUM", "source": "dhan_last_trade",
+                             "event_at": "2026-11-04T10:21:00+05:30", "price": 167.2,
+                             "effective_stop": 167.2})
+    rendered = render_option_lifecycle_event({"update_type": "STOPPED_OUT_AT_BE", "event_time": opt["exit"]["event_at"],
+                                              "trade": trade, "option_trailing": opt})
+    text = rendered["embeds"][0]["description"]
+    assert "Option-premium break-even stop hit" in rendered["embeds"][0]["title"]
+    assert "Premium stop domain: OPTION_PREMIUM" in text
+    assert "Runner stop-out points: +0.00" in text
+    assert "Confirmed fill: unavailable" in text
