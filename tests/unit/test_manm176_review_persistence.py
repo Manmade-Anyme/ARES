@@ -307,7 +307,11 @@ async def test_sync_reports_pending_until_snapshot_is_durable():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persist_order_record", [False, True])
-async def test_restart_restores_terminal_pending_paper_exit_and_execution_binding(persist_order_record):
+@pytest.mark.parametrize("execution_status", [
+    "CONFIRMED_PAPER_FILL", "EXIT_TRIGGERED_PENDING_CONFIRMATION",
+])
+async def test_restart_restores_terminal_pending_paper_exit_and_execution_binding(
+        persist_order_record, execution_status):
     signal_id = "signal-terminal-retry"
     trade_id = "terminal-trade"
     correlation_id = hashlib.sha256(signal_id.encode()).hexdigest()[:24]
@@ -341,7 +345,7 @@ async def test_restart_restores_terminal_pending_paper_exit_and_execution_bindin
         "execution": execution,
         "option_trailing": {
             "policy_version": "option_premium_protection_v2",
-            "execution_status": "CONFIRMED_PAPER_FILL",
+            "execution_status": execution_status,
             "execution_route_pending": True, "execution_route_reason": "ATR_SL_HIT",
             "contract": contract,
             "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
@@ -396,11 +400,60 @@ async def test_restart_restores_terminal_pending_paper_exit_and_execution_bindin
         assert pending_trade["market_context"]["execution"]["status"] == "EXIT_PENDING"
         resumed = SignalDispatcher(OrderManager(), restarted)
         assert await resumed.on_option_stop(pending_trade, "ATR_SL_HIT") is True
+        pending_record = resumed.orders.records[correlation_id]
+        before_entry = asdict(pending_record)
+        new_signal = make_signal()
+        assert await resumed.dispatch(new_signal, 24000, [{
+            "strike": 24000, "expiry_date": "2099-01-01", "ce_security_id": "123",
+            "ce_ask": 100, "ce_bid": 99, "underlying_spot": 24000,
+        }]) is True
+        assert asdict(pending_record) == before_entry
+        assert len(resumed.orders.records) == 2
+        duplicate = make_signal()
+        assert await resumed.dispatch(duplicate, 24000, []) is False
+        assert duplicate.trade_binding_status == "DUPLICATE_SKIPPED"
+        assert len(resumed.orders.records) == 2
         await resumed.on_snapshot([{
             "strike": 24000, "expiry_date": "2099-01-01", "ce_security_id": "123",
             "ce_ask": 100, "ce_bid": 99, "underlying_spot": 24000,
         }], 24000)
         assert pending_trade["market_context"]["execution"]["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persist_order_record", [False, True])
+@pytest.mark.parametrize("damage", [
+    "reference_only", "reference_triggered", "live", "unprotected", "zero_fill", "wrong_contract",
+])
+async def test_triggered_restart_does_not_bypass_paper_fill_validation(persist_order_record, damage):
+    trade, option, execution, correlation_id = legacy_route_payload()
+    record = SignalDispatcher._record_from_legacy_context(correlation_id, trade, option, execution)
+    option.update(
+        execution_status="EXIT_TRIGGERED_PENDING_CONFIRMATION",
+        execution_route_pending=True, execution_route_reason="ATR_SL_HIT",
+        exit={"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    )
+    if damage == "reference_only":
+        option["execution_status"] = "REFERENCE_ONLY"
+    elif damage == "reference_triggered":
+        option["execution_status"] = "REFERENCE_TRIGGERED_NO_BROKER_FILL"
+    elif damage == "live":
+        execution["mode"] = record.mode = "LIVE"
+    elif damage == "unprotected":
+        execution["protection_confirmed"] = record.protection_confirmed = False
+    elif damage == "zero_fill":
+        execution["filled_quantity"] = record.filled_quantity = 0
+    elif damage == "wrong_contract":
+        option["contract"]["exchange_segment"] = "NSE_EQ"
+    if persist_order_record:
+        execution["order_record"] = asdict(record)
+    positions = SimpleNamespace(active_trades=[], sync_execution=AsyncMock(return_value=True))
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+
+    assert await dispatcher.on_option_stop(trade, "ATR_SL_HIT") is False
+    assert dispatcher._signals == {}
+    assert option["execution_route_pending"] is True
+    positions.sync_execution.assert_not_awaited()
 
 
 @pytest.mark.asyncio

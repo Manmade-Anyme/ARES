@@ -36,6 +36,9 @@ class SignalDispatcher:
             # Completed fills may remain here solely for persistence retries.
             if self.orders.records[correlation_id].status in {"CANCELLED", "REJECTED", "CLOSED"}:
                 continue
+            # Restored bindings own an exit only, not an entry candidate.
+            if getattr(pending, "exit_only", False):
+                continue
             if (pending.id != signal.id and pending.setup_type == signal.setup_type
                     and pending.direction == signal.direction
                     and abs(pending.bracket.spot_entry - spot) <= settings.trade_dedupe_tolerance_pts):
@@ -133,7 +136,8 @@ class SignalDispatcher:
             return False
         execution = context.get("execution") or {}
         if (not isinstance(execution, dict) or execution.get("mode") != "PAPER"
-                or option.get("execution_status") != "CONFIRMED_PAPER_FILL"):
+                or option.get("execution_status") not in {
+                    "CONFIRMED_PAPER_FILL", "EXIT_TRIGGERED_PENDING_CONFIRMATION"}):
             return False
         correlation_id = str(execution.get("correlation_id") or "")
         if not correlation_id:
@@ -163,6 +167,7 @@ class SignalDispatcher:
             trade_id=trade.get("id"),
             market_context=context,
             bracket=record.bracket,
+            exit_only=True,
         )
         self._signals.setdefault(correlation_id, (signal, None))
         return True
@@ -224,7 +229,8 @@ class SignalDispatcher:
     def _record_from_legacy_context(correlation_id, trade, option, execution):
         """Read pre-order_record snapshots without inventing a live execution."""
         if (execution.get("mode") != "PAPER" or execution.get("protection_confirmed") is not True
-                or option.get("execution_status") != "CONFIRMED_PAPER_FILL"):
+                or option.get("execution_status") not in {
+                    "CONFIRMED_PAPER_FILL", "EXIT_TRIGGERED_PENDING_CONFIRMATION"}):
             return None
         context = trade.get("market_context")
         if not isinstance(context, dict):

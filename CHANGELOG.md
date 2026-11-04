@@ -20,6 +20,10 @@ All notable changes to the ARES trading system will be documented in this file.
 
 - **PR #156 terminal paper-exit recovery:** Restore terminal v2 trades with an unacknowledged execution-route marker after restart, including the matching paper order binding. Preserve terminal `EXIT_PENDING` paper orders after route acknowledgement and resume quote monitoring until an observed premium bid completes the exit. Legacy execution snapshots are accepted only when their confirmed fill and pinned contract can be validated; incomplete or mismatched state remains pending.
 
+- **PR #156 recovery review fixes:** Accept `EXIT_TRIGGERED_PENDING_CONFIRMATION` during full-snapshot and legacy paper-binding recovery while retaining fill, protection, and contract checks. Exclude restored exit-only bindings from pending-entry deduplication so a new valid signal can dispatch while a recovered protective exit awaits a bid.
+
+- **PR #156 terminal recovery cleanup:** When an earlier recovered option stop wins, clear the superseded deferred premium exit and later queued index observations in the original terminal snapshot, avoiding a second lifecycle transition after closure.
+
 - **Tuesday expiry profile sensitivity tuning (TASK-20261103):** Set expiry OI-wall minimum OI/change to 6,000,000/5.0%, widen approach/test/excursion/retest distances to 60/15/15/15 points, and set breakout writer/IV/weak-volume thresholds to 5%/−3.0/0.75. Set exhaustion volume/IV thresholds to 2.5/3.5, continuation score/resumption-volume/pullback-window to 2/1.2/8 candles, level scan to 400 points, and signal cooldown to 15 minutes. Non-expiry settings and expiry candle-body ratio remain unchanged. Multi-Tuesday replay confirms 5.0% growth eliminates fragile 2.7% false-alarm watches while delivering 1 disciplined trade per session. Dhan replay evidence and limits are in the Ares Build Log.
 
 - **TASK-20261102 Live market quotes persistence for SpanQuant frontend:**

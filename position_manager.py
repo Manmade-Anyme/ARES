@@ -2069,9 +2069,8 @@ class PositionManager:
             if deferred_at != event_at:
                 continue
             if trade.get("state") in {"CLOSED", "STOPPED_OUT"}:
-                opt["deferred_option_exit"] = None
-                opt["pending_index_observations"] = []
-                await self._record_trade_update(trade, None, None, deferred_at.isoformat())
+                # Terminal cleanup belongs to the original closure snapshot;
+                # the lifecycle RPC rejects new transitions after closure.
                 continue
 
             unresolved_prior_index = False
@@ -2140,6 +2139,11 @@ class PositionManager:
         terminal = trade["state"] in {"CLOSED", "STOPPED_OUT"}
         if terminal:
             opt["monitoring_status"] = "CLOSED"
+            if opt.get("policy_version") == "option_premium_protection_v2":
+                # An earlier recovered stop supersedes later deferred events.
+                # Persist cleanup atomically with either premium or index exit.
+                opt.update(deferred_option_exit=None, pending_index_observations=[],
+                           observed_index_guard_exit=None)
             self._cleanup_option_selection_if_terminal()
         reference_accounting = opt.get("accounting_formula_version") == "one_lot_reference_v1"
         accounting = self._enrich_reference_trade(trade) if reference_accounting else {}

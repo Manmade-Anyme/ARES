@@ -1,5 +1,6 @@
 """Regressions for the independent option-premium stop lifecycle."""
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -12,6 +13,26 @@ from tests.unit.test_option_lifecycle_commit_boundary import Ledger
 from alerts import render_option_lifecycle_event
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+class TerminalGuardLedger(Ledger):
+    """Model the RPC's terminal guard, including idempotent response retries."""
+
+    def __init__(self, lose_terminal_response=False):
+        super().__init__()
+        self.lose_terminal_response = lose_terminal_response
+        self.rejected_terminal_writes = []
+
+    def apply_option_lifecycle_transition(self, trade_id, revision, event_id, payload):
+        if (event_id not in self.events and self.rows
+                and self.rows[-1]["active_state"] in {"CLOSED", "STOPPED_OUT"}):
+            self.rejected_terminal_writes.append(deepcopy(payload))
+            raise ValueError("Terminal trade cannot receive a new lifecycle transition")
+        result = super().apply_option_lifecycle_transition(trade_id, revision, event_id, payload)
+        if self.lose_terminal_response and payload["active_state"] in {"CLOSED", "STOPPED_OUT"}:
+            self.lose_terminal_response = False
+            raise ConnectionError("Terminal commit response lost")
+        return result
 
 
 def _trade(*, phase="PRE_T1", entry=167.20, stop=161.05, option_type="CE"):
@@ -664,15 +685,20 @@ async def test_earlier_queued_t2_is_replayed_before_premium_exit_finalizes_refer
 
 
 @pytest.mark.asyncio
-async def test_recovered_option_stop_before_deferred_trigger_wins_over_later_queued_t2():
+@pytest.mark.parametrize("earlier_source", ["premium", "index_guard"])
+@pytest.mark.parametrize("lose_terminal_response", [False, True])
+async def test_recovered_option_stop_before_deferred_trigger_wins_over_later_queued_t2(
+        earlier_source, lose_terminal_response):
     trade = _trade(phase="POST_T1")
     opt = trade["market_context"]["option_trailing"]
     opt.update(atr_enabled=True, accounting_formula_version="one_lot_reference_v1")
     pm = _manager(trade)
+    pm.analytics = TerminalGuardLedger(lose_terminal_response)
     pm._option_available_until = {}
     t2_at = datetime(2026, 11, 4, 10, 20, 30, tzinfo=IST)
     quote_at = datetime(2026, 11, 4, 10, 21, 0, tzinfo=IST)
-    tick = {"price": trade["target_2"], "exchange_at": t2_at.isoformat(),
+    tick = {"price": trade["target_2"] if earlier_source == "premium" else trade["entry_price"],
+            "exchange_at": t2_at.isoformat(),
             "received_at": t2_at.isoformat(), "source": "dhan_tick"}
     quote = _quote(166.0, 21)
     quote.update(observed_at=quote_at.isoformat(), received_at=(quote_at + timedelta(seconds=1)).isoformat())
@@ -683,7 +709,7 @@ async def test_recovered_option_stop_before_deferred_trigger_wins_over_later_que
     for i in range(13):
         bar_start = start + timedelta(minutes=5 * i)
         bar_end = bar_start + timedelta(minutes=5)
-        close = 160.0 if bar_end == stop_bar_end else 170.0
+        close = 160.0 if earlier_source == "premium" and bar_end == stop_bar_end else 170.0
         history.append(OptionCandle(bar_start, bar_end, 170.0, 171.0,
                                     min(169.0, close), close, 1, "39961"))
 
@@ -696,16 +722,69 @@ async def test_recovered_option_stop_before_deferred_trigger_wins_over_later_que
     with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         recovery_events = await pm.update_option_market_events(
             [], {"39961": history}, current_time=start + timedelta(minutes=65, seconds=2))
+        await pm.retry_option_lifecycle_writes()
+        await pm.retry_option_lifecycle_writes()
 
     assert ("v2-trade", "STOPPED_OUT_AT_BE") in recovery_events
     assert trade["state"] == "CLOSED"
     assert opt["highest_milestone"] == 1
     assert opt["remaining_fraction"] == 0.0
-    assert opt["exit"]["event_at"] == stop_bar_end.isoformat()
-    assert opt["exit"]["option_close"] == pytest.approx(160.0)
+    expected_exit_at = stop_bar_end if earlier_source == "premium" else t2_at
+    assert datetime.fromisoformat(opt["exit"]["event_at"]) == expected_exit_at
+    if earlier_source == "premium":
+        assert opt["exit"]["option_close"] == pytest.approx(160.0)
+    else:
+        assert opt["exit"]["stop_domain"] == "SPOT_INDEX"
     assert opt["exit"]["exited_fraction"] == pytest.approx(0.5)
     assert opt.get("deferred_option_exit") is None
     assert not opt.get("pending_index_observations")
+    assert pm.analytics.rejected_terminal_writes == []
+    assert not pm._option_pending[trade["id"]]
+    terminal_rows = [row for row in pm.analytics.rows if row["active_state"] == "CLOSED"]
+    assert len(terminal_rows) == 1
+    terminal = terminal_rows[0]["option_trailing"]
+    assert terminal["deferred_option_exit"] is None
+    assert terminal["pending_index_observations"] == []
+    assert terminal["observed_index_guard_exit"] is None
+
+
+@pytest.mark.asyncio
+async def test_terminal_deferred_event_does_not_issue_another_transition():
+    trade = _trade(phase="POST_T1")
+    trade["state"] = "CLOSED"
+    opt = trade["market_context"]["option_trailing"]
+    opt["deferred_option_exit"] = {"event_at": "2026-11-04T10:21:00+05:30"}
+    pm = _manager(trade)
+    pm._record_trade_update = AsyncMock()
+
+    assert await pm._apply_deferred_option_exit_at_event("2026-11-04T10:21:00+05:30") == []
+    pm._record_trade_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_nonclosing_recovered_history_preserves_deferred_trigger_and_queued_index():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    deferred = {"event_at": "2026-11-04T10:21:00+05:30", "reason": "STOPPED_OUT_AT_BE",
+                "option_close": 166.0, "stop_domain": "OPTION_PREMIUM"}
+    queued = [{"event_at": "2026-11-04T10:20:30+05:30", "touches_t2": True}]
+    opt.update(atr_enabled=True, deferred_option_exit=deepcopy(deferred),
+               pending_index_observations=deepcopy(queued))
+    pm = _manager(trade)
+    pm.analytics = TerminalGuardLedger()
+    start = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    history = [OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                            170.0, 171.0, 169.0, 170.0, 1, "39961") for i in range(12)]
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_atr_trailing(
+            {"39961": history}, current_time=start + timedelta(minutes=60, seconds=2))
+    assert (trade["id"], "STOPPED_OUT_AT_BE") not in events
+    assert trade["state"] == "T1_HIT"
+    assert opt["deferred_option_exit"] == deferred
+    assert opt["pending_index_observations"] == queued
+    persisted = pm.analytics.rows[-1]["option_trailing"]
+    assert persisted["deferred_option_exit"] == deferred
+    assert persisted["pending_index_observations"] == queued
 
 
 @pytest.mark.asyncio

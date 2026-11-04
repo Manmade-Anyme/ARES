@@ -16,3 +16,9 @@ The option execution retry monitor previously considered active trades only. Aft
 ## Evidence boundary
 
 The restart regression tests cover restored legacy and full snapshots, route acknowledgement, resumed bid processing, and malformed or unavailable persisted state. Local tests do not prove a production restart, database RPC behavior under live service conditions, broker fills, or trading outcome.
+
+## Follow-up review findings
+
+- Premium triggers advance the lifecycle execution status to `EXIT_TRIGGERED_PENDING_CONFIRMATION` before the paper exit fills. Both recovery paths now accept that status while retaining paper-mode, protected-fill, quantity, and contract checks. Recovery tests exercise both the legacy and complete snapshots, plus invalid and reference-only inputs.
+- Restored exit-only bindings do not have the full entry signal used by pending-entry deduplication. Marking and excluding them from that check lets a new valid entry dispatch while the recovered exit stays pending. Ordinary pending-entry deduplication is still covered.
+- A recovered earlier option stop or index guard can supersede a deferred later premium trigger. Clear the superseded metadata before constructing the terminal lifecycle snapshot. The deferred-event handler no longer submits another transition after closure. A terminal-guard ledger reproduces the database rejection and exercises lost-response retry and nonclosing recovery.
