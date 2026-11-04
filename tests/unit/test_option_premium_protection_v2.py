@@ -190,6 +190,40 @@ async def test_t1_tied_option_bar_below_initial_stop_preserves_ordering_and_rout
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ambiguity_field", ["ambiguous_premium_quote", "ambiguous_premium_bar"])
+@pytest.mark.parametrize("index_touch", ["guard", "t2"])
+async def test_later_index_touch_is_retained_while_t1_premium_ordering_is_unknown(ambiguity_field, index_touch):
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    t1_at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    opt.update(atr_enabled=False, t1_at=t1_at.isoformat())
+    opt[ambiguity_field] = {
+        "status": "T1_ORDER_UNKNOWN", "event_at": t1_at.isoformat(),
+        "protective_option_exit": {
+            "reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
+            "event_at": t1_at.isoformat(), "option_close": 160.0,
+            "effective_stop": 161.05, "stop_source": "INITIAL_OPTION_SL",
+        },
+    }
+    pm = _manager(trade)
+    guard_at = t1_at + timedelta(minutes=1)
+    touch_price = trade["entry_price"] if index_touch == "guard" else trade["target_2"]
+    tick = {"price": touch_price, "exchange_at": guard_at.isoformat(),
+            "received_at": guard_at.isoformat(), "source": "dhan_tick"}
+
+    events = await pm.update_option_market_events(
+        [], {}, current_time=guard_at, index_ticks=[tick])
+
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") not in events
+    assert trade["state"] == "T1_HIT"
+    assert opt.get("exit") is None
+    observations = opt[ambiguity_field]["subsequent_index_observations"]
+    assert len(observations) == 1
+    assert datetime.fromisoformat(observations[0]["event_at"]).astimezone(timezone.utc) == guard_at.astimezone(timezone.utc)
+    assert observations[0]["price"] == pytest.approx(touch_price)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("has_spot_evidence", [True, False])
 async def test_premium_exit_persists_contemporaneous_spot_exit_price_when_available(has_spot_evidence):
     trade = _trade(phase="POST_T1")

@@ -976,6 +976,23 @@ class PositionManager:
                             later.append(observation)
                             await self._record_trade_update(trade, None, None, transition_event_ts)
                     continue
+                if (opt_ctx.get("policy_version") == "option_premium_protection_v2"
+                        and self._retained_t1_premium_exit(opt_ctx)):
+                    ambiguity = next((opt_ctx.get(key) for key in
+                                      ("ambiguous_premium_bar", "ambiguous_premium_quote")
+                                      if ((opt_ctx.get(key) or {}).get("protective_option_exit"))), None)
+                    if (ambiguity is not None) and (target_2_hit or be_hit):
+                        observation = {"event_at": price_event_ts, "price": spot_price,
+                            "high": trade_high, "low": trade_low,
+                            "candle_timestamp": candle_timestamp.isoformat() if candle_timestamp else None}
+                        later = ambiguity.setdefault("subsequent_index_observations", [])
+                        if observation not in later:
+                            later.append(observation)
+                            await self._record_trade_update(trade, None, None, transition_event_ts)
+                    # The T1-tied premium stop may already have closed the whole
+                    # position. Preserve later index touches, but do not choose
+                    # an assumed T1 allocation or a later reference exit.
+                    continue
                 if reference_accounting and target_2_hit and be_hit and candle_timestamp is not None:
                     opt_ctx["ambiguous_index_touch"] = {
                         "kind": "T2_ENTRY", "source_minute": candle_timestamp.isoformat(), "event_at": price_event_ts,
