@@ -50,6 +50,24 @@ def test_alert_ack_uses_dedicated_rpc_without_lifecycle_mutation():
     client.table.assert_not_called()
 
 
+def test_execution_route_ack_uses_terminal_safe_rpc_without_lifecycle_mutation():
+    client = Mock()
+    client.rpc.return_value.execute.return_value = SimpleNamespace(
+        data={"success": True, "acknowledged": True})
+    result = logger_with_client(client).acknowledge_option_execution_route("trade", "ATR_SL_HIT")
+    assert result["acknowledged"] is True
+    assert client.rpc.call_args.args[0] == "acknowledge_option_execution_route"
+    assert client.rpc.call_args.args[1] == {"p_trade_id": "trade", "p_reason": "ATR_SL_HIT"}
+    client.table.assert_not_called()
+
+
+def test_execution_route_ack_requires_supported_reason():
+    client = Mock()
+    with pytest.raises(ValueError, match="Unsupported option execution route reason"):
+        logger_with_client(client).acknowledge_option_execution_route("trade", "T2_HIT")
+    client.rpc.assert_not_called()
+
+
 def record(result="OPTION_SL_FLOOR_HIT", milestone=2, remaining=0):
     return {"id": "option", "result_state": result, "entry_timestamp": "2026-10-23T05:00:00Z",
             "entry_price": 22434.8, "direction": "BEARISH", "score": 2,

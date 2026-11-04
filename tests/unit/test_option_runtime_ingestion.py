@@ -275,7 +275,6 @@ async def test_monitor_routes_each_pending_exit_and_retries_failed_sync_on_later
         option = trade["market_context"]["option_trailing"]
         assert option["execution_route_reason"] == reason
         option["execution_route_pending"] = False
-        option["execution_route_reason"] = None
 
     positions = SimpleNamespace(active_trades=trades, update_atr_trailing=AsyncMock(),
                                 acknowledge_option_execution_route=AsyncMock(side_effect=acknowledge))

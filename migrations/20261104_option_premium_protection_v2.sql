@@ -298,6 +298,53 @@ BEGIN
 END;
 $$;
 
+-- Execution-route acknowledgements update only retry metadata. They remain
+-- valid after reference closure and must not reopen the finalized lifecycle.
+CREATE OR REPLACE FUNCTION public.acknowledge_option_execution_route(
+    p_trade_id uuid, p_reason text
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = ''
+AS $$
+DECLARE
+    v_active public.active_trades%ROWTYPE;
+    v_analytics public.trade_analytics%ROWTYPE;
+    v_context jsonb;
+    v_option jsonb;
+BEGIN
+    IF p_reason IS NULL OR pg_catalog.btrim(p_reason) = '' OR p_reason NOT IN
+       ('SL_HIT', 'STOPPED_OUT_AT_BE', 'ATR_SL_HIT', 'OPTION_SL_FLOOR_HIT') THEN
+        RAISE EXCEPTION 'Unsupported option execution route reason';
+    END IF;
+
+    -- Match lifecycle writer lock order so an acknowledgement cannot deadlock
+    -- against a transition or race its atomic two-row commit.
+    SELECT * INTO STRICT v_active FROM public.active_trades WHERE id = p_trade_id FOR UPDATE;
+    SELECT * INTO STRICT v_analytics FROM public.trade_analytics WHERE id = p_trade_id FOR UPDATE;
+    v_context := COALESCE(v_analytics.market_context, '{}'::jsonb);
+    v_option := COALESCE(v_context->'option_trailing', '{}'::jsonb);
+    IF v_option->>'policy_version' IS DISTINCT FROM 'option_premium_protection_v2' THEN
+        RAISE EXCEPTION 'Trade % is not enrolled in option_premium_protection_v2', p_trade_id;
+    END IF;
+    IF v_option->>'execution_route_reason' IS DISTINCT FROM p_reason THEN
+        RETURN pg_catalog.jsonb_build_object('success', true, 'acknowledged', false,
+            'trade_id', p_trade_id, 'option_trailing', v_option);
+    END IF;
+    IF v_option->>'execution_route_pending' IS DISTINCT FROM 'true' THEN
+        -- The reason is retained after clearing the flag, making a lost RPC
+        -- response safe to retry without advancing lifecycle revision.
+        RETURN pg_catalog.jsonb_build_object('success', true, 'acknowledged', true,
+            'idempotent_skip', true, 'trade_id', p_trade_id, 'option_trailing', v_option);
+    END IF;
+
+    v_option := pg_catalog.jsonb_set(v_option, '{execution_route_pending}', 'false'::jsonb, true);
+    v_context := pg_catalog.jsonb_set(v_context, '{option_trailing}', v_option, true);
+    UPDATE public.trade_analytics SET market_context = v_context WHERE id = p_trade_id;
+    RETURN pg_catalog.jsonb_build_object('success', true, 'acknowledged', true,
+        'trade_id', p_trade_id, 'option_trailing', v_option,
+        'active_state', v_active.state, 'result_state', v_analytics.result_state);
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.option_premium_protection_capabilities()
 RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = '' AS $$
     SELECT pg_catalog.jsonb_build_object(
@@ -311,6 +358,7 @@ RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = '' AS $$
                   AND attname = 'option_pnl_points' AND NOT attisdropped)
         AND pg_catalog.to_regprocedure('public.apply_option_lifecycle_transition(uuid,integer,text,jsonb)') IS NOT NULL
         AND pg_catalog.to_regprocedure('public.acknowledge_option_lifecycle_alert(uuid,text,text,text)') IS NOT NULL
+        AND pg_catalog.to_regprocedure('public.acknowledge_option_execution_route(uuid,text)') IS NOT NULL
         AND pg_catalog.to_regprocedure('public.sync_option_reference_ml_label(uuid)') IS NOT NULL
         AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.trade_analytics', 'SELECT')
         AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.trade_analytics', 'UPDATE')
@@ -321,6 +369,8 @@ RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = '' AS $$
         AND pg_catalog.has_function_privilege(CURRENT_USER,
             pg_catalog.to_regprocedure('public.acknowledge_option_lifecycle_alert(uuid,text,text,text)'), 'EXECUTE')
         AND pg_catalog.has_function_privilege(CURRENT_USER,
+            pg_catalog.to_regprocedure('public.acknowledge_option_execution_route(uuid,text)'), 'EXECUTE')
+        AND pg_catalog.has_function_privilege(CURRENT_USER,
             pg_catalog.to_regprocedure('public.sync_option_reference_ml_label(uuid)'), 'EXECUTE')
     );
 $$;
@@ -328,6 +378,8 @@ REVOKE ALL ON FUNCTION public.option_premium_protection_capabilities() FROM PUBL
 GRANT EXECUTE ON FUNCTION public.option_premium_protection_capabilities() TO service_role;
 REVOKE ALL ON FUNCTION public.apply_option_lifecycle_transition(uuid, integer, text, jsonb) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.apply_option_lifecycle_transition(uuid, integer, text, jsonb) TO service_role;
+REVOKE ALL ON FUNCTION public.acknowledge_option_execution_route(uuid, text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.acknowledge_option_execution_route(uuid, text) TO service_role;
 REVOKE ALL ON FUNCTION public.sync_option_reference_ml_label(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.sync_option_reference_ml_label(uuid) TO service_role;
 

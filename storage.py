@@ -485,6 +485,21 @@ class AnalyticsLogger:
             raise RuntimeError("Option alert acknowledgement did not confirm a commit")
         return result
 
+    def acknowledge_option_execution_route(self, trade_id: str, reason: str) -> Dict[str, Any]:
+        """Persist execution retry completion without mutating finalized lifecycle state."""
+        if reason not in {"SL_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
+            raise ValueError("Unsupported option execution route reason")
+        if not getattr(self, "_option_backend_configured", False):
+            raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
+        response = self.supabase.rpc(
+            "acknowledge_option_execution_route",
+            {"p_trade_id": str(trade_id), "p_reason": reason},
+        ).execute()
+        result = getattr(response, "data", None)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise RuntimeError("Option execution route acknowledgement did not confirm a commit")
+        return result
+
     def option_reference_accounting_ready(self) -> bool:
         """Check the installed schema and backend privileges before enrollment."""
         if not getattr(self, "_option_backend_configured", False):

@@ -1,7 +1,7 @@
 """Regressions for the independent option-premium stop lifecycle."""
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -186,7 +186,8 @@ async def test_recovered_option_stop_before_deferred_trigger_wins_over_later_que
 
 
 @pytest.mark.asyncio
-async def test_same_close_index_ambiguity_emits_v2_premium_protective_event():
+@pytest.mark.parametrize("bar_close", [166.0, 167.20])
+async def test_same_close_index_ambiguity_emits_v2_premium_protective_event(bar_close):
     trade = _trade(phase="POST_T1")
     opt = trade["market_context"]["option_trailing"]
     opt.update(atr_enabled=True, accounting_formula_version="one_lot_reference_v1",
@@ -200,7 +201,7 @@ async def test_same_close_index_ambiguity_emits_v2_premium_protective_event():
     for i in range(13):
         bar_start = start + timedelta(minutes=5 * i)
         bar_end = bar_start + timedelta(minutes=5)
-        close = 166.0 if bar_end == stop_bar_end else 170.0
+        close = bar_close if bar_end == stop_bar_end else 170.0
         history.append(OptionCandle(bar_start, bar_end, 170.0, 171.0,
                                     min(169.0, close), close, 1, "39961"))
 
@@ -215,6 +216,7 @@ async def test_same_close_index_ambiguity_emits_v2_premium_protective_event():
     protective = ambiguity["protective_option_exit"]
     assert protective["stop_domain"] == "OPTION_PREMIUM"
     assert protective["reason"] == "STOPPED_OUT_AT_BE"
+    assert protective["option_close"] == pytest.approx(bar_close)
     assert opt["execution_route_pending"] is True
     assert opt["execution_route_reason"] == "STOPPED_OUT_AT_BE"
 
@@ -226,14 +228,32 @@ async def test_execution_route_acknowledgement_clears_only_matching_durable_mark
     opt = trade["market_context"]["option_trailing"]
     opt.update(execution_route_pending=True, execution_route_reason="ATR_SL_HIT")
     pm = _manager(trade)
+    pm.analytics.acknowledge_option_execution_route = Mock(
+        return_value={"success": True, "acknowledged": True})
     pm._record_trade_update = AsyncMock()
 
     assert await pm.acknowledge_option_execution_route("v2-trade", "ATR_SL_HIT") is True
     assert opt["execution_route_pending"] is False
-    assert opt["execution_route_reason"] is None
-    pm._record_trade_update.assert_awaited_once()
+    assert opt["execution_route_reason"] == "ATR_SL_HIT"
+    pm.analytics.acknowledge_option_execution_route.assert_called_once_with("v2-trade", "ATR_SL_HIT")
+    pm._record_trade_update.assert_not_awaited()
     assert await pm.acknowledge_option_execution_route("v2-trade", "STOPPED_OUT_AT_BE") is False
-    pm._record_trade_update.assert_awaited_once()
+    pm.analytics.acknowledge_option_execution_route.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_execution_route_marker_stays_pending_until_terminal_safe_ack_commits():
+    trade = _trade(phase="POST_T1")
+    trade["state"] = "CLOSED"
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(execution_route_pending=True, execution_route_reason="ATR_SL_HIT")
+    pm = _manager(trade)
+    pm.analytics.acknowledge_option_execution_route = Mock(
+        return_value={"success": True, "acknowledged": False})
+
+    assert await pm.acknowledge_option_execution_route("v2-trade", "ATR_SL_HIT") is False
+    assert opt["execution_route_pending"] is True
+    assert opt["execution_route_reason"] == "ATR_SL_HIT"
 
 
 @pytest.mark.asyncio

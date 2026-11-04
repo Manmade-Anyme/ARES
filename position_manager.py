@@ -640,7 +640,7 @@ class PositionManager:
         opt["execution_route_reason"] = reason
 
     async def acknowledge_option_execution_route(self, trade_id, reason):
-        """Clear a durable retry marker only after the matching intent sync succeeds."""
+        """Clear a durable retry marker without reopening the lifecycle writer."""
         trade = next((item for item in self.active_trades if str(item.get("id")) == str(trade_id)), None)
         if trade is None:
             return False
@@ -648,10 +648,14 @@ class PositionManager:
         if (not opt.get("execution_route_pending")
                 or opt.get("execution_route_reason") != reason):
             return False
+        acknowledge = getattr(self.analytics, "acknowledge_option_execution_route", None)
+        if not callable(acknowledge):
+            return False
+        result = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: acknowledge(str(trade_id), reason))
+        if not isinstance(result, dict) or result.get("success") is not True or result.get("acknowledged") is not True:
+            return False
         opt["execution_route_pending"] = False
-        opt["execution_route_reason"] = None
-        stamp = datetime.now(timezone.utc).isoformat()
-        await self._record_trade_update(trade, None, None, stamp)
         return True
 
     async def update_trades(
@@ -3131,8 +3135,9 @@ class PositionManager:
                         if parse_candle_timestamp(candidate.end_time) == event_at), None)
             if bar is None or event_at.microsecond != 0:
                 continue
+            v2 = opt.get("policy_version") == "option_premium_protection_v2"
             active_stop = opt.get("locked_option_sl")
-            if active_stop is None or bar.close >= active_stop:
+            if active_stop is None or (bar.close > active_stop if v2 else bar.close >= active_stop):
                 continue
 
             sign = 1 if trade["direction"] == "BULLISH" else -1
@@ -3157,7 +3162,6 @@ class PositionManager:
                 touches_guard = low <= trade["entry_price"] if sign == 1 else high >= trade["entry_price"]
                 if not touches_t2 and not touches_guard:
                     continue
-                v2 = opt.get("policy_version") == "option_premium_protection_v2"
                 reason = "ATR_SL_HIT" if opt.get("protection_mode") == "ATR" else "OPTION_SL_FLOOR_HIT"
                 ambiguity = opt["ambiguous_index_touch"] = {
                     "kind": "SPOT_OPTION_EXIT_TIE",
