@@ -97,6 +97,82 @@ async def test_post_t1_cost_stop_equality_is_break_even_and_zero_runner_points()
 
 
 @pytest.mark.asyncio
+async def test_earlier_queued_t2_is_replayed_before_premium_exit_finalizes_reference():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, accounting_formula_version="one_lot_reference_v1")
+    pm = _manager(trade)
+    pm._option_available_until = {}
+    t2_at = datetime(2026, 11, 4, 10, 20, 30, tzinfo=IST)
+    quote_at = datetime(2026, 11, 4, 10, 21, 0, tzinfo=IST)
+    tick = {"price": trade["target_2"], "exchange_at": t2_at.isoformat(),
+            "received_at": t2_at.isoformat(), "source": "dhan_tick"}
+    quote = _quote(166.0, 21)
+    quote.update(observed_at=quote_at.isoformat(), received_at=(quote_at + timedelta(seconds=1)).isoformat())
+
+    start = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    history = [OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                            167.2, 168.0, 166.0, 167.2, 1, "39961") for i in range(13)]
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=quote_at + timedelta(seconds=2), index_ticks=[tick], option_quotes=[quote])
+
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in events  # execution protection is routed immediately
+    assert trade["state"] == "T1_HIT"
+    assert opt["highest_milestone"] == 1
+    assert opt.get("exit") is None
+    assert opt["deferred_option_exit"]["event_at"] == quote_at.isoformat()
+    assert opt["pending_index_observations"][0]["touches_t2"] is True
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        recovery_events = await pm.update_option_market_events(
+            [], {"39961": history}, current_time=start + timedelta(minutes=65, seconds=2))
+
+    assert ("v2-trade", "T2_HIT") in recovery_events
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in recovery_events
+    assert trade["state"] == "CLOSED"
+    assert opt["highest_milestone"] == 2
+    assert datetime.fromisoformat(opt["t2_at"]) == t2_at.astimezone(timezone.utc)
+    assert opt["exit"]["event_at"] == quote_at.isoformat()
+    assert opt["exit"]["exited_fraction"] == pytest.approx(0.2)
+    assert opt.get("deferred_option_exit") is None
+    assert not opt.get("pending_index_observations")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quote_offset", [-1, 0])
+async def test_delayed_quote_at_or_before_t2_is_rejected_after_t2_committed(quote_offset):
+    trade = _trade(phase="POST_T1")
+    pm = _manager(trade)
+    t2_at = datetime(2026, 11, 4, 10, 21, 1, tzinfo=IST)
+    tick = {"price": trade["target_2"], "exchange_at": t2_at.isoformat(),
+            "received_at": t2_at.isoformat(), "source": "dhan_tick"}
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        t2_events = await pm.update_option_market_events([], {}, current_time=t2_at, index_ticks=[tick])
+
+    assert ("v2-trade", "T2_HIT") in t2_events
+    assert trade["state"] == "T2_REACHED"
+    quote_at = t2_at + timedelta(seconds=quote_offset)
+    quote = _quote(167.2, 21)
+    quote.update(observed_at=quote_at.isoformat(), received_at=(t2_at + timedelta(seconds=2)).isoformat())
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=t2_at + timedelta(seconds=2), option_quotes=[quote])
+
+    opt = trade["market_context"]["option_trailing"]
+    assert events == []
+    assert trade["state"] == "T2_REACHED"
+    assert opt["highest_milestone"] == 2
+    assert opt["remaining_fraction"] == pytest.approx(0.2)
+    assert opt.get("exit") is None
+    assert opt.get("quote_watermark") is None
+    assert opt.get("last_option_quote") is None
+    assert opt["monitoring_status"] == "UNAVAILABLE"
+    assert "T2 transition" in opt["monitoring_detail"]
+
+
+@pytest.mark.asyncio
 async def test_fresh_quote_is_not_discarded_after_history_fetch_finishes_late():
     trade = _trade(phase="POST_T1")
     pm = _manager(trade)

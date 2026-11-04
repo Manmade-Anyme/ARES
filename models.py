@@ -386,6 +386,7 @@ class OptionTrailingContext:
     last_option_quote: Optional[Dict[str, Any]] = None
     quote_watermark: Optional[str] = None
     exit_trigger: Optional[Dict[str, Any]] = None
+    deferred_option_exit: Optional[Dict[str, Any]] = None
     execution_status: str = "REFERENCE_ONLY"
     protection_mode: str = "NONE"             # NONE | ATR | ORIGINAL_OPTION_SL_FLOOR
     raw_line: Optional[float] = None
@@ -442,6 +443,7 @@ class OptionTrailingContext:
             "last_option_quote": self.last_option_quote,
             "quote_watermark": self.quote_watermark,
             "exit_trigger": self.exit_trigger,
+            "deferred_option_exit": self.deferred_option_exit,
             "execution_status": self.execution_status,
             "protection_mode": self.protection_mode,
             "raw_line": self.raw_line,
@@ -526,6 +528,7 @@ class OptionTrailingContext:
             last_option_quote=data.get("last_option_quote"),
             quote_watermark=data.get("quote_watermark"),
             exit_trigger=data.get("exit_trigger"),
+            deferred_option_exit=data.get("deferred_option_exit"),
             execution_status=data.get("execution_status", "REFERENCE_ONLY"),
             protection_mode=data.get("protection_mode", "NONE"),
             raw_line=data.get("raw_line"),

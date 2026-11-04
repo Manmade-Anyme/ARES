@@ -83,6 +83,7 @@ class SignalDispatcher:
         contract = option.get("contract") or {}
         exit_state = (option.get("exit")
                       or (option.get("ambiguous_index_touch") or {}).get("protective_option_exit")
+                      or option.get("deferred_option_exit")
                       or {})
         stop_domain = exit_state.get("stop_domain")
         index_break_even = (stop_domain == "SPOT_INDEX" and reason == "STOPPED_OUT_AT_BE"

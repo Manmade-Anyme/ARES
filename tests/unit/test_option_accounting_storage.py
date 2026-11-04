@@ -86,10 +86,14 @@ def test_typed_round_trip_preserves_ambiguity_and_protective_observation():
                  "protective_option_exit": {"event_at": "2026-10-23T10:35:00+05:30",
                                             "option_close": 145.0, "option_stop": 146.0}}
     resolution = {"outcome": "T2_HIT", "evidence_source": "complete_ticks"}
+    deferred = {"event_at": "2026-10-23T10:40:00+05:30", "reason": "ATR_SL_HIT",
+                "stop_domain": "OPTION_PREMIUM", "option_close": 145.0}
     restored = OptionTrailingContext.from_dict({"ambiguous_index_touch": ambiguity,
-                                                 "ambiguity_resolution": resolution}).to_dict()
+                                                 "ambiguity_resolution": resolution,
+                                                 "deferred_option_exit": deferred}).to_dict()
     assert restored["ambiguous_index_touch"] == ambiguity
     assert restored["ambiguity_resolution"] == resolution
+    assert restored["deferred_option_exit"] == deferred
 
 
 def test_conflict_state_read_does_not_require_new_column_on_legacy_database():

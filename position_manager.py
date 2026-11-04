@@ -1926,6 +1926,9 @@ class PositionManager:
         source = protective.get("source") or protective.get("trigger_source") or "completed_5m_option_close"
         opt.update(phase="CLOSED", remaining_fraction=0.0, index_guard_enabled=False,
                    monitoring_status="CLOSED")
+        opt["deferred_option_exit"] = None
+        opt["pending_index_observations"] = []
+        opt["observed_index_guard_exit"] = None
         opt["exit_trigger"] = {
             "domain": "OPTION_PREMIUM", "source": source, "event_at": event_at,
             "received_at": protective.get("received_at"), "price": price,
@@ -1954,6 +1957,71 @@ class PositionManager:
                        stop_source=stop_source)
             opt["exit"]["index_price"] = leg.get("spot_price")
         return opt.get("exit", {}).get("index_price")
+
+    async def _apply_deferred_option_exit_at_event(self, event_at):
+        """Finalize a retained premium trigger only after earlier index events replay."""
+        event_at = parse_candle_timestamp(event_at)
+        events = []
+        for trade in self.active_trades:
+            opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+            deferred = opt.get("deferred_option_exit")
+            if not deferred:
+                continue
+            try:
+                deferred_at = parse_candle_timestamp(deferred["event_at"])
+            except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                continue
+            if deferred_at != event_at:
+                continue
+            if trade.get("state") in {"CLOSED", "STOPPED_OUT"}:
+                opt["deferred_option_exit"] = None
+                opt["pending_index_observations"] = []
+                await self._record_trade_update(trade, None, None, deferred_at.isoformat())
+                continue
+
+            unresolved_prior_index = False
+            for observation in opt.get("pending_index_observations") or []:
+                try:
+                    if parse_candle_timestamp(observation["event_at"]) <= deferred_at:
+                        unresolved_prior_index = True
+                        break
+                except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                    unresolved_prior_index = True
+                    break
+            if unresolved_prior_index:
+                continue
+
+            ambiguity = opt.get("ambiguous_index_touch")
+            if ambiguity:
+                try:
+                    ambiguous_at = parse_candle_timestamp(ambiguity.get("event_at") or ambiguity["source_minute"])
+                except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                    ambiguous_at = deferred_at
+                if ambiguous_at <= deferred_at:
+                    ambiguity.setdefault("protective_option_exit", deepcopy(deferred))
+                    opt["deferred_option_exit"] = None
+                    await self._record_trade_update(trade, None, None, deferred_at.isoformat())
+                    continue
+
+            phase = opt.get("phase")
+            if phase not in {"POST_T1", "POST_T2"}:
+                continue
+            t2_at = parse_candle_timestamp(opt["t2_at"]) if opt.get("t2_at") else None
+            if phase == "POST_T2" and t2_at is not None and t2_at >= deferred_at:
+                # A later or same-time T2 must not retroactively change the exit allocation.
+                if deferred.get("ordering_status") != "ORDER_UNKNOWN":
+                    deferred["ordering_status"] = "ORDER_UNKNOWN"
+                    await self._record_trade_update(trade, None, None, deferred_at.isoformat())
+                continue
+            exited_fraction = float(opt.get("remaining_fraction", 0.0))
+            if exited_fraction <= 0:
+                continue
+            protective = deepcopy(deferred)
+            spot = self._finalize_protective_option_exit(
+                trade, protective, exited_fraction=exited_fraction)
+            await self._record_trade_update(trade, spot, protective["reason"], protective["event_at"])
+            events.append((trade["id"], protective["reason"]))
+        return events
 
     @staticmethod
     def _weighted_option_index_pnl(trade, exit_price):
@@ -2118,7 +2186,8 @@ class PositionManager:
                                             # A later database milestone must not erase a newer observed raise.
                                             for field in ("phase", "highest_milestone", "booked_fraction", "remaining_fraction",
                                                           "index_guard_enabled", "index_guard_stop", "t1_at", "t2_at",
-                                                          "observed_index_guard_exit", "pending_index_observations"):
+                                                          "observed_index_guard_exit", "pending_index_observations",
+                                                          "deferred_option_exit"):
                                                 if field in persisted_opt:
                                                     candidate[field] = persisted_opt[field]
                                             queued["active_state"] = persisted.get("active_state")
@@ -2135,7 +2204,7 @@ class PositionManager:
                                                 alert["trade"]["state"] = queued["active_state"]
                                                 alert["trade"]["market_context"]["option_trailing"] = deepcopy(alert["option_trailing"])
                                             if trade.get("state") not in {"CLOSED", "STOPPED_OUT"}:
-                                                opt.update({key: candidate[key] for key in ("phase", "highest_milestone", "booked_fraction", "remaining_fraction", "index_guard_enabled", "index_guard_stop", "locked_option_sl", "protection_mode", "observed_index_guard_exit", "pending_index_observations") if key in candidate})
+                                                opt.update({key: candidate[key] for key in ("phase", "highest_milestone", "booked_fraction", "remaining_fraction", "index_guard_enabled", "index_guard_stop", "locked_option_sl", "protection_mode", "observed_index_guard_exit", "pending_index_observations", "deferred_option_exit") if key in candidate})
                                                 trade["state"] = queued["active_state"]
                                             kept.append((queued_id, queued))
                                         elif older_stop and (candidate.get("highest_milestone", 0) > persisted_opt.get("highest_milestone", 0)
@@ -2456,18 +2525,34 @@ class PositionManager:
             "stop_source": stop_source, "reason": reason,
         }
         ambiguity = opt.get("ambiguous_index_touch")
-        if ambiguity:
+        queued_index_before_or_at_exit = False
+        for observation in opt.get("pending_index_observations") or []:
+            try:
+                queued_at = parse_candle_timestamp(observation["event_at"])
+            except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                queued_index_before_or_at_exit = True
+                break
+            if queued_at <= parse_candle_timestamp(observed_at):
+                queued_index_before_or_at_exit = True
+                break
+        if ambiguity or queued_index_before_or_at_exit:
             pending_exit = {
                 "reason": reason, "stop_domain": "OPTION_PREMIUM", "source": source,
                 "event_at": observed_at, "received_at": received_at,
                 "option_close": float(price), "option_stop": stop, "effective_stop": stop,
                 "stop_source": stop_source, "trigger_source": source,
-                "trigger_price": float(price),
+                "trigger_price": float(price), "detected_at": datetime.now(timezone.utc).isoformat(),
             }
             # The first observed stop trigger is immutable; later quotes cannot
-            # move its event time or price while index ordering is unresolved.
-            already_pending = ambiguity.get("protective_option_exit") is not None
-            pending_exit = ambiguity.setdefault("protective_option_exit", pending_exit)
+            # move its event time or price while index ordering/history is unresolved.
+            pending_container = ambiguity if ambiguity else opt
+            pending_key = "protective_option_exit" if ambiguity else "deferred_option_exit"
+            existing_pending = pending_container.get(pending_key)
+            already_pending = existing_pending is not None
+            if already_pending:
+                pending_exit = existing_pending
+            else:
+                pending_container[pending_key] = pending_exit
             for key, value in {
                 "stop_domain": "OPTION_PREMIUM", "source": source,
                 "received_at": received_at, "option_close": float(price),
@@ -2522,10 +2607,15 @@ class PositionManager:
 
     async def _reject_quote_before_active_stop(self, trade, observed_at, received_at):
         opt = (trade.get("market_context") or {}).get("option_trailing") or {}
-        effective_value = opt.get("stop_effective_at")
-        if not effective_value or observed_at >= parse_candle_timestamp(effective_value):
-            return False
-        detail = "Rejected out-of-order option quote before active stop effective time"
+        t2_value = opt.get("t2_at")
+        if (opt.get("phase") == "POST_T2" and t2_value
+                and observed_at <= parse_candle_timestamp(t2_value)):
+            detail = "Rejected out-of-order option quote at or before T2 transition"
+        else:
+            effective_value = opt.get("stop_effective_at")
+            if not effective_value or observed_at >= parse_candle_timestamp(effective_value):
+                return False
+            detail = "Rejected out-of-order option quote before active stop effective time"
         if opt.get("policy_version") == "option_premium_protection_v2":
             before = (opt.get("monitoring_status"), list(opt.get("monitoring_unavailable_sources") or []),
                       dict(opt.get("monitoring_unavailable_details") or {}))
@@ -2548,6 +2638,8 @@ class PositionManager:
             opt = (trade.get("market_context") or {}).get("option_trailing") or {}
             if (opt.get("policy_version") != "option_premium_protection_v2"
                     or trade.get("state") in {"CLOSED", "STOPPED_OUT"}):
+                continue
+            if opt.get("deferred_option_exit"):
                 continue
             contract = opt.get("contract") or {}
             for quote in quotes:
@@ -2715,9 +2807,10 @@ class PositionManager:
             if opt.get("locked_option_sl") is None:
                 self._seed_option_stop(trade, parse_candle_timestamp(opt["t1_at"]))
             for bar in bars:
-                if (opt.get("ambiguous_index_touch") or {}).get("protective_option_exit"):
+                if (opt.get("deferred_option_exit")
+                        or (opt.get("ambiguous_index_touch") or {}).get("protective_option_exit")):
                     # Preserve the first protective exit and its active stop until
-                    # the earlier same-minute ordering has been established.
+                    # all earlier index ordering/history has been established.
                     break
                 end = parse_candle_timestamp(bar.end_time)
                 if end < cutoff or (end == cutoff and opt.get("last_processed_option_bar_end")):
@@ -2924,6 +3017,12 @@ class PositionManager:
                 end = parse_candle_timestamp(bar.end_time)
                 if end > cutoff or (end == cutoff and not opt.get("last_processed_option_bar_end")):
                     timeline.setdefault(end, [])
+            deferred_exit = opt.get("deferred_option_exit")
+            if deferred_exit:
+                try:
+                    timeline.setdefault(parse_candle_timestamp(deferred_exit["event_at"]), [])
+                except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                    pass
         pending_ticks = {}
         live_ticks = {}
         for tick in index_ticks or []:
@@ -3059,6 +3158,7 @@ class PositionManager:
                 events.extend(await self.update_trades(
                     tick["price"], event_time=tick["received_at"],
                     market_event_time=tick["exchange_at"], only_option_policy=True))
+            events.extend(await self._apply_deferred_option_exit_at_event(event_at))
             events.extend(await self._process_option_quotes_at_event(
                 event_at, (premium_quotes or {}).get(event_at, [])))
             events.extend(await self.update_option_atr_trailing(option_histories, current_time=event_at, _check_monitoring=False))

@@ -71,6 +71,10 @@ Merge source-timestamped spot observations, option-premium observations, and com
 
 When an option-premium stop triggers while an earlier index T2/entry-guard candle is unresolved, persist the first protective premium event on that ambiguity record and route its paper execution intent without closing the reference lifecycle. Keep the trade in its active post-T1 state until certified ordered index evidence resolves the earlier candle. Then book T2 first and apply the premium exit to the remaining reference fraction if T2 was first; if the entry guard was first, finalize the break-even index exit. If the premium trigger itself predates the first ordered index touch, finalize the premium exit first. Preserve the original quote/bar provenance and do not re-use later observations to rewrite the first protective trigger.
 
+Apply the same ordering protection when a meaningful index touch is queued because required option history is incomplete. A later premium-stop quote immediately creates the execution exit intent, but its reference exit is stored as `deferred_option_exit` and the trade remains in its active post-T1 lifecycle. On recovery, replay the queued index observation and completed option history by source timestamp, then apply the retained premium trigger using the fraction still remaining at that event. Do not let a terminal premium event strand earlier queued index evidence.
+
+After T2 is committed, reject any premium quote whose source time is at or before `t2_at` as out of order and mark quote monitoring unavailable. Do not apply the later POST_T2 allocation retroactively to a pre-T2 premium observation; a same-batch quote with an earlier source time must be replayed before T2.
+
 For v2 trades, keep premium-quote health and ATR-history health as separate monitoring causes. Healthy ATR history cannot clear a quote outage, and a fresh quote cannot clear an ATR-history outage. Emit a restored state only after all feeds required by the trade's ATR configuration have recovered; when ATR is disabled, quote health remains the only required monitoring feed.
 
 ## 3. Premium Quote Source and Failure Policy

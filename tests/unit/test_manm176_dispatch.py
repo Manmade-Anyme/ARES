@@ -415,6 +415,31 @@ async def test_deferred_premium_stop_routes_from_unresolved_index_ambiguity():
 
 
 @pytest.mark.asyncio
+async def test_deferred_premium_stop_routes_while_prior_index_history_is_queued():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    trade = positions.active_trades[0]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                "strike": 24000, "option_type": "CE"}
+    trade["state"] = "T1_HIT"
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "contract": contract,
+        "exit": None,
+        "deferred_option_exit": {"reason": "STOPPED_OUT_AT_BE", "stop_domain": "OPTION_PREMIUM"},
+    }}
+    record = next(iter(orders.records.values()))
+
+    assert await dispatcher.on_option_stop(trade, "STOPPED_OUT_AT_BE") is True
+    assert trade["state"] == "T1_HIT"
+    assert trade["market_context"]["option_trailing"]["exit"] is None
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == record.filled_quantity
+
+
+@pytest.mark.asyncio
 async def test_premium_stop_expands_pending_t1_exit_to_all_remaining_units():
     positions = Positions()
     orders = OrderManager()
