@@ -628,6 +628,32 @@ class PositionManager:
         await asyncio.get_running_loop().run_in_executor(None, persist)
         return trade_id in self._execution_ml_bound
 
+    @staticmethod
+    def _mark_option_execution_route_pending(trade, reason):
+        opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+        if (opt.get("policy_version") != "option_premium_protection_v2"
+                or opt.get("execution_status") in {"REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"}):
+            return
+        if opt.get("execution_route_pending"):
+            return
+        opt["execution_route_pending"] = True
+        opt["execution_route_reason"] = reason
+
+    async def acknowledge_option_execution_route(self, trade_id, reason):
+        """Clear a durable retry marker only after the matching intent sync succeeds."""
+        trade = next((item for item in self.active_trades if str(item.get("id")) == str(trade_id)), None)
+        if trade is None:
+            return False
+        opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+        if (not opt.get("execution_route_pending")
+                or opt.get("execution_route_reason") != reason):
+            return False
+        opt["execution_route_pending"] = False
+        opt["execution_route_reason"] = None
+        stamp = datetime.now(timezone.utc).isoformat()
+        await self._record_trade_update(trade, None, None, stamp)
+        return True
+
     async def update_trades(
         self,
         spot_price: float,
@@ -999,6 +1025,7 @@ class PositionManager:
                     event_price = trade["entry_price"]
                     if reference_accounting:
                         self._capture_reference_leg(trade, "EXIT", event_price, price_event_ts, candle_timestamp)
+                    self._mark_option_execution_route_pending(trade, update_type)
                     events.append((trade["id"], update_type))
                     await self._record_trade_update(trade, event_price, update_type, transition_event_ts)
                 continue
@@ -1137,6 +1164,7 @@ class PositionManager:
                 event_price = trade["stop_loss"]
                 if reference_accounting:
                     self._capture_reference_leg(trade, "EXIT", event_price, price_event_ts, candle_timestamp)
+                self._mark_option_execution_route_pending(trade, update_type)
                 events.append((trade["id"], update_type))
                 await self._record_trade_update(trade, event_price, update_type, transition_event_ts)
                 continue
@@ -2571,6 +2599,7 @@ class PositionManager:
             opt["execution_status"] = ("REFERENCE_TRIGGERED_NO_BROKER_FILL"
                                         if opt.get("execution_status") == "REFERENCE_ONLY"
                                         else "EXIT_TRIGGERED_PENDING_CONFIRMATION")
+            self._mark_option_execution_route_pending(trade, pending_exit["reason"])
             if not already_pending:
                 opt.setdefault("event_history", []).append(dict(opt["exit_trigger"]))
             await self._record_trade_update(trade, None, None, pending_exit["event_at"])
@@ -2579,6 +2608,7 @@ class PositionManager:
         opt["execution_status"] = ("REFERENCE_TRIGGERED_NO_BROKER_FILL"
                                     if opt.get("execution_status") == "REFERENCE_ONLY"
                                     else "EXIT_TRIGGERED_PENDING_CONFIRMATION")
+        self._mark_option_execution_route_pending(trade, reason)
         runner_points = round(float(price) - float(opt["original_option_entry"]), 8)
         opt["exit"] = {
             "reason": reason, "stop_domain": "OPTION_PREMIUM", "event_at": observed_at,
@@ -3077,6 +3107,7 @@ class PositionManager:
 
     async def _mark_same_close_option_spot_ambiguities(self, event_at, timeline, pending_ticks, live_ticks, histories):
         """Preserve spot/option ordering when a second-resolution event ties a stopped bar close."""
+        events = []
         for trade in self.active_trades:
             if trade.get("state") != "T1_HIT":
                 continue
@@ -3126,6 +3157,7 @@ class PositionManager:
                 touches_guard = low <= trade["entry_price"] if sign == 1 else high >= trade["entry_price"]
                 if not touches_t2 and not touches_guard:
                     continue
+                v2 = opt.get("policy_version") == "option_premium_protection_v2"
                 reason = "ATR_SL_HIT" if opt.get("protection_mode") == "ATR" else "OPTION_SL_FLOOR_HIT"
                 ambiguity = opt["ambiguous_index_touch"] = {
                     "kind": "SPOT_OPTION_EXIT_TIE",
@@ -3137,21 +3169,29 @@ class PositionManager:
                     "touches_t2": touches_t2,
                     "touches_guard": touches_guard,
                     "status": "ORDER_UNKNOWN",
-                    "protective_option_exit": {
+                }
+                if not v2:
+                    ambiguity["protective_option_exit"] = {
                         "event_at": __import__("storage").to_utc_iso(bar.end_time),
                         "option_close": bar.close,
                         "option_stop": active_stop,
                         "reason": reason,
-                    },
-                }
-                await self._record_trade_update(trade, None, None, ambiguity["event_at"])
+                    }
+                if v2:
+                    reason = await self._close_option_premium_trade(
+                        trade, bar.close, bar.end_time, source="completed_5m_option_close")
+                    if reason:
+                        events.append((trade["id"], reason))
+                else:
+                    await self._record_trade_update(trade, None, None, ambiguity["event_at"])
                 break
+        return events
 
     async def _replay_option_timeline(self, timeline, pending_ticks, live_ticks, histories, option_histories, now, events,
                                       premium_quotes=None):
         for event_at in sorted(timeline):
-            await self._mark_same_close_option_spot_ambiguities(
-                event_at, timeline, pending_ticks, live_ticks, histories)
+            events.extend(await self._mark_same_close_option_spot_ambiguities(
+                event_at, timeline, pending_ticks, live_ticks, histories))
             for candle in timeline[event_at]:
                 val = (lambda key: candle[key]) if isinstance(candle, dict) else (lambda key: getattr(candle, key))
                 events.extend(await self.update_trades(val("close"), candle_high=val("high"), candle_low=val("low"),

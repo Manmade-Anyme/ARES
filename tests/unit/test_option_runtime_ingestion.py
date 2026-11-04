@@ -258,6 +258,44 @@ async def test_v2_premium_stop_is_routed_while_index_history_replay_is_pending()
 
 
 @pytest.mark.asyncio
+async def test_monitor_routes_each_pending_exit_and_retries_failed_sync_on_later_pass():
+    import main
+    contract = dict(security_id="39961", exchange_segment="NSE_FNO", expiry="2026-11-09",
+                    strike=23950, option_type="CE")
+    trades = []
+    for trade_id in ("first", "second"):
+        trades.append({"id": trade_id, "state": "CLOSED", "market_context": {"option_trailing": {
+            "policy_version": "option_premium_protection_v2", "highest_milestone": 1,
+            "contract": contract, "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+            "execution_route_pending": True, "execution_route_reason": "ATR_SL_HIT",
+        }}})
+
+    async def acknowledge(trade_id, reason):
+        trade = next(item for item in trades if item["id"] == trade_id)
+        option = trade["market_context"]["option_trailing"]
+        assert option["execution_route_reason"] == reason
+        option["execution_route_pending"] = False
+        option["execution_route_reason"] = None
+
+    positions = SimpleNamespace(active_trades=trades, update_atr_trailing=AsyncMock(),
+                                acknowledge_option_execution_route=AsyncMock(side_effect=acknowledge))
+    dispatcher = SimpleNamespace(on_candles=AsyncMock(),
+                                 on_option_stop=AsyncMock(side_effect=[RuntimeError("sync failed"), True, True]))
+
+    await main._monitor_completed_atr([], positions, dispatcher, current_time=datetime(2026, 11, 4, 10, 21, tzinfo=IST))
+
+    assert [call.args[0]["id"] for call in dispatcher.on_option_stop.await_args_list] == ["first", "second"]
+    assert trades[0]["market_context"]["option_trailing"]["execution_route_pending"] is True
+    assert trades[1]["market_context"]["option_trailing"]["execution_route_pending"] is False
+
+    await main._monitor_completed_atr([], positions, dispatcher, current_time=datetime(2026, 11, 4, 10, 22, tzinfo=IST))
+
+    assert [call.args[0]["id"] for call in dispatcher.on_option_stop.await_args_list] == [
+        "first", "second", "first"]
+    assert all(not trade["market_context"]["option_trailing"]["execution_route_pending"] for trade in trades)
+
+
+@pytest.mark.asyncio
 async def test_index_request_failure_still_runs_option_protection():
     import main
     contract = dict(security_id="51333", exchange="NSE_FNO", expiry="2026-10-27", strike=22550, option_type="PE")

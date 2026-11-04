@@ -186,6 +186,57 @@ async def test_recovered_option_stop_before_deferred_trigger_wins_over_later_que
 
 
 @pytest.mark.asyncio
+async def test_same_close_index_ambiguity_emits_v2_premium_protective_event():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, accounting_formula_version="one_lot_reference_v1",
+               execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    stop_bar_end = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    tick = {"price": trade["target_2"], "exchange_at": stop_bar_end.isoformat(),
+            "received_at": stop_bar_end.isoformat(), "source": "dhan_tick"}
+    start = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    history = []
+    for i in range(13):
+        bar_start = start + timedelta(minutes=5 * i)
+        bar_end = bar_start + timedelta(minutes=5)
+        close = 166.0 if bar_end == stop_bar_end else 170.0
+        history.append(OptionCandle(bar_start, bar_end, 170.0, 171.0,
+                                    min(169.0, close), close, 1, "39961"))
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {"39961": history}, current_time=stop_bar_end + timedelta(seconds=2), index_ticks=[tick])
+
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in events
+    assert trade["state"] == "T1_HIT"
+    assert opt.get("exit") is None
+    ambiguity = opt["ambiguous_index_touch"]
+    protective = ambiguity["protective_option_exit"]
+    assert protective["stop_domain"] == "OPTION_PREMIUM"
+    assert protective["reason"] == "STOPPED_OUT_AT_BE"
+    assert opt["execution_route_pending"] is True
+    assert opt["execution_route_reason"] == "STOPPED_OUT_AT_BE"
+
+
+@pytest.mark.asyncio
+async def test_execution_route_acknowledgement_clears_only_matching_durable_marker():
+    trade = _trade(phase="POST_T1")
+    trade["state"] = "CLOSED"
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(execution_route_pending=True, execution_route_reason="ATR_SL_HIT")
+    pm = _manager(trade)
+    pm._record_trade_update = AsyncMock()
+
+    assert await pm.acknowledge_option_execution_route("v2-trade", "ATR_SL_HIT") is True
+    assert opt["execution_route_pending"] is False
+    assert opt["execution_route_reason"] is None
+    pm._record_trade_update.assert_awaited_once()
+    assert await pm.acknowledge_option_execution_route("v2-trade", "STOPPED_OUT_AT_BE") is False
+    pm._record_trade_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("quote_offset", [-1, 0])
 async def test_delayed_quote_at_or_before_t2_is_rejected_after_t2_committed(quote_offset):
     trade = _trade(phase="POST_T1")

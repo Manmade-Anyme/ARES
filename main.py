@@ -680,6 +680,7 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
     PositionManager owns source-time ordering across index and premium candles.
     """
     option_ticks_replayed = False
+    option_stop_events = []
     if price_fetcher is not None:
         from options_candles import IST
         contracts = {}
@@ -741,34 +742,52 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                 events = await position_manager.update_option_market_events(
                     candles, histories, current_time=replayed_at, index_ticks=index_ticks,
                     option_quotes=option_quotes, quote_freshness_at=quote_freshness_at or replayed_at)
+                option_stop_events.extend(events)
                 option_ticks_replayed = index_ticks is not None
                 if engine is not None and any(event == "SL_HIT" for _, event in events):
                     engine.clear_cooldown()
-                if dispatcher is not None:
-                    on_option_stop = getattr(dispatcher, "on_option_stop", None)
-                    if callable(on_option_stop):
-                        terminal_by_id = {str(trade.get("id")): trade
-                                          for trade in position_manager.active_trades}
-                        for trade_id, reason in events:
-                            trade = terminal_by_id.get(str(trade_id))
-                            option = ((trade or {}).get("market_context") or {}).get("option_trailing") or {}
-                            exit_state = (option.get("exit")
-                                          or (option.get("ambiguous_index_touch") or {}).get("protective_option_exit")
-                                          or option.get("deferred_option_exit")
-                                          or {})
-                            stop_domain = exit_state.get("stop_domain")
-                            index_stop = (stop_domain == "SPOT_INDEX"
-                                          and ((reason == "STOPPED_OUT_AT_BE"
-                                                and option.get("highest_milestone") == 1)
-                                               or (reason == "SL_HIT"
-                                                   and option.get("highest_milestone") == 0)))
-                            execution_stop = stop_domain == "OPTION_PREMIUM" or index_stop
-                            if (option.get("policy_version") == "option_premium_protection_v2"
-                                    and execution_stop
-                                    and exit_state.get("reason") == reason):
-                                await on_option_stop(trade, reason)
             except Exception as exc:
                 logger.warning("Option lifecycle monitoring failed: %s", exc)
+    if dispatcher is not None:
+        on_option_stop = getattr(dispatcher, "on_option_stop", None)
+        if callable(on_option_stop):
+            routes = list(option_stop_events)
+            seen_routes = {(str(trade_id), reason) for trade_id, reason in routes}
+            for trade in position_manager.active_trades:
+                option = ((trade.get("market_context") or {}).get("option_trailing") or {})
+                if option.get("execution_route_pending"):
+                    reason = option.get("execution_route_reason")
+                    key = (str(trade.get("id")), reason)
+                    if reason and key not in seen_routes:
+                        routes.append((trade.get("id"), reason))
+                        seen_routes.add(key)
+            trades_by_id = {str(trade.get("id")): trade for trade in position_manager.active_trades}
+            for trade_id, reason in routes:
+                trade = trades_by_id.get(str(trade_id))
+                option = ((trade or {}).get("market_context") or {}).get("option_trailing") or {}
+                exit_state = (option.get("exit")
+                              or (option.get("ambiguous_index_touch") or {}).get("protective_option_exit")
+                              or option.get("deferred_option_exit")
+                              or {})
+                stop_domain = exit_state.get("stop_domain")
+                index_stop = (stop_domain == "SPOT_INDEX"
+                              and ((reason == "STOPPED_OUT_AT_BE" and option.get("highest_milestone") == 1)
+                                   or (reason == "SL_HIT" and option.get("highest_milestone") == 0)))
+                route_pending = (option.get("execution_route_pending")
+                                 and option.get("execution_route_reason") == reason)
+                execution_stop = stop_domain == "OPTION_PREMIUM" or index_stop
+                if (option.get("policy_version") != "option_premium_protection_v2"
+                        or not execution_stop
+                        or (exit_state.get("reason") != reason and not route_pending)):
+                    continue
+                try:
+                    routed = await on_option_stop(trade, reason)
+                    if routed is True and route_pending:
+                        acknowledge = getattr(position_manager, "acknowledge_option_execution_route", None)
+                        if callable(acknowledge):
+                            await acknowledge(trade_id, reason)
+                except Exception:
+                    logger.exception("Option stop execution routing failed for trade %s; retry retained", trade_id)
     try:
         if index_ticks is None:
             events = await position_manager.update_atr_trailing(candles)

@@ -90,10 +90,14 @@ def test_typed_round_trip_preserves_ambiguity_and_protective_observation():
                 "stop_domain": "OPTION_PREMIUM", "option_close": 145.0}
     restored = OptionTrailingContext.from_dict({"ambiguous_index_touch": ambiguity,
                                                  "ambiguity_resolution": resolution,
-                                                 "deferred_option_exit": deferred}).to_dict()
+                                                 "deferred_option_exit": deferred,
+                                                 "execution_route_pending": True,
+                                                 "execution_route_reason": "ATR_SL_HIT"}).to_dict()
     assert restored["ambiguous_index_touch"] == ambiguity
     assert restored["ambiguity_resolution"] == resolution
     assert restored["deferred_option_exit"] == deferred
+    assert restored["execution_route_pending"] is True
+    assert restored["execution_route_reason"] == "ATR_SL_HIT"
 
 
 def test_conflict_state_read_does_not_require_new_column_on_legacy_database():

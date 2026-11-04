@@ -75,6 +75,8 @@ Apply the same ordering protection when a meaningful index touch is queued becau
 
 After T2 is committed, reject any premium quote whose source time is at or before `t2_at` as out of order and mark quote monitoring unavailable. Do not apply the later POST_T2 allocation retroactively to a pre-T2 premium observation; a same-batch quote with an earlier source time must be replayed before T2.
 
+For a same-close v2 option-stop/index-milestone ambiguity, retain the reference ambiguity but persist and emit the premium protective trigger immediately so execution routing does not depend on resolving the reference event first. For confirmed paper fills, persist an execution-route-pending marker with the trigger reason. Route each trade independently; a sync failure for one trade must not abort the batch. Retry pending routes on later monitor passes, including for already-terminal trades, and clear the marker only after the dispatcher confirms the route sync.
+
 For v2 trades, keep premium-quote health and ATR-history health as separate monitoring causes. Healthy ATR history cannot clear a quote outage, and a fresh quote cannot clear an ATR-history outage. Emit a restored state only after all feeds required by the trade's ATR configuration have recovered; when ATR is disabled, quote health remains the only required monitoring feed.
 
 ## 3. Premium Quote Source and Failure Policy

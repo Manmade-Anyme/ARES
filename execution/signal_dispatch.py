@@ -85,6 +85,8 @@ class SignalDispatcher:
                       or (option.get("ambiguous_index_touch") or {}).get("protective_option_exit")
                       or option.get("deferred_option_exit")
                       or {})
+        route_pending = (option.get("execution_route_pending")
+                         and option.get("execution_route_reason") == reason)
         stop_domain = exit_state.get("stop_domain")
         index_break_even = (stop_domain == "SPOT_INDEX" and reason == "STOPPED_OUT_AT_BE"
                             and option.get("highest_milestone") == 1)
@@ -92,7 +94,7 @@ class SignalDispatcher:
                               and option.get("highest_milestone") == 0)
         if (not trade_signal or option.get("policy_version") != "option_premium_protection_v2"
                 or (stop_domain != "OPTION_PREMIUM" and not index_break_even and not initial_index_stop)
-                or exit_state.get("reason") != reason):
+                or (exit_state.get("reason") != reason and not route_pending)):
             return False
         for correlation_id, (signal, _) in tuple(self._signals.items()):
             if str(signal.id) != trade_signal:
@@ -112,8 +114,7 @@ class SignalDispatcher:
                 return False
             self.orders.request_option_exit(correlation_id, reason)
             self._publish(record)
-            await self._sync(record)
-            return True
+            return await self._sync(record)
         return False
 
     def _publish(self, record):
@@ -160,6 +161,7 @@ class SignalDispatcher:
         terminal = record.status in {"CANCELLED", "REJECTED", "CLOSED"}
         if terminal and (record.filled_quantity == 0 or persisted):
             self._signals.pop(record.correlation_id, None)
+        return persisted
 
     async def _observe(self, record, full_chain, spot):
         bracket = record.bracket
