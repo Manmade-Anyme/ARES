@@ -289,6 +289,7 @@ async def test_monitor_routes_each_pending_exit_and_retries_failed_sync_on_later
             "contract": contract, "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
             "execution_route_pending": True, "execution_route_reason": "ATR_SL_HIT",
         }}})
+    trades[0]["market_context"]["execution"] = ["invalid"]
 
     async def acknowledge(trade_id, reason):
         trade = next(item for item in trades if item["id"] == trade_id)
@@ -296,7 +297,8 @@ async def test_monitor_routes_each_pending_exit_and_retries_failed_sync_on_later
         assert option["execution_route_reason"] == reason
         option["execution_route_pending"] = False
 
-    positions = SimpleNamespace(active_trades=trades, update_atr_trailing=AsyncMock(),
+    positions = SimpleNamespace(active_trades=[], _option_execution_route_trades=trades,
+                                update_atr_trailing=AsyncMock(),
                                 acknowledge_option_execution_route=AsyncMock(side_effect=acknowledge))
     dispatcher = SimpleNamespace(on_candles=AsyncMock(),
                                  on_option_stop=AsyncMock(side_effect=[RuntimeError("sync failed"), True, True]))
@@ -312,6 +314,40 @@ async def test_monitor_routes_each_pending_exit_and_retries_failed_sync_on_later
     assert [call.args[0]["id"] for call in dispatcher.on_option_stop.await_args_list] == [
         "first", "second", "first"]
     assert all(not trade["market_context"]["option_trailing"]["execution_route_pending"] for trade in trades)
+
+
+@pytest.mark.asyncio
+async def test_monitor_resumes_terminal_paper_exit_after_route_marker_was_acknowledged():
+    import main
+    trade = {"id": "terminal-pending-fill", "state": "CLOSED", "market_context": {
+        "execution": {"mode": "PAPER", "status": "EXIT_PENDING",
+                      "pending_exit_quantity": 65, "exit_reason": "ATR_SL_HIT"},
+        "option_trailing": {
+            "policy_version": "option_premium_protection_v2",
+            "execution_status": "CONFIRMED_PAPER_FILL",
+            "execution_route_pending": False,
+            "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+        },
+    }}
+    missing_reason = {"id": "pending-without-reason", "state": "CLOSED", "market_context": {
+        "execution": {"mode": "PAPER", "status": "EXIT_PENDING"},
+        "option_trailing": {
+            "policy_version": "option_premium_protection_v2",
+            "execution_status": "CONFIRMED_PAPER_FILL",
+            "execution_route_pending": False,
+            "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+        },
+    }}
+    positions = SimpleNamespace(
+        active_trades=[], _option_execution_route_trades=[trade, missing_reason],
+        update_atr_trailing=AsyncMock(), update_option_market_events=AsyncMock(),
+    )
+    dispatcher = SimpleNamespace(on_candles=AsyncMock(), on_option_stop=AsyncMock(return_value=True))
+
+    await main._monitor_completed_atr([], positions, dispatcher,
+                                      current_time=datetime(2026, 11, 4, 10, 22, tzinfo=IST))
+
+    dispatcher.on_option_stop.assert_awaited_once_with(trade, "ATR_SL_HIT")
 
 
 @pytest.mark.asyncio

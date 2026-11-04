@@ -751,6 +751,7 @@ async def test_execution_route_acknowledgement_clears_only_matching_durable_mark
     opt = trade["market_context"]["option_trailing"]
     opt.update(execution_route_pending=True, execution_route_reason="ATR_SL_HIT")
     pm = _manager(trade)
+    pm._option_execution_route_trades = [trade]
     pm.analytics.acknowledge_option_execution_route = Mock(
         return_value={"success": True, "acknowledged": True})
     pm._record_trade_update = AsyncMock()
@@ -758,6 +759,7 @@ async def test_execution_route_acknowledgement_clears_only_matching_durable_mark
     assert await pm.acknowledge_option_execution_route("v2-trade", "ATR_SL_HIT") is True
     assert opt["execution_route_pending"] is False
     assert opt["execution_route_reason"] == "ATR_SL_HIT"
+    assert pm._option_execution_route_trades == []
     pm.analytics.acknowledge_option_execution_route.assert_called_once_with("v2-trade", "ATR_SL_HIT")
     pm._record_trade_update.assert_not_awaited()
     assert await pm.acknowledge_option_execution_route("v2-trade", "STOPPED_OUT_AT_BE") is False

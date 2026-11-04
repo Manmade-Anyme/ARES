@@ -75,6 +75,8 @@ class PositionManager:
             pass
         self.analytics = AnalyticsLogger()
         self.active_trades: List[Dict[str, Any]] = []
+        self._option_execution_route_trades: List[Dict[str, Any]] = []
+        self._option_alert_trades: List[Dict[str, Any]] = []
         self._trade_writes: Dict[str, asyncio.Task] = {}
         self._trade_alerts: Dict[str, asyncio.Task] = {}
         self._execution_snapshots = {}
@@ -288,9 +290,12 @@ class PositionManager:
             except Exception as e:
                 print(f"Failed to reconcile active trades against analytics: {e}")
 
-            # Terminal trades can still own a committed undelivered exit alert.
+            # Terminal trades can still own committed alerts or paper-exit
+            # routes. Restore their latest analytics context before filtering
+            # them from active lifecycle monitoring.
             terminal_records = [r for r in records if r.get("state") in {"CLOSED", "STOPPED_OUT"}]
             self._option_alert_trades = []
+            self._option_execution_route_trades = []
             if terminal_records:
                 try:
                     rows = self.supabase.table("trade_analytics").select("id,market_context").in_(
@@ -298,15 +303,29 @@ class PositionManager:
                     contexts = {str(r["id"]): r.get("market_context") or {} for r in rows}
                     for record in terminal_records:
                         context = contexts.get(str(record["id"]), {})
+                        if not isinstance(context, dict):
+                            context = {}
+                        existing = record.get("market_context")
+                        record["market_context"] = {
+                            **(existing if isinstance(existing, dict) else {}),
+                            **context,
+                        }
                         opt = context.get("option_trailing") or {}
                         if _has_option_policy(opt) and any(
                             event.get("status") in {"PENDING", "FAILED"} and event.get("snapshot")
                             for event in (opt.get("alert_events") or {}).values()
                         ):
-                            record["market_context"] = context
                             self._option_alert_trades.append(record)
+                        execution = context.get("execution") or {}
+                        if not isinstance(execution, dict):
+                            execution = {}
+                        if (opt.get("policy_version") == "option_premium_protection_v2"
+                                and (opt.get("execution_route_pending") is True
+                                     or (execution.get("mode") == "PAPER"
+                                         and execution.get("status") == "EXIT_PENDING"))):
+                            self._option_execution_route_trades.append(record)
                 except Exception as exc:
-                    print(f"Failed to restore terminal option alert outbox: {exc}")
+                    print(f"Failed to restore terminal option outboxes: {exc}")
             valid_trades = [
                 record for record in records
                 if record.get("state") not in ["CLOSED", "STOPPED_OUT"]
@@ -641,7 +660,9 @@ class PositionManager:
 
     async def acknowledge_option_execution_route(self, trade_id, reason):
         """Clear a durable retry marker without reopening the lifecycle writer."""
-        trade = next((item for item in self.active_trades if str(item.get("id")) == str(trade_id)), None)
+        route_trades = getattr(self, "_option_execution_route_trades", [])
+        trade = next((item for item in [*self.active_trades, *route_trades]
+                      if str(item.get("id")) == str(trade_id)), None)
         if trade is None:
             return False
         opt = (trade.get("market_context") or {}).get("option_trailing") or {}
@@ -656,6 +677,9 @@ class PositionManager:
         if not isinstance(result, dict) or result.get("success") is not True or result.get("acknowledged") is not True:
             return False
         opt["execution_route_pending"] = False
+        execution = (trade.get("market_context") or {}).get("execution") or {}
+        if trade in route_trades and execution.get("status") != "EXIT_PENDING":
+            route_trades.remove(trade)
         return True
 
     async def update_trades(

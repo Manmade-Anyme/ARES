@@ -753,15 +753,31 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
         if callable(on_option_stop):
             routes = list(option_stop_events)
             seen_routes = {(str(trade_id), reason) for trade_id, reason in routes}
-            for trade in position_manager.active_trades:
-                option = ((trade.get("market_context") or {}).get("option_trailing") or {})
+            route_trades = [
+                *position_manager.active_trades,
+                *getattr(position_manager, "_option_execution_route_trades", []),
+            ]
+            for trade in route_trades:
+                context = trade.get("market_context") or {}
+                option = context.get("option_trailing") or {}
+                execution = context.get("execution") or {}
+                if not isinstance(execution, dict):
+                    execution = {}
                 if option.get("execution_route_pending"):
                     reason = option.get("execution_route_reason")
                     key = (str(trade.get("id")), reason)
                     if reason and key not in seen_routes:
                         routes.append((trade.get("id"), reason))
                         seen_routes.add(key)
-            trades_by_id = {str(trade.get("id")): trade for trade in position_manager.active_trades}
+                elif (option.get("policy_version") == "option_premium_protection_v2"
+                      and execution.get("mode") == "PAPER"
+                      and execution.get("status") == "EXIT_PENDING"):
+                    reason = execution.get("exit_reason")
+                    key = (str(trade.get("id")), reason)
+                    if reason and key not in seen_routes:
+                        routes.append((trade.get("id"), reason))
+                        seen_routes.add(key)
+            trades_by_id = {str(trade.get("id")): trade for trade in route_trades}
             for trade_id, reason in routes:
                 trade = trades_by_id.get(str(trade_id))
                 option = ((trade or {}).get("market_context") or {}).get("option_trailing") or {}
