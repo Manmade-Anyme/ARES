@@ -750,6 +750,7 @@ class PositionManager:
                 event_ts_base = __import__("storage").to_utc_iso(
                     candle_timestamp + timedelta(minutes=1))
             market_context = trade.get("market_context") or {}
+            context = market_context
             execution = market_context.get("execution") or {}
             if versioned:
                 entry_cutoff = (opt.get("activated_at") or execution.get("filled_at")
@@ -861,6 +862,12 @@ class PositionManager:
                     # Existing option-ATR trades retain their historical rule:
                     # never replay pre-T1 wicks into the new entry guard.
                     observation_high = observation_low = spot_price
+                if ((versioned or context.get("execution") or context.get("tracking_mode") == "SIGNAL_REFERENCE")
+                        and candle_timestamp is not None and trade.get("entry_timestamp")):
+                    candle_ts = __import__("storage").to_utc_iso(candle_timestamp)
+                    if parse_candle_timestamp(candle_ts) <= parse_candle_timestamp(
+                            opt.get("activated_at") or trade["entry_timestamp"]):
+                        observation_high = observation_low = spot_price
                 expected = expected_completed_option_bar_end(observed_at)
                 available = getattr(self, "_option_available_until", {}).get(trade["id"])
                 requires_option_history = (
@@ -869,10 +876,21 @@ class PositionManager:
                 )
                 if (opt.get("phase") == "POST_T1" and requires_option_history and expected is not None
                         and (available is None or available < expected)):
-                    queued = opt.setdefault("pending_index_observations", [])
                     sign = 1 if trade["direction"] == "BULLISH" else -1
                     touches_t2 = observation_high >= trade["target_2"] if sign == 1 else observation_low <= trade["target_2"]
                     touches_guard = observation_low <= trade["entry_price"] if sign == 1 else observation_high >= trade["entry_price"]
+                    t1_premium_ambiguity = (self._unresolved_t1_premium_ambiguity(opt)
+                        if opt.get("policy_version") == "option_premium_protection_v2" else None)
+                    if t1_premium_ambiguity and (touches_guard or touches_t2):
+                        observation = {"event_at": source_event_ts or event_ts_base, "price": spot_price,
+                            "high": observation_high, "low": observation_low,
+                            "candle_timestamp": candle_timestamp.isoformat() if candle_timestamp else None}
+                        later = t1_premium_ambiguity.setdefault("subsequent_index_observations", [])
+                        if observation not in later:
+                            later.append(observation)
+                            await self._record_trade_update(trade, None, None, source_event_ts or event_ts_base)
+                        continue
+                    queued = opt.setdefault("pending_index_observations", [])
                     # Preserve the first meaningful touch, rather than persisting
                     # every unchanged tick during a provider outage.
                     already_t2 = any(item.get("touches_t2") for item in queued)
@@ -915,13 +933,6 @@ class PositionManager:
             direction = trade["direction"]
 
             trade_high, trade_low = observation_high, observation_low
-            context = trade.get("market_context") or {}
-            if (versioned or context.get("execution") or context.get("tracking_mode") == "SIGNAL_REFERENCE") and candle_timestamp is not None and trade.get("entry_timestamp"):
-                candle_ts = __import__("storage").to_utc_iso(candle_timestamp)
-                if parse_candle_timestamp(candle_ts) <= parse_candle_timestamp(opt.get("activated_at") or trade["entry_timestamp"]):
-                    # A limit filled after this candle opened; its earlier wicks
-                    # cannot close the newly filled paper position retroactively.
-                    trade_high = trade_low = spot_price
 
             # Post-T2, runner is governed exclusively by option ATR (index SL disabled)
             if trade["state"] == "T2_REACHED":
@@ -976,22 +987,19 @@ class PositionManager:
                             later.append(observation)
                             await self._record_trade_update(trade, None, None, transition_event_ts)
                     continue
+                t1_premium_ambiguity = self._unresolved_t1_premium_ambiguity(opt_ctx)
                 if (opt_ctx.get("policy_version") == "option_premium_protection_v2"
-                        and self._retained_t1_premium_exit(opt_ctx)):
-                    ambiguity = next((opt_ctx.get(key) for key in
-                                      ("ambiguous_premium_bar", "ambiguous_premium_quote")
-                                      if ((opt_ctx.get(key) or {}).get("protective_option_exit"))), None)
-                    if (ambiguity is not None) and (target_2_hit or be_hit):
+                        and t1_premium_ambiguity):
+                    if target_2_hit or be_hit:
                         observation = {"event_at": price_event_ts, "price": spot_price,
                             "high": trade_high, "low": trade_low,
                             "candle_timestamp": candle_timestamp.isoformat() if candle_timestamp else None}
-                        later = ambiguity.setdefault("subsequent_index_observations", [])
+                        later = t1_premium_ambiguity.setdefault("subsequent_index_observations", [])
                         if observation not in later:
                             later.append(observation)
                             await self._record_trade_update(trade, None, None, transition_event_ts)
-                    # The T1-tied premium stop may already have closed the whole
-                    # position. Preserve later index touches, but do not choose
-                    # an assumed T1 allocation or a later reference exit.
+                    # The T1-tied premium bar/quote may have stopped the trade
+                    # depending on event order. Keep later touches for reconciliation.
                     continue
                 if reference_accounting and target_2_hit and be_hit and candle_timestamp is not None:
                     opt_ctx["ambiguous_index_touch"] = {
@@ -1147,7 +1155,7 @@ class PositionManager:
                 # Target-first: If single index observation established both T1 and T2, apply T1 then T2 exactly once
                 if (target_2_hit and is_option_atr
                         and not (opt_ctx.get("policy_version") == "option_premium_protection_v2"
-                                 and self._retained_t1_premium_exit(opt_ctx))
+                                 and self._unresolved_t1_premium_ambiguity(opt_ctx))
                         and (not reference_accounting or candle_timestamp is None or not (
                             trade_low <= trade["entry_price"] if sign == 1 else trade_high >= trade["entry_price"]))):
                     trade["state"] = "T2_REACHED"
@@ -2563,6 +2571,26 @@ class PositionManager:
                 return protective
         return None
 
+    @staticmethod
+    def _unresolved_t1_premium_ambiguity(opt):
+        for key in ("ambiguous_premium_bar", "ambiguous_premium_quote"):
+            ambiguity = opt.get(key) or {}
+            if ambiguity.get("status") != "T1_ORDER_UNKNOWN":
+                continue
+            if ambiguity.get("protective_option_exit"):
+                return ambiguity
+            if ambiguity.get("ordering_reason") == "COST_STOP_ONLY_BREACH":
+                return ambiguity
+            try:
+                price = float(ambiguity["price"])
+                original_stop = float(opt["original_option_sl"])
+                entry_premium = float(opt["original_option_entry"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if original_stop < price <= entry_premium:
+                return ambiguity
+        return None
+
     async def _retain_t1_premium_bar_exit(self, trade, bar):
         """Keep a stop breach tied to T1 protective without choosing its allocation."""
         opt = trade["market_context"]["option_trailing"]
@@ -2608,7 +2636,7 @@ class PositionManager:
         await self._record_trade_update(trade, None, None, event_at.isoformat())
         return "SL_HIT" if opt.get("execution_route_pending") else None
 
-    async def _retain_t1_premium_bar_ambiguity(self, trade, bar):
+    async def _retain_t1_premium_bar_ambiguity(self, trade, bar, index_observations=None):
         """Keep a T1-tied close between the initial stop and cost from replaying."""
         opt = trade["market_context"]["option_trailing"]
         try:
@@ -2627,6 +2655,7 @@ class PositionManager:
             "option_close": price, "ordering_reason": "COST_STOP_ONLY_BREACH",
             "original_option_sl": original_stop,
             "entry_premium": entry_premium,
+            "tied_index_observations": list(index_observations or []),
         }
         opt["source_candle"] = {"start_time": bar.start_time, "end_time": bar.end_time,
                                 "close": price}
@@ -2718,7 +2747,8 @@ class PositionManager:
             "price": float(price), "effective_stop": stop,
             "stop_source": stop_source, "reason": reason,
         }
-        ambiguity = opt.get("ambiguous_index_touch")
+        t1_premium_ambiguity = self._unresolved_t1_premium_ambiguity(opt)
+        ambiguity = opt.get("ambiguous_index_touch") or t1_premium_ambiguity
         queued_index_before_or_at_exit = False
         for observation in opt.get("pending_index_observations") or []:
             try:
@@ -3409,17 +3439,29 @@ class PositionManager:
                 entry_premium = float(opt.get("original_option_entry") or 0)
                 if isfinite(bar_close) and 0 < bar_close <= entry_premium:
                     sign = 1 if trade["direction"] == "BULLISH" else -1
-                    for high, low, _, _, _ in spot_ranges:
+                    tied_index_observations = []
+                    for high, low, source_start, source, close in spot_ranges:
                         touches_t1 = high >= trade["target_1"] if sign == 1 else low <= trade["target_1"]
                         if not touches_t1:
                             continue
+                        touches_t2 = high >= trade["target_2"] if sign == 1 else low <= trade["target_2"]
+                        touches_guard = low <= trade["entry_price"] if sign == 1 else high >= trade["entry_price"]
+                        tied_index_observations.append({
+                            "event_at": event_at.isoformat(), "price": close,
+                            "high": high, "low": low, "source": source,
+                            "touches_t1": True, "touches_t2": touches_t2,
+                            "touches_guard": touches_guard,
+                            "candle_timestamp": source_start.isoformat()
+                                if source != "live_tick" else None,
+                        })
+                    if tied_index_observations:
                         if bar_close <= original_stop:
                             reason = await self._retain_t1_premium_bar_exit(trade, bar)
                             if reason:
                                 events.append((trade["id"], reason))
                         else:
-                            await self._retain_t1_premium_bar_ambiguity(trade, bar)
-                        break
+                            await self._retain_t1_premium_bar_ambiguity(
+                                trade, bar, tied_index_observations)
 
             if (v2 and trade.get("state") == "OPEN" and opt.get("phase") == "PRE_T1"
                     and not opt.get("t1_at") and not self._retained_t1_premium_exit(opt)

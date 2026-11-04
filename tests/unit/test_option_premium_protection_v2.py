@@ -261,6 +261,69 @@ async def test_t1_bar_between_initial_stop_and_cost_keeps_order_unknown(history_
     assert opt["last_processed_option_bar_end"] == t1_at.isoformat()
     assert opt.get("execution_route_pending") is not True
 
+    later_at = t1_at + timedelta(minutes=1)
+    quote = _quote(166.0, 21)
+    quote.update(observed_at=later_at.isoformat(), received_at=later_at.isoformat())
+    later_events = await pm.update_option_market_events(
+        [], {}, current_time=later_at, option_quotes=[quote])
+
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in later_events
+    assert trade["state"] == "T1_HIT"
+    assert opt.get("exit") is None
+    assert ambiguity["event_at"] == t1_at.isoformat()
+    assert ambiguity["option_close"] == pytest.approx(165.0)
+    assert ambiguity["protective_option_exit"]["event_at"] == later_at.isoformat()
+    assert ambiguity["protective_option_exit"]["reason"] == "STOPPED_OUT_AT_BE"
+    assert opt["execution_route_pending"] is True
+
+
+@pytest.mark.asyncio
+async def test_later_index_milestone_is_retained_while_cost_only_t1_bar_is_unresolved():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    t1_at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    opt.update(t1_at=t1_at.isoformat(), atr_enabled=True)
+    opt["ambiguous_premium_bar"] = {
+        "status": "T1_ORDER_UNKNOWN", "event_at": t1_at.isoformat(),
+        "option_close": 165.0, "ordering_reason": "COST_STOP_ONLY_BREACH",
+        "original_option_sl": 161.05, "entry_premium": 167.20,
+    }
+    pm = _manager(trade)
+    later_at = t1_at + timedelta(minutes=1)
+    tick = {"price": trade["target_2"], "exchange_at": later_at.isoformat(),
+            "received_at": later_at.isoformat(), "source": "dhan_tick"}
+
+    events = await pm.update_option_market_events(
+        [], {}, current_time=later_at, index_ticks=[tick])
+
+    assert ("v2-trade", "T2_HIT") not in events
+    assert trade["state"] == "T1_HIT"
+    assert opt["highest_milestone"] == 1
+    assert opt.get("exit") is None
+    assert opt["ambiguous_premium_bar"]["subsequent_index_observations"][0]["price"] == pytest.approx(
+        trade["target_2"])
+
+
+@pytest.mark.asyncio
+async def test_t1_premium_quote_above_cost_does_not_block_later_index_milestone():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    t1_at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    opt.update(t1_at=t1_at.isoformat(), atr_enabled=False)
+    opt["ambiguous_premium_quote"] = {
+        "status": "T1_ORDER_UNKNOWN", "event_at": t1_at.isoformat(), "price": 168.0,
+    }
+    pm = _manager(trade)
+    later_at = t1_at + timedelta(minutes=1)
+    tick = {"price": trade["target_2"], "exchange_at": later_at.isoformat(),
+            "received_at": later_at.isoformat(), "source": "dhan_tick"}
+
+    events = await pm.update_option_market_events(
+        [], {}, current_time=later_at, index_ticks=[tick])
+
+    assert ("v2-trade", "T2_HIT") in events
+    assert trade["state"] == "T2_REACHED"
+
 
 @pytest.mark.asyncio
 async def test_same_time_premium_breach_is_retained_when_pre_t1_tick_gaps_through_t2():
