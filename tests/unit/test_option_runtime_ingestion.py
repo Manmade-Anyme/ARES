@@ -174,8 +174,9 @@ async def test_v2_monitor_marks_quote_unavailable_when_protective_poll_fails():
 @pytest.mark.parametrize(("reason", "stop_domain", "milestone"), [
     ("ATR_SL_HIT", "OPTION_PREMIUM", 1),
     ("STOPPED_OUT_AT_BE", "SPOT_INDEX", 1),
+    ("SL_HIT", "SPOT_INDEX", 0),
 ])
-async def test_v2_terminal_option_or_post_t1_be_event_is_routed_to_execution_dispatcher(
+async def test_v2_terminal_premium_or_index_stop_event_is_routed_to_execution_dispatcher(
         reason, stop_domain, milestone):
     import main
     now = datetime(2026, 11, 4, 10, 21, tzinfo=IST)

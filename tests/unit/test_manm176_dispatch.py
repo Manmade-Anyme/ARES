@@ -458,3 +458,38 @@ async def test_post_t1_index_break_even_closure_exits_all_remaining_paper_units(
     assert record.exited_quantity == record.filled_quantity == 130
     assert record.pending_exit_quantity == 0
     assert record.exit_reason == "STOPPED_OUT_AT_BE"
+
+
+@pytest.mark.asyncio
+async def test_pre_t1_index_stop_closure_exits_runner_if_paper_already_booked_t1():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    record = next(iter(orders.records.values()))
+    assert record.filled_quantity == 130
+
+    # The paper premium target can book T1 before spot reaches its own T1.
+    await dispatcher.on_snapshot(chain(110.05, spot=24000), 24000)
+    assert record.t1_hit is True
+    assert record.exited_quantity == 65
+    assert record.status == "FILLED"
+
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "phase": "CLOSED", "highest_milestone": 0,
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        "exit": {"reason": "SL_HIT", "stop_domain": "SPOT_INDEX"},
+    }}
+    assert await dispatcher.on_option_stop(trade, "SL_HIT") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "SL_HIT"
+
+    await dispatcher.on_snapshot(chain(99, spot=24000), 24000)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == record.filled_quantity == 130
+    assert record.pending_exit_quantity == 0
+    assert record.exit_reason == "SL_HIT"

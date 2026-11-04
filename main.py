@@ -754,9 +754,12 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                             option = ((trade or {}).get("market_context") or {}).get("option_trailing") or {}
                             exit_state = option.get("exit") or {}
                             stop_domain = exit_state.get("stop_domain")
-                            execution_stop = (stop_domain == "OPTION_PREMIUM"
-                                              or (stop_domain == "SPOT_INDEX"
-                                                  and reason == "STOPPED_OUT_AT_BE"))
+                            index_stop = (stop_domain == "SPOT_INDEX"
+                                          and ((reason == "STOPPED_OUT_AT_BE"
+                                                and option.get("highest_milestone") == 1)
+                                               or (reason == "SL_HIT"
+                                                   and option.get("highest_milestone") == 0)))
+                            execution_stop = stop_domain == "OPTION_PREMIUM" or index_stop
                             if (option.get("policy_version") == "option_premium_protection_v2"
                                     and execution_stop
                                     and exit_state.get("reason") == reason):
