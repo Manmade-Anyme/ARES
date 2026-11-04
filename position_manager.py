@@ -2608,6 +2608,33 @@ class PositionManager:
         await self._record_trade_update(trade, None, None, event_at.isoformat())
         return "SL_HIT" if opt.get("execution_route_pending") else None
 
+    async def _retain_t1_premium_bar_ambiguity(self, trade, bar):
+        """Keep a T1-tied close between the initial stop and cost from replaying."""
+        opt = trade["market_context"]["option_trailing"]
+        try:
+            price = float(bar.close)
+            original_stop = float(opt["original_option_sl"])
+            entry_premium = float(opt["original_option_entry"])
+            event_at = parse_candle_timestamp(bar.end_time)
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError, OSError):
+            return False
+        if (not isfinite(price) or price <= original_stop or price > entry_premium
+                or self._retained_t1_premium_exit(opt)):
+            return False
+        opt["ambiguous_premium_bar"] = {
+            "status": "T1_ORDER_UNKNOWN", "event_at": event_at.isoformat(),
+            "source_minute": parse_candle_timestamp(bar.start_time).isoformat(),
+            "option_close": price, "ordering_reason": "COST_STOP_ONLY_BREACH",
+            "original_option_sl": original_stop,
+            "entry_premium": entry_premium,
+        }
+        opt["source_candle"] = {"start_time": bar.start_time, "end_time": bar.end_time,
+                                "close": price}
+        opt["last_valid_option_bar_end"] = bar.end_time
+        opt["last_processed_option_bar_end"] = bar.end_time
+        await self._record_trade_update(trade, None, None, event_at.isoformat())
+        return True
+
     async def _retain_t1_premium_quote_exit(self, trade, quote, event_at, index_observations):
         """Retain an exact-T1 quote breach before index milestones are committed."""
         opt = trade["market_context"]["option_trailing"]
@@ -3040,6 +3067,8 @@ class PositionManager:
                         events.append((trade["id"], reason))
                     if self._retained_t1_premium_exit(opt):
                         break
+                    if await self._retain_t1_premium_bar_ambiguity(trade, bar):
+                        break
                 opt["source_candle"] = {"start_time": bar.start_time, "end_time": bar.end_time, "close": bar.close}
                 opt["last_valid_option_bar_end"] = bar.end_time
                 active_stop = opt.get("locked_option_sl")
@@ -3377,15 +3406,19 @@ class PositionManager:
                     bar_close = float(bar.close)
                 except (KeyError, TypeError, ValueError, OverflowError):
                     continue
-                if isfinite(bar_close) and 0 < bar_close <= original_stop:
+                entry_premium = float(opt.get("original_option_entry") or 0)
+                if isfinite(bar_close) and 0 < bar_close <= entry_premium:
                     sign = 1 if trade["direction"] == "BULLISH" else -1
                     for high, low, _, _, _ in spot_ranges:
                         touches_t1 = high >= trade["target_1"] if sign == 1 else low <= trade["target_1"]
                         if not touches_t1:
                             continue
-                        reason = await self._retain_t1_premium_bar_exit(trade, bar)
-                        if reason:
-                            events.append((trade["id"], reason))
+                        if bar_close <= original_stop:
+                            reason = await self._retain_t1_premium_bar_exit(trade, bar)
+                            if reason:
+                                events.append((trade["id"], reason))
+                        else:
+                            await self._retain_t1_premium_bar_ambiguity(trade, bar)
                         break
 
             if (v2 and trade.get("state") == "OPEN" and opt.get("phase") == "PRE_T1"

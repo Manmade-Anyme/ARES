@@ -220,6 +220,49 @@ async def test_pre_entry_t1_bar_and_index_tick_cannot_retain_protective_exit():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("history_arrives_with_t1", [True, False])
+async def test_t1_bar_between_initial_stop_and_cost_keeps_order_unknown(history_arrives_with_t1):
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    t1_at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    tick = {"price": trade["target_1"], "exchange_at": t1_at.isoformat(),
+            "received_at": t1_at.isoformat(), "source": "dhan_tick"}
+    start = t1_at - timedelta(minutes=65)
+    history = [
+        OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                     170.0, 171.0, 164.0 if i == 12 else 169.0,
+                     165.0 if i == 12 else 170.0, 1, "39961")
+        for i in range(13)
+    ]
+
+    if history_arrives_with_t1:
+        events = await pm.update_option_market_events(
+            [], {"39961": history}, current_time=t1_at + timedelta(seconds=2), index_ticks=[tick])
+    else:
+        events = await pm.update_option_market_events(
+            [], {}, current_time=t1_at, index_ticks=[tick])
+        assert trade["state"] == "T1_HIT"
+        events.extend(await pm.update_option_market_events(
+            [], {"39961": history}, current_time=t1_at + timedelta(seconds=2)))
+
+    assert ("v2-trade", "T1_HIT") in events
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") not in events
+    assert trade["state"] == "T1_HIT"
+    assert opt["phase"] == "POST_T1"
+    assert opt.get("exit") is None
+    assert opt.get("exit_trigger") is None
+    ambiguity = opt["ambiguous_premium_bar"]
+    assert ambiguity["status"] == "T1_ORDER_UNKNOWN"
+    assert ambiguity["ordering_reason"] == "COST_STOP_ONLY_BREACH"
+    assert ambiguity["option_close"] == pytest.approx(165.0)
+    assert "protective_option_exit" not in ambiguity
+    assert opt["last_processed_option_bar_end"] == t1_at.isoformat()
+    assert opt.get("execution_route_pending") is not True
+
+
+@pytest.mark.asyncio
 async def test_same_time_premium_breach_is_retained_when_pre_t1_tick_gaps_through_t2():
     trade = _trade()
     opt = trade["market_context"]["option_trailing"]
