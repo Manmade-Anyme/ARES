@@ -128,6 +128,37 @@ async def test_post_t1_break_even_stop_is_not_replaced_by_atr_at_or_below_cost()
 
 
 @pytest.mark.asyncio
+async def test_delayed_quote_before_active_atr_stop_revision_cannot_trigger_retroactively():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(locked_option_sl=171.0, protection_mode="ATR", premium_stop_source="ATR_TRAILING",
+               stop_effective_at="2026-11-04T10:20:00+05:30")
+    pm = _manager(trade)
+    delayed = _quote(169.0, 20)
+    delayed["observed_at"] = "2026-11-04T10:19:59+05:30"
+    delayed["received_at"] = "2026-11-04T10:20:02+05:30"
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=datetime(2026, 11, 4, 10, 20, 2, tzinfo=IST), option_quotes=[delayed])
+
+    assert events == []
+    assert trade["state"] == "T1_HIT"
+    assert opt["quote_watermark"] is None
+    assert opt["locked_option_sl"] == pytest.approx(171.0)
+    assert opt["monitoring_status"] == "UNAVAILABLE"
+    assert "out-of-order" in opt["monitoring_detail"]
+
+    current = _quote(169.0, 20)
+    current["observed_at"] = "2026-11-04T10:20:02+05:30"
+    current["received_at"] = current["observed_at"]
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=datetime(2026, 11, 4, 10, 20, 2, tzinfo=IST), option_quotes=[current])
+    assert ("v2-trade", "ATR_SL_HIT") in events
+
+
+@pytest.mark.asyncio
 async def test_t1_moves_premium_stop_to_entry_cost_without_changing_spot_guard():
     trade = _trade()
     pm = _manager(trade)

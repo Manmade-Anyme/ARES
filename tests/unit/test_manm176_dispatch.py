@@ -2,6 +2,7 @@
 from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -293,67 +294,96 @@ async def test_closed_trade_waiting_for_ml_snapshot_does_not_block_new_signal():
 
 
 @pytest.mark.asyncio
-async def test_completed_candles_publish_runner_stop_and_queue_exit_without_quotes():
-    from datetime import timedelta, timezone
-
+async def test_index_candles_never_drive_atr_for_option_execution_records(monkeypatch):
     positions = Positions()
-    synced = []
-    async def sync_execution(signal, execution):
-        synced.append(dict(execution))
-    positions.sync_execution = sync_execution
     orders = OrderManager()
     dispatcher = SignalDispatcher(orders, positions)
     signal = candidate()
     await dispatcher.dispatch(signal, 24000, chain())
-    await dispatcher.on_snapshot(chain(110, spot=24020), 24020)
     record = next(iter(orders.records.values()))
-    record.atr_last_bar = "2098-12-31T00:00:00+00:00"
-    start = datetime(2099, 1, 1, 9, 15, tzinfo=timezone(timedelta(hours=5, minutes=30)))
-    candles = [{"timestamp": (start + timedelta(minutes=i)).isoformat(), "complete": True,
-                "open":24030, "high":24040, "low":24030, "close":24035}
-               for i in range(50)]
+    record.t1_hit = True
+    spot_atr = Mock(wraps=orders.on_candles)
+    monkeypatch.setattr(orders, "on_candles", spot_atr)
+    candles = [{"timestamp": "2026-11-04T10:00:00+05:30", "complete": True,
+                "open":100, "high":110, "low":90, "close":91}]
     await dispatcher.on_candles(candles)
-    assert synced[-1]["t1_hit"] is True
-    assert synced[-1]["active_spot_sl"] == 24015
-    assert synced[-1]["atr_last_bar"] == "2099-01-01T10:05:00+05:30"
+    assert spot_atr.call_count == 0
     assert record.status == "FILLED"
-    candles.extend({"timestamp": (start + timedelta(minutes=i)).isoformat(), "complete": True,
-                    "open":24030, "high":24040, "low":24010, "close":24014}
-                   for i in range(50, 55))
-    await dispatcher.on_candles(candles)
-    assert synced[-1]["status"] == "EXIT_PENDING"
-    assert synced[-1]["exit_reason"] == "ATR_SL_HIT"
-    assert synced[-1]["exited_quantity"] == 65
-    await dispatcher.on_snapshot(chain(108, spot=24030), 24030)
-    assert record.status == "CLOSED"
-    assert record.exited_quantity == 130
-    assert record.correlation_id not in dispatcher._signals
+    assert record.exited_quantity == 0
 
 
 @pytest.mark.asyncio
-async def test_candle_sync_failure_retries_without_reprocessing_order_exit(monkeypatch):
+async def test_premium_exit_sync_failure_retries_without_confirming_a_fill():
     positions = Positions()
     orders = OrderManager()
     dispatcher = SignalDispatcher(orders, positions)
     signal = candidate()
     await dispatcher.dispatch(signal, 24000, chain())
     record = next(iter(orders.records.values()))
-    await dispatcher.on_snapshot(chain(110, spot=24020), 24020)
-    record.atr_last_bar = "2026-10-21T04:30:00+00:00"
-    monkeypatch.setattr("execution.order_manager.completed_atr_bars", lambda candles: [{
-        "timestamp":"2026-10-21T04:35:00+00:00", "close":23999,
-        "bullish_sl": None, "bearish_sl": None,
-    }])
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2",
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    }}
     async def failure(*args):
         raise RuntimeError("database unavailable")
     positions.sync_execution = failure
-    await dispatcher.on_candles([])
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await dispatcher.on_option_stop(trade, "ATR_SL_HIT")
+    record = next(iter(orders.records.values()))
     assert record.status == "EXIT_PENDING"
-    assert record.exited_quantity == 65
+    assert record.exited_quantity == 0
     assert record.correlation_id in dispatcher._signals
     async def success(*args):
         return True
     positions.sync_execution = success
-    await dispatcher.on_candles([])
+    no_bid = chain(101)
+    no_bid[0]["ce_bid"] = None
+    await dispatcher.on_snapshot(no_bid, 24000)
     assert signal.market_context["execution"]["exit_reason"] == "ATR_SL_HIT"
-    assert record.exited_quantity == 65
+    assert record.status == "EXIT_PENDING"
+    assert record.exited_quantity == 0
+
+
+@pytest.mark.asyncio
+async def test_v2_premium_stop_creates_pending_exit_until_an_observed_bid_confirms_it(monkeypatch):
+    positions = Positions()
+    persisted = []
+    async def sync_execution(signal, execution):
+        persisted.append(dict(execution))
+        return True
+    positions.sync_execution = sync_execution
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    trade = positions.active_trades[0]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                "strike": 24000, "option_type": "CE"}
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "contract": contract,
+        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    }}
+    record = next(iter(orders.records.values()))
+    spot_atr = Mock(wraps=orders.on_candles)
+    monkeypatch.setattr(orders, "on_candles", spot_atr)
+
+    await dispatcher.on_candles([{"timestamp": "2099-01-01T10:00:00+05:30", "complete": True,
+                                  "open": 100, "high": 110, "low": 90, "close": 91}])
+    assert spot_atr.call_count == 0
+    assert await dispatcher.on_option_stop(trade, "ATR_SL_HIT") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.exited_quantity == 0
+    assert record.pending_exit_quantity == record.filled_quantity
+    assert signal.market_context["execution"]["status"] == "EXIT_PENDING"
+    assert persisted[-1]["status"] == "EXIT_PENDING"
+
+    await dispatcher.on_snapshot(chain(99), 24000)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == record.filled_quantity
+    assert record.exit_reason == "ATR_SL_HIT"
+    assert record.realized_pnl == pytest.approx(-6.5)
+    assert signal.market_context["execution"]["status"] == "CLOSED"
+    assert persisted[-1]["status"] == "CLOSED"

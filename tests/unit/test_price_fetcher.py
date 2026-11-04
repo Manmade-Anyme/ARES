@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fetchers.price_fetcher import PriceFetcher
@@ -211,8 +211,15 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
             "123": {"last_price": 101.5, "last_trade_time": stamp},
             "456": {"last_price": 99.5, "last_trade_time": stamp},
         }}}
-        observations = await self.fetcher.fetch_option_observations(contracts)
+        with patch.object(self.fetcher, "_protective_request",
+                          new=AsyncMock(side_effect=lambda request: request())) as protective, \
+             patch.object(self.fetcher, "_reference_request",
+                          new=AsyncMock(side_effect=AssertionError(
+                              "stop quotes must not use the reference lane"))) as reference:
+            observations = await self.fetcher.fetch_option_observations(contracts)
         self.assertEqual(len(observations), 2)
+        protective.assert_awaited_once()
+        reference.assert_not_awaited()
         self.assertEqual(self.mock_dhan.quote_data.call_count, 1)
         self.assertEqual(self.mock_dhan.quote_data.call_args.args[0], {"NSE_FNO": [123, 456]})
         self.assertEqual({item["contract"]["option_type"] for item in observations}, {"CE", "PE"})

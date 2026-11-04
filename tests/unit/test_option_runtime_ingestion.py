@@ -107,7 +107,7 @@ async def test_v2_monitor_polls_pinned_premium_quotes_even_when_atr_is_disabled(
 
 
 @pytest.mark.asyncio
-async def test_v2_monitor_defers_quote_gap_warning_when_provider_pacing_defers_poll():
+async def test_v2_monitor_marks_quote_unavailable_when_protective_poll_fails():
     import main
     from fetchers.price_fetcher import ReferencePriceDeferred
     now = datetime(2026, 11, 4, 10, 0, tzinfo=IST)
@@ -126,8 +126,35 @@ async def test_v2_monitor_defers_quote_gap_warning_when_provider_pacing_defers_p
     await main._monitor_completed_atr([], positions, dispatcher, price_fetcher=fetcher,
                                       current_time=now)
 
-    positions.mark_option_quote_unavailable.assert_not_awaited()
+    positions.mark_option_quote_unavailable.assert_awaited_once_with(
+        {"39961": contract}, "No fresh quote for the pinned contract", now)
     assert positions.update_option_market_events.await_args.kwargs["option_quotes"] == []
+
+
+@pytest.mark.asyncio
+async def test_v2_premium_terminal_event_is_routed_to_execution_dispatcher():
+    import main
+    now = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    contract = dict(security_id="39961", exchange_segment="NSE_FNO", expiry="2026-11-09",
+                    strike=23950, option_type="CE")
+    trade = {"id": "v2-trade", "market_context": {"option_trailing": {
+        "policy_version": "option_premium_protection_v2",
+        "contract": contract,
+        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    }}}
+    positions = SimpleNamespace(
+        active_trades=[trade],
+        update_atr_trailing=AsyncMock(),
+        update_option_market_events=AsyncMock(return_value=[("v2-trade", "ATR_SL_HIT")]),
+        mark_option_quote_unavailable=AsyncMock())
+    dispatcher = SimpleNamespace(on_candles=AsyncMock(), on_option_stop=AsyncMock())
+    fetcher = SimpleNamespace(fetch_option_observations=AsyncMock(return_value=[]),
+                              fetch_option_candles=AsyncMock(return_value=[]))
+
+    await main._monitor_completed_atr([], positions, dispatcher, price_fetcher=fetcher,
+                                      current_time=now)
+
+    dispatcher.on_option_stop.assert_awaited_once_with(trade, "ATR_SL_HIT")
 
 
 @pytest.mark.asyncio

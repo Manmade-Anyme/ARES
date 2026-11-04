@@ -60,21 +60,53 @@ class SignalDispatcher:
                 logger.exception("Paper spot update failed for %s; will retry", correlation_id)
 
     async def on_candles(self, candles):
-        """Persist completed-candle runner stops before waiting for option quotes."""
+        """Never use index candles as an ATR source for option execution records."""
         for correlation_id in tuple(self._signals):
             try:
-                signal, _ = self._signals[correlation_id]
-                policy = (signal.market_context.get("option_trailing") or {}).get("policy_version")
-                for trade in self.positions.active_trades:
-                    if str(trade.get("signal_uuid")) == str(signal.id):
-                        policy = ((trade.get("market_context") or {}).get("option_trailing") or {}).get("policy_version", policy)
-                if policy == "option_atr_v1":
+                record = self.orders.records[correlation_id]
+                # Every dispatched order has a pinned CE/PE bracket. Its ATR
+                # lifecycle consumes option-premium bars through PositionManager.
+                if record.bracket and record.bracket.option_type in {"CE", "PE"}:
                     continue
                 record = self.orders.on_candles(correlation_id, candles)
                 self._publish(record)
                 await self._sync(record)
             except Exception:
                 logger.exception("Paper candle update failed for %s; will retry", correlation_id)
+
+    async def on_option_stop(self, trade, reason):
+        """Route a v2 premium stop to its matching paper execution record."""
+        if not isinstance(trade, dict):
+            return False
+        trade_signal = str(trade.get("signal_uuid") or trade.get("signal_id") or "")
+        option = ((trade.get("market_context") or {}).get("option_trailing") or {})
+        contract = option.get("contract") or {}
+        exit_state = option.get("exit") or {}
+        if (not trade_signal or option.get("policy_version") != "option_premium_protection_v2"
+                or exit_state.get("stop_domain") != "OPTION_PREMIUM"
+                or exit_state.get("reason") != reason):
+            return False
+        for correlation_id, (signal, _) in tuple(self._signals.items()):
+            if str(signal.id) != trade_signal:
+                continue
+            record = self.orders.records[correlation_id]
+            bracket = record.bracket
+            try:
+                same_strike = (not isinstance(contract.get("strike"), bool)
+                               and math.isclose(float(contract.get("strike")), float(bracket.strike), abs_tol=1e-9))
+            except (TypeError, ValueError, OverflowError):
+                same_strike = False
+            if not (str(contract.get("security_id")) == str(bracket.security_id)
+                    and contract.get("exchange_segment") == "NSE_FNO"
+                    and str(contract.get("expiry")) == str(bracket.expiry_date)
+                    and same_strike and str(contract.get("option_type")).upper() == bracket.option_type):
+                logger.error("Premium stop contract does not match paper execution for trade %s", trade.get("id"))
+                return False
+            self.orders.request_option_exit(correlation_id, reason)
+            self._publish(record)
+            await self._sync(record)
+            return True
+        return False
 
     def _publish(self, record):
         signal, _ = self._signals[record.correlation_id]

@@ -2443,6 +2443,18 @@ class PositionManager:
         await self._record_trade_update(trade, None, reason, observed_at)
         return reason
 
+    async def _reject_quote_before_active_stop(self, trade, observed_at, received_at):
+        opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+        effective_value = opt.get("stop_effective_at")
+        if not effective_value or observed_at >= parse_candle_timestamp(effective_value):
+            return False
+        detail = "Rejected out-of-order option quote before active stop effective time"
+        if opt.get("monitoring_status") != "UNAVAILABLE" or opt.get("monitoring_detail") != detail:
+            opt["monitoring_status"] = "UNAVAILABLE"
+            opt["monitoring_detail"] = detail
+            await self._record_trade_update(trade, None, "MONITORING_UNAVAILABLE", received_at.isoformat())
+        return True
+
     async def _process_option_quotes_at_event(self, event_at, quotes):
         events = []
         for trade in self.active_trades:
@@ -2481,6 +2493,10 @@ class PositionManager:
                     continue
                 watermark = opt.get("quote_watermark")
                 if watermark and observed_at <= parse_candle_timestamp(watermark):
+                    continue
+                if await self._reject_quote_before_active_stop(trade, observed_at, received_at):
+                    # This quote predates the currently active stop revision.
+                    # Do not apply a later stop retroactively across monitor batches.
                     continue
                 entry_at = parse_candle_timestamp(opt.get("activated_at") or trade.get("entry_timestamp"))
                 if observed_at <= entry_at:
@@ -2712,6 +2728,8 @@ class PositionManager:
                 if incoming_contract != expected_contract:
                     continue
                 if opt.get("quote_watermark") and observed_at <= parse_candle_timestamp(opt["quote_watermark"]):
+                    continue
+                if await self._reject_quote_before_active_stop(trade, observed_at, received_at):
                     continue
                 entry_at = parse_candle_timestamp(opt.get("activated_at") or trade.get("entry_timestamp"))
                 if observed_at <= entry_at:

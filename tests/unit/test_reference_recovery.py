@@ -48,9 +48,11 @@ def test_minute_cache_keeps_explicitly_requested_old_bar_past_capacity():
 
 
 @pytest.mark.asyncio
-async def test_recovery_restores_closed_evidence_and_submits_revisioned_correction():
+@pytest.mark.parametrize("policy", ["option_atr_v1", "option_premium_protection_v2"])
+async def test_recovery_restores_closed_evidence_and_submits_revisioned_correction(policy):
     pm = _make_pm()
     row = closed_row()
+    row["option_trailing"]["policy_version"] = policy
     original = deepcopy(row)
     logger = SimpleNamespace(list_incomplete_option_accounting=Mock(return_value=[row]),
                              apply_option_accounting_correction=Mock(return_value={"success": True}))
@@ -99,12 +101,13 @@ async def test_pages_are_read_before_correction_and_guard_exit_gets_matching_opt
 
 
 @pytest.mark.asyncio
-async def test_closed_query_failure_does_not_stop_open_enrichment():
+@pytest.mark.parametrize("policy", ["option_atr_v1", "option_premium_protection_v2"])
+async def test_closed_query_failure_does_not_stop_open_enrichment(policy):
     pm = _make_pm()
     row = closed_row()
     trade = row["active_trade"]
     trade["state"] = "T1_HIT"
-    trade["market_context"]["option_trailing"].update(phase="POST_T1")
+    trade["market_context"]["option_trailing"].update(phase="POST_T1", policy_version=policy)
     pm.active_trades = [trade]
     pm.enrich_reference_accounting = AsyncMock()
     logger = SimpleNamespace(list_incomplete_option_accounting=Mock(side_effect=RuntimeError("offline")),

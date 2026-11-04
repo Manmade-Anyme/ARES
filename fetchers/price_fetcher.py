@@ -460,7 +460,10 @@ class PriceFetcher:
         exchanges = {}
         for security_id, (exchange, _) in pins.items():
             exchanges.setdefault(exchange, []).append(int(security_id))
-        response = await self._reference_request(lambda: self.dhan.quote_data(exchanges))
+        # This snapshot drives the active premium stop, so it shares the
+        # non-deferrable protection lane with option history and index polling.
+        # Reference-accounting reads remain on _reference_request.
+        response = await self._protective_request(lambda: self.dhan.quote_data(exchanges))
         received = parse_candle_timestamp(datetime.now(timezone.utc))
         if not isinstance(response, dict) or response.get("status") != "success":
             raise ValueError("Pinned option quote request failed")

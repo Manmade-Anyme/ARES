@@ -113,6 +113,19 @@ try {
   assert.equal((await rpc('sync_option_reference_ml_label', [id])).matched, 0);
   assert.equal((await q('SELECT trade_outcome FROM public.ml_collection WHERE id=3')).rows[0].trade_outcome, null);
 
+  const v2Id = '00000000-0000-0000-0000-000000000002';
+  const v2Closed = {option_trailing: {policy_version: 'option_premium_protection_v2',
+    accounting_formula_version: 'one_lot_reference_v1', phase: 'CLOSED', highest_milestone: 1,
+    original_option_entry: 100, accounting: {legs: {T1: {spot_price: 22010}, EXIT: {}}}}};
+  await db.exec('RESET ROLE;');
+  await q("INSERT INTO public.active_trades(id,state,stop_loss,entry_price,direction) VALUES ($1,'CLOSED',22000,22000,'BULLISH')", [v2Id]);
+  await q("INSERT INTO public.trade_analytics(id,result_state,market_context) VALUES ($1,'ATR_SL_HIT',$2)",
+    [v2Id, JSON.stringify(v2Closed)]);
+  await db.exec('SET ROLE service_role;');
+  const v2RecoveryRows = await rpc('list_incomplete_option_accounting', [100, 0]);
+  assert.equal(v2RecoveryRows.length, 1);
+  assert.equal(v2RecoveryRows[0].option_trailing.policy_version, 'option_premium_protection_v2');
+
   await assert.rejects(() => correction(4, 'overwrite', {legs: {}}, 71, null), /Cannot overwrite/);
   // A later stale client snapshot cannot erase or rewrite an already committed leg.
   await db.exec('RESET ROLE; TRUNCATE public.active_trades, public.trade_analytics, public.ml_collection;');

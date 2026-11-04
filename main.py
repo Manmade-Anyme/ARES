@@ -708,24 +708,18 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
             try:
                 observed_at = current_time or datetime.now(IST)
                 option_quotes = []
-                quote_fetch_deferred = False
                 if quote_contracts:
                     quote_fetch = getattr(price_fetcher, "fetch_option_observations", None)
                     if callable(quote_fetch):
                         try:
                             option_quotes = await quote_fetch(list(quote_contracts.values())) or []
                         except Exception as exc:
-                            from fetchers.price_fetcher import ReferencePriceDeferred
-                            if isinstance(exc, ReferencePriceDeferred):
-                                quote_fetch_deferred = True
-                                logger.debug("Pinned option quote poll deferred by provider pacing")
-                            else:
-                                logger.warning("Pinned option stop quotes unavailable: %s", exc)
+                            logger.error("Pinned option stop quotes unavailable: %s", exc)
                         quote_ids = {str((q.get("contract") or {}).get("security_id")) for q in option_quotes
                                      if isinstance(q, dict)}
                         missing_quotes = {security_id: contract for security_id, contract in quote_contracts.items()
                                           if security_id not in quote_ids}
-                        if missing_quotes and not quote_fetch_deferred:
+                        if missing_quotes:
                             marker = getattr(position_manager, "mark_option_quote_unavailable", None)
                             if callable(marker):
                                 await marker(missing_quotes, "No fresh quote for the pinned contract", observed_at)
@@ -748,6 +742,19 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                 option_ticks_replayed = index_ticks is not None
                 if engine is not None and any(event == "SL_HIT" for _, event in events):
                     engine.clear_cooldown()
+                if dispatcher is not None:
+                    on_option_stop = getattr(dispatcher, "on_option_stop", None)
+                    if callable(on_option_stop):
+                        terminal_by_id = {str(trade.get("id")): trade
+                                          for trade in position_manager.active_trades}
+                        for trade_id, reason in events:
+                            trade = terminal_by_id.get(str(trade_id))
+                            option = ((trade or {}).get("market_context") or {}).get("option_trailing") or {}
+                            exit_state = option.get("exit") or {}
+                            if (option.get("policy_version") == "option_premium_protection_v2"
+                                    and exit_state.get("stop_domain") == "OPTION_PREMIUM"
+                                    and exit_state.get("reason") == reason):
+                                await on_option_stop(trade, reason)
             except Exception as exc:
                 logger.warning("Option lifecycle monitoring failed: %s", exc)
     try:

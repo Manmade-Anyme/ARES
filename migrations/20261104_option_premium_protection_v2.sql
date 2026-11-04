@@ -330,3 +330,60 @@ REVOKE ALL ON FUNCTION public.apply_option_lifecycle_transition(uuid, integer, t
 GRANT EXECUTE ON FUNCTION public.apply_option_lifecycle_transition(uuid, integer, text, jsonb) TO service_role;
 REVOKE ALL ON FUNCTION public.sync_option_reference_ml_label(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.sync_option_reference_ml_label(uuid) TO service_role;
+
+-- Include the new lifecycle policy in the bounded closed-trade recovery scan.
+-- The accounting formula guard prevents reinterpreting any legacy rows.
+CREATE OR REPLACE FUNCTION public.list_incomplete_option_accounting(
+    p_limit integer DEFAULT 100, p_offset integer DEFAULT 0
+) RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+DECLARE
+    v_rows jsonb;
+BEGIN
+    IF p_limit IS NULL OR p_limit < 1 OR p_limit > 500 OR p_offset IS NULL OR p_offset < 0 THEN
+        RAISE EXCEPTION 'Recovery page requires limit 1..500 and non-negative offset';
+    END IF;
+    SELECT COALESCE(pg_catalog.jsonb_agg(page.record ORDER BY page.exit_timestamp NULLS LAST, page.id), '[]'::jsonb)
+    INTO v_rows FROM (
+        SELECT a.id, t.exit_timestamp, pg_catalog.jsonb_build_object(
+            'active_trade', pg_catalog.to_jsonb(a), 'option_trailing', t.market_context->'option_trailing',
+            'score', t.score, 'result_state', t.result_state, 'exit_timestamp', t.exit_timestamp,
+            'pnl_points', t.pnl_points, 'option_pnl_points', t.option_pnl_points) AS record
+        FROM public.trade_analytics t JOIN public.active_trades a ON a.id = t.id
+        WHERE a.state IN ('CLOSED', 'STOPPED_OUT') AND t.result_state IS NOT NULL AND t.result_state <> 'OPEN'
+          AND t.market_context->'option_trailing'->>'phase' = 'CLOSED'
+          AND t.market_context->'option_trailing'->>'policy_version' IN
+              ('option_atr_v1', 'option_premium_protection_v2')
+          AND t.market_context->'option_trailing'->>'accounting_formula_version' = 'one_lot_reference_v1'
+          AND pg_catalog.jsonb_typeof(t.market_context->'option_trailing'->'accounting') = 'object'
+          AND (
+              t.pnl_points IS NULL OR t.option_pnl_points IS NULL
+              OR t.market_context #>> '{option_trailing,accounting,legs,EXIT,spot_price}' IS NULL
+              OR t.market_context #>> '{option_trailing,accounting,legs,EXIT,option_price}' IS NULL
+              OR t.market_context #>> '{option_trailing,original_option_entry}' IS NULL
+              OR (COALESCE((t.market_context #>> '{option_trailing,highest_milestone}')::integer, 0) >= 1 AND (
+                  t.market_context #>> '{option_trailing,accounting,legs,T1,spot_price}' IS NULL OR
+                  t.market_context #>> '{option_trailing,accounting,legs,T1,option_price}' IS NULL))
+              OR (COALESCE((t.market_context #>> '{option_trailing,highest_milestone}')::integer, 0) >= 2 AND (
+                  t.market_context #>> '{option_trailing,accounting,legs,T2,spot_price}' IS NULL OR
+                  t.market_context #>> '{option_trailing,accounting,legs,T2,option_price}' IS NULL))
+              OR NOT EXISTS (
+                  SELECT 1 FROM public.ml_collection m
+                  WHERE m.trade_id::text = t.id::text
+                    AND CASE
+                        WHEN COALESCE(pg_catalog.to_jsonb(t)->>'signal_uuid', pg_catalog.to_jsonb(a)->>'signal_uuid') IS NOT NULL
+                        THEN pg_catalog.to_jsonb(m)->>'signal_uuid' = COALESCE(pg_catalog.to_jsonb(t)->>'signal_uuid', pg_catalog.to_jsonb(a)->>'signal_uuid')
+                        WHEN COALESCE(pg_catalog.to_jsonb(t)->>'signal_id', pg_catalog.to_jsonb(a)->>'signal_id') IS NOT NULL
+                        THEN pg_catalog.to_jsonb(m)->>'signal_id' = COALESCE(pg_catalog.to_jsonb(t)->>'signal_id', pg_catalog.to_jsonb(a)->>'signal_id')
+                        ELSE true END
+                    AND m.trade_outcome = t.result_state
+                    AND m.trade_score IS NOT DISTINCT FROM t.score
+                    AND m.trade_pnl IS NOT DISTINCT FROM t.pnl_points
+              )
+          )
+        ORDER BY t.exit_timestamp NULLS LAST, a.id LIMIT p_limit OFFSET p_offset
+    ) page;
+    RETURN v_rows;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.list_incomplete_option_accounting(integer, integer) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.list_incomplete_option_accounting(integer, integer) TO service_role;

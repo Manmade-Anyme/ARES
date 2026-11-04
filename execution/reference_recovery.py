@@ -35,7 +35,7 @@ def _option(trade):
         return None
     context = trade.get("market_context") or {}
     option = context.get("option_trailing") or {}
-    if (option.get("policy_version") != "option_atr_v1"
+    if (option.get("policy_version") not in {"option_atr_v1", "option_premium_protection_v2"}
             or option.get("accounting_formula_version") != "one_lot_reference_v1"):
         return None
     return option
