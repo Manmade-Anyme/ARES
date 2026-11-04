@@ -417,6 +417,8 @@ class OptionTrailingContext:
     accounting_formula_version: Optional[str] = None
     ambiguous_index_touch: Optional[Dict[str, Any]] = None
     ambiguity_resolution: Optional[Dict[str, Any]] = None
+    ambiguous_premium_quote: Optional[Dict[str, Any]] = None
+    ambiguous_premium_bar: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -474,6 +476,8 @@ class OptionTrailingContext:
             "accounting_formula_version": self.accounting_formula_version,
             "ambiguous_index_touch": self.ambiguous_index_touch,
             "ambiguity_resolution": self.ambiguity_resolution,
+            "ambiguous_premium_quote": self.ambiguous_premium_quote,
+            "ambiguous_premium_bar": self.ambiguous_premium_bar,
         }
 
     @classmethod
@@ -563,4 +567,6 @@ class OptionTrailingContext:
             accounting_formula_version=data.get("accounting_formula_version"),
             ambiguous_index_touch=data.get("ambiguous_index_touch"),
             ambiguity_resolution=data.get("ambiguity_resolution"),
+            ambiguous_premium_quote=data.get("ambiguous_premium_quote"),
+            ambiguous_premium_bar=data.get("ambiguous_premium_bar"),
         )

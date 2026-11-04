@@ -100,6 +100,27 @@ def test_typed_round_trip_preserves_ambiguity_and_protective_observation():
     assert restored["execution_route_reason"] == "ATR_SL_HIT"
 
 
+def test_typed_round_trip_preserves_t1_tied_premium_quote_and_bar_triggers():
+    protective = {"reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
+                  "event_at": "2026-11-04T04:50:00+00:00", "option_close": 160.0,
+                  "effective_stop": 161.05, "stop_source": "INITIAL_OPTION_SL"}
+    quote = {"status": "T1_ORDER_UNKNOWN", "protective_option_exit": protective}
+    bar = {"status": "T1_ORDER_UNKNOWN", "option_close": 160.0,
+           "protective_option_exit": protective}
+
+    restored = OptionTrailingContext.from_dict({
+        "ambiguous_premium_quote": quote,
+        "ambiguous_premium_bar": bar,
+        "execution_route_pending": True,
+        "execution_route_reason": "SL_HIT",
+    }).to_dict()
+
+    assert restored["ambiguous_premium_quote"] == quote
+    assert restored["ambiguous_premium_bar"] == bar
+    assert restored["execution_route_pending"] is True
+    assert restored["execution_route_reason"] == "SL_HIT"
+
+
 def test_conflict_state_read_does_not_require_new_column_on_legacy_database():
     client = Mock()
     analytics = Mock()
