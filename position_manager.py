@@ -2722,6 +2722,45 @@ class PositionManager:
         await self._record_trade_update(trade, None, None, observed_at.isoformat())
         return "SL_HIT" if opt.get("execution_route_pending") else None
 
+    async def _retain_t1_premium_quote_ambiguity(self, trade, quote, event_at, index_observations):
+        """Retain a T1-tied quote that breaches cost only if T1 came first."""
+        opt = trade["market_context"]["option_trailing"]
+        try:
+            observed_at = parse_candle_timestamp(quote["observed_at"])
+            received_at = parse_candle_timestamp(quote["received_at"])
+            price = float(quote["price"])
+            original_stop = float(opt["original_option_sl"])
+            entry_premium = float(opt["original_option_entry"])
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            return False
+        if (observed_at != event_at or received_at < observed_at
+                or received_at - observed_at > timedelta(seconds=5)
+                or not isfinite(price) or not original_stop < price <= entry_premium
+                or self._unresolved_t1_premium_ambiguity(opt)):
+            return False
+        watermark = opt.get("quote_watermark")
+        if watermark:
+            try:
+                if observed_at <= parse_candle_timestamp(watermark):
+                    return False
+            except (TypeError, ValueError, OverflowError, OSError):
+                return False
+        source = quote.get("source") or "OPTION_QUOTE"
+        opt["ambiguous_premium_quote"] = {
+            "event_at": observed_at.isoformat(), "price": price,
+            "status": "T1_ORDER_UNKNOWN", "received_at": received_at.isoformat(),
+            "ordering_reason": "COST_STOP_ONLY_BREACH",
+            "original_option_sl": original_stop, "entry_premium": entry_premium,
+            "tied_index_observations": list(index_observations),
+        }
+        opt["quote_watermark"] = observed_at.isoformat()
+        opt["last_option_quote"] = {
+            "price": price, "observed_at": observed_at.isoformat(),
+            "received_at": received_at.isoformat(), "source": source,
+        }
+        await self._record_trade_update(trade, None, None, observed_at.isoformat())
+        return True
+
     async def _close_option_premium_trade(self, trade, price, event_at, *, source, received_at=None,
                                           phase_override=None, stop_override=None):
         """Record a premium-domain trigger without manufacturing a spot mark or fill."""
@@ -3493,20 +3532,26 @@ class PositionManager:
                         try:
                             quote_at = parse_candle_timestamp(candidate["observed_at"])
                             quote_price = float(candidate["price"])
+                            original_stop = float(opt["original_option_sl"])
+                            entry_premium = float(opt["original_option_entry"])
                             raw_contract = candidate.get("contract") or {}
                         except (KeyError, TypeError, ValueError, OverflowError, OSError):
                             continue
-                        if (quote_at != event_at or quote_price > float(opt["original_option_sl"])
+                        if (quote_at != event_at or quote_price > entry_premium
                                 or str(raw_contract.get("security_id")) != str(expected.get("security_id"))
                                 or raw_contract.get("exchange_segment") != expected.get("exchange_segment")
                                 or raw_contract.get("expiry") != expected.get("expiry")
                                 or raw_contract.get("strike") != expected.get("strike")
                                 or raw_contract.get("option_type") != expected.get("option_type")):
                             continue
-                        reason = await self._retain_t1_premium_quote_exit(
-                            trade, candidate, event_at, t1_ranges)
-                        if reason:
-                            events.append((trade["id"], reason))
+                        if quote_price <= original_stop:
+                            reason = await self._retain_t1_premium_quote_exit(
+                                trade, candidate, event_at, t1_ranges)
+                            if reason:
+                                events.append((trade["id"], reason))
+                        else:
+                            await self._retain_t1_premium_quote_ambiguity(
+                                trade, candidate, event_at, t1_ranges)
                         break
 
             if (trade.get("state") != "T1_HIT" or opt.get("phase") != "POST_T1"

@@ -357,6 +357,39 @@ async def test_same_time_premium_breach_is_retained_when_pre_t1_tick_gaps_throug
 
 
 @pytest.mark.asyncio
+async def test_t1_cost_stop_quote_is_retained_when_pre_t1_tick_gaps_through_t2():
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt["execution_status"] = "CONFIRMED_PAPER_FILL"
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    tick = {"price": trade["target_2"], "exchange_at": at.isoformat(),
+            "received_at": at.isoformat(), "source": "dhan_tick"}
+    quote = _quote(165.0, 20)
+    quote.update(observed_at=at.isoformat(), received_at=at.isoformat())
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=at, index_ticks=[tick], option_quotes=[quote])
+
+    assert ("v2-trade", "T1_HIT") in events
+    assert ("v2-trade", "T2_HIT") not in events
+    assert trade["state"] == "T1_HIT"
+    assert opt["phase"] == "POST_T1"
+    assert opt["highest_milestone"] == 1
+    assert opt["booked_fraction"] == pytest.approx(0.5)
+    assert opt["remaining_fraction"] == pytest.approx(0.5)
+    ambiguity = opt["ambiguous_premium_quote"]
+    assert ambiguity["status"] == "T1_ORDER_UNKNOWN"
+    assert ambiguity["ordering_reason"] == "COST_STOP_ONLY_BREACH"
+    assert ambiguity["price"] == pytest.approx(165.0)
+    assert ambiguity["tied_index_observations"][0]["touches_t2"] is True
+    assert opt["quote_watermark"] == at.isoformat()
+    assert opt.get("exit") is None
+    assert not opt.get("execution_route_pending")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("ambiguity_field", ["ambiguous_premium_quote", "ambiguous_premium_bar"])
 @pytest.mark.parametrize("index_touch", ["guard", "t2"])
 async def test_later_index_touch_is_retained_while_t1_premium_ordering_is_unknown(ambiguity_field, index_touch):
