@@ -2807,12 +2807,18 @@ class PositionManager:
             if opt.get("locked_option_sl") is None:
                 self._seed_option_stop(trade, parse_candle_timestamp(opt["t1_at"]))
             for bar in bars:
-                if (opt.get("deferred_option_exit")
-                        or (opt.get("ambiguous_index_touch") or {}).get("protective_option_exit")):
-                    # Preserve the first protective exit and its active stop until
-                    # all earlier index ordering/history has been established.
-                    break
                 end = parse_candle_timestamp(bar.end_time)
+                pending_exits = [opt.get("deferred_option_exit"),
+                                 (opt.get("ambiguous_index_touch") or {}).get("protective_option_exit")]
+                pending_exits = [item for item in pending_exits if item]
+                try:
+                    if any(end >= parse_candle_timestamp(item["event_at"]) for item in pending_exits):
+                        # Replay completed option bars strictly before the retained
+                        # trigger; never let later history rewrite its chronology.
+                        break
+                except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                    # Missing trigger time cannot establish bar ordering.
+                    break
                 if end < cutoff or (end == cutoff and opt.get("last_processed_option_bar_end")):
                     continue
                 opt["source_candle"] = {"start_time": bar.start_time, "end_time": bar.end_time, "close": bar.close}

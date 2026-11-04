@@ -112,7 +112,7 @@ async def test_earlier_queued_t2_is_replayed_before_premium_exit_finalizes_refer
 
     start = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
     history = [OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
-                            167.2, 168.0, 166.0, 167.2, 1, "39961") for i in range(13)]
+                            170.0, 171.0, 169.0, 170.0, 1, "39961") for i in range(13)]
 
     with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_option_market_events(
@@ -136,6 +136,51 @@ async def test_earlier_queued_t2_is_replayed_before_premium_exit_finalizes_refer
     assert datetime.fromisoformat(opt["t2_at"]) == t2_at.astimezone(timezone.utc)
     assert opt["exit"]["event_at"] == quote_at.isoformat()
     assert opt["exit"]["exited_fraction"] == pytest.approx(0.2)
+    assert opt.get("deferred_option_exit") is None
+    assert not opt.get("pending_index_observations")
+
+
+@pytest.mark.asyncio
+async def test_recovered_option_stop_before_deferred_trigger_wins_over_later_queued_t2():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, accounting_formula_version="one_lot_reference_v1")
+    pm = _manager(trade)
+    pm._option_available_until = {}
+    t2_at = datetime(2026, 11, 4, 10, 20, 30, tzinfo=IST)
+    quote_at = datetime(2026, 11, 4, 10, 21, 0, tzinfo=IST)
+    tick = {"price": trade["target_2"], "exchange_at": t2_at.isoformat(),
+            "received_at": t2_at.isoformat(), "source": "dhan_tick"}
+    quote = _quote(166.0, 21)
+    quote.update(observed_at=quote_at.isoformat(), received_at=(quote_at + timedelta(seconds=1)).isoformat())
+
+    start = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    stop_bar_end = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    history = []
+    for i in range(13):
+        bar_start = start + timedelta(minutes=5 * i)
+        bar_end = bar_start + timedelta(minutes=5)
+        close = 160.0 if bar_end == stop_bar_end else 170.0
+        history.append(OptionCandle(bar_start, bar_end, 170.0, 171.0,
+                                    min(169.0, close), close, 1, "39961"))
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        first_events = await pm.update_option_market_events(
+            [], {}, current_time=quote_at + timedelta(seconds=2), index_ticks=[tick], option_quotes=[quote])
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in first_events
+    assert opt.get("deferred_option_exit") is not None
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        recovery_events = await pm.update_option_market_events(
+            [], {"39961": history}, current_time=start + timedelta(minutes=65, seconds=2))
+
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in recovery_events
+    assert trade["state"] == "CLOSED"
+    assert opt["highest_milestone"] == 1
+    assert opt["remaining_fraction"] == 0.0
+    assert opt["exit"]["event_at"] == stop_bar_end.isoformat()
+    assert opt["exit"]["option_close"] == pytest.approx(160.0)
+    assert opt["exit"]["exited_fraction"] == pytest.approx(0.5)
     assert opt.get("deferred_option_exit") is None
     assert not opt.get("pending_index_observations")
 
