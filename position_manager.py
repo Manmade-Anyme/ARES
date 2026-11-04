@@ -954,7 +954,8 @@ class PositionManager:
                 target_2_hit = trade_high >= trade["target_2"] if sign == 1 else trade_low <= trade["target_2"]
                 be_hit = trade_low <= trade["entry_price"] if sign == 1 else trade_high >= trade["entry_price"]
 
-                if reference_accounting and opt_ctx.get("ambiguous_index_touch"):
+                if ((reference_accounting or opt_ctx.get("policy_version") == "option_premium_protection_v2")
+                        and opt_ctx.get("ambiguous_index_touch")):
                     ambiguity = opt_ctx["ambiguous_index_touch"]
                     if ambiguity.get("kind") == "SPOT_OPTION_EXIT_TIE":
                         try:
@@ -3109,15 +3110,17 @@ class PositionManager:
         finally:
             self._option_replaying = False
 
-    async def _mark_same_close_option_spot_ambiguities(self, event_at, timeline, pending_ticks, live_ticks, histories):
-        """Preserve spot/option ordering when a second-resolution event ties a stopped bar close."""
+    async def _mark_same_close_option_spot_ambiguities(
+            self, event_at, timeline, pending_ticks, live_ticks, histories, premium_quotes=None):
+        """Preserve spot/option ordering when a premium trigger ties an index touch."""
         events = []
         for trade in self.active_trades:
             if trade.get("state") != "T1_HIT":
                 continue
             opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+            v2 = opt.get("policy_version") == "option_premium_protection_v2"
             if (not _has_option_policy(opt)
-                    or opt.get("accounting_formula_version") != "one_lot_reference_v1"
+                    or (not v2 and opt.get("accounting_formula_version") != "one_lot_reference_v1")
                     or opt.get("phase") != "POST_T1"
                     or opt.get("ambiguous_index_touch")):
                 continue
@@ -3133,11 +3136,38 @@ class PositionManager:
                 continue
             bar = next((candidate for candidate in histories.get(trade["id"], [])
                         if parse_candle_timestamp(candidate.end_time) == event_at), None)
-            if bar is None or event_at.microsecond != 0:
-                continue
-            v2 = opt.get("policy_version") == "option_premium_protection_v2"
             active_stop = opt.get("locked_option_sl")
-            if active_stop is None or (bar.close > active_stop if v2 else bar.close >= active_stop):
+            if active_stop is None:
+                continue
+            try:
+                active_stop = float(active_stop)
+            except (TypeError, ValueError, OverflowError):
+                continue
+
+            quote_trigger = None
+            if v2:
+                expected = opt.get("contract") or {}
+                for candidate in (premium_quotes or {}).get(event_at, []):
+                    try:
+                        quote_at = parse_candle_timestamp(candidate["observed_at"])
+                        quote_price = float(candidate["price"])
+                        raw_contract = candidate.get("contract") or {}
+                    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                        continue
+                    if quote_at != event_at or quote_price > active_stop:
+                        continue
+                    if (str(raw_contract.get("security_id")) != str(expected.get("security_id"))
+                            or raw_contract.get("exchange_segment") != expected.get("exchange_segment")
+                            or raw_contract.get("expiry") != expected.get("expiry")
+                            or raw_contract.get("strike") != expected.get("strike")
+                            or raw_contract.get("option_type") != expected.get("option_type")):
+                        continue
+                    quote_trigger = candidate
+                    break
+
+            bar_breaches = (bar is not None and event_at.microsecond == 0
+                            and (bar.close <= active_stop if v2 else bar.close < active_stop))
+            if not bar_breaches and quote_trigger is None:
                 continue
 
             sign = 1 if trade["direction"] == "BULLISH" else -1
@@ -3168,6 +3198,8 @@ class PositionManager:
                     "source_minute": source_start.replace(second=0, microsecond=0).isoformat(),
                     "event_at": __import__("storage").to_utc_iso(event_at),
                     "source": source,
+                    "premium_source": (quote_trigger.get("source") or "OPTION_QUOTE")
+                        if quote_trigger else "completed_5m_option_close",
                     "high": high,
                     "low": low,
                     "touches_t2": touches_t2,
@@ -3182,8 +3214,23 @@ class PositionManager:
                         "reason": reason,
                     }
                 if v2:
+                    if quote_trigger:
+                        received_at = parse_candle_timestamp(quote_trigger["received_at"])
+                        opt["quote_watermark"] = event_at.isoformat()
+                        opt["last_option_quote"] = {
+                            "price": float(quote_trigger["price"]),
+                            "observed_at": event_at.isoformat(),
+                            "received_at": received_at.isoformat(),
+                            "source": quote_trigger.get("source"),
+                        }
                     reason = await self._close_option_premium_trade(
-                        trade, bar.close, bar.end_time, source="completed_5m_option_close")
+                        trade,
+                        float(quote_trigger["price"]) if quote_trigger else bar.close,
+                        event_at,
+                        source=(quote_trigger.get("source") or "OPTION_QUOTE")
+                            if quote_trigger else "completed_5m_option_close",
+                        received_at=quote_trigger.get("received_at") if quote_trigger else None,
+                    )
                     if reason:
                         events.append((trade["id"], reason))
                 else:
@@ -3195,7 +3242,8 @@ class PositionManager:
                                       premium_quotes=None):
         for event_at in sorted(timeline):
             events.extend(await self._mark_same_close_option_spot_ambiguities(
-                event_at, timeline, pending_ticks, live_ticks, histories))
+                event_at, timeline, pending_ticks, live_ticks, histories,
+                premium_quotes=premium_quotes))
             for candle in timeline[event_at]:
                 val = (lambda key: candle[key]) if isinstance(candle, dict) else (lambda key: getattr(candle, key))
                 events.extend(await self.update_trades(val("close"), candle_high=val("high"), candle_low=val("low"),

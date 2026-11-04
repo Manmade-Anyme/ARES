@@ -97,6 +97,38 @@ async def test_post_t1_cost_stop_equality_is_break_even_and_zero_runner_points()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_accounting", [True, False])
+async def test_same_batch_t2_and_premium_stop_quote_retain_ambiguity_and_route_protection(with_accounting):
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt["execution_status"] = "CONFIRMED_PAPER_FILL"
+    if with_accounting:
+        opt["accounting_formula_version"] = "one_lot_reference_v1"
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    tick = {"price": trade["target_2"], "exchange_at": at.isoformat(),
+            "received_at": at.isoformat(), "source": "dhan_tick"}
+    quote = _quote(166.0, 21)
+    quote.update(observed_at=at.isoformat(), received_at=at.isoformat())
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=at, index_ticks=[tick], option_quotes=[quote])
+
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in events
+    assert trade["state"] == "T1_HIT"
+    assert opt["highest_milestone"] == 1
+    assert opt.get("exit") is None
+    ambiguity = opt["ambiguous_index_touch"]
+    assert ambiguity["kind"] == "SPOT_OPTION_EXIT_TIE"
+    assert ambiguity["touches_t2"] is True
+    assert ambiguity["protective_option_exit"]["option_close"] == pytest.approx(166.0)
+    assert ambiguity["protective_option_exit"]["source"] == "dhan_last_trade"
+    assert opt["execution_route_pending"] is True
+    assert opt["execution_route_reason"] == "STOPPED_OUT_AT_BE"
+
+
+@pytest.mark.asyncio
 async def test_earlier_queued_t2_is_replayed_before_premium_exit_finalizes_reference():
     trade = _trade(phase="POST_T1")
     opt = trade["market_context"]["option_trailing"]
