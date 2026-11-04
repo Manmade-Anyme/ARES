@@ -2541,6 +2541,12 @@ class PositionManager:
         opt = trade["market_context"]["option_trailing"]
         if trade.get("state") in {"CLOSED", "STOPPED_OUT"}:
             return None
+        t1_quote_ambiguity = opt.get("ambiguous_premium_quote") or {}
+        if t1_quote_ambiguity.get("protective_option_exit"):
+            # The first stop breach is already routed, while the T1 allocation
+            # remains order-unknown. Later quotes/bars cannot finalize or
+            # rewrite that reference exit until its ordering is resolved.
+            return None
         phase = phase_override or opt.get("phase")
         stop = float(stop_override or opt.get("locked_option_sl") or opt["original_option_sl"])
         stop_source = ("INITIAL_OPTION_SL" if phase == "PRE_T1" else opt.get("premium_stop_source")) or (

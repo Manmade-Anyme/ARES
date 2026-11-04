@@ -107,10 +107,16 @@ async def test_t1_tied_quote_below_initial_stop_preserves_ambiguity_and_routes_p
             "received_at": at.isoformat(), "source": "dhan_tick"}
     quote = _quote(160.0, 20)
     quote.update(observed_at=at.isoformat(), received_at=at.isoformat())
+    later_at = at + timedelta(minutes=1)
+    later_quote = _quote(166.0, 21)
+    later_quote.update(observed_at=later_at.isoformat(), received_at=later_at.isoformat())
 
     with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         events = await pm.update_option_market_events(
             [], {}, current_time=at, index_ticks=[tick], option_quotes=[quote])
+        later_events = await pm.update_option_market_events(
+            [], {}, current_time=later_at, option_quotes=[later_quote])
+    events.extend(later_events)
 
     assert ("v2-trade", "T1_HIT") in events
     assert ("v2-trade", "SL_HIT") in events
@@ -122,10 +128,12 @@ async def test_t1_tied_quote_below_initial_stop_preserves_ambiguity_and_routes_p
     protective = opt["ambiguous_premium_quote"]["protective_option_exit"]
     assert protective["stop_domain"] == "OPTION_PREMIUM"
     assert protective["reason"] == "SL_HIT"
+    assert protective["event_at"] == at.isoformat()
+    assert protective["option_close"] == pytest.approx(160.0)
     assert protective["effective_stop"] == pytest.approx(161.05)
     assert opt["execution_route_pending"] is True
     assert opt["execution_route_reason"] == "SL_HIT"
-    assert opt["quote_watermark"] == at.isoformat()
+    assert opt["quote_watermark"] == later_at.isoformat()
 
 
 @pytest.mark.asyncio
