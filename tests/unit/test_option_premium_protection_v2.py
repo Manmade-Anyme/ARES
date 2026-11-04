@@ -190,6 +190,67 @@ async def test_t1_tied_option_bar_below_initial_stop_preserves_ordering_and_rout
 
 
 @pytest.mark.asyncio
+async def test_pre_entry_t1_bar_and_index_tick_cannot_retain_protective_exit():
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL",
+               activated_at="2026-11-04T10:21:00+05:30")
+    trade["entry_timestamp"] = "2026-11-04T10:21:00+05:30"
+    pm = _manager(trade)
+    start = datetime(2026, 11, 4, 9, 15, tzinfo=IST)
+    history = [
+        OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                     170.0, 171.0, 159.0 if i == 12 else 169.0,
+                     160.0 if i == 12 else 170.0, 1, "39961")
+        for i in range(13)
+    ]
+    before_entry = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    tick = {"price": trade["target_1"], "exchange_at": before_entry.isoformat(),
+            "received_at": before_entry.isoformat(), "source": "dhan_tick"}
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {"39961": history}, current_time=before_entry, index_ticks=[tick])
+
+    assert events == []
+    assert trade["state"] == "OPEN"
+    assert opt.get("ambiguous_premium_bar") is None
+    assert opt.get("exit_trigger") is None
+    assert opt.get("execution_route_pending") is not True
+
+
+@pytest.mark.asyncio
+async def test_same_time_premium_breach_is_retained_when_pre_t1_tick_gaps_through_t2():
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt["execution_status"] = "CONFIRMED_PAPER_FILL"
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    tick = {"price": trade["target_2"], "exchange_at": at.isoformat(),
+            "received_at": at.isoformat(), "source": "dhan_tick"}
+    quote = _quote(160.0, 20)
+    quote.update(observed_at=at.isoformat(), received_at=at.isoformat())
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=at, index_ticks=[tick], option_quotes=[quote])
+
+    assert ("v2-trade", "SL_HIT") in events
+    assert opt["ambiguous_premium_quote"]["status"] == "T1_ORDER_UNKNOWN"
+    protective = opt["ambiguous_premium_quote"]["protective_option_exit"]
+    assert protective["event_at"] == at.isoformat()
+    assert protective["option_close"] == pytest.approx(160.0)
+    assert protective["effective_stop"] == pytest.approx(161.05)
+    assert trade["state"] == "T1_HIT"
+    assert opt["phase"] == "POST_T1"
+    assert opt["highest_milestone"] == 1
+    assert opt["ambiguous_premium_quote"]["tied_index_observations"][0]["touches_t2"] is True
+    assert opt["execution_route_pending"] is True
+    assert opt["execution_route_reason"] == "SL_HIT"
+    assert opt["exit"] is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("ambiguity_field", ["ambiguous_premium_quote", "ambiguous_premium_bar"])
 @pytest.mark.parametrize("index_touch", ["guard", "t2"])
 async def test_later_index_touch_is_retained_while_t1_premium_ordering_is_unknown(ambiguity_field, index_touch):
@@ -221,6 +282,50 @@ async def test_later_index_touch_is_retained_while_t1_premium_ordering_is_unknow
     assert len(observations) == 1
     assert datetime.fromisoformat(observations[0]["event_at"]).astimezone(timezone.utc) == guard_at.astimezone(timezone.utc)
     assert observations[0]["price"] == pytest.approx(touch_price)
+
+
+@pytest.mark.asyncio
+async def test_repeated_premium_breaches_do_not_create_execution_route_for_reference_trade():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt["execution_status"] = "REFERENCE_ONLY"
+    opt["ambiguous_index_touch"] = {
+        "kind": "T2_ENTRY", "event_at": "2026-11-04T10:20:00+05:30",
+        "high": trade["target_2"], "low": trade["entry_price"], "status": "ORDER_UNKNOWN",
+    }
+    pm = _manager(trade)
+    first_at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    first = _quote(160.0, 21)
+    first.update(observed_at=first_at.isoformat(), received_at=first_at.isoformat())
+    later_at = first_at + timedelta(minutes=1)
+    later = _quote(150.0, 22)
+    later.update(observed_at=later_at.isoformat(), received_at=later_at.isoformat())
+
+    await pm.update_option_market_events([], {}, current_time=first_at, option_quotes=[first])
+    await pm.update_option_market_events([], {}, current_time=later_at, option_quotes=[later])
+
+    assert opt["execution_status"] == "REFERENCE_TRIGGERED_NO_BROKER_FILL"
+    assert not opt.get("execution_route_pending")
+    assert opt["ambiguous_index_touch"]["protective_option_exit"]["option_close"] == pytest.approx(160.0)
+    assert opt["ambiguous_index_touch"]["protective_option_exit"]["event_at"] == first_at.isoformat()
+
+
+@pytest.mark.parametrize("initial_status", ["REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"])
+def test_finalizing_protective_exit_preserves_reference_only_execution_status(initial_status):
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt["execution_status"] = initial_status
+    pm = _manager(trade)
+    protective = {
+        "reason": "SL_HIT", "source": "dhan_last_trade",
+        "event_at": "2026-11-04T10:21:00+05:30", "option_close": 160.0,
+        "effective_stop": 161.05, "stop_source": "INITIAL_OPTION_SL",
+    }
+
+    pm._finalize_protective_option_exit(trade, protective, exited_fraction=0.5)
+
+    assert opt["execution_status"] == "REFERENCE_TRIGGERED_NO_BROKER_FILL"
+    assert not opt.get("execution_route_pending")
 
 
 @pytest.mark.asyncio

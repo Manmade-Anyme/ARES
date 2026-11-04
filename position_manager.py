@@ -1145,8 +1145,11 @@ class PositionManager:
                     events.append((trade["id"], "T2_TOUCHED"))
 
                 # Target-first: If single index observation established both T1 and T2, apply T1 then T2 exactly once
-                if target_2_hit and is_option_atr and (not reference_accounting or candle_timestamp is None or not (
-                        trade_low <= trade["entry_price"] if sign == 1 else trade_high >= trade["entry_price"])):
+                if (target_2_hit and is_option_atr
+                        and not (opt_ctx.get("policy_version") == "option_premium_protection_v2"
+                                 and self._retained_t1_premium_exit(opt_ctx))
+                        and (not reference_accounting or candle_timestamp is None or not (
+                            trade_low <= trade["entry_price"] if sign == 1 else trade_high >= trade["entry_price"]))):
                     trade["state"] = "T2_REACHED"
                     opt_ctx["phase"] = "POST_T2"
                     opt_ctx["highest_milestone"] = 2
@@ -1989,7 +1992,7 @@ class PositionManager:
             "effective_stop": stop, "stop_source": stop_source, "reason": reason,
         }
         opt["execution_status"] = ("REFERENCE_TRIGGERED_NO_BROKER_FILL"
-                                    if opt.get("execution_status") == "REFERENCE_ONLY"
+                                    if opt.get("execution_status") in {"REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"}
                                     else "EXIT_TRIGGERED_PENDING_CONFIRMATION")
         runner_points = round(price - float(opt["original_option_entry"]), 8)
         opt["exit"] = {
@@ -2605,6 +2608,58 @@ class PositionManager:
         await self._record_trade_update(trade, None, None, event_at.isoformat())
         return "SL_HIT" if opt.get("execution_route_pending") else None
 
+    async def _retain_t1_premium_quote_exit(self, trade, quote, event_at, index_observations):
+        """Retain an exact-T1 quote breach before index milestones are committed."""
+        opt = trade["market_context"]["option_trailing"]
+        if self._retained_t1_premium_exit(opt):
+            return None
+        try:
+            observed_at = parse_candle_timestamp(quote["observed_at"])
+            received_at = parse_candle_timestamp(quote["received_at"])
+            price = float(quote["price"])
+            stop = float(opt["original_option_sl"])
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            return None
+        if (observed_at != event_at or received_at < observed_at
+                or received_at - observed_at > timedelta(seconds=5)
+                or not isfinite(price) or price <= 0 or price > stop):
+            return None
+        source = quote.get("source") or "OPTION_QUOTE"
+        protective = {
+            "reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
+            "source": source, "trigger_source": source,
+            "event_at": observed_at.isoformat(), "received_at": received_at.isoformat(),
+            "option_close": price, "trigger_price": price,
+            "option_stop": stop, "effective_stop": stop,
+            "stop_source": "INITIAL_OPTION_SL",
+        }
+        opt["ambiguous_premium_quote"] = {
+            "event_at": observed_at.isoformat(), "price": price,
+            "status": "T1_ORDER_UNKNOWN", "received_at": received_at.isoformat(),
+            "protective_option_exit": protective,
+            "tied_index_observations": index_observations,
+        }
+        opt["quote_watermark"] = observed_at.isoformat()
+        opt["last_option_quote"] = {
+            "price": price, "observed_at": observed_at.isoformat(),
+            "received_at": received_at.isoformat(), "source": source,
+        }
+        opt["exit_trigger"] = {
+            "domain": "OPTION_PREMIUM", "source": source,
+            "event_at": observed_at.isoformat(), "received_at": received_at.isoformat(),
+            "price": price, "effective_stop": stop,
+            "stop_source": "INITIAL_OPTION_SL", "reason": "SL_HIT",
+        }
+        opt["execution_status"] = (
+            "REFERENCE_TRIGGERED_NO_BROKER_FILL"
+            if opt.get("execution_status") in {"REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"}
+            else "EXIT_TRIGGERED_PENDING_CONFIRMATION"
+        )
+        self._mark_option_execution_route_pending(trade, "SL_HIT")
+        opt.setdefault("event_history", []).append(dict(opt["exit_trigger"]))
+        await self._record_trade_update(trade, None, None, observed_at.isoformat())
+        return "SL_HIT" if opt.get("execution_route_pending") else None
+
     async def _close_option_premium_trade(self, trade, price, event_at, *, source, received_at=None,
                                           phase_override=None, stop_override=None):
         """Record a premium-domain trigger without manufacturing a spot mark or fill."""
@@ -2681,7 +2736,7 @@ class PositionManager:
                 "stop_source": pending_exit.get("stop_source"), "reason": pending_exit["reason"],
             }
             opt["execution_status"] = ("REFERENCE_TRIGGERED_NO_BROKER_FILL"
-                                        if opt.get("execution_status") == "REFERENCE_ONLY"
+                                        if opt.get("execution_status") in {"REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"}
                                         else "EXIT_TRIGGERED_PENDING_CONFIRMATION")
             self._mark_option_execution_route_pending(trade, pending_exit["reason"])
             if not already_pending:
@@ -2690,7 +2745,7 @@ class PositionManager:
             return pending_exit["reason"]
         opt["exit_trigger"] = trigger
         opt["execution_status"] = ("REFERENCE_TRIGGERED_NO_BROKER_FILL"
-                                    if opt.get("execution_status") == "REFERENCE_ONLY"
+                                    if opt.get("execution_status") in {"REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"}
                                     else "EXIT_TRIGGERED_PENDING_CONFIRMATION")
         self._mark_option_execution_route_pending(trade, reason)
         runner_points = round(float(price) - float(opt["original_option_entry"]), 8)
@@ -3250,23 +3305,67 @@ class PositionManager:
                     or (not v2 and opt.get("accounting_formula_version") != "one_lot_reference_v1")
                     or opt.get("ambiguous_index_touch")):
                 continue
+            execution = ((trade.get("market_context") or {}).get("execution") or {})
+            activation_value = (opt.get("activated_at") or execution.get("filled_at")
+                                or trade.get("entry_timestamp"))
+            if activation_value:
+                try:
+                    activation_at = parse_candle_timestamp(activation_value)
+                except (TypeError, ValueError, OverflowError, OSError):
+                    # An invalid activation timestamp cannot authorize a protective
+                    # event against a position whose start time is unknown.
+                    continue
+                if event_at < activation_at:
+                    continue
+                if event_at.microsecond == 0 and event_at + timedelta(seconds=1) <= activation_at:
+                    continue
+            last_index = opt.get("last_index_event_at")
+            if last_index:
+                try:
+                    if event_at < parse_candle_timestamp(last_index):
+                        continue
+                except (TypeError, ValueError, OverflowError, OSError):
+                    continue
             bar = next((candidate for candidate in histories.get(trade["id"], [])
                         if parse_candle_timestamp(candidate.end_time) == event_at), None)
+            bar_watermark = opt.get("last_processed_option_bar_end")
+            if bar is not None and bar_watermark:
+                try:
+                    if event_at <= parse_candle_timestamp(bar_watermark):
+                        bar = None
+                except (TypeError, ValueError, OverflowError, OSError):
+                    bar = None
             spot_ranges = []
             for candle in timeline.get(event_at, []):
                 start = parse_candle_timestamp(candle["timestamp"])
                 if start + timedelta(minutes=1) == event_at:
-                    spot_ranges.append((candle["high"], candle["low"], start, "completed_candle"))
+                    spot_ranges.append((candle["high"], candle["low"], start,
+                                        "completed_candle", candle["close"]))
             for trade_id, observation in pending_ticks.get(event_at, []):
                 if trade_id == trade["id"]:
                     spot_ranges.append((observation.get("high", observation["price"]),
                                         observation.get("low", observation["price"]),
                                         parse_candle_timestamp(observation.get("candle_timestamp") or event_at),
-                                        "recovered_observation"))
+                                        "recovered_observation", observation["price"]))
             ticks = live_ticks.get(event_at, [])
             if ticks:
                 prices = [tick["price"] for tick in ticks]
-                spot_ranges.append((max(prices), min(prices), event_at, "live_tick"))
+                spot_ranges.append((max(prices), min(prices), event_at, "live_tick", None))
+
+            # Mirror update_trades' entry-boundary treatment: a completed candle
+            # that began before activation contributes only its close, never its
+            # pre-entry wick. A buffered source-second wholly before activation
+            # contributes no index range at all.
+            eligible_ranges = []
+            for high, low, source_start, source, close in spot_ranges:
+                if activation_value:
+                    if source == "live_tick":
+                        if source_start + timedelta(seconds=1) <= activation_at:
+                            continue
+                    elif source_start < activation_at:
+                        high = low = close
+                eligible_ranges.append((high, low, source_start, source, close))
+            spot_ranges = eligible_ranges
 
             # The detector runs before index milestones. Capture a T1/bar tie
             # here while the trade is still PRE_T1, using only the original SL.
@@ -3280,7 +3379,7 @@ class PositionManager:
                     continue
                 if isfinite(bar_close) and 0 < bar_close <= original_stop:
                     sign = 1 if trade["direction"] == "BULLISH" else -1
-                    for high, low, _, _ in spot_ranges:
+                    for high, low, _, _, _ in spot_ranges:
                         touches_t1 = high >= trade["target_1"] if sign == 1 else low <= trade["target_1"]
                         if not touches_t1:
                             continue
@@ -3288,7 +3387,46 @@ class PositionManager:
                         if reason:
                             events.append((trade["id"], reason))
                         break
-                continue
+
+            if (v2 and trade.get("state") == "OPEN" and opt.get("phase") == "PRE_T1"
+                    and not opt.get("t1_at") and not self._retained_t1_premium_exit(opt)
+                    and spot_ranges):
+                sign = 1 if trade["direction"] == "BULLISH" else -1
+                t1_ranges = []
+                for high, low, source_start, source, close in spot_ranges:
+                    touches_t1 = high >= trade["target_1"] if sign == 1 else low <= trade["target_1"]
+                    if touches_t1:
+                        touches_t2 = high >= trade["target_2"] if sign == 1 else low <= trade["target_2"]
+                        touches_guard = low <= trade["entry_price"] if sign == 1 else high >= trade["entry_price"]
+                        t1_ranges.append({
+                            "event_at": event_at.isoformat(), "price": close,
+                            "high": high, "low": low, "source": source,
+                            "touches_t1": touches_t1, "touches_t2": touches_t2,
+                            "touches_guard": touches_guard,
+                            "candle_timestamp": source_start.isoformat()
+                                if source != "live_tick" else None,
+                        })
+                if t1_ranges:
+                    expected = opt.get("contract") or {}
+                    for candidate in (premium_quotes or {}).get(event_at, []):
+                        try:
+                            quote_at = parse_candle_timestamp(candidate["observed_at"])
+                            quote_price = float(candidate["price"])
+                            raw_contract = candidate.get("contract") or {}
+                        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                            continue
+                        if (quote_at != event_at or quote_price > float(opt["original_option_sl"])
+                                or str(raw_contract.get("security_id")) != str(expected.get("security_id"))
+                                or raw_contract.get("exchange_segment") != expected.get("exchange_segment")
+                                or raw_contract.get("expiry") != expected.get("expiry")
+                                or raw_contract.get("strike") != expected.get("strike")
+                                or raw_contract.get("option_type") != expected.get("option_type")):
+                            continue
+                        reason = await self._retain_t1_premium_quote_exit(
+                            trade, candidate, event_at, t1_ranges)
+                        if reason:
+                            events.append((trade["id"], reason))
+                        break
 
             if (trade.get("state") != "T1_HIT" or opt.get("phase") != "POST_T1"
                     or not opt.get("t1_at")):
@@ -3336,7 +3474,7 @@ class PositionManager:
                 continue
 
             sign = 1 if trade["direction"] == "BULLISH" else -1
-            for high, low, source_start, source in spot_ranges:
+            for high, low, source_start, source, _ in spot_ranges:
                 touches_t2 = high >= trade["target_2"] if sign == 1 else low <= trade["target_2"]
                 touches_guard = low <= trade["entry_price"] if sign == 1 else high >= trade["entry_price"]
                 if not touches_t2 and not touches_guard:
