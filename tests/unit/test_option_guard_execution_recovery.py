@@ -412,6 +412,53 @@ async def test_new_t1_entry_ambiguity_routes_proven_close_guard_exit():
     assert option["execution_route_pending"] is True
     assert option["execution_route_trigger"]["stop_domain"] == "SPOT_INDEX"
     assert datetime.fromisoformat(option["execution_route_trigger"]["event_at"]) == completed
+    committed = positions.analytics.rows[-1]["option_trailing"]
+    assert committed["ambiguous_index_touch"]["kind"] == "T1_ENTRY"
+    assert committed["execution_route_pending"] is True
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await main._monitor_completed_atr([], positions, dispatcher, current_time=completed)
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "STOPPED_OUT_AT_BE"
+    assert trade["state"] == "T1_HIT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+async def test_first_t1_candle_routes_guard_for_already_t1_booked_paper_execution(option_type):
+    import main
+    trade, positions, dispatcher, record = paper_guard_runtime(option_type)
+    option = trade["market_context"]["option_trailing"]
+    option.update(
+        phase="PRE_T1", highest_milestone=0, booked_fraction=0.0,
+        remaining_fraction=1.0, locked_option_sl=option["original_option_sl"],
+        protection_mode="INITIAL_OPTION_SL", index_guard_enabled=False,
+        index_guard_stop=None, t1_at=None, atr_enabled=False,
+    )
+    trade["state"] = "OPEN"
+    assert trade["market_context"]["execution"]["t1_hit"] is True
+
+    start = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    completed = start + timedelta(minutes=1)
+    candle = ({"timestamp": start.isoformat(), "open": 24010, "high": 24025,
+               "low": 23995, "close": 23999, "complete": True}
+              if option_type == "CE" else
+              {"timestamp": start.isoformat(), "open": 23990, "high": 24025,
+               "low": 23975, "close": 24001, "complete": True})
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await positions.update_option_market_events([candle], {}, current_time=completed)
+
+    assert option["ambiguous_index_touch"]["kind"] == "T1_ENTRY"
+    assert trade["state"] == "T1_HIT"
+    assert (trade["id"], "STOPPED_OUT_AT_BE") in events
+    assert option["execution_route_pending"] is True
+    assert option["execution_route_trigger"]["stop_domain"] == "SPOT_INDEX"
+    assert datetime.fromisoformat(option["execution_route_trigger"]["event_at"]) == completed
+    committed = positions.analytics.rows[-1]["option_trailing"]
+    assert committed["ambiguous_index_touch"]["kind"] == "T1_ENTRY"
+    assert committed["execution_route_pending"] is True
 
     with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
         await main._monitor_completed_atr([], positions, dispatcher, current_time=completed)

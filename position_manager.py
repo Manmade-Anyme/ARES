@@ -660,7 +660,8 @@ class PositionManager:
 
     @staticmethod
     def _retain_index_guard_execution_route(trade, event_at, received_at, *,
-                                            index_watermark_checked=False, prior_index_watermark=None):
+                                            index_watermark_checked=False, prior_index_watermark=None,
+                                            allow_t1_boundary=False):
         """Protect a confirmed paper runner while reference history is pending."""
         from execution.signal_dispatch import SignalDispatcher
 
@@ -690,8 +691,11 @@ class PositionManager:
         try:
             observed_at = parse_candle_timestamp(event_at)
             watermark = prior_index_watermark if index_watermark_checked else opt.get("last_index_event_at")
-            if any(observed_at <= parse_candle_timestamp(value)
-                   for value in (opt.get("t1_at"), watermark) if value):
+            t1_at = parse_candle_timestamp(opt["t1_at"]) if opt.get("t1_at") else None
+            if (t1_at is not None
+                    and (observed_at < t1_at or (observed_at == t1_at and not allow_t1_boundary))):
+                return False
+            if watermark and observed_at <= parse_candle_timestamp(watermark):
                 return False
         except (TypeError, ValueError, OverflowError, OSError):
             return False
@@ -1277,6 +1281,7 @@ class PositionManager:
 
                 update_type = "T1_HIT"
                 event_price = trade["target_1"]
+                guard_route_intent = False
                 if reference_accounting:
                     self._capture_reference_leg(trade, "T1", event_price, t1_event_at, candle_timestamp)
                     guard_touched = trade_low <= trade["entry_price"] if sign == 1 else trade_high >= trade["entry_price"]
@@ -1286,7 +1291,21 @@ class PositionManager:
                             "source_minute": candle_timestamp.isoformat(), "event_at": price_event_ts,
                             "high": trade_high, "low": trade_low, "status": "ORDER_UNKNOWN",
                         }
+                        close_guard_touch = (spot_price <= trade["entry_price"] if sign == 1
+                                             else spot_price >= trade["entry_price"])
+                        guard_route_intent = (
+                            opt_ctx.get("policy_version") == "option_premium_protection_v2"
+                            and close_guard_touch
+                            and self._retain_index_guard_execution_route(
+                                trade, price_event_ts, event_ts_base,
+                                index_watermark_checked=True,
+                                prior_index_watermark=previous_index,
+                                allow_t1_boundary=True,
+                            )
+                        )
                 events.append((trade["id"], update_type))
+                if guard_route_intent:
+                    events.append((trade["id"], "STOPPED_OUT_AT_BE"))
                 await self._record_trade_update(trade, event_price, update_type, transition_event_ts)
                 if allow_t2_milestone and not is_option_atr and trade["state"] == "T1_HIT" and await self._record_t2_touch(
                     trade, trade_high, trade_low, event_ts_base, candle_timestamp, spot_price

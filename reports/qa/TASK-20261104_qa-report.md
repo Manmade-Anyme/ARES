@@ -124,3 +124,11 @@ The tests emitted existing dependency/runtime warnings. The root `pytest -q` com
 - Focused lifecycle, dataset, normalization, and repair checks: **104 passed, 2 warnings**.
 - Full CI-scoped local suite: **2,446 passed, 45 subtests passed, 12 warnings** in 174.90 seconds on the synchronized branch.
 - Exact-head GitHub Actions verification is pending push. No production data or broker execution was used.
+
+## Guard routing on the initial T1 candle
+
+- Fail-first CE and PE regressions reproduced the reviewer case: the reference advanced from PRE_T1 to T1, retained `T1_ENTRY/ORDER_UNKNOWN`, but emitted only `T1_HIT` while the confirmed paper remainder stayed `FILLED`.
+- The initial T1 transition now routes the close-proven guard for an already-T1-booked confirmed PAPER execution, preserving the reference ambiguity and validating against the prior index watermark. The exact T1 boundary exception is limited to this transition.
+- The complete guard-recovery module, including the new CE/PE first-T1 regression: **74 passed**.
+- Full `tests/` suite: **2,448 passed, 45 subtests passed, 12 warnings** in 175.02 seconds. Compilation and `git diff --check` passed; exact-head GitHub Actions is pending push.
+- No production data, live provider, or broker execution was used.

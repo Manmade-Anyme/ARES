@@ -77,3 +77,7 @@ The lifecycle event ID used the trade, update kind, source timestamp, active sto
 ## V2 outcome labeling and legacy break-even repair
 
 The v2 policy was absent from the milestone-aware labeling checks, so a T2 trade closed by `ATR_SL_HIT` or `STOPPED_OUT_AT_BE` fell through to legacy exit-reason labeling and could be classified as a loss when `t1_is_win=False`. The joined dataset and cached analytics normalizer also did not consistently prefer the canonical v2 `result_state` and `option_trailing` metadata. Shared policy membership now covers v1 and v2 in those paths and terminal repair; the legacy target-based break-even repair excludes v2 to preserve canonical zero-P&L accounting.
+
+## Guard routing on the initial T1 candle
+
+When the paper execution had already booked T1 but the reference lifecycle was still PRE_T1, the first index candle could advance the reference to T1 and close through entry. The code retained `T1_ENTRY/ORDER_UNKNOWN` but the protective route helper was only called from post-T1 branches, so the confirmed paper runner remained open. The initial T1 transition now uses the completed close as guard evidence, preserves the ambiguity, and routes the remaining units using the prior index watermark. The helper permits the exact T1 boundary only for this already-booked paper-T1 case.

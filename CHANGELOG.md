@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #156 first T1-candle guard route:** When a completed candle first advances the reference lifecycle to T1 and closes through entry after a confirmed paper execution has already booked T1, retain `T1_ENTRY/ORDER_UNKNOWN` and route the remaining-unit index guard in the same transition using the prior index watermark.
+
 - **PR #156 v2 milestone-aware ML outcomes:** Apply the canonical milestone label and dataset metadata handling to `option_premium_protection_v2` as well as v1; keep v2 zero-P&L break-even rows out of the legacy target-based repair.
 
 - **PR #156 same-time T1 option-bar ordering:** When a completed premium bar ends at T1 and its close breaches the original pre-T1 option SL, persist the `T1_ORDER_UNKNOWN` bar trigger across restart and route paper protection immediately. Preserve the unresolved reference allocation when history arrives with T1 or later; same-time quotes, later bars, and later index T2/break-even touches cannot replace or finalize the first trigger. Keep subsequent index touches for reconciliation.
