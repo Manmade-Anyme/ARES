@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #156 T2 quote stop-effective-time guard:** When a T2-tied quote is checked against the current locked stop, reject it if it predates that stop revision instead of applying the later stop retroactively. This also applies before equal-time quote deduplication; exact ATR-raise timestamp handling still compares the previous stop.
+
 - **PR #156 T2-tied stop breach across monitor batches:** When a fresh option quote arrives in a later batch with the exact source timestamp of an already committed T2, retain it as `T2_ORDER_UNKNOWN` if it breaches the stop that was protective under every possible ordering: the original SL when T1 is tied/unknown, or the active break-even/ATR stop when T1 predates T2. Check this protection even if another quote already watermarked the same source time. Route confirmed paper protection, record possible pre-T1/full, post-T1/pre-T2/half, and post-T2/runner allocations, and preserve the trigger through later premium recovery. Other delayed quotes at or before T2 remain rejected.
 
 - **PR #156 tied ATR-raise quote protection:** A fresh premium quote at the exact source time of an applied ATR raise is checked against the previously effective stop. If it breaches that prior stop, preserve and route the protective exit using that prior stop while recording the raised-stop ordering as unknown; if it breaches only the raised stop, keep rejecting it as order-unknown. This works when candle history and quote arrive in separate monitor batches.

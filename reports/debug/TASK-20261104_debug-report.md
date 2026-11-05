@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P1: T2-tied quote predating a later ATR raise
+
+Fail-first replay processed T2 at 10:29:59 with a ₹196 stop, then a 10:30 completed option bar raising the stop to ₹201.50, then a ₹198 quote sourced at 10:29:59 and received at 10:30:02. Both ordinary ingestion and the equal-time quote-watermark exception incorrectly emitted `ATR_SL_HIT` and marked an execution route. The shared retention helper now rejects a quote that strictly predates the locked stop's effective time. The exact-raise-time prior-stop comparison remains intact.
+
 **Verdict:** CLEAN — the P1 restart gap is addressed in the branch; live service and broker behavior were not exercised.
 
 ## Finding and cause

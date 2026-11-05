@@ -1,5 +1,12 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P1: T2 quote before the active stop revision
+
+- Fail-first replay reproduced `ATR_SL_HIT` for a ₹198 quote sourced at T2 (10:29:59) after the 10:30 bar raised the stop from ₹196 to ₹201.50. Both ordinary ingestion and the equal-time quote-watermark exception failed before the fix.
+- The shared helper now rejects that earlier quote without creating an ambiguity, trigger, or pending route, retaining the current ₹201.50 stop. Existing exact-raise-time prior-stop regressions remain green.
+- Focused lifecycle module: **76 passed, 2 warnings**. Full `tests/`: **2,459 passed, 45 subtests passed, 12 warnings** in 176.86 seconds. Compilation and `git diff --check` pass. Actions for the pushed revision are pending.
+- No production data, provider requests, broker orders, deployment, or worker start was used.
+
 **Verdict:** PASS — terminal-route regressions and the CI-scoped test suite pass; latest-head GitHub Actions is pending push.
 
 ## Verification

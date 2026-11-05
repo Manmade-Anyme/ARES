@@ -95,6 +95,8 @@ The v2 policy uses the same canonical milestone-aware outcome rules as `option_a
 
 ## 3. Premium Quote Source and Failure Policy
 
+The T2-tied quote exception must validate the effective time of the stop it would use. If a later stop revision is already installed and the quote strictly predates that revision, reject the quote without creating a trigger or route; do not assume the current stop was effective at the earlier T2 source time. Apply this boundary inside the shared retention helper so the equal-time quote-watermark exception cannot bypass it. Keep exact ATR-raise timestamp ties on the existing previous-stop comparison.
+
 Current evidence establishes that the option candle path can fetch candles for a pinned security ID (`main._monitor_completed_atr`) and that `price_fetcher.fetch_option_observation(contract)` exists in the selected-option quote flow. The latter currently services a selected dashboard contract, not every active trade. `quote_service` persists `OPTION:SELECTED`, so that global selected quote must not be treated as per-trade protection.
 
 Extend monitoring to request/consume a timestamped premium observation for **each distinct active pinned contract**, keyed and validated by `security_id`, exchange segment, expiry, strike, and option type. Prefer the Dhan live quote/feed subscription if it supplies per-contract exchange-time updates; otherwise poll `fetch_option_observation` for each distinct active contract at the monitor cadence. Feed these observations into the central lifecycle event ordering path, not just the dashboard cache. Document the actual update cadence and source timestamp; do not claim tick-level latency if the implemented provider is a polling snapshot.

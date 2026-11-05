@@ -3222,8 +3222,10 @@ class PositionManager:
                 "ATR_TRAILING")
             stop_effective_at = opt.get("stop_effective_at")
             try:
-                tied_atr_raise = (stop_source == "ATR_TRAILING" and stop_effective_at
-                                  and parse_candle_timestamp(stop_effective_at) == quote_at)
+                effective_at = parse_candle_timestamp(stop_effective_at) if stop_effective_at else None
+                if effective_at is not None and quote_at < effective_at:
+                    return False, None
+                tied_atr_raise = stop_source == "ATR_TRAILING" and effective_at == quote_at
             except (TypeError, ValueError, OverflowError, OSError):
                 return False, None
             if tied_atr_raise:

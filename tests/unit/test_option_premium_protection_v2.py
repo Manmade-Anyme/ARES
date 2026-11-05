@@ -607,6 +607,49 @@ async def test_t2_tied_quote_respects_same_time_atr_raise_ordering(quote_price, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("already_watermarked", [False, True])
+async def test_t2_tied_quote_before_later_atr_raise_cannot_trigger_new_stop(already_watermarked):
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    start = datetime(2026, 11, 4, 9, 15, tzinfo=IST)
+    history = [
+        OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                     200, 201, 199, 200, 1, "39961")
+        for i in range(14)
+    ]
+    history.append(OptionCandle(start + timedelta(minutes=70), start + timedelta(minutes=75),
+                                210, 211, 209, 210.5, 1, "39961"))
+    raise_at = history[-1].end_time
+    t2_at = raise_at - timedelta(seconds=1)
+    tick = {"price": trade["target_2"], "exchange_at": t2_at.isoformat(),
+            "received_at": t2_at.isoformat(), "source": "dhan_tick"}
+    quote = _quote(198.0, 29)
+    quote.update(observed_at=t2_at.isoformat(), received_at=(raise_at + timedelta(seconds=2)).isoformat())
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events(
+            [], {"39961": history[:-1]}, current_time=t2_at, index_ticks=[tick])
+        assert trade["state"] == "T2_REACHED"
+        assert opt["locked_option_sl"] == pytest.approx(196.0)
+        await pm.update_option_market_events([], {"39961": history}, current_time=raise_at)
+        assert opt["locked_option_sl"] == pytest.approx(201.5)
+        if already_watermarked:
+            opt["quote_watermark"] = t2_at.isoformat()
+        events = await pm.update_option_market_events(
+            [], {"39961": history}, current_time=raise_at + timedelta(seconds=2), option_quotes=[quote])
+
+    assert events == []
+    assert trade["state"] == "T2_REACHED"
+    assert opt.get("ambiguous_premium_quote") is None
+    assert opt.get("exit_trigger") is None
+    assert opt["execution_route_pending"] is False
+    assert opt["execution_status"] == "CONFIRMED_PAPER_FILL"
+    assert opt["locked_option_sl"] == pytest.approx(201.5)
+
+
+@pytest.mark.asyncio
 async def test_t1_cost_stop_quote_is_retained_when_pre_t1_tick_gaps_through_t2():
     trade = _trade()
     opt = trade["market_context"]["option_trailing"]
