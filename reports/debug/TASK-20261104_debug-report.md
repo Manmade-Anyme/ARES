@@ -38,3 +38,7 @@ Timeline replay supplies completed candles with an explicit event time, which by
 ## Index guard during unresolved reference ordering
 
 A cost-stop-only T1 ambiguity kept later index touches for reference reconciliation but bypassed the execution guard when option ATR history was disabled or available. A proven guard touch now creates the same validated, durable paper execution intent while preserving the unresolved reference ambiguity. Existing protective intents retain priority; stale, pre-T1, and reference-only observations cannot create a new route.
+
+## Fresh quote tied to an already processed option bar
+
+The POST_T1 same-close detector used `last_processed_option_bar_end` to skip the whole event. A later fresh quote at the same timestamp as an already processed non-breaching bar was therefore skipped along with the bar; the following index T2 tick could commit its milestone before the quote path rejected the quote against the new T2 state. The detector now lets the bar watermark filter bar evidence only and still evaluates accepted quote evidence. The quote's existing freshness, pinned-contract, stop-effective-time, and quote-watermark checks remain unchanged. CE and PE replay tests verify a same-time ₹166 quote against the ₹167.20 cost stop retains order ambiguity and routes paper protection before T2 commits. Local tests do not establish production runtime behavior or broker fills.

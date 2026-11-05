@@ -555,6 +555,54 @@ async def test_same_batch_t2_and_premium_stop_quote_retain_ambiguity_and_route_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+async def test_quote_tied_to_previously_processed_option_bar_still_preempts_t2(option_type):
+    trade = _trade(phase="POST_T1", option_type=option_type)
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    start = datetime(2026, 11, 4, 9, 10, tzinfo=IST)
+    at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    bars = [
+        OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                     170.0, 171.0, 169.0, 170.0, 1, "39961")
+        for i in range(14)
+    ]
+
+    # First batch processes an ordinary bar and persists its event-time watermark.
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events([], {"39961": bars}, current_time=at)
+    assert opt["last_processed_option_bar_end"] == at.isoformat()
+    assert opt["locked_option_sl"] == pytest.approx(167.20)
+
+    # A fresh quote at that same time must still be considered alongside a T2 tick.
+    tick = {"price": trade["target_2"], "exchange_at": at.isoformat(),
+            "received_at": at.isoformat(), "source": "dhan_tick"}
+    quote = _quote(166.0, 20, option_type=option_type)
+    quote.update(observed_at=at.isoformat(), received_at=(at + timedelta(seconds=2)).isoformat())
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {"39961": bars}, current_time=at + timedelta(seconds=2),
+            index_ticks=[tick], option_quotes=[quote])
+
+    assert (trade["id"], "STOPPED_OUT_AT_BE") in events
+    assert (trade["id"], "T2_HIT") not in events
+    assert trade["state"] == "T1_HIT"
+    assert opt["highest_milestone"] == 1
+    assert opt.get("exit") is None
+    ambiguity = opt["ambiguous_index_touch"]
+    assert ambiguity["kind"] == "SPOT_OPTION_EXIT_TIE"
+    assert ambiguity["touches_t2"] is True
+    protective = ambiguity["protective_option_exit"]
+    assert protective["option_close"] == pytest.approx(166.0)
+    assert protective["effective_stop"] == pytest.approx(167.20)
+    assert protective["reason"] == "STOPPED_OUT_AT_BE"
+    assert opt["execution_route_pending"] is True
+    assert opt["execution_route_reason"] == "STOPPED_OUT_AT_BE"
+    assert opt["last_processed_option_bar_end"] == at.isoformat()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("ambiguity_field", "cost_only"),
     [("ambiguous_premium_quote", False), ("ambiguous_premium_bar", False),

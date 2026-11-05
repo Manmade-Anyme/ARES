@@ -172,6 +172,8 @@ The lifecycle input path must accept these independent source types:
 
 The output event must identify the trigger domain (`SPOT_INDEX` or `OPTION_PREMIUM`), event/source time, quote/bar price, active/effective stop and stop source, status/reason, reference/estimated exit where relevant, and confirmed fill only when execution evidence exists. Alerts must distinguish entry premium, initial premium SL, ATR candidate, effective premium SL, source quote timestamp, trigger, and fill/reference exit. A spot-entry stop must never be labeled premium break-even.
 
+An option-bar watermark suppresses only bar evidence already consumed by ATR/lifecycle processing. It must not suppress a fresh, contract-matched premium quote at the same event time: quote freshness, contract identity, stop activation time, and quote deduplication are enforced by their own checks. The same-close detector must retain and route a stop-breaching quote before a tied index T2 milestone can commit, while leaving reference ordering/allocation unresolved until certified evidence is available.
+
 ## 7. Definition of Done / Regression Evidence
 
 Implementation and QA must exercise the actual lifecycle entry points and persistence/restart path, with external order execution disabled:
@@ -185,6 +187,7 @@ Implementation and QA must exercise the actual lifecycle entry points and persis
 - A premium quote tied exactly to T1 at or below the original premium SL preserves order/allocation ambiguity and immediately creates a protective execution intent; advancing the quote watermark cannot discard the breach.
 - Later quotes or ATR bars cannot finalize or rewrite that reference exit while the T1-tied protective trigger remains unresolved.
 - A same-time T1 premium quote above the original SL but at/below entry cost remains order-unknown when an index tick also reaches T2. Preserve the quote and tied index observation before milestone processing; do not commit T2 or its reference allocation.
+- After a non-breaching option bar records a bar watermark, a fresh same-time post-T1 premium quote at/below the active stop is still detected alongside a T2 index tick. Retain the protective trigger and order-unknown ambiguity before T2 processing, keep the reference at T1, and preserve existing quote freshness, contract, stop-effective-time, and duplicate validation. Verify CE/PE and split-batch replay.
 - Certified ordered spot/index ticks establish index-touch order only. If a T1-tied premium quote or bar remains unresolved, do not finalize a later index guard/T2 outcome or commit an assumed exit allocation from those ticks; retain the lifecycle ambiguity.
 - Expired or malformed restored pins are isolated while building the protective quote batch; valid contracts continue to receive quotes, and no request is made when every pin is invalid.
 - A contemporaneous spot mark recovered for a premium-triggered exit is persisted as `exit_price` in both lifecycle and accounting ledgers; absent evidence remains null.

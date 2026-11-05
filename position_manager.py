@@ -3698,11 +3698,12 @@ class PositionManager:
             try:
                 if event_at <= parse_candle_timestamp(opt["t1_at"]):
                     continue
-                watermark = opt.get("last_processed_option_bar_end")
-                if watermark and event_at <= parse_candle_timestamp(watermark):
-                    continue
             except (TypeError, ValueError, OverflowError, OSError):
                 continue
+            # The option-bar watermark filters `bar` above. Do not use it to
+            # suppress a fresh premium quote at the same event time: quote
+            # freshness, contract identity, stop-effective time, and duplicate
+            # handling are validated independently when quotes are ingested.
             active_stop = opt.get("locked_option_sl")
             if active_stop is None:
                 continue

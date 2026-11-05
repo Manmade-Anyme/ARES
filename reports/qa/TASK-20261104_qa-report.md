@@ -53,3 +53,11 @@ The test run emitted 12 existing dependency/runtime warnings. No live service re
 - The full local suite on the final production code passed: **2,423 tests, 45 subtests, 12 warnings** in 176.51 seconds. Two additional duplicate-observation regressions were added after collection and passed in the 68-test guard-focused run above.
 - Combined full and focused coverage exercised all **18 changed executable statements and 16 changed branch arcs** in `position_manager.py`.
 - GitHub Actions run #599 passed for preceding commit `bc0c56f`, including database integration checks. This change requires a new run after push.
+
+## Quote tie after a processed option bar
+
+- Added CE and PE end-to-end regressions that first process a non-breaching 10:20 premium bar, then deliver a fresh ₹166 quote and a T2 index tick with the same source timestamp against the ₹167.20 moved cost stop.
+- The tests reproduce the prior defect before the fix: the reference advanced to `T2_HIT` with no premium protective route. After the fix, the first stop trigger and `SPOT_OPTION_EXIT_TIE` remain recorded, the route intent is pending, the lifecycle remains at T1, and T2 allocation does not commit.
+- The previously processed bar is not replayed or used to raise ATR again. Existing quote freshness/contract/activation/duplicate filtering and same-batch T2-plus-stop regressions pass.
+- Full local suite: **2,427 passed, 45 subtests passed, 12 warnings** in 176.41 seconds. Coverage run exercised both event-time branches at the changed detector boundary; module-wide coverage is 90.5% statements / 86.9% branches, which is not a changed-code coverage claim.
+- `git diff --check` passed. GitHub Actions run #600 passed on the preceding head `443c87e`; this fix needs its own CI run after push. No live service, broker fill, or production restart was tested.
