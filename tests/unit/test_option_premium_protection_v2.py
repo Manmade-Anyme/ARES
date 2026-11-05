@@ -565,6 +565,53 @@ async def test_t2_tied_quote_after_prior_t1_uses_break_even_status_and_runner_al
 
 
 @pytest.mark.asyncio
+async def test_delayed_t2_protective_quote_preserves_newer_watermark_and_commits():
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt["execution_status"] = "CONFIRMED_PAPER_FILL"
+    pm = _manager(trade)
+    commit = pm.analytics.apply_option_lifecycle_transition
+
+    def reject_backward_watermark(trade_id, revision, event_id, payload):
+        if pm.analytics.rows:
+            old = pm.analytics.rows[-1]["option_trailing"].get("quote_watermark")
+            new = payload["option_trailing"].get("quote_watermark")
+            if old and (not new or datetime.fromisoformat(new) < datetime.fromisoformat(old)):
+                raise ValueError("Option quote watermark cannot move backward")
+        return commit(trade_id, revision, event_id, payload)
+
+    pm.analytics.apply_option_lifecycle_transition = reject_backward_watermark
+    at = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    newer_at = at + timedelta(seconds=1)
+    tick = {"price": trade["target_2"], "exchange_at": at.isoformat(),
+            "received_at": at.isoformat(), "source": "dhan_tick"}
+    newer_quote = _quote(180.0, 20)
+    newer_quote.update(observed_at=newer_at.isoformat(), received_at=newer_at.isoformat())
+    protective_quote = _quote(160.0, 20)
+    protective_quote.update(observed_at=at.isoformat(), received_at=(at + timedelta(seconds=2)).isoformat())
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events([], {}, current_time=at, index_ticks=[tick])
+        await pm.update_option_market_events([], {}, current_time=newer_at, option_quotes=[newer_quote])
+        assert pm.analytics.rows[-1]["option_trailing"]["quote_watermark"] == newer_at.isoformat()
+        events = await pm.update_option_market_events(
+            [], {}, current_time=at + timedelta(seconds=2), option_quotes=[protective_quote])
+
+    assert ("v2-trade", "SL_HIT") in events
+    assert opt["quote_watermark"] == newer_at.isoformat()
+    persisted = pm.analytics.rows[-1]["option_trailing"]
+    assert persisted["quote_watermark"] == newer_at.isoformat()
+    assert persisted["ambiguous_premium_quote"]["status"] == "T2_ORDER_UNKNOWN"
+    assert persisted["ambiguous_premium_quote"]["protective_option_exit"]["event_at"] == at.isoformat()
+    assert persisted["exit_trigger"]["event_at"] == at.isoformat()
+    assert persisted["execution_route_pending"] is True
+    assert not pm._option_pending[trade["id"]]
+    restored = OptionTrailingContext.from_dict(persisted).to_dict()
+    assert restored["quote_watermark"] == newer_at.isoformat()
+    assert restored["execution_route_pending"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("quote_price", "expected_reason"), [
     (180.0, None), (160.0, "STOPPED_OUT_AT_BE"),
 ])

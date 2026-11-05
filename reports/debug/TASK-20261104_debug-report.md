@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: delayed T2 quote moved the watermark backward
+
+Fail-first replay committed T2 at 09:20:00, then a non-breaching ₹180 quote at 09:20:01, then received a protective ₹160 quote sourced at 09:20:00. The retention helper regressed `quote_watermark`, violating the lifecycle RPC's monotonic rule. It now advances that watermark only for a newer source time while preserving the earlier protective event time. The regression enforces the database rule in its ledger and checks committed ambiguity/route state, an empty pending-write queue, and serialization recovery.
+
 ## P1: T2-tied quote predating a later ATR raise
 
 Fail-first replay processed T2 at 10:29:59 with a ₹196 stop, then a 10:30 completed option bar raising the stop to ₹201.50, then a ₹198 quote sourced at 10:29:59 and received at 10:30:02. Both ordinary ingestion and the equal-time quote-watermark exception incorrectly emitted `ATR_SL_HIT` and marked an execution route. The shared retention helper now rejects a quote that strictly predates the locked stop's effective time. The exact-raise-time prior-stop comparison remains intact.

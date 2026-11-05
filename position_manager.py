@@ -3276,7 +3276,9 @@ class PositionManager:
         possible_allocations["post_t1_pre_t2_exit_fraction"] = 0.5
         possible_allocations["post_t2_runner_fraction"] = float(opt.get("remaining_fraction", 0.2))
         ambiguity["allocation_uncertainty"] = possible_allocations
-        opt["quote_watermark"] = quote_at.isoformat()
+        watermark = opt.get("quote_watermark")
+        if not watermark or quote_at > parse_candle_timestamp(watermark):
+            opt["quote_watermark"] = quote_at.isoformat()
         opt["last_option_quote"] = {
             "price": trigger_price, "observed_at": quote_at.isoformat(),
             "received_at": received.isoformat(), "source": source,

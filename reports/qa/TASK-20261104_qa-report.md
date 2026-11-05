@@ -1,5 +1,12 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: preserve a newer quote watermark for delayed T2 protection
+
+- The fail-first replay committed T2 at 09:20:00, then ₹180 at 09:20:01, then received ₹160 sourced at T2. It reproduced the regressed quote watermark.
+- The corrected regression enforces the lifecycle RPC's monotonic-watermark rule in the test ledger, verifies committed `T2_ORDER_UNKNOWN` and pending route state, preserves 09:20:00 in the protective trigger, restores that state from serialization, and confirms no write remains queued.
+- Focused lifecycle module: **77 passed, 2 warnings**. Full `tests/`: **2,460 passed, 45 subtests passed, 12 warnings** in 175.92 seconds. Compilation and `git diff --check` pass; Actions for the pushed revision are pending.
+- No production data, provider requests, broker orders, deployment, or worker start was used.
+
 ## P1: T2 quote before the active stop revision
 
 - Fail-first replay reproduced `ATR_SL_HIT` for a ₹198 quote sourced at T2 (10:29:59) after the 10:30 bar raised the stop from ₹196 to ₹201.50. Both ordinary ingestion and the equal-time quote-watermark exception failed before the fix.

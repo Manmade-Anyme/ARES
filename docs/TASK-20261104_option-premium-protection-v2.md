@@ -2,6 +2,8 @@
 
 ## Scope
 
+Retaining a delayed protective T2 quote preserves the maximum quote watermark. Its original source timestamp remains on the ambiguity and exit trigger, so the database can commit the protective state without a backward-watermark error.
+
 For a T2-tied quote evaluated against the current locked stop after an earlier T1, reject a source timestamp before that stop's effective time. A later ATR revision must not create an earlier quote breach. The shared retention helper enforces this even through equal-time quote deduplication; quotes at the exact ATR-raise timestamp continue using the prior-stop comparison.
 
 `option_premium_protection_v2` manages the premium of the exact pinned option contract (security ID, NSE_FNO, expiry, strike, and CE/PE). It does not replace or reinterpret the separate spot/index initial stop or post-T1 index break-even guard. The 5-minute option ATR formula and `option_atr_v1` parity gate remain unchanged; ATR stays disabled unless its existing config, approved-version, service-role, and backend checks pass.
