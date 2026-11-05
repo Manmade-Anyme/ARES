@@ -6,6 +6,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 - **PR #156 tied ATR-raise quote protection:** A fresh premium quote at the exact source time of an applied ATR raise is checked against the previously effective stop. If it breaches that prior stop, preserve and route the protective exit using that prior stop while recording the raised-stop ordering as unknown; if it breaches only the raised stop, keep rejecting it as order-unknown. This works when candle history and quote arrive in separate monitor batches.
 
+- **PR #156 T1 ATR-seed stop history:** When ATR is seeded as T1 activates, persist the moved entry-cost stop as the previous effective stop before storing the higher ATR stop. This lets a later same-time quote reach T1 ambiguity handling instead of being discarded against stale pre-T1 stop history.
+
 - **PR #156 first T1-candle guard route:** When a completed candle first advances the reference lifecycle to T1 and closes through entry after a confirmed paper execution has already booked T1, retain `T1_ENTRY/ORDER_UNKNOWN` and route the remaining-unit index guard in the same transition using the prior index watermark.
 
 - **PR #156 v2 milestone-aware ML outcomes:** Apply the canonical milestone label and dataset metadata handling to `option_premium_protection_v2` as well as v1; keep v2 zero-P&L break-even rows out of the legacy target-based repair.

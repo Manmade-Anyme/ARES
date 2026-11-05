@@ -87,3 +87,9 @@ When the paper execution had already booked T1 but the reference lifecycle was s
 With the active stop at ₹196.00, a completed option bar raised it to ₹201.50, and a fresh ₹195.00 quote sharing that bar timestamp, processing both together produced `ATR_SL_HIT` and a pending execution route. When the quote arrived in a later monitor batch, the timestamp guard rejected it without checking that it had already breached ₹196.00. That lost a protective event valid under either source ordering.
 
 The quote-time guard now permits a tied quote at or below `previous_locked_option_sl`; closure uses that prior stop and source. The trigger persists `stop_ordering_status=ATR_RAISE_TIED` and the raised value. Quotes between the old and raised stop remain rejected because their trigger depends on event order. A prior break-even stop retains `STOPPED_OUT_AT_BE` and zero runner points.
+
+## P2: retain the T1 cost-only quote when ATR seeds at T1
+
+Fail-first replay used a T1 event at 10:26 with cached option bars through 10:25. `_seed_option_stop` raised the moved cost stop from ₹167.20 to ₹196.00 but left `previous_locked_option_sl` at the original ₹161.05 stop. A fresh ₹166 quote sourced at 10:26 and received at 10:26:02 was therefore rejected as an ATR-raise tie before the T1 ambiguity handler; no `COST_STOP_ONLY_BREACH` state was retained.
+
+The seed now records the actual pre-raise stop (₹167.20) before installing the ATR stop. The split-batch quote passes the stop-time guard and becomes `T1_ORDER_UNKNOWN/COST_STOP_ONLY_BREACH` without creating an execution route. This leaves the reference ordering unresolved rather than losing a potential moved-cost stop event.

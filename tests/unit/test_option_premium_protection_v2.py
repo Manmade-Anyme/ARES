@@ -169,6 +169,47 @@ async def test_t1_cost_stop_quote_after_bar_watermark_has_distinct_persisted_ide
 
 
 @pytest.mark.asyncio
+async def test_t1_cost_quote_after_atr_seed_keeps_ambiguity_across_batches():
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    t1_at = datetime(2026, 11, 4, 10, 26, tzinfo=IST)
+    start = t1_at - timedelta(minutes=76)
+    history = [
+        OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                     200.0, 201.0, 199.0, 200.0, 1, "39961")
+        for i in range(15)
+    ]
+    t1_tick = {"price": trade["target_1"], "exchange_at": t1_at.isoformat(),
+               "received_at": t1_at.isoformat(), "source": "dhan_tick"}
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {"39961": history}, current_time=t1_at + timedelta(seconds=2), index_ticks=[t1_tick])
+
+    assert (trade["id"], "T1_HIT") in events
+    assert opt["locked_option_sl"] == pytest.approx(196.0)
+    assert opt["previous_locked_option_sl"] == pytest.approx(167.2)
+    assert opt["premium_stop_source"] == "ATR_TRAILING"
+    quote = _quote(166.0, 26)
+    quote.update(observed_at=t1_at.isoformat(),
+                 received_at=(t1_at + timedelta(seconds=2)).isoformat())
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        quote_events = await pm.update_option_market_events(
+            [], {"39961": history}, current_time=t1_at + timedelta(seconds=2), option_quotes=[quote])
+
+    assert quote_events == []
+    assert trade["state"] == "T1_HIT"
+    assert opt["ambiguous_premium_quote"]["status"] == "T1_ORDER_UNKNOWN"
+    assert opt["ambiguous_premium_quote"]["ordering_reason"] == "COST_STOP_ONLY_BREACH"
+    assert opt["ambiguous_premium_quote"]["price"] == pytest.approx(166.0)
+    assert opt["quote_watermark"] == t1_at.isoformat()
+    assert opt.get("execution_route_pending") is not True
+    assert opt["monitoring_status"] == "ACTIVE"
+
+
+@pytest.mark.asyncio
 async def test_t1_tied_quote_below_initial_stop_preserves_ambiguity_and_routes_protection():
     trade = _trade()
     opt = trade["market_context"]["option_trailing"]

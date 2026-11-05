@@ -139,3 +139,10 @@ The tests emitted existing dependency/runtime warnings. The root `pytest -q` com
 - The corrected regression covers same-batch and split-batch processing. Both close at the prior ₹196.00 ATR stop and route; the split-batch case also persists raised value ₹201.50 with `ATR_RAISE_TIED` metadata. A separate tied-raise case verifies a prior ₹167.20 cost stop remains `STOPPED_OUT_AT_BE` with zero runner points.
 - The existing case where the quote breaches only the raised stop remains rejected. Focused lifecycle module: **68 passed**. Full `tests/` suite: **2,451 passed, 45 subtests passed, 12 warnings** in 176.82 seconds; compileall and `git diff --check` passed. Exact-head GitHub Actions evidence is pending push.
 - No live provider, production record, broker order, or fill was used.
+
+## T1 cost quote after ATR seed
+
+- Fail-first replay reproduced the comment: after T1 seeded a ₹196.00 ATR stop, `previous_locked_option_sl` remained ₹161.05 and a fresh same-time ₹166.00 quote was rejected with no ambiguity.
+- `_seed_option_stop` now stores the moved ₹167.20 cost stop as the previous effective stop before applying the ATR candidate. The quote is retained as `T1_ORDER_UNKNOWN/COST_STOP_ONLY_BREACH`; it does not emit a premature execution route.
+- Focused option-premium lifecycle module: **69 passed**. Full `tests/` suite: **2,454 passed, 45 subtests passed, 12 warnings** in 175.94 seconds. Compilation and `git diff --check` passed; exact-head GitHub Actions is pending push.
+- No production data, live provider, broker order, or fill was used.

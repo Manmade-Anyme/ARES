@@ -103,3 +103,7 @@ Unit lifecycle tests and isolated PGlite transaction tests cover initial premium
 ## Protection for quotes tied to an ATR raise
 
 A fresh quote may arrive in a later batch with the exact source timestamp of an ATR raise already committed in an earlier batch. If it is at or below the prior stop, the breach is valid whichever event came first: use the prior stop and its source for the exit, route protection, and persist `ATR_RAISE_TIED` plus the raised value so the stop ordering remains explicit. If the quote is above the prior stop but at or below the raised stop, the new stop cannot be applied retroactively; retain the existing order-unknown rejection. Regression coverage exercises both batch orders and verifies the prior stop, source, raised value, and route marker.
+
+## Preserve T1 cost-stop ambiguity when ATR seeds
+
+An ATR candidate seeded while T1 activates must store the moved entry-cost stop as `previous_locked_option_sl` before replacing `locked_option_sl`. Otherwise, a fresh quote arriving in the next batch with source time equal to T1 is tested against stale pre-T1 stop history and rejected before the cost-only T1 ambiguity can be retained. The regression seeds ₹196 ATR above the ₹167.20 cost stop at T1, then submits a tied ₹166 quote; it verifies `COST_STOP_ONLY_BREACH` persists with no execution route.

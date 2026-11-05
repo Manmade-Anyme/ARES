@@ -2698,15 +2698,17 @@ class PositionManager:
         v2 = opt.get("policy_version") == "option_premium_protection_v2"
         if v2 and not opt.get("atr_enabled"):
             return
+        previous_stop = float(opt.get("locked_option_sl") or opt["original_option_sl"])
         stop, mode, raised = ratchet_option_stop(
-            opt.get("locked_option_sl"), bar.raw_line, opt["original_option_sl"],
+            previous_stop, bar.raw_line, opt["original_option_sl"],
             protection_mode=opt.get("protection_mode", "NONE"),
             entry_premium_floor=opt.get("original_option_entry") if v2 else None,
         )
         opt["raw_line"] = bar.raw_line
         opt["last_valid_option_bar_end"] = bar.end_time
         if raised:
-            opt.update(locked_option_sl=stop, protection_mode=mode, atr_eligible=mode == "ATR",
+            opt.update(previous_locked_option_sl=previous_stop, locked_option_sl=stop,
+                       protection_mode=mode, atr_eligible=mode == "ATR",
                        premium_stop_source="ATR_TRAILING" if v2 and mode == "ATR" else opt.get("premium_stop_source"),
                        stop_effective_at=event_at.isoformat())
 
