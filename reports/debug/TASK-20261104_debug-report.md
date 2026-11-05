@@ -29,7 +29,7 @@ An eligible index-entry guard was queued for reference reconciliation while the 
 
 ## Quote tied to an ATR raise
 
-A quote in a later batch with the same source timestamp as a committed ATR raise was compared with the newly raised stop, even though its order relative to the raise was unknown. The quote is now rejected with quote monitoring marked unavailable. A later fresh quote uses the retained stop. The tied quote is not used to infer an exit at the prior stop either; no earlier exit is established without further evidence.
+An earlier ordering guard rejected every quote in a later batch with the same timestamp as a committed ATR raise. The new P1 replay found that this also discarded quotes already below the prior stop, even though that breach is protective under either ordering. The correction below supersedes that behavior: prior-stop breaches route at the prior stop, while quotes that breach only the raised stop remain rejected as order-unknown.
 
 ## T1-candle timeline replay
 
@@ -81,3 +81,9 @@ The v2 policy was absent from the milestone-aware labeling checks, so a T2 trade
 ## Guard routing on the initial T1 candle
 
 When the paper execution had already booked T1 but the reference lifecycle was still PRE_T1, the first index candle could advance the reference to T1 and close through entry. The code retained `T1_ENTRY/ORDER_UNKNOWN` but the protective route helper was only called from post-T1 branches, so the confirmed paper runner remained open. The initial T1 transition now uses the completed close as guard evidence, preserves the ambiguity, and routes the remaining units using the prior index watermark. The helper permits the exact T1 boundary only for this already-booked paper-T1 case.
+
+## P1: preserve prior-stop protection for a quote tied to an ATR raise
+
+With the active stop at ₹196.00, a completed option bar raised it to ₹201.50, and a fresh ₹195.00 quote sharing that bar timestamp, processing both together produced `ATR_SL_HIT` and a pending execution route. When the quote arrived in a later monitor batch, the timestamp guard rejected it without checking that it had already breached ₹196.00. That lost a protective event valid under either source ordering.
+
+The quote-time guard now permits a tied quote at or below `previous_locked_option_sl`; closure uses that prior stop and source. The trigger persists `stop_ordering_status=ATR_RAISE_TIED` and the raised value. Quotes between the old and raised stop remain rejected because their trigger depends on event order. A prior break-even stop retains `STOPPED_OUT_AT_BE` and zero runner points.

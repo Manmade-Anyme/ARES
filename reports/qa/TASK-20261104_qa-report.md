@@ -132,3 +132,10 @@ The tests emitted existing dependency/runtime warnings. The root `pytest -q` com
 - The complete guard-recovery module, including the new CE/PE first-T1 regression: **74 passed**.
 - Full `tests/` suite: **2,448 passed, 45 subtests passed, 12 warnings** in 175.02 seconds. Compilation and `git diff --check` passed; exact-head GitHub Actions is pending push.
 - No production data, live provider, or broker execution was used.
+
+## Quote tied to an ATR raise
+
+- A fail-first split-batch replay reproduced the report: after the ATR stop moved from ₹196.00 to ₹201.50, the same-time ₹195.00 quote emitted no exit event or route.
+- The corrected regression covers same-batch and split-batch processing. Both close at the prior ₹196.00 ATR stop and route; the split-batch case also persists raised value ₹201.50 with `ATR_RAISE_TIED` metadata. A separate tied-raise case verifies a prior ₹167.20 cost stop remains `STOPPED_OUT_AT_BE` with zero runner points.
+- The existing case where the quote breaches only the raised stop remains rejected. Focused lifecycle module: **68 passed**. Full `tests/` suite: **2,451 passed, 45 subtests passed, 12 warnings** in 176.82 seconds; compileall and `git diff --check` passed. Exact-head GitHub Actions evidence is pending push.
+- No live provider, production record, broker order, or fill was used.

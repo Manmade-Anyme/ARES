@@ -234,3 +234,7 @@ Run focused unit and integration/replay/restart verification after implementatio
 - The ATR formula's exact chart/feed parity remains subject to the existing approval gate. This ADR does not authorize enabling `option_atr_enabled`, changing approved/parity versions, deploying, restarting workers, or activating the feature in production.
 - Reference accounting is not broker execution. Trigger, modeled/reference exit, and confirmed fill remain distinct data facts.
 - Historical production records remain unchanged. Any existing-trade correction or production migration requires its own reviewed dry run and separate authorization.
+
+### ATR raise and same-time quote ordering
+
+When a fresh pinned premium quote has the same source timestamp as an already applied ATR raise, the event order is unknown. Compare the quote with the previously effective stop: a breach of that stop proves protection was required under either ordering, so route at the prior stop and preserve the raised stop with `stop_ordering_status=ATR_RAISE_TIED`; a quote that breaches only the raised stop remains rejected as order-unknown. This applies across monitor batches and carries immutable prior/raised stop metadata into lifecycle persistence. Exit reason follows the prior source, including `STOPPED_OUT_AT_BE` with zero runner points for a cost stop.

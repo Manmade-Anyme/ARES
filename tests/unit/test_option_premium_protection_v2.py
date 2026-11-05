@@ -1183,6 +1183,85 @@ async def test_quote_tied_to_already_raised_atr_stop_is_not_applied_retroactivel
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("split_batches", [False, True])
+async def test_quote_tied_to_atr_raise_breaches_prior_stop_and_routes_in_either_batch_order(split_batches):
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    start = datetime(2026, 11, 4, 9, 15, tzinfo=IST)
+    history = [
+        OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                     200, 201, 199, 200, 1, "39961")
+        for i in range(14)
+    ]
+    history.append(OptionCandle(start + timedelta(minutes=70), start + timedelta(minutes=75),
+                                210, 211, 209, 210.5, 1, "39961"))
+    raise_at = history[-1].end_time
+    quote = _quote(195.0, 30)
+    quote.update(observed_at=raise_at.isoformat(),
+                 received_at=(raise_at + timedelta(seconds=2)).isoformat())
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        if split_batches:
+            await pm.update_option_market_events(
+                [], {"39961": history}, current_time=raise_at + timedelta(seconds=2))
+            assert opt["previous_locked_option_sl"] == pytest.approx(196.0)
+            assert opt["locked_option_sl"] == pytest.approx(201.5)
+            events = await pm.update_option_market_events(
+                [], {"39961": history}, current_time=raise_at + timedelta(seconds=2),
+                option_quotes=[quote])
+        else:
+            events = await pm.update_option_market_events(
+                [], {"39961": history}, current_time=raise_at + timedelta(seconds=2),
+                option_quotes=[quote])
+
+    assert (trade["id"], "ATR_SL_HIT") in events
+    assert trade["state"] == "CLOSED"
+    assert opt["exit"]["option_stop"] == pytest.approx(196.0)
+    assert opt["exit"]["stop_source"] == "ATR_TRAILING"
+    assert opt["exit_trigger"]["effective_stop"] == pytest.approx(196.0)
+    assert opt["execution_route_pending"] is True
+    assert opt["execution_route_reason"] == "ATR_SL_HIT"
+    if split_batches:
+        assert opt["exit"]["stop_ordering_status"] == "ATR_RAISE_TIED"
+        assert opt["exit"]["raised_stop"] == pytest.approx(201.5)
+        assert opt["exit_trigger"]["stop_ordering_status"] == "ATR_RAISE_TIED"
+        assert opt["exit_trigger"]["raised_stop"] == pytest.approx(201.5)
+    else:
+        # The quote is replayed before the same-time completed bar can raise
+        # protection, so it triggers against the already active prior stop.
+        assert "stop_ordering_status" not in opt["exit"]
+
+
+@pytest.mark.asyncio
+async def test_quote_tied_to_atr_raise_uses_prior_break_even_status_and_zero_points():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(locked_option_sl=201.5, previous_locked_option_sl=167.2,
+               protection_mode="ATR", premium_stop_source="ATR_TRAILING",
+               stop_effective_at="2026-11-04T10:20:00+05:30",
+               execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    quote = _quote(165.0, 20)
+    quote.update(observed_at="2026-11-04T10:20:00+05:30",
+                 received_at="2026-11-04T10:20:02+05:30")
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=datetime(2026, 11, 4, 10, 20, 2, tzinfo=IST), option_quotes=[quote])
+
+    assert (trade["id"], "STOPPED_OUT_AT_BE") in events
+    assert trade["state"] == "CLOSED"
+    assert opt["exit"]["option_stop"] == pytest.approx(167.2)
+    assert opt["exit"]["stop_source"] == "BREAK_EVEN_COST"
+    assert opt["exit"]["runner_option_points"] == pytest.approx(0.0)
+    assert opt["exit"]["stop_ordering_status"] == "ATR_RAISE_TIED"
+    assert opt["exit"]["raised_stop"] == pytest.approx(201.5)
+    assert opt["execution_route_reason"] == "STOPPED_OUT_AT_BE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("split_batches", [False, True])
 async def test_atr_raise_and_tied_quote_leave_same_reference_outcome(split_batches):
     trade = _trade(phase="POST_T1")
     opt = trade["market_context"]["option_trailing"]

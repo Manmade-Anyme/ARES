@@ -99,3 +99,7 @@ The code change does not apply the migration, alter runtime config, enable ATR, 
 ## Verification boundary
 
 Unit lifecycle tests and isolated PGlite transaction tests cover initial premium SL, T1 break-even movement, quote equality/gaps, CE/PE symmetry, ATR precedence, wrong/stale contract data, monotonic state, status labels, runner points, and migration behavior. Synthetic tests do not establish live Dhan quote latency or incident-time breach marks. The 4 November zero-lot `SIGNAL_REFERENCE` incident records establish the legacy spot-ATR route and 10:20 close, but the durable store has no intermediate option quote/candle series to establish the corrected historical trigger time or any broker fill.
+
+## Protection for quotes tied to an ATR raise
+
+A fresh quote may arrive in a later batch with the exact source timestamp of an ATR raise already committed in an earlier batch. If it is at or below the prior stop, the breach is valid whichever event came first: use the prior stop and its source for the exit, route protection, and persist `ATR_RAISE_TIED` plus the raised value so the stop ordering remains explicit. If the quote is above the prior stop but at or below the raised stop, the new stop cannot be applied retroactively; retain the existing order-unknown rejection. Regression coverage exercises both batch orders and verifies the prior stop, source, raised value, and route marker.
