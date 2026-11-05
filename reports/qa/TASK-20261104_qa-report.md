@@ -1,20 +1,20 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
-**Verdict:** PASS — local regression suite and changed-code coverage pass; latest-head GitHub Actions is pending push.
+**Verdict:** PASS — terminal-route regressions and the CI-scoped test suite pass; latest-head GitHub Actions is pending push.
 
 ## Verification
 
 | Check | Result | Evidence |
 |---|---|---|
-| Focused lifecycle and routing tests | PASS | 142 passed, 2 warnings |
-| Full repository suite | PASS | 2,340 passed, 45 subtests passed, 12 warnings in 173.41s |
-| Changed executable statements | PASS | 142/142 covered across `execution/signal_dispatch.py`, `main.py`, and `position_manager.py` |
-| Changed branch arcs | PASS | 56/56 covered across the same files |
+| Focused lifecycle and routing tests | PASS | 223 passed, 2 warnings in 70.98s |
+| CI test scope (`tests/`) | PASS | 2,437 passed, 45 subtests passed, 12 warnings in 174.65s |
+| New monitoring-gate statements | PASS | The terminal-route helper and protected-fetch, REST, and tick-poll gates were exercised by the focused coverage run |
+| New monitoring-gate branches | PASS | All three route-queue paths reached the existing dispatcher with no active trades or new candle |
 | Python compilation | PASS | `python -m compileall -q position_manager.py execution/signal_dispatch.py main.py` |
 | Whitespace validation | PASS | `git diff --check` |
 | Latest-head GitHub Actions | PENDING | Push is required before CI can run against this revision |
 
-The test run emitted 12 existing dependency/runtime warnings. No live service restart, broker interaction, or production trade was performed. The review thread remains for human review; no approval or merge is implied by this report.
+The tests emitted existing dependency/runtime warnings. The root `pytest -q` command also collects ignored scratch scripts that call Supabase during import and failed collection under the offline sandbox; the repository CI command `python -m pytest tests/ -q` passed. No live service restart, broker interaction, or production trade was performed. The PR remains for human review; no approval or merge is implied by this report.
 
 ## Follow-up review verification
 
@@ -91,3 +91,9 @@ The test run emitted 12 existing dependency/runtime warnings. No live service re
 - The regression reproduces a confirmed PAPER runner with T1 at 10:20:30 and a completed 10:20 candle with high 24025, low 23995, and close 23999 against entry 24000. Before the fix, it created `T1_ENTRY/ORDER_UNKNOWN` without a route event.
 - The close-based guard now persists a `SPOT_INDEX` route intent using the prior index watermark while keeping the reference trade at T1. The paper dispatcher places the remaining quantity in `EXIT_PENDING`; execution confirmation remains separate.
 - Focused premium lifecycle, commit-boundary, and guard-route modules: **153 passed, 2 warnings**. The full local suite passed with **2,439 tests and 45 subtests**; these isolated tests do not establish live broker or production behavior.
+
+## Restored terminal-route monitoring gate
+
+- Three no-candle regressions cover protected candle-fetch, REST fallback, and tick polling with no active trades and only a restored terminal v2 execution-route record. Before the fix, none invoked the option-stop dispatcher.
+- The gates now treat a non-empty terminal retry queue as monitoring work, allowing the existing dispatcher validation and paper-binding recovery to run without a new index candle.
+- Focused lifecycle and routing suite: **223 passed, 2 warnings**. CI-scoped tests: **2,437 passed, 45 subtests passed, 12 warnings**. CI for this follow-up is pending push.

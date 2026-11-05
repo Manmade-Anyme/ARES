@@ -58,3 +58,7 @@ Quote ingestion accepted a shared-contract quote for one trade but rejected it f
 ## Guard routing while creating T1-entry ambiguity
 
 A completed candle spanning T1 can use its close to prove the entry guard was touched after T1, while its wick leaves T1-versus-guard ordering unknown. The `T1_ENTRY` branch retained that ambiguity but returned without routing the proven paper guard. It now records the validated guard intent using the prior index watermark in the same persisted transition. The lifecycle stays at T1; the execution dispatcher receives the remaining-unit exit. The regression verifies the route becomes `EXIT_PENDING` and the reference ambiguity remains.
+
+## Restored terminal-route monitoring gate
+
+After restart, valid pending execution routes are held in `_option_execution_route_trades`, separate from `active_trades`. The no-candle REST fallback, protected candle-fetch, and tick-poll gates previously checked only active option-policy trades, so they skipped `_monitor_completed_atr` when only terminal retry work remained. Those gates now also recognize the terminal route queue and invoke the existing validated dispatcher path. A no-candle replay through each gate confirms the pending paper exit is retried without requiring an active trade or a new index candle.

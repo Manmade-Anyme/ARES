@@ -138,6 +138,11 @@ def _has_option_policy_trades(position_manager):
     return False
 
 
+def _has_pending_option_execution_routes(position_manager):
+    """Keep terminal paper exits monitored after restart, even with no active trades."""
+    return bool(getattr(position_manager, "_option_execution_route_trades", []))
+
+
 def _read_buffered_spot_ticks(tick_feed, position_manager):
     """Drain ticks once, separating exchange-time replay from receipt fallback."""
     from options_candles import parse_candle_timestamp
@@ -394,7 +399,9 @@ async def _sleep_with_tick_exits(total_seconds, tick_feed, position_manager, eng
                 await _apply_buffered_spot_ticks_in_event_order(buffered_ticks, position_manager, engine)
             except Exception as exc:
                 print(f"[-] Buffered tick exit check failed: {exc}")
-        if price_fetcher is not None and (buffered_ticks or option_policy):
+        if (price_fetcher is not None
+                and (buffered_ticks or option_policy
+                     or _has_pending_option_execution_routes(position_manager))):
             option_ticks_replayed = await _monitor_completed_atr(
                 price_fetcher.watch_candles, position_manager,
                 dispatcher, price_fetcher=price_fetcher, engine=engine,
@@ -605,7 +612,8 @@ async def _drain_selected_option_quote(position_manager, timeout_seconds=5.0):
 
 async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manager, engine, dispatcher):
     """Keep exits and pending orders live without replaying a detector candle."""
-    if _has_option_policy_trades(position_manager):
+    if (_has_option_policy_trades(position_manager)
+            or _has_pending_option_execution_routes(position_manager)):
         await _monitor_completed_atr(price_fetcher.watch_candles, position_manager,
                                      dispatcher, price_fetcher=price_fetcher, engine=engine)
     spot = await price_fetcher.fetch_latest_spot()
@@ -846,7 +854,8 @@ async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatc
                 _schedule_quote_flush(position_manager, qs)
             except Exception:
                 pass
-        if candle is not None or _has_option_policy_trades(position_manager):
+        if (candle is not None or _has_option_policy_trades(position_manager)
+                or _has_pending_option_execution_routes(position_manager)):
             buffered_ticks = []
             if tick_feed is not None and position_manager.active_trades:
                 _, ordered_ticks, receipt_ticks = _read_buffered_spot_ticks(tick_feed, position_manager)

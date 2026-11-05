@@ -350,6 +350,49 @@ async def test_monitor_resumes_terminal_paper_exit_after_route_marker_was_acknow
     dispatcher.on_option_stop.assert_awaited_once_with(trade, "ATR_SL_HIT")
 
 
+@pytest.mark.parametrize("path", ["fetch", "rest", "tick"])
+@pytest.mark.asyncio
+async def test_restored_terminal_option_route_is_monitored_without_candle_or_active_trade(
+        monkeypatch, path):
+    import main
+    trade = {"id": "terminal-route", "state": "CLOSED", "market_context": {
+        "option_trailing": {
+            "policy_version": "option_premium_protection_v2",
+            "highest_milestone": 1,
+            "execution_route_pending": True,
+            "execution_route_reason": "ATR_SL_HIT",
+            "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+        },
+    }}
+    positions = SimpleNamespace(
+        active_trades=[], _option_execution_route_trades=[trade],
+        update_atr_trailing=AsyncMock(return_value=[]),
+        update_trades=AsyncMock(return_value=[]),
+    )
+    dispatcher = SimpleNamespace(
+        on_option_stop=AsyncMock(return_value=False), on_candles=AsyncMock(),
+        on_spot=AsyncMock(),
+    )
+    fetcher = SimpleNamespace(
+        watch_candles=[], fetch_latest_candle=AsyncMock(return_value=None),
+        fetch_latest_spot=AsyncMock(return_value=24000),
+    )
+
+    if path == "fetch":
+        await main._fetch_candle_with_protection(fetcher, positions, dispatcher)
+    elif path == "rest":
+        await main._monitor_rest_without_candle(fetcher, None, positions, None, dispatcher)
+    else:
+        feed = SimpleNamespace(is_active=True, get_latest_price=lambda: None,
+                                get_observations_since=lambda: [])
+        monkeypatch.setattr(main.settings, "tick_exit_check_interval_seconds", 1)
+        monkeypatch.setattr(main.asyncio, "sleep", AsyncMock())
+        await main._sleep_with_tick_exits(1, feed, positions, None, dispatcher,
+                                          price_fetcher=fetcher)
+
+    dispatcher.on_option_stop.assert_awaited_once_with(trade, "ATR_SL_HIT")
+
+
 @pytest.mark.asyncio
 async def test_index_request_failure_still_runs_option_protection():
     import main
