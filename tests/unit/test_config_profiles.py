@@ -37,7 +37,7 @@ class TestTuningConfig:
 
     def test_expiry_profile_values(self):
         """Expiry sensitivity values stay explicit and scoped to this profile."""
-        assert EXPIRY_CONFIG.signal_cooldown_minutes == 15
+        assert EXPIRY_CONFIG.signal_cooldown_minutes == 10
         assert EXPIRY_CONFIG.breakout_confirmation_candles == 2
         assert EXPIRY_CONFIG.breakout_writers_active_min_pct == 5.0
         assert EXPIRY_CONFIG.breakout_iv_falling_threshold == -3.0
@@ -60,7 +60,7 @@ class TestTuningConfig:
 
     def test_non_expiry_profile_values(self):
         """Spot-check specific non-expiry profile values."""
-        assert NON_EXPIRY_CONFIG.signal_cooldown_minutes == 15
+        assert NON_EXPIRY_CONFIG.signal_cooldown_minutes == 10
         assert NON_EXPIRY_CONFIG.breakout_confirmation_candles == 3
         assert NON_EXPIRY_CONFIG.oi_wall_min_oi == 4_000_000
         assert NON_EXPIRY_CONFIG.oi_wall_min_oi_change_pct == 5.0
@@ -100,14 +100,14 @@ class TestSettings:
         s = Settings()
 
         s.apply_profile(EXPIRY_CONFIG)
-        assert s.signal_cooldown_minutes == 15
+        assert s.signal_cooldown_minutes == 10
         assert s.level_scan_range == 400.0
         assert s.oi_wall_min_oi == 6_000_000
         assert s.oi_wall_min_oi_change_pct == 5.0
         assert s.continuation_min_score == 2
 
         s.apply_profile(NON_EXPIRY_CONFIG)
-        assert s.signal_cooldown_minutes == 15
+        assert s.signal_cooldown_minutes == 10
         assert s.level_scan_range == 500.0
         assert s.oi_wall_min_oi == 4_000_000
 
