@@ -2262,6 +2262,14 @@ class PositionManager:
             # make this newly observed protective route look like a retry.
             identity += ":route:" + ":".join(str(route_trigger.get(key) or "") for key in (
                 "stop_domain", "reason", "event_at"))
+        exit_trigger = snapshot.get("exit_trigger")
+        if isinstance(exit_trigger, dict) and exit_trigger.get("domain") == "OPTION_PREMIUM":
+            # A retained premium trigger can be created after a bar watermark
+            # at the same timestamp. Include its immutable identity so the
+            # lifecycle RPC does not mistake that protection for a replay.
+            identity += ":exit:" + ":".join(str(exit_trigger.get(key) or "") for key in (
+                "domain", "reason", "source", "event_at", "received_at", "price",
+                "effective_stop", "stop_source"))
         resolution = snapshot.get("ambiguity_resolution")
         if resolution:
             # Keep the silent resolution distinct from the watermark snapshot

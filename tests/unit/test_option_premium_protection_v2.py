@@ -574,6 +574,7 @@ async def test_quote_tied_to_previously_processed_option_bar_still_preempts_t2(o
         await pm.update_option_market_events([], {"39961": bars}, current_time=at)
     assert opt["last_processed_option_bar_end"] == at.isoformat()
     assert opt["locked_option_sl"] == pytest.approx(167.20)
+    bar_event_ids = set(pm.analytics.events)
 
     # A fresh quote at that same time must still be considered alongside a T2 tick.
     tick = {"price": trade["target_2"], "exchange_at": at.isoformat(),
@@ -600,6 +601,22 @@ async def test_quote_tied_to_previously_processed_option_bar_still_preempts_t2(o
     assert opt["execution_route_pending"] is True
     assert opt["execution_route_reason"] == "STOPPED_OUT_AT_BE"
     assert opt["last_processed_option_bar_end"] == at.isoformat()
+
+    new_event_ids = set(pm.analytics.events) - bar_event_ids
+    assert len(new_event_ids) == 1
+    committed_rows = len(pm.analytics.rows)
+    committed = pm.analytics.rows[-1]["option_trailing"]
+    assert committed["execution_route_pending"] is True
+    assert committed["ambiguous_index_touch"]["protective_option_exit"]["option_close"] == pytest.approx(166.0)
+    assert committed["exit_trigger"]["reason"] == "STOPPED_OUT_AT_BE"
+    restored = OptionTrailingContext.from_dict(committed).to_dict()
+    assert restored["execution_route_pending"] is True
+    assert restored["ambiguous_index_touch"]["protective_option_exit"]["option_close"] == pytest.approx(166.0)
+
+    # Retrying the unchanged retained trigger reuses its ID and is idempotent.
+    await pm._record_trade_update(trade, None, None, opt["exit_trigger"]["event_at"])
+    assert len(pm.analytics.rows) == committed_rows
+    assert set(pm.analytics.events) == bar_event_ids | new_event_ids
 
 
 @pytest.mark.asyncio

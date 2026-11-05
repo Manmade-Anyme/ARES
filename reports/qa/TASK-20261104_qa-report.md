@@ -70,3 +70,11 @@ The test run emitted 12 existing dependency/runtime warnings. No live service re
 - Full local suite: **2,430 passed, 45 subtests passed, 12 warnings** in 177.91 seconds.
 - Full-suite coverage exercised every branch arc in the changed T2-entry creation/route block. Module-wide `position_manager.py` coverage was 90.5% statements / 87.0% branches; no whole-module coverage claim is made.
 - GitHub Actions run #601 passed on preceding head `cc6bb8a`; CI for this follow-up commit is required after push.
+
+## Retained premium-trigger persistence identity
+
+- CE and PE regressions first commit a non-breaching option bar, then submit a same-timestamp premium stop quote with an index T2 touch. They verify the trigger produces a distinct lifecycle ID and atomically persists the ambiguity, observed premium trigger, and execution-route-pending state.
+- Restoring the committed snapshot through `OptionTrailingContext` retains the route and first trigger. Rewriting the unchanged trigger reuses its identity and adds no duplicate lifecycle commit.
+- The new assertions failed against the previous event identity because no new ledger event was recorded; they pass with retained exit-trigger fields included in the identity.
+- Focused premium lifecycle, commit-boundary, and paper-route modules: **151 passed, 2 warnings**. Full local suite: **2,437 passed, 45 subtests passed, 12 warnings** in 172.89 seconds. The final verification remains local until CI runs on the pushed commit.
+- Focused branch coverage exercised both paths of the premium-only exit-identity condition in `position_manager.py`; the retry regression confirms the identity is stable for the same retained trigger.

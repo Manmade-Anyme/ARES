@@ -46,3 +46,7 @@ The POST_T1 same-close detector used `last_processed_option_bar_end` to skip the
 ## Route protection when creating a T2-entry ambiguity
 
 When a completed post-T1 index candle first touched both T2 and the entry guard, the code persisted `T2_ENTRY/ORDER_UNKNOWN` and returned before retaining a paper execution route. A later tick above entry but below T2 could not recreate that missed guard. The creation branch now calls the existing validated route helper with the pre-update index watermark, appends a route event only for an eligible confirmed PAPER execution, and persists the new ambiguity and route intent together. It leaves the lifecycle at T1 and does not commit an assumed allocation or resolve event ordering. CE/PE replay tests verify the runner exits through the dispatcher while the reference ambiguity remains; a reference-only control does not route.
+
+## Retained premium-trigger persistence identity
+
+A fresh quote tied to an already processed option bar correctly created an in-memory ambiguity and pending route, but its lifecycle ID was derived only from the unchanged stop and bar watermark. The persistence RPC therefore treated the new trigger as an idempotent replay and kept the previous snapshot. Lifecycle identity now includes the immutable premium exit trigger fields, so the ambiguity and route marker commit under a distinct ID; an unchanged retry reuses that ID. CE/PE persistence regressions verify the committed snapshot survives `OptionTrailingContext` restoration and that retries do not add a second commit.

@@ -176,6 +176,8 @@ An option-bar watermark suppresses only bar evidence already consumed by ATR/lif
 
 When a completed POST_T1 index candle first creates a T2/entry-guard ordering ambiguity, the same transition may also retain the independent index-guard execution intent for an eligible confirmed PAPER runner. Validate against the prior event watermark because the current candle may already have advanced the working watermark. The execution route must not resolve the ambiguity, book T2, change reference allocation, or create execution state for reference-only/mismatched records.
 
+Lifecycle event identity must include any retained premium exit trigger's immutable domain, reason, source, event/receipt times, observed price, effective stop, and stop source. This separates a newly retained trigger from an already committed bar watermark at the same event time while keeping retries stable. Persistence must atomically retain the ambiguity, trigger, and execution-route-pending marker.
+
 ## 7. Definition of Done / Regression Evidence
 
 Implementation and QA must exercise the actual lifecycle entry points and persistence/restart path, with external order execution disabled:
