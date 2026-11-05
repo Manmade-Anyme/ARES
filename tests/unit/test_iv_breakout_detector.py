@@ -189,3 +189,127 @@ def test_reports_includes_iv_gated_breakout():
     assert metrics["per_setup"]["IV_GATED_BREAKOUT"]["net_points"] == 35.0
 
 
+@pytest.mark.asyncio
+async def test_iv_breakout_end_to_end_ml_prediction_and_collection():
+    """End-to-End Test: Validates IV_GATED_BREAKOUT works through ML Predictor and Collector."""
+    import json
+    from unittest.mock import MagicMock
+    from ml_signal.predictor import SignalPredictor
+    from ml_signal.collector import MLCollector
+    from models import OptionRow, ATMStrikes, ResistanceLevel
+
+    # 1. Initialize ML Predictor and Load Model
+    predictor = SignalPredictor()
+    predictor.load_model()
+    assert predictor.model is not None
+
+    # 2. Simulate AresEngine generating an IV_GATED_BREAKOUT signal
+    engine = AresEngine()
+    date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+
+    # Establish 09:15-12:30 anchor high at 24400.0
+    for m in range(0, 195):
+        t = date_now + timedelta(minutes=m)
+        c = OHLCVCandle(timestamp=t, open=24350.0, high=24400.0 if m == 30 else 24380.0, low=24340.0, close=24360.0, volume=1000000, vwap=24360.0)
+        atm = ATMStrikes(spot_price=24360.0, ce=OptionRow(strike=24350, option_type="CE", iv=13.0, oi=5000000, delta=0.52), pe=OptionRow(strike=24350, option_type="PE", iv=13.0, oi=4000000, delta=-0.48))
+        engine.tick(c, full_chain=[], atm=atm)
+
+    # 13:00 Breakout candle past 24400
+    t_bo = date_now + timedelta(minutes=225)
+    c_bo = OHLCVCandle(timestamp=t_bo, open=24395.0, high=24408.0, low=24390.0, close=24405.0, volume=1500000, vwap=24370.0)
+    engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=3), 12.8))
+    engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=1), 13.0))
+
+    levels = [ResistanceLevel(price=24500.0, source="OI_WALL", strength=3), ResistanceLevel(price=24350.0, source="SWING_LOW", strength=2)]
+    atm_bo = ATMStrikes(
+        spot_price=24405.0,
+        ce=OptionRow(strike=24400, option_type="CE", iv=13.2, oi=6000000, delta=0.55, gamma=0.002, theta=-12.0, vega=8.0),
+        pe=OptionRow(strike=24400, option_type="PE", iv=13.0, oi=4000000, delta=-0.45, gamma=0.002, theta=-11.0, vega=7.5)
+    )
+
+    signal = engine.tick(c_bo, full_chain=[], atm=atm_bo, levels=levels)
+    assert signal is not None
+    assert signal.setup_type == SetupType.IV_GATED_BREAKOUT
+    assert signal.direction == Direction.BULLISH
+
+    # 3. Predict from Raw Market Features (Same call pattern as main.py)
+    candle_dict = MLCollector._candle_to_dict(c_bo)
+    atm_ce_dict = MLCollector._option_row_to_dict(atm_bo.ce)
+    atm_pe_dict = MLCollector._option_row_to_dict(atm_bo.pe)
+    level_prices = MLCollector._levels_to_prices(levels)
+
+    pred = predictor.predict_from_raw(
+        candle=candle_dict,
+        volume_history=[1000000, 1200000, 1500000],
+        iv_history=[12.8, 13.0, 13.2],
+        atm_ce=atm_ce_dict,
+        atm_pe=atm_pe_dict,
+        total_ce_oi=20000000,
+        total_pe_oi=18000000,
+        all_ce_oi=[6000000, 5000000],
+        all_pe_oi=[4000000, 3000000],
+        levels=level_prices,
+        timestamp=t_bo,
+        spot=24405.0,
+        pdh=24450.0,
+        pdl=24300.0,
+        dte=5,
+        is_expiry=False,
+        direction=signal.direction.value
+    )
+
+    # Validate ML Prediction Outputs
+    assert "probability" in pred
+    assert 0.0 <= pred["probability"] <= 1.0
+    assert pred["confidence_tier"] in ("HIGH", "MEDIUM", "LOW")
+    assert "features" in pred
+    feats = pred["features"]
+    assert feats["structure_features__dist_to_target_wall"] == pytest.approx(95.0)  # 24500 - 24405
+    assert feats["candle_features__aligns_direction"] == 1.0
+    assert feats["greek_features__aligned_net_delta"] == pytest.approx(0.10)  # 0.55 - 0.45
+
+    # 4. Attach prediction to signal (main.py pattern)
+    from main import _attach_ml_prediction_to_signal
+    _attach_ml_prediction_to_signal(signal, pred)
+    assert signal.ml_prediction == pred
+
+    # 5. ML Data Collection Snapshot Persistence
+    collector = MLCollector("https://dummy.supabase.co", "dummy_key")
+    mock_supabase = MagicMock()
+    collector.supabase = mock_supabase
+    mock_table = MagicMock()
+    mock_supabase.table.return_value = mock_table
+
+    saved_records = []
+    def fake_upsert(record, **kwargs):
+        saved_records.append(record)
+        m = MagicMock()
+        m.execute.return_value.data = [record]
+        return m
+    mock_table.upsert.side_effect = fake_upsert
+
+    await collector.snapshot(
+        signal=signal,
+        candle=c_bo,
+        atm=atm_bo,
+        full_chain=[],
+        levels=levels,
+        spot=24405.0,
+        pdh=24450.0,
+        pdl=24300.0,
+        is_expiry=False,
+        dte=5,
+        timestamp=t_bo,
+    )
+
+    assert len(saved_records) == 1
+    rec = saved_records[0]
+    assert rec["signal_setup_type"] == "IV_GATED_BREAKOUT"
+    assert rec["signal_direction"] == "BULLISH"
+    scores = json.loads(rec["detector_scores"])
+    assert scores["iv_gated_breakout"] == 1
+    assert scores["failed_breakout"] == 0
+    assert scores["oi_wall_rejection"] == 0
+
+
+
