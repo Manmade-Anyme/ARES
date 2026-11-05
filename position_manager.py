@@ -2304,7 +2304,8 @@ class PositionManager:
             # lifecycle RPC does not mistake that protection for a replay.
             identity += ":exit:" + ":".join(str(exit_trigger.get(key) or "") for key in (
                 "domain", "reason", "source", "event_at", "received_at", "price",
-                "effective_stop", "stop_source", "stop_ordering_status", "raised_stop"))
+                "effective_stop", "stop_source", "stop_ordering_status",
+                "atr_raise_ordering_status", "raised_stop"))
         for ambiguity_key in ("ambiguous_premium_quote", "ambiguous_premium_bar"):
             ambiguity = snapshot.get(ambiguity_key)
             if (isinstance(ambiguity, dict)
@@ -3122,11 +3123,15 @@ class PositionManager:
         return {"previous_stop": previous, "previous_stop_source": previous_source,
                 "raised_stop": raised}
 
-    async def _reject_quote_before_active_stop(self, trade, observed_at, received_at, *, price=None):
+    async def _reject_quote_before_active_stop(self, trade, observed_at, received_at, *, price=None,
+                                               source=None, events=None):
         opt = (trade.get("market_context") or {}).get("option_trailing") or {}
         t2_value = opt.get("t2_at")
         if (opt.get("phase") == "POST_T2" and t2_value
                 and observed_at <= parse_candle_timestamp(t2_value)):
+            if await self._retain_t2_tied_quote_if_protective(
+                    trade, observed_at, received_at, price, source, events):
+                return True
             detail = "Rejected out-of-order option quote at or before T2 transition"
         else:
             effective_value = opt.get("stop_effective_at")
@@ -3159,6 +3164,146 @@ class PositionManager:
             opt["monitoring_detail"] = detail
             await self._record_trade_update(trade, None, "MONITORING_UNAVAILABLE", received_at.isoformat())
         return True
+
+    async def _retain_t2_tied_quote_if_protective(self, trade, observed_at, received_at,
+                                                 price, source, events):
+        """Capture a protective exact-T2 quote even if an equal-time quote was watermarked."""
+        opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+        t2_value = opt.get("t2_at")
+        if (opt.get("phase") != "POST_T2" or not t2_value
+                or observed_at != parse_candle_timestamp(t2_value)):
+            return False
+        retained, reason = await self._retain_t2_tied_premium_quote_exit(
+            trade, observed_at, received_at, price, source)
+        if retained and reason and events is not None:
+            events.append((trade["id"], reason))
+        return retained
+
+    async def _retain_t2_tied_premium_quote_exit(self, trade, observed_at, received_at, price, source):
+        """Retain a T2-tied quote that breaches the protective stop under every ordering."""
+        opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+        if (opt.get("policy_version") != "option_premium_protection_v2"
+                or opt.get("phase") != "POST_T2" or trade.get("state") != "T2_REACHED"):
+            return False, None
+        try:
+            t2_at = parse_candle_timestamp(opt["t2_at"])
+            quote_at = parse_candle_timestamp(observed_at)
+            t1_at = parse_candle_timestamp(opt["t1_at"]) if opt.get("t1_at") else None
+            received = parse_candle_timestamp(received_at)
+            trigger_price = float(price)
+            original_stop = float(opt["original_option_sl"])
+            entry_premium = float(opt.get("original_option_entry") or original_stop)
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            return False, None
+        if (quote_at != t2_at or received < quote_at or not isfinite(trigger_price)
+                or trigger_price <= 0 or not isfinite(original_stop)):
+            return False, None
+
+        if t1_at is not None and t1_at > t2_at:
+            return False, None
+        t1_tied_to_t2 = t1_at is None or t1_at == t2_at
+        atr_raise_ordering = None
+        if t1_tied_to_t2:
+            if trigger_price > original_stop:
+                return False, None
+            active_stop = original_stop
+            stop_source = "INITIAL_OPTION_SL"
+            reason = "SL_HIT"
+        else:
+            try:
+                active_stop = float(opt.get("locked_option_sl") or original_stop)
+            except (TypeError, ValueError, OverflowError):
+                return False, None
+            if not isfinite(active_stop) or trigger_price > active_stop:
+                return False, None
+            stop_source = opt.get("premium_stop_source") or (
+                "INITIAL_OPTION_SL" if active_stop <= original_stop else
+                "BREAK_EVEN_COST" if active_stop <= entry_premium else
+                "ATR_TRAILING")
+            stop_effective_at = opt.get("stop_effective_at")
+            try:
+                tied_atr_raise = (stop_source == "ATR_TRAILING" and stop_effective_at
+                                  and parse_candle_timestamp(stop_effective_at) == quote_at)
+            except (TypeError, ValueError, OverflowError, OSError):
+                return False, None
+            if tied_atr_raise:
+                prior_stop = self._atr_raise_quote_stop_basis(opt, quote_at, trigger_price)
+                if prior_stop is None:
+                    return False, None
+                active_stop = prior_stop["previous_stop"]
+                stop_source = prior_stop["previous_stop_source"]
+                atr_raise_ordering = prior_stop
+            reason = ("STOPPED_OUT_AT_BE" if stop_source == "BREAK_EVEN_COST" else
+                      "ATR_SL_HIT" if stop_source == "ATR_TRAILING" else "SL_HIT")
+
+        existing = opt.get("ambiguous_premium_quote")
+        existing = existing if isinstance(existing, dict) else {}
+        if existing.get("protective_option_exit"):
+            return True, None
+        prior_ambiguity = deepcopy(existing) if existing else None
+        source = source or "OPTION_QUOTE"
+        protective = {
+            "reason": reason, "stop_domain": "OPTION_PREMIUM",
+            "source": source, "trigger_source": source,
+            "event_at": quote_at.isoformat(), "received_at": received.isoformat(),
+            "option_close": trigger_price, "trigger_price": trigger_price,
+            "option_stop": active_stop, "effective_stop": active_stop,
+            "stop_source": stop_source,
+            "stop_ordering_status": "T2_MILESTONE_TIED",
+        }
+        if reason == "STOPPED_OUT_AT_BE":
+            protective["runner_option_points"] = 0.0
+        if atr_raise_ordering is not None:
+            protective["atr_raise_ordering_status"] = "ATR_RAISE_TIED"
+            protective["raised_stop"] = atr_raise_ordering["raised_stop"]
+        ambiguity = opt["ambiguous_premium_quote"] = {
+            "status": "T2_ORDER_UNKNOWN", "event_at": quote_at.isoformat(),
+            "price": trigger_price, "received_at": received.isoformat(), "source": source,
+            "tied_milestone": {
+                "kind": "T2_HIT", "event_at": t2_at.isoformat(),
+                "booked_fraction": float(opt.get("booked_fraction", 0.8)),
+                "remaining_fraction": float(opt.get("remaining_fraction", 0.2)),
+            },
+            "protective_option_exit": protective,
+        }
+        if prior_ambiguity:
+            ambiguity["prior_ambiguity"] = prior_ambiguity
+        possible_allocations = {}
+        if t1_tied_to_t2:
+            possible_allocations["pre_t1_exit_fraction"] = 1.0
+        possible_allocations["post_t1_pre_t2_exit_fraction"] = 0.5
+        possible_allocations["post_t2_runner_fraction"] = float(opt.get("remaining_fraction", 0.2))
+        ambiguity["allocation_uncertainty"] = possible_allocations
+        opt["quote_watermark"] = quote_at.isoformat()
+        opt["last_option_quote"] = {
+            "price": trigger_price, "observed_at": quote_at.isoformat(),
+            "received_at": received.isoformat(), "source": source,
+        }
+        opt["exit_trigger"] = {
+            "domain": "OPTION_PREMIUM", "source": source,
+            "event_at": quote_at.isoformat(), "received_at": received.isoformat(),
+            "price": trigger_price, "effective_stop": active_stop,
+            "stop_source": stop_source, "reason": reason,
+            "stop_ordering_status": "T2_MILESTONE_TIED",
+        }
+        if atr_raise_ordering is not None:
+            opt["exit_trigger"]["atr_raise_ordering_status"] = "ATR_RAISE_TIED"
+            opt["exit_trigger"]["raised_stop"] = atr_raise_ordering["raised_stop"]
+        opt["execution_status"] = (
+            "REFERENCE_TRIGGERED_NO_BROKER_FILL"
+            if opt.get("execution_status") in {"REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"}
+            else "EXIT_TRIGGERED_PENDING_CONFIRMATION"
+        )
+        self._mark_option_execution_route_pending(trade, reason)
+        opt.setdefault("event_history", []).append(dict(opt["exit_trigger"]))
+        previous_monitoring = opt.get("monitoring_status", "ACTIVE")
+        _, current_monitoring = self._set_option_monitoring_health(
+            opt, "OPTION_QUOTE", unavailable=False)
+        update = ("MONITORING_RESTORED"
+                  if previous_monitoring == "UNAVAILABLE" and current_monitoring == "ACTIVE" else None)
+        await self._record_trade_update(trade, None, update, quote_at.isoformat())
+        return True, (reason if opt.get("execution_route_pending")
+                      and opt.get("execution_route_reason") == reason else None)
 
     async def _process_option_quotes_at_event(self, event_at, quotes):
         events = []
@@ -3200,9 +3345,13 @@ class PositionManager:
                     continue
                 watermark = opt.get("quote_watermark")
                 if watermark and observed_at <= parse_candle_timestamp(watermark):
+                    await self._retain_t2_tied_quote_if_protective(
+                        trade, observed_at, received_at, price,
+                        quote.get("source"), events)
                     continue
                 if await self._reject_quote_before_active_stop(
-                        trade, observed_at, received_at, price=price):
+                        trade, observed_at, received_at, price=price,
+                        source=quote.get("source"), events=events):
                     # This quote predates the currently active stop revision.
                     # Do not apply a later stop retroactively across monitor batches.
                     continue
@@ -3525,6 +3674,7 @@ class PositionManager:
         fetch, so later option-history I/O cannot make a fresh stop observation stale.
         """
         now = current_time or datetime.now(timezone.utc)
+        events = []
         quote_reference = now
         if quote_freshness_at is not None:
             try:
@@ -3582,9 +3732,13 @@ class PositionManager:
                 if incoming_contract != expected_contract:
                     continue
                 if opt.get("quote_watermark") and observed_at <= parse_candle_timestamp(opt["quote_watermark"]):
+                    await self._retain_t2_tied_quote_if_protective(
+                        trade, observed_at, received_at, value,
+                        quote.get("source"), events)
                     continue
                 if await self._reject_quote_before_active_stop(
-                        trade, observed_at, received_at, price=value):
+                        trade, observed_at, received_at, price=value,
+                        source=quote.get("source"), events=events):
                     continue
                 entry_at = parse_candle_timestamp(opt.get("activated_at") or trade.get("entry_timestamp"))
                 if observed_at <= entry_at:
@@ -3668,7 +3822,6 @@ class PositionManager:
                 pending_ticks.setdefault(event_at, []).append((trade["id"], observation))
             # If unavailable, update_trades requeues the observation below.
             opt["pending_index_observations"] = []
-        events = []
         self._option_replaying = True
         try:
             return await self._replay_option_timeline(
@@ -3733,6 +3886,9 @@ class PositionManager:
                 if quote_watermark:
                     try:
                         if quote_at <= parse_candle_timestamp(quote_watermark):
+                            await self._retain_t2_tied_quote_if_protective(
+                                trade, quote_at, received_at, candidate.get("price"),
+                                candidate.get("source"), events)
                             continue
                     except (TypeError, ValueError, OverflowError, OSError):
                         continue
@@ -3741,7 +3897,8 @@ class PositionManager:
                 except (KeyError, TypeError, ValueError, OverflowError):
                     continue
                 if await self._reject_quote_before_active_stop(
-                        trade, quote_at, received_at, price=quote_price):
+                        trade, quote_at, received_at, price=quote_price,
+                        source=candidate.get("source"), events=events):
                     continue
                 try:
                     entry_at = parse_candle_timestamp(opt.get("activated_at") or trade.get("entry_timestamp"))
