@@ -262,10 +262,15 @@ async def test_guard_routes_t1_candle_close_that_touches_entry():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("option_type", ["CE", "PE"])
 @pytest.mark.parametrize("close_hits_guard", [False, True])
-async def test_t1_candle_replay_uses_close_for_guard_execution(option_type, close_hits_guard):
+@pytest.mark.parametrize("unresolved_premium", [False, True])
+async def test_t1_candle_replay_uses_close_for_guard_execution(option_type, close_hits_guard, unresolved_premium):
     trade, positions, _, _ = paper_guard_runtime(option_type)
     option = trade["market_context"]["option_trailing"]
     option["t1_at"] = "2026-11-04T10:20:30+05:30"
+    if unresolved_premium:
+        option["atr_enabled"] = False
+        option["ambiguous_premium_quote"] = {"status": "T1_ORDER_UNKNOWN",
+            "ordering_reason": "COST_STOP_ONLY_BREACH", "event_at": option["t1_at"], "price": 99}
     start = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
     if option_type == "CE":
         candle = {"open": 24010, "high": 24015, "low": 23999,
@@ -348,6 +353,124 @@ async def test_existing_queued_guard_gets_new_execution_intent(ambiguous):
         await positions.update_trades(24000, event_time=at, market_event_time=at, only_option_policy=True)
     assert positions.analytics.rows[-1]["option_trailing"]["execution_route_pending"] is True
     assert option["execution_route_trigger"]["stop_domain"] == "SPOT_INDEX"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+@pytest.mark.parametrize("ambiguity_field", ["ambiguous_premium_bar", "ambiguous_premium_quote", "ambiguous_index_touch"])
+@pytest.mark.parametrize("candle_input", [False, True])
+async def test_guard_routes_while_reference_ambiguity_remains(option_type, ambiguity_field, candle_input):
+    import main
+    trade, positions, dispatcher, record = paper_guard_runtime(option_type)
+    option = trade["market_context"]["option_trailing"]
+    option["atr_enabled"] = False
+    if ambiguity_field == "ambiguous_index_touch":
+        option[ambiguity_field] = {"kind": "T2_ENTRY", "status": "ORDER_UNKNOWN",
+                                   "event_at": "2026-11-04T10:20:00+05:30"}
+    else:
+        option[ambiguity_field] = {"status": "T1_ORDER_UNKNOWN", "ordering_reason": "COST_STOP_ONLY_BREACH",
+                                   "event_at": option["t1_at"], "price": 99}
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    candles = []
+    ticks = []
+    if candle_input:
+        candles = [{"timestamp": at.isoformat(), "open": 24000, "high": 24001,
+                    "low": 23999, "close": 24000, "complete": True}]
+        now = at + timedelta(minutes=1)
+    else:
+        ticks = [{"price": 24000, "exchange_at": at.isoformat(), "received_at": at.isoformat()}]
+        now = at
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await positions.update_option_market_events(candles, {}, current_time=now, index_ticks=ticks)
+        await main._monitor_completed_atr([], positions, dispatcher, current_time=now)
+    assert (trade["id"], "STOPPED_OUT_AT_BE") in events
+    assert trade["state"] == "T1_HIT"
+    assert option[ambiguity_field]["subsequent_index_observations"]
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "STOPPED_OUT_AT_BE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["reference_only", "no_execution_t1", "stale"])
+async def test_ambiguous_reference_guard_rejects_invalid_execution_intent(damage):
+    trade, positions, dispatcher, record = paper_guard_runtime()
+    option = trade["market_context"]["option_trailing"]
+    option.update(atr_enabled=False, ambiguous_premium_quote={"status": "T1_ORDER_UNKNOWN",
+                  "ordering_reason": "COST_STOP_ONLY_BREACH", "event_at": option["t1_at"], "price": 99})
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    if damage == "reference_only":
+        option["execution_status"] = "REFERENCE_ONLY"
+    elif damage == "no_execution_t1":
+        record.t1_hit = False
+        dispatcher._publish(record)
+    else:
+        option["last_index_event_at"] = at.isoformat()
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await positions.update_trades(24000, event_time=at, market_event_time=at, only_option_policy=True)
+    assert (trade["id"], "STOPPED_OUT_AT_BE") not in events
+    assert option.get("execution_route_pending") is not True
+    assert record.status == "FILLED"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_candle_guard_checks_prior_watermark_against_source_time():
+    trade, positions, _, record = paper_guard_runtime()
+    option = trade["market_context"]["option_trailing"]
+    option.update(atr_enabled=False, last_index_event_at="2026-11-04T10:21:00+05:30",
+                  ambiguous_premium_quote={"status": "T1_ORDER_UNKNOWN", "price": 99,
+                      "ordering_reason": "COST_STOP_ONLY_BREACH", "event_at": option["t1_at"]})
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await positions.update_trades(
+            24000, candle_high=24001, candle_low=23999, candle_timestamp=at - timedelta(minutes=1),
+            event_time=at + timedelta(seconds=1), market_event_time=at - timedelta(seconds=30),
+            only_option_policy=True)
+    assert (trade["id"], "STOPPED_OUT_AT_BE") not in events
+    assert option.get("execution_route_pending") is not True
+    assert record.status == "FILLED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ambiguity_field", ["ambiguous_premium_quote", "ambiguous_index_touch"])
+async def test_ambiguous_guard_persists_intent_for_already_retained_observation(ambiguity_field):
+    trade, positions, _, _ = paper_guard_runtime()
+    option = trade["market_context"]["option_trailing"]
+    option.update(atr_enabled=False, execution_status="REFERENCE_ONLY")
+    if ambiguity_field == "ambiguous_index_touch":
+        option[ambiguity_field] = {"kind": "T2_ENTRY", "status": "ORDER_UNKNOWN",
+                                   "event_at": "2026-11-04T10:20:00+05:30"}
+    else:
+        option[ambiguity_field] = {"status": "T1_ORDER_UNKNOWN", "ordering_reason": "COST_STOP_ONLY_BREACH",
+                                   "event_at": option["t1_at"], "price": 99}
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await positions.update_trades(24000, event_time=at, market_event_time=at, only_option_policy=True)
+        await positions.update_trades(24000, event_time=at, market_event_time=at, only_option_policy=True)
+        option["execution_status"] = "CONFIRMED_PAPER_FILL"
+        events = await positions.update_trades(24000, event_time=at, market_event_time=at, only_option_policy=True)
+    assert (trade["id"], "STOPPED_OUT_AT_BE") in events
+    assert positions.analytics.rows[-1]["option_trailing"]["execution_route_pending"] is True
+    assert len(option[ambiguity_field]["subsequent_index_observations"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_reference_guard_preserves_existing_premium_route():
+    trade, positions, dispatcher, record = paper_guard_runtime()
+    option = trade["market_context"]["option_trailing"]
+    premium = {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM",
+               "event_at": "2026-11-04T10:20:59+05:30", "option_close": 99}
+    option.update(atr_enabled=False, execution_status="EXIT_TRIGGERED_PENDING_CONFIRMATION",
+                  execution_route_pending=True, execution_route_reason="ATR_SL_HIT",
+                  ambiguous_premium_bar={"status": "T1_ORDER_UNKNOWN", "protective_option_exit": premium})
+    dispatcher.orders.request_option_exit(record.correlation_id, "ATR_SL_HIT")
+    dispatcher._publish(record)
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await positions.update_trades(24000, event_time=at, market_event_time=at, only_option_policy=True)
+    assert option["execution_route_reason"] == "ATR_SL_HIT"
+    assert option.get("execution_route_trigger") is None
+    assert record.exit_reason == "ATR_SL_HIT"
 
 
 @pytest.mark.asyncio

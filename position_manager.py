@@ -659,7 +659,8 @@ class PositionManager:
         opt["execution_route_reason"] = reason
 
     @staticmethod
-    def _retain_index_guard_execution_route(trade, event_at, received_at):
+    def _retain_index_guard_execution_route(trade, event_at, received_at, *,
+                                            index_watermark_checked=False, prior_index_watermark=None):
         """Protect a confirmed paper runner while reference history is pending."""
         from execution.signal_dispatch import SignalDispatcher
 
@@ -688,8 +689,9 @@ class PositionManager:
             return False
         try:
             observed_at = parse_candle_timestamp(event_at)
-            if any(observed_at <= parse_candle_timestamp(opt[key])
-                   for key in ("t1_at", "last_index_event_at") if opt.get(key)):
+            watermark = prior_index_watermark if index_watermark_checked else opt.get("last_index_event_at")
+            if any(observed_at <= parse_candle_timestamp(value)
+                   for value in (opt.get("t1_at"), watermark) if value):
                 return False
         except (TypeError, ValueError, OverflowError, OSError):
             return False
@@ -1062,6 +1064,12 @@ class PositionManager:
                 # A candle's wicks do not establish which protection occurred first.
                 target_2_hit = trade_high >= trade["target_2"] if sign == 1 else trade_low <= trade["target_2"]
                 be_hit = trade_low <= trade["entry_price"] if sign == 1 else trade_high >= trade["entry_price"]
+                execution_guard_touch = be_hit
+                if (opt_ctx.get("policy_version") == "option_premium_protection_v2"
+                        and candle_timestamp is not None and opt_ctx.get("t1_at")
+                        and parse_candle_timestamp(candle_timestamp) <= parse_candle_timestamp(opt_ctx["t1_at"])):
+                    execution_guard_touch = (spot_price <= trade["entry_price"] if sign == 1
+                                             else spot_price >= trade["entry_price"])
 
                 if ((reference_accounting or opt_ctx.get("policy_version") == "option_premium_protection_v2")
                         and opt_ctx.get("ambiguous_index_touch")):
@@ -1077,24 +1085,40 @@ class PositionManager:
                         except (KeyError, TypeError, ValueError, OverflowError, OSError):
                             pass
                     if target_2_hit or be_hit:
+                        guard_intent = execution_guard_touch and self._retain_index_guard_execution_route(
+                            trade, price_event_ts, event_ts_base,
+                            index_watermark_checked=candle_timestamp is not None,
+                            prior_index_watermark=previous_index if candle_timestamp is not None else None)
+                        if guard_intent:
+                            events.append((trade["id"], "STOPPED_OUT_AT_BE"))
                         observation = {"event_at": price_event_ts, "price": spot_price,
                             "high": trade_high, "low": trade_low,
                             "candle_timestamp": candle_timestamp.isoformat() if candle_timestamp else None}
                         later = ambiguity.setdefault("subsequent_index_observations", [])
-                        if observation not in later:
+                        changed = observation not in later
+                        if changed:
                             later.append(observation)
+                        if changed or guard_intent:
                             await self._record_trade_update(trade, None, None, transition_event_ts)
                     continue
                 t1_premium_ambiguity = self._unresolved_t1_premium_ambiguity(opt_ctx)
                 if (opt_ctx.get("policy_version") == "option_premium_protection_v2"
                         and t1_premium_ambiguity):
                     if target_2_hit or be_hit:
+                        guard_intent = execution_guard_touch and self._retain_index_guard_execution_route(
+                            trade, price_event_ts, event_ts_base,
+                            index_watermark_checked=candle_timestamp is not None,
+                            prior_index_watermark=previous_index if candle_timestamp is not None else None)
+                        if guard_intent:
+                            events.append((trade["id"], "STOPPED_OUT_AT_BE"))
                         observation = {"event_at": price_event_ts, "price": spot_price,
                             "high": trade_high, "low": trade_low,
                             "candle_timestamp": candle_timestamp.isoformat() if candle_timestamp else None}
                         later = t1_premium_ambiguity.setdefault("subsequent_index_observations", [])
-                        if observation not in later:
+                        changed = observation not in later
+                        if changed:
                             later.append(observation)
+                        if changed or guard_intent:
                             await self._record_trade_update(trade, None, None, transition_event_ts)
                     # The T1-tied premium bar/quote may have stopped the trade
                     # depending on event order. Keep later touches for reconciliation.

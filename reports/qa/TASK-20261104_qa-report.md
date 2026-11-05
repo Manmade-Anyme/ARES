@@ -45,3 +45,11 @@ The test run emitted 12 existing dependency/runtime warnings. No live service re
 - The production timeline replay was exercised for CE and PE with missing option history, both when only the pre-T1 wick touches the guard and when the completed close touches it. Direct-call regressions also pass.
 - The full local suite passed: **2,402 tests, 45 subtests, 12 warnings** in 181.73 seconds. The changed statement and both branch arcs were covered.
 - GitHub Actions run #598 passed on preceding commit `a445314`, including database integration checks; a new run is required for this replay safeguard.
+
+## Guard during unresolved reference ordering
+
+- The 68-test guard-focused suite passed. Twelve new end-to-end cases cover CE and PE, tick and completed-candle observations, and unresolved premium-bar, premium-quote, and index ambiguities while ATR is disabled; two cases also verify persistence when the observation was already retained.
+- Additional checks retain an existing premium route and reject reference-only, stale, or unconfirmed execution inputs, including a candle whose source time predates the prior index watermark. The T1-candle close-only check also remains active during unresolved premium ordering.
+- The full local suite on the final production code passed: **2,423 tests, 45 subtests, 12 warnings** in 176.51 seconds. Two additional duplicate-observation regressions were added after collection and passed in the 68-test guard-focused run above.
+- Combined full and focused coverage exercised all **18 changed executable statements and 16 changed branch arcs** in `position_manager.py`.
+- GitHub Actions run #599 passed for preceding commit `bc0c56f`, including database integration checks. This change requires a new run after push.
