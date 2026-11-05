@@ -38,3 +38,10 @@ The test run emitted 12 existing dependency/runtime warnings. No live service re
 - The full local suite on the final production code passed: **2,396 tests, 45 subtests, 12 warnings** in 175.56 seconds. The two replay cases were added after that suite was collected and passed separately.
 - All **6 changed executable statements and 4 changed branch arcs** in `position_manager.py` were covered by the full suite.
 - CE and PE regressions check rejection of a tied ATR quote and a subsequent fresh ATR-stop hit. A separate equality regression verifies that a cost-stop touch still reports `STOPPED_OUT_AT_BE` with zero runner points.
+
+## T1-candle replay review
+
+- Focused option lifecycle, routing, and persistence suite: **228 passed, 2 warnings** on the replay safeguard.
+- The production timeline replay was exercised for CE and PE with missing option history, both when only the pre-T1 wick touches the guard and when the completed close touches it. Direct-call regressions also pass.
+- The full local suite passed: **2,402 tests, 45 subtests, 12 warnings** in 181.73 seconds. The changed statement and both branch arcs were covered.
+- GitHub Actions run #598 passed on preceding commit `a445314`, including database integration checks; a new run is required for this replay safeguard.

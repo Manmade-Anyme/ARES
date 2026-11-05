@@ -30,3 +30,7 @@ An eligible index-entry guard was queued for reference reconciliation while the 
 ## Quote tied to an ATR raise
 
 A quote in a later batch with the same source timestamp as a committed ATR raise was compared with the newly raised stop, even though its order relative to the raise was unknown. The quote is now rejected with quote monitoring marked unavailable. A later fresh quote uses the retained stop. The tied quote is not used to infer an exit at the prior stop either; no earlier exit is established without further evidence.
+
+## T1-candle timeline replay
+
+Timeline replay supplies completed candles with an explicit event time, which bypassed the T1-candle close-only execution check. The safeguard now applies whenever a completed candle starts at or before T1, including replay; its full range remains available for reference-order reconciliation. CE and PE regressions cover a wick-only touch and a close that actually reaches the guard.

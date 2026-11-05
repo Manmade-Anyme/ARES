@@ -260,6 +260,29 @@ async def test_guard_routes_t1_candle_close_that_touches_entry():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+@pytest.mark.parametrize("close_hits_guard", [False, True])
+async def test_t1_candle_replay_uses_close_for_guard_execution(option_type, close_hits_guard):
+    trade, positions, _, _ = paper_guard_runtime(option_type)
+    option = trade["market_context"]["option_trailing"]
+    option["t1_at"] = "2026-11-04T10:20:30+05:30"
+    start = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    if option_type == "CE":
+        candle = {"open": 24010, "high": 24015, "low": 23999,
+                  "close": 24000 if close_hits_guard else 24010}
+    else:
+        candle = {"open": 23990, "high": 24001, "low": 23985,
+                  "close": 24000 if close_hits_guard else 23990}
+    candle.update(timestamp=start.isoformat(), complete=True)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await positions.update_option_market_events(
+            [candle], {}, current_time=start + timedelta(minutes=1))
+    assert ((trade["id"], "STOPPED_OUT_AT_BE") in events) is close_hits_guard
+    assert bool(option.get("execution_route_pending")) is close_hits_guard
+    assert trade["state"] == "T1_HIT"
+
+
+@pytest.mark.asyncio
 async def test_guard_intent_persists_after_same_timestamp_watermark():
     from storage import to_utc_iso
 

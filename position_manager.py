@@ -963,7 +963,7 @@ class PositionManager:
                     touches_t2 = observation_high >= trade["target_2"] if sign == 1 else observation_low <= trade["target_2"]
                     touches_guard = observation_low <= trade["entry_price"] if sign == 1 else observation_high >= trade["entry_price"]
                     execution_guard_touch = touches_guard
-                    if (candle_timestamp is not None and event_time is None and t1_at is not None
+                    if (candle_timestamp is not None and t1_at is not None
                             and parse_candle_timestamp(candle_timestamp) <= t1_at):
                         # A wick in the T1 candle may predate T1. Its close is
                         # the only value known to occur after activation.
