@@ -355,6 +355,7 @@ async def test_monitor_resumes_terminal_paper_exit_after_route_marker_was_acknow
 async def test_restored_terminal_option_route_is_monitored_without_candle_or_active_trade(
         monkeypatch, path):
     import main
+    monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 5, 10, 0))
     trade = {"id": "terminal-route", "state": "CLOSED", "market_context": {
         "option_trailing": {
             "policy_version": "option_premium_protection_v2",
@@ -395,6 +396,20 @@ async def test_restored_terminal_option_route_is_monitored_without_candle_or_act
                                           price_fetcher=fetcher)
 
     dispatcher.on_option_stop.assert_awaited_once_with(trade, "ATR_SL_HIT")
+
+
+@pytest.mark.asyncio
+async def test_monitor_rest_without_candle_handles_none_oi_fetcher(monkeypatch):
+    import main
+    monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 5, 10, 0))
+    positions = SimpleNamespace(
+        active_trades=[], _option_execution_route_trades=[],
+        update_trades=AsyncMock(return_value=[]),
+    )
+    dispatcher = SimpleNamespace(on_spot=AsyncMock())
+    fetcher = SimpleNamespace(fetch_latest_spot=AsyncMock(return_value=24000))
+    await main._monitor_rest_without_candle(fetcher, None, positions, None, dispatcher)
+    dispatcher.on_spot.assert_awaited_once_with(24000)
 
 
 @pytest.mark.asyncio

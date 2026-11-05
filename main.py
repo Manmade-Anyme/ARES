@@ -627,12 +627,22 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
     # Risk checks must survive an independent option-chain outage.
     try:
         events = await position_manager.update_trades(spot)
-        if any(event == "SL_HIT" for _, event in events):
+        if engine is not None and any(event == "SL_HIT" for _, event in events):
             engine.clear_cooldown()
     except Exception as exc:
         logger.warning("REST exit check failed: %s", exc)
     await dispatcher.on_spot(spot)
     if _session_now().time() >= time(15, 30):
+        return
+    if oi_fetcher is None:
+        try:
+            from quote_service import get_quote_service
+            qs = get_quote_service()
+            _schedule_selected_option_quote(
+                position_manager, price_fetcher, qs, None, None
+            )
+        except Exception:
+            pass
         return
     expiry = None
     full_chain = None

@@ -97,3 +97,10 @@ The tests emitted existing dependency/runtime warnings. The root `pytest -q` com
 - Three no-candle regressions cover protected candle-fetch, REST fallback, and tick polling with no active trades and only a restored terminal v2 execution-route record. Before the fix, none invoked the option-stop dispatcher.
 - The gates now treat a non-empty terminal retry queue as monitoring work, allowing the existing dispatcher validation and paper-binding recovery to run without a new index candle.
 - Focused lifecycle and routing suite: **223 passed, 2 warnings**. CI-scoped tests: **2,437 passed, 45 subtests passed, 12 warnings**. CI for this follow-up is pending push.
+
+## REST monitor oi_fetcher guard and deterministic session time
+
+- In CI, `test_restored_terminal_option_route_is_monitored_without_candle_or_active_trade[rest]` failed with `AttributeError: 'NoneType' object has no attribute 'get_nearest_expiry'` because `_session_now().time() < 15:30` reached chain fetch with `oi_fetcher=None`.
+- `_monitor_rest_without_candle` now safely handles `oi_fetcher is None` and guards `engine.clear_cooldown()` against `None`.
+- `test_restored_terminal_option_route_is_monitored_without_candle_or_active_trade` pins `_session_now` to 10:00 to verify no-candle terminal monitoring under intraday market conditions deterministically.
+- Full test suite: **2,435 passed, 45 subtests passed, 12 warnings**.

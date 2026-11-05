@@ -62,3 +62,7 @@ A completed candle spanning T1 can use its close to prove the entry guard was to
 ## Restored terminal-route monitoring gate
 
 After restart, valid pending execution routes are held in `_option_execution_route_trades`, separate from `active_trades`. The no-candle REST fallback, protected candle-fetch, and tick-poll gates previously checked only active option-policy trades, so they skipped `_monitor_completed_atr` when only terminal retry work remained. Those gates now also recognize the terminal route queue and invoke the existing validated dispatcher path. A no-candle replay through each gate confirms the pending paper exit is retried without requiring an active trade or a new index candle.
+
+## REST monitor optional oi_fetcher and session time isolation
+
+During CI execution in UTC before 15:30, `_monitor_rest_without_candle` proceeded into option chain retrieval. When invoked with `oi_fetcher=None` (as in isolated unit tests of the terminal route monitoring gate), `await oi_fetcher.get_nearest_expiry()` raised an unhandled `AttributeError`. The REST monitoring gate now checks whether `oi_fetcher` is provided; if absent, it schedules the fallback selected contract quote if available and returns safely. Furthermore, `test_restored_terminal_option_route_is_monitored_without_candle_or_active_trade` now explicitly pins `_session_now` to intraday market hours so its coverage remains deterministic regardless of the wall-clock time of test execution.
