@@ -178,6 +178,8 @@ When a completed POST_T1 index candle first creates a T2/entry-guard ordering am
 
 Lifecycle event identity must include any retained premium exit trigger's immutable domain, reason, source, event/receipt times, observed price, effective stop, and stop source. This separates a newly retained trigger from an already committed bar watermark at the same event time while keeping retries stable. Persistence must atomically retain the ambiguity, trigger, and execution-route-pending marker.
 
+Quote-batch matching is per trade even when several trades share a pinned contract. Preserve the IDs of trades that accepted each quote, then recheck the current trade's quote watermark, stop-effective time, contract, and activation boundary before same-close ambiguity detection can use it. A quote accepted for one trade must not be applied to another whose newer stop makes the source time stale.
+
 ## 7. Definition of Done / Regression Evidence
 
 Implementation and QA must exercise the actual lifecycle entry points and persistence/restart path, with external order execution disabled:

@@ -620,6 +620,47 @@ async def test_quote_tied_to_previously_processed_option_bar_still_preempts_t2(o
 
 
 @pytest.mark.asyncio
+async def test_tied_quote_is_only_used_for_trades_that_accepted_its_stop_timing():
+    cost_stop_trade = _trade(phase="POST_T1")
+    atr_trade = _trade(phase="POST_T1")
+    atr_trade["id"] = "v2-atr-trade"
+    atr_opt = atr_trade["market_context"]["option_trailing"]
+    raise_at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    atr_opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL",
+                   protection_mode="ATR", premium_stop_source="ATR_TRAILING",
+                   locked_option_sl=180.0, stop_effective_at=raise_at.isoformat())
+    cost_opt = cost_stop_trade["market_context"]["option_trailing"]
+    cost_opt.update(execution_status="CONFIRMED_PAPER_FILL",
+                    protection_mode="BREAK_EVEN_COST", premium_stop_source="BREAK_EVEN_COST",
+                    stop_effective_at=cost_opt["t1_at"])
+    cost_stop_trade["target_2"] += 10.0
+    pm = _manager(cost_stop_trade)
+    pm.active_trades.append(atr_trade)
+
+    quote_at = raise_at - timedelta(seconds=1)
+    quote = _quote(175.0, 20)
+    quote.update(observed_at=quote_at.isoformat(),
+                 received_at=raise_at.isoformat())
+    tick = {"price": atr_trade["target_2"], "exchange_at": quote_at.isoformat(),
+            "received_at": raise_at.isoformat(), "source": "dhan_tick"}
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=raise_at + timedelta(seconds=1),
+            index_ticks=[tick], option_quotes=[quote])
+
+    assert ("v2-atr-trade", "ATR_SL_HIT") not in events
+    assert atr_trade["state"] == "T1_HIT"
+    assert atr_opt.get("exit") is None
+    assert atr_opt.get("ambiguous_index_touch") is None
+    assert atr_opt.get("execution_route_pending") is not True
+    assert atr_opt["pending_index_observations"][0]["touches_t2"] is True
+    assert atr_opt["monitoring_status"] == "UNAVAILABLE"
+    assert "OPTION_QUOTE" in atr_opt["monitoring_unavailable_sources"]
+    assert cost_opt["last_option_quote"]["price"] == pytest.approx(175.0)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("ambiguity_field", "cost_only"),
     [("ambiguous_premium_quote", False), ("ambiguous_premium_bar", False),

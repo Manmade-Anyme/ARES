@@ -50,3 +50,7 @@ When a completed post-T1 index candle first touched both T2 and the entry guard,
 ## Retained premium-trigger persistence identity
 
 A fresh quote tied to an already processed option bar correctly created an in-memory ambiguity and pending route, but its lifecycle ID was derived only from the unchanged stop and bar watermark. The persistence RPC therefore treated the new trigger as an idempotent replay and kept the previous snapshot. Lifecycle identity now includes the immutable premium exit trigger fields, so the ambiguity and route marker commit under a distinct ID; an unchanged retry reuses that ID. CE/PE persistence regressions verify the committed snapshot survives `OptionTrailingContext` restoration and that retries do not add a second commit.
+
+## Shared-contract quote ordering
+
+Quote ingestion accepted a shared-contract quote for one trade but rejected it for another because the second trade's ATR stop became effective after the quote timestamp. The same-close detector discarded that per-trade distinction and could apply the quote to both. The quote batch now retains the IDs of trades that passed ingestion, and the detector rechecks each accepted trade's current quote watermark, active-stop time, contract, and activation boundary before using the quote. A two-trade replay reproduces the stale quote rejection and confirms it cannot close the ATR-raised trade.

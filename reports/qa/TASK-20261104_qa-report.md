@@ -78,3 +78,10 @@ The test run emitted 12 existing dependency/runtime warnings. No live service re
 - The new assertions failed against the previous event identity because no new ledger event was recorded; they pass with retained exit-trigger fields included in the identity.
 - Focused premium lifecycle, commit-boundary, and paper-route modules: **151 passed, 2 warnings**. Full local suite: **2,437 passed, 45 subtests passed, 12 warnings** in 172.89 seconds. The final verification remains local until CI runs on the pushed commit.
 - Focused branch coverage exercised both paths of the premium-only exit-identity condition in `position_manager.py`; the retry regression confirms the identity is stable for the same retained trigger.
+
+## Shared-contract quote ordering
+
+- A two-trade regression shares the pinned contract: the first trade accepts a ₹175 quote against its ₹167.20 cost stop while the second trade's ₹180 ATR stop becomes effective one second later. The quote is rejected for the second trade during ingestion; a tied T2 observation cannot turn it into `ATR_SL_HIT` or create a protective route for that trade.
+- Same-close detection receives per-trade acceptance IDs and rechecks the current quote watermark, stop-effective time, pinned contract, and activation time before retaining an ambiguity or routing protection.
+- Focused premium lifecycle, commit-boundary, and paper-route modules: **152 passed, 2 warnings**. The regression failed before the fix with a spurious `ATR_SL_HIT` for the second trade.
+- Full local suite on the combined P1/P2 changes: **2,438 passed, 45 subtests passed, 12 warnings** in 175.15 seconds. `git diff --check` passed. The tests do not establish live broker or production behavior.

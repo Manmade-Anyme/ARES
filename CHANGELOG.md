@@ -38,6 +38,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 - **PR #156 retained premium-trigger persistence identity:** Include the immutable premium exit trigger in lifecycle event identity so a same-timestamp trigger cannot be mistaken for an already committed option-bar watermark. Repeated retries of the retained trigger reuse the same identity.
 
+- **PR #156 shared-contract quote ordering:** Keep premium quote acceptance scoped to each trade sharing a pinned contract, and recheck that trade's quote watermark and active-stop time before same-close protection can use the observation.
+
 - **Tuesday expiry profile sensitivity tuning (TASK-20261103):** Set expiry OI-wall minimum OI/change to 6,000,000/5.0%, widen approach/test/excursion/retest distances to 60/15/15/15 points, and set breakout writer/IV/weak-volume thresholds to 5%/−3.0/0.75. Set exhaustion volume/IV thresholds to 2.5/3.5, continuation score/resumption-volume/pullback-window to 2/1.2/8 candles, level scan to 400 points, and signal cooldown to 15 minutes. Non-expiry settings and expiry candle-body ratio remain unchanged. Multi-Tuesday replay confirms 5.0% growth eliminates fragile 2.7% false-alarm watches while delivering 1 disciplined trade per session. Dhan replay evidence and limits are in the Ares Build Log.
 
 - **TASK-20261102 Live market quotes persistence for SpanQuant frontend:**

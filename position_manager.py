@@ -3473,7 +3473,12 @@ class PositionManager:
                 matching.append(trade)
             if not matching:
                 continue
-            premium_quotes.setdefault(observed_at, []).append(quote)
+            # A shared contract quote can be valid for one trade but stale for
+            # another whose stop was raised at a later source time. Preserve
+            # the per-trade decision for the same-close detector below.
+            premium_quotes.setdefault(observed_at, []).append({
+                **quote, "_accepted_trade_ids": tuple(str(trade["id"]) for trade in matching),
+            })
             timeline.setdefault(observed_at, [])
         for candle in index_candles or []:
             raw = candle if isinstance(candle, dict) else {
@@ -3585,6 +3590,42 @@ class PositionManager:
                         continue
                 except (TypeError, ValueError, OverflowError, OSError):
                     continue
+            expected = opt.get("contract") or {}
+            accepted_quotes = []
+            for candidate in (premium_quotes or {}).get(event_at, []):
+                accepted_trade_ids = candidate.get("_accepted_trade_ids")
+                if (not isinstance(accepted_trade_ids, (tuple, list, set))
+                        or str(trade.get("id")) not in {str(value) for value in accepted_trade_ids}):
+                    continue
+                try:
+                    quote_at = parse_candle_timestamp(candidate["observed_at"])
+                    received_at = parse_candle_timestamp(candidate["received_at"])
+                    raw_contract = candidate.get("contract") or {}
+                except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                    continue
+                if (quote_at != event_at
+                        or not _valid_pinned_option_quote_contract(raw_contract, quote_at)
+                        or not _valid_pinned_option_quote_contract(expected, quote_at)):
+                    continue
+                if any(str(raw_contract.get(key)) != str(expected.get(key))
+                       for key in ("security_id", "exchange_segment", "expiry", "strike", "option_type")):
+                    continue
+                quote_watermark = opt.get("quote_watermark")
+                if quote_watermark:
+                    try:
+                        if quote_at <= parse_candle_timestamp(quote_watermark):
+                            continue
+                    except (TypeError, ValueError, OverflowError, OSError):
+                        continue
+                if await self._reject_quote_before_active_stop(trade, quote_at, received_at):
+                    continue
+                try:
+                    entry_at = parse_candle_timestamp(opt.get("activated_at") or trade.get("entry_timestamp"))
+                except (TypeError, ValueError, OverflowError, OSError):
+                    continue
+                if quote_at <= entry_at:
+                    continue
+                accepted_quotes.append(candidate)
             bar = next((candidate for candidate in histories.get(trade["id"], [])
                         if parse_candle_timestamp(candidate.end_time) == event_at), None)
             bar_watermark = opt.get("last_processed_option_bar_end")
@@ -3682,8 +3723,7 @@ class PositionManager:
                                 if source != "live_tick" else None,
                         })
                 if t1_ranges:
-                    expected = opt.get("contract") or {}
-                    for candidate in (premium_quotes or {}).get(event_at, []):
+                    for candidate in accepted_quotes:
                         try:
                             quote_at = parse_candle_timestamp(candidate["observed_at"])
                             quote_price = float(candidate["price"])
@@ -3731,8 +3771,7 @@ class PositionManager:
 
             quote_trigger = None
             if v2:
-                expected = opt.get("contract") or {}
-                for candidate in (premium_quotes or {}).get(event_at, []):
+                for candidate in accepted_quotes:
                     try:
                         quote_at = parse_candle_timestamp(candidate["observed_at"])
                         quote_price = float(candidate["price"])
