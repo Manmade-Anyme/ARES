@@ -50,6 +50,9 @@ class IVBreakoutDetector:
         iv_current: Optional[float] = None,
         levels: Optional[List[ResistanceLevel]] = None,
     ) -> Optional[AresSignal]:
+        if not isinstance(getattr(candle, "timestamp", None), datetime):
+            return None
+
         candle_date = candle.timestamp.date()
         if self.current_date != candle_date:
             self.reset_session(candle_date)
