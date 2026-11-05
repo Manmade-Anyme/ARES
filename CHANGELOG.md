@@ -4,6 +4,9 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #156 source-second quote revisions:** Accept changed premium prices at an already watermarked source second through ingestion and downstream checks, while deduplicating identical observations and preserving stop-effective-time validation. Persist price revisions with their quote identity, preserve existing T1 ambiguity through recovery, and stop a batch after terminal closure.
+- **PR #156 delayed T1/T2 cost uncertainty:** Retain a delayed quote between initial SL and entry cost when T1 and committed T2 share its source time. Persist `T1_ORDER_UNKNOWN/COST_STOP_ONLY_BREACH` and disputed allocation metadata without creating a protective route from that uncertain observation or rolling back committed T2.
+
 - **PR #156 delayed T2 quote persistence:** Keep the maximum quote watermark when retaining an earlier protective T2 quote. The trigger retains its actual source timestamp, while lifecycle writes satisfy the database's monotonic watermark rule.
 
 - **PR #156 T2 quote stop-effective-time guard:** When a T2-tied quote is checked against the current locked stop, reject it if it predates that stop revision instead of applying the later stop retroactively. This also applies before equal-time quote deduplication; exact ATR-raise timestamp handling still compares the previous stop.

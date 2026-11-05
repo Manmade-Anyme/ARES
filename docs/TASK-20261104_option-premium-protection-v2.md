@@ -2,6 +2,10 @@
 
 ## Scope
 
+Fresh price changes within one source second pass the same stop checks as newer timestamps; timestamp equality alone does not prove a duplicate. Identical accepted timestamp/price observations are deduplicated. Price revisions persist under distinct quote identities, recovery preserves earlier T1 uncertainty/protection, and a terminal quote stops further processing in its batch.
+
+A delayed cost-only quote tied to both committed T1 and T2 retains `T1_ORDER_UNKNOWN/COST_STOP_ONLY_BREACH` with explicit disputed-allocation metadata. The prior T2 milestone remains recorded, reference finalization waits for ordering evidence, and the uncertain quote alone creates no protective route.
+
 Retaining a delayed protective T2 quote preserves the maximum quote watermark. Its original source timestamp remains on the ambiguity and exit trigger, so the database can commit the protective state without a backward-watermark error.
 
 For a T2-tied quote evaluated against the current locked stop after an earlier T1, reject a source timestamp before that stop's effective time. A later ATR revision must not create an earlier quote breach. The shared retention helper enforces this even through equal-time quote deduplication; quotes at the exact ATR-raise timestamp continue using the prior-stop comparison.

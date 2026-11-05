@@ -1,5 +1,13 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: changed prices inside a watermarked source second
+
+Fail-first CE/PE replays accepted ₹180 then discarded a changed stop-breaching price at the same source second for initial, break-even, and ATR stops. The ingestion and downstream guards treated every equal timestamp as a replay. A shared timestamp/price replay check now admits changed prices while keeping existing chronology validation. Quote identity includes source/receipt time and price so revisions (including a return to an earlier price) persist without revision rollback. Added regressions preserve T1 ambiguity through recovery and prove both same-batch price orders avoid post-terminal writes.
+
+## P2: delayed cost-only quote tied to committed T1/T2
+
+Fail-first split-batch replay committed a PRE_T1 tick through T2, then lost a ₹165 quote sourced at that tick against initial SL ₹161.05 and entry cost ₹167.20. The T2 handler now reuses T1 cost-only ambiguity retention, marks T2 as already committed with disputed allocation, and preserves a newer watermark when present. It creates no protective exit/route from the cost-only observation. Regressions verify durable/recovered ambiguity, idempotent retries, and a later genuine premium breach routing protection without finalizing the unresolved reference exit.
+
 ## P2: delayed T2 quote moved the watermark backward
 
 Fail-first replay committed T2 at 09:20:00, then a non-breaching ₹180 quote at 09:20:01, then received a protective ₹160 quote sourced at 09:20:00. The retention helper regressed `quote_watermark`, violating the lifecycle RPC's monotonic rule. It now advances that watermark only for a newer source time while preserving the earlier protective event time. The regression enforces the database rule in its ledger and checks committed ambiguity/route state, an empty pending-write queue, and serialization recovery.

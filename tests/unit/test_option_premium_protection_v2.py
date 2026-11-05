@@ -100,6 +100,81 @@ async def test_pre_t1_option_quote_at_initial_stop_closes_in_premium_domain():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+@pytest.mark.parametrize(("phase", "stop_source", "stop", "price", "reason"), [
+    ("PRE_T1", "INITIAL_OPTION_SL", 161.05, 160.0, "SL_HIT"),
+    ("POST_T1", "BREAK_EVEN_COST", 167.2, 166.0, "STOPPED_OUT_AT_BE"),
+    ("POST_T1", "ATR_TRAILING", 171.0, 170.0, "ATR_SL_HIT"),
+])
+async def test_changed_quote_in_watermarked_second_enforces_premium_stop(
+        option_type, phase, stop_source, stop, price, reason):
+    trade = _trade(phase=phase, option_type=option_type)
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(locked_option_sl=stop, premium_stop_source=stop_source,
+               execution_status="CONFIRMED_PAPER_FILL", stop_effective_at="2026-11-04T10:10:00+05:30")
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    first = _quote(180.0, 20, option_type=option_type)
+    first.update(observed_at=at.isoformat(), received_at=at.isoformat())
+    changed = {**first, "price": price, "received_at": (at + timedelta(seconds=1)).isoformat()}
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events([], {}, current_time=at, option_quotes=[first])
+        events = await pm.update_option_market_events(
+            [], {}, current_time=at + timedelta(seconds=1), option_quotes=[changed])
+
+    assert ("v2-trade", reason) in events
+    assert trade["state"] == "CLOSED"
+    assert opt["exit_trigger"]["event_at"] == at.isoformat()
+    assert opt["exit_trigger"]["price"] == pytest.approx(price)
+    assert pm.analytics.rows[-1]["option_trailing"]["execution_route_pending"] is True
+    if reason == "STOPPED_OUT_AT_BE":
+        assert opt["exit"]["runner_option_points"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_changed_same_second_quote_persists_but_identical_retry_is_duplicate():
+    trade = _trade()
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    first = _quote(180.0, 20)
+    changed = {**first, "price": 181.0, "received_at": (at + timedelta(seconds=1)).isoformat()}
+    await pm.update_option_market_events([], {}, current_time=at, option_quotes=[first])
+    await pm.update_option_market_events([], {}, current_time=at + timedelta(seconds=1), option_quotes=[changed])
+    persisted = pm.analytics.rows[-1]["option_trailing"]
+    assert persisted["last_option_quote"]["price"] == pytest.approx(181.0)
+    row_count = len(pm.analytics.rows)
+    retry = {**changed, "received_at": (at + timedelta(seconds=2)).isoformat()}
+    await pm.update_option_market_events([], {}, current_time=at + timedelta(seconds=2), option_quotes=[retry])
+    assert len(pm.analytics.rows) == row_count
+    assert OptionTrailingContext.from_dict(persisted).last_option_quote["price"] == pytest.approx(181.0)
+    back_to_first = {**first, "received_at": (at + timedelta(seconds=3)).isoformat()}
+    await pm.update_option_market_events(
+        [], {}, current_time=at + timedelta(seconds=3), option_quotes=[back_to_first])
+    assert len(pm.analytics.rows) == row_count + 1
+    assert pm.analytics.rows[-1]["option_trailing"]["last_option_quote"]["price"] == pytest.approx(180.0)
+    assert trade["market_context"]["option_trailing"]["revision"] == pm.analytics.revision
+    assert not pm._option_pending[trade["id"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prices", [(180.0, 160.0), (160.0, 180.0)])
+async def test_same_second_quote_batch_stops_at_first_terminal_exit(prices):
+    trade = _trade()
+    trade["market_context"]["option_trailing"]["execution_status"] = "CONFIRMED_PAPER_FILL"
+    pm = _manager(trade)
+    pm.analytics = TerminalGuardLedger()
+    at = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    quotes = [_quote(price, 20) for price in prices]
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events([], {}, current_time=at, option_quotes=quotes)
+    assert events.count(("v2-trade", "SL_HIT")) == 1
+    assert trade["state"] == "CLOSED"
+    assert not pm.analytics.rejected_terminal_writes
+    assert not pm._option_pending[trade["id"]]
+    assert pm.analytics.rows[-1]["option_trailing"]["exit_trigger"]["price"] == pytest.approx(160.0)
+
+
+@pytest.mark.asyncio
 async def test_post_t1_cost_stop_equality_is_break_even_and_zero_runner_points():
     trade = _trade(phase="POST_T1")
     pm = _manager(trade)
@@ -727,6 +802,79 @@ async def test_t1_cost_stop_quote_is_retained_when_pre_t1_tick_gaps_through_t2()
     assert opt["quote_watermark"] == at.isoformat()
     assert opt.get("exit") is None
     assert not opt.get("execution_route_pending")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newer_watermark", [False, True])
+async def test_delayed_t1_t2_cost_only_quote_retains_uncertainty_without_route(newer_watermark):
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt["execution_status"] = "CONFIRMED_PAPER_FILL"
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    tick = {"price": trade["target_2"], "exchange_at": at.isoformat(),
+            "received_at": at.isoformat(), "source": "dhan_tick"}
+    quote = _quote(165.0, 20)
+    quote["received_at"] = (at + timedelta(seconds=2)).isoformat()
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events([], {}, current_time=at, index_ticks=[tick])
+        if newer_watermark:
+            newer_at = at + timedelta(seconds=1)
+            newer = {**_quote(180.0, 20), "observed_at": newer_at.isoformat(), "received_at": newer_at.isoformat()}
+            await pm.update_option_market_events([], {}, current_time=newer_at, option_quotes=[newer])
+        events = await pm.update_option_market_events(
+            [], {}, current_time=at + timedelta(seconds=2), option_quotes=[quote])
+        assert events == []
+        assert trade["state"] == "T2_REACHED"
+        ambiguity = opt["ambiguous_premium_quote"]
+        assert ambiguity["status"] == "T1_ORDER_UNKNOWN"
+        assert ambiguity["ordering_reason"] == "COST_STOP_ONLY_BREACH"
+        assert ambiguity["tied_milestone"]["kind"] == "T2_HIT"
+        assert ambiguity["tied_milestone"]["already_committed"] is True
+        assert ambiguity["price"] == pytest.approx(165.0)
+        assert not opt.get("exit_trigger")
+        assert not opt.get("execution_route_pending")
+        persisted = pm.analytics.rows[-1]["option_trailing"]
+        restored = OptionTrailingContext.from_dict(persisted).to_dict()
+        assert restored["ambiguous_premium_quote"] == ambiguity
+        assert restored["quote_watermark"] == (at + timedelta(seconds=1 if newer_watermark else 0)).isoformat()
+        rows = len(pm.analytics.rows)
+        await pm.update_option_market_events([], {}, current_time=at + timedelta(seconds=2), option_quotes=[quote])
+        assert len(pm.analytics.rows) == rows
+        later_at = at + timedelta(minutes=1)
+        later = {**_quote(166.0, 21), "observed_at": later_at.isoformat(), "received_at": later_at.isoformat()}
+        later_events = await pm.update_option_market_events([], {}, current_time=later_at, option_quotes=[later])
+    assert ("v2-trade", "STOPPED_OUT_AT_BE") in later_events
+    assert trade["state"] == "T2_REACHED"
+    assert opt["ambiguous_premium_quote"]["price"] == pytest.approx(165.0)
+    assert opt.get("exit") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_price", [160.0, 165.0])
+@pytest.mark.parametrize("later_price", [160.0, 180.0])
+async def test_same_second_recovery_preserves_t1_quote_ambiguity(first_price, later_price):
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt["execution_status"] = "CONFIRMED_PAPER_FILL"
+    pm = _manager(trade)
+    at = datetime(2026, 11, 4, 9, 20, tzinfo=IST)
+    tick = {"price": trade["target_1"], "exchange_at": at.isoformat(),
+            "received_at": at.isoformat(), "source": "dhan_tick"}
+    quote = {**_quote(first_price, 20), "received_at": (at + timedelta(seconds=1)).isoformat()}
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events([], {}, current_time=at, index_ticks=[tick])
+        await pm.update_option_market_events([], {}, current_time=at + timedelta(seconds=1), option_quotes=[quote])
+        retained = deepcopy(opt["ambiguous_premium_quote"])
+        recovery = {**quote, "price": later_price, "received_at": (at + timedelta(seconds=2)).isoformat()}
+        await pm.update_option_market_events([], {}, current_time=at + timedelta(seconds=2), option_quotes=[recovery])
+    if first_price == 165.0 and later_price == 160.0:
+        assert opt["ambiguous_premium_quote"]["protective_option_exit"]["trigger_price"] == pytest.approx(160.0)
+        assert opt["ambiguous_premium_quote"]["prior_ambiguity"] == retained
+        assert opt["execution_route_pending"] is True
+    else:
+        assert opt["ambiguous_premium_quote"] == retained
+    assert trade["state"] == "T1_HIT"
 
 
 @pytest.mark.asyncio

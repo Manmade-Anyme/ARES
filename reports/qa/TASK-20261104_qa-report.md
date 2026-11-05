@@ -1,5 +1,12 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2 findings: source-second price changes and delayed T1/T2 cost uncertainty
+
+- Fail-first replays reproduced lost initial/BE/ATR stop breaches for CE/PE price changes at one source second, lost durable price revisions, and missing delayed T1/T2 cost-only ambiguity with or without a newer watermark.
+- Final focused module: **92 passed, 2 warnings**. Coverage includes identical retry deduplication, returning to an earlier price, durable/recovered ambiguity, later proven protection without reference finalization, first-trigger retention through recovery, preservation of prior cost-only evidence when upgraded, and both same-batch quote orders with a terminal-safe ledger.
+- Full `tests/`: **2,475 passed, 45 subtests passed, 12 warnings** in 176.84 seconds. Compilation and `git diff --check` pass. Actions for the pushed revision are pending.
+- The delayed split-batch case keeps committed T2 recorded and explicitly marks its allocation as disputed; it creates no route from the cost-only quote itself. No production data, provider requests, broker orders, deployment, or worker start was used.
+
 ## P2: preserve a newer quote watermark for delayed T2 protection
 
 - The fail-first replay committed T2 at 09:20:00, then ₹180 at 09:20:01, then received ₹160 sourced at T2. It reproduced the regressed quote watermark.
