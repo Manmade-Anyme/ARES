@@ -30,3 +30,11 @@ The test run emitted 12 existing dependency/runtime warnings. No live service re
 - Combined coverage from the full and guard-focused runs exercised **51/51 changed executable statements and 26/26 changed branch arcs** across `execution/signal_dispatch.py`, `main.py`, `models.py`, and `position_manager.py`.
 - Regressions cover CE and PE runners, T1 partial exits awaiting a bid, legacy snapshots, missing history, first-intent preservation, failed synchronization, restart before routing and after acknowledgement, stale/pre-T1 observations, a T1-spanning candle, a same-timestamp watermark, and malformed-route isolation.
 - GitHub Actions run #596 passed for the earlier commit `efa67a5`; it does not cover this follow-up change. A run for the new head is required after push.
+
+## ATR raise timestamp review
+
+- GitHub Actions run #597 passed for the preceding commit `bd5b162`, including database integration checks; it does not cover this timestamp fix.
+- The 221-test focused lifecycle and routing suite passed on the fix. Two additional replay cases, added after its collection, passed separately and verify matching reference outcomes when an ATR bar and tied quote arrive together or in separate batches.
+- The full local suite on the final production code passed: **2,396 tests, 45 subtests, 12 warnings** in 175.56 seconds. The two replay cases were added after that suite was collected and passed separately.
+- All **6 changed executable statements and 4 changed branch arcs** in `position_manager.py` were covered by the full suite.
+- CE and PE regressions check rejection of a tied ATR quote and a subsequent fresh ATR-stop hit. A separate equality regression verifies that a cost-stop touch still reports `STOPPED_OUT_AT_BE` with zero runner points.

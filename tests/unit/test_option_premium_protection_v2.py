@@ -997,6 +997,77 @@ async def test_delayed_quote_before_active_atr_stop_revision_cannot_trigger_retr
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+async def test_quote_tied_to_already_raised_atr_stop_is_not_applied_retroactively(option_type):
+    trade = _trade(phase="POST_T1", option_type=option_type)
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(locked_option_sl=171.0, previous_locked_option_sl=167.20,
+               protection_mode="ATR", premium_stop_source="ATR_TRAILING",
+               stop_effective_at="2026-11-04T10:20:00+05:30")
+    pm = _manager(trade)
+    quote = _quote(169.0, 20, option_type=option_type)
+    quote.update(observed_at="2026-11-04T10:20:00+05:30",
+                 received_at="2026-11-04T10:20:02+05:30")
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=datetime(2026, 11, 4, 10, 20, 2, tzinfo=IST), option_quotes=[quote])
+    assert (trade["id"], "ATR_SL_HIT") not in events
+    assert trade["state"] == "T1_HIT"
+    assert opt["quote_watermark"] is None
+    assert opt["monitoring_status"] == "UNAVAILABLE"
+
+    quote.update(observed_at="2026-11-04T10:20:03+05:30",
+                 received_at="2026-11-04T10:20:03+05:30")
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=datetime(2026, 11, 4, 10, 20, 3, tzinfo=IST), option_quotes=[quote])
+    assert (trade["id"], "ATR_SL_HIT") in events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("split_batches", [False, True])
+async def test_atr_raise_and_tied_quote_leave_same_reference_outcome(split_batches):
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt["atr_enabled"] = True
+    pm = _manager(trade)
+    start = datetime(2026, 11, 4, 9, 15, tzinfo=IST)
+    bars = [OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                         200, 201, 199, 200, 1, "39961") for i in range(14)]
+    at = bars[-1].end_time
+    quote = _quote(180.0, 25)
+    quote.update(observed_at=at.isoformat(), received_at=(at + timedelta(seconds=2)).isoformat())
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {"39961": bars}, current_time=at + timedelta(seconds=2),
+            option_quotes=[] if split_batches else [quote])
+        if split_batches:
+            events += await pm.update_option_market_events(
+                [], {"39961": bars}, current_time=at + timedelta(seconds=2), option_quotes=[quote])
+    assert trade["state"] == "T1_HIT"
+    assert opt["locked_option_sl"] == pytest.approx(196.0)
+    assert (trade["id"], "ATR_SL_HIT") not in events
+    if split_batches:
+        assert "OPTION_QUOTE" in opt["monitoring_unavailable_sources"]
+
+
+@pytest.mark.asyncio
+async def test_quote_at_cost_stop_effective_time_keeps_cost_protection():
+    trade = _trade(phase="POST_T1")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(premium_stop_source="BREAK_EVEN_COST", stop_effective_at="2026-11-04T10:20:00+05:30")
+    pm = _manager(trade)
+    quote = _quote(167.20, 20)
+    quote.update(observed_at="2026-11-04T10:20:00+05:30",
+                 received_at="2026-11-04T10:20:02+05:30")
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_market_events(
+            [], {}, current_time=datetime(2026, 11, 4, 10, 20, 2, tzinfo=IST), option_quotes=[quote])
+    assert (trade["id"], "STOPPED_OUT_AT_BE") in events
+    assert opt["exit"]["runner_option_points"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_t1_moves_premium_stop_to_entry_cost_without_changing_spot_guard():
     trade = _trade()
     pm = _manager(trade)

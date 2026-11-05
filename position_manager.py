@@ -2993,9 +2993,17 @@ class PositionManager:
             detail = "Rejected out-of-order option quote at or before T2 transition"
         else:
             effective_value = opt.get("stop_effective_at")
-            if not effective_value or observed_at >= parse_candle_timestamp(effective_value):
+            if not effective_value:
                 return False
-            detail = "Rejected out-of-order option quote before active stop effective time"
+            effective_at = parse_candle_timestamp(effective_value)
+            tied_atr_raise = (opt.get("policy_version") == "option_premium_protection_v2"
+                              and opt.get("premium_stop_source") == "ATR_TRAILING"
+                              and observed_at == effective_at)
+            if observed_at >= effective_at and not tied_atr_raise:
+                return False
+            detail = ("Rejected option quote tied to ATR stop raise; event order unavailable"
+                      if tied_atr_raise else
+                      "Rejected out-of-order option quote before active stop effective time")
         if opt.get("policy_version") == "option_premium_protection_v2":
             before = (opt.get("monitoring_status"), list(opt.get("monitoring_unavailable_sources") or []),
                       dict(opt.get("monitoring_unavailable_details") or {}))

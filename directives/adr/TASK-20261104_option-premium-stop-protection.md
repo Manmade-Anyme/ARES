@@ -48,6 +48,8 @@ Keep the configured indicator timeframe at five minutes; the supplied one-minute
 
 Only the ATR-derived stop price is compared to the active premium stop. Raw ATR volatility is not itself a stop. A candidate must be strictly above the current premium stop to become effective and change its source to ATR.
 
+If a later batch brings a quote with the same source timestamp as an already applied ATR raise, its ordering relative to the raise is unknown. Reject the quote and mark quote monitoring unavailable instead of applying the raised stop retroactively; a later fresh quote uses the retained active stop. This also means the tied quote cannot establish an exit under the previous stop.
+
 ### 2.4 Entry basis, trigger, and fill semantics
 
 Record the premium basis with its provenance:

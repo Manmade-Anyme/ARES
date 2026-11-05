@@ -38,6 +38,8 @@ For v2 trades with ATR enabled, quote-monitor and ATR-history outages are tracke
 
 Post-T1 spot/index T2 and break-even guard observations do not wait for option-bar history when v2 ATR is disabled. Their own source timestamps remain ordered with available premium quotes, and no ATR candidate is computed or inferred from spot data.
 
+If a quote in a later batch shares the source timestamp of an already applied ATR stop raise, the system rejects it and marks quote monitoring unavailable because the relative order is unknown. A later fresh quote is evaluated against the retained active stop. The rejected tied quote cannot establish an exit under the previous stop.
+
 With v2 ATR enabled, an eligible index-entry guard hit still routes protection immediately for a matching confirmed paper execution that has booked T1 or has a T1 partial awaiting a bid, even if option history is unavailable. The index observation may remain queued and the reference lifecycle/accounting deferred until history establishes chronology. Preserve the first protective intent, validate the paper fill and pinned contract, and keep pre-entry/stale observations and reference-only trades from creating an execution exit. The protective intent stays pending until an executable premium bid confirms the remaining paper exit.
 
 A T1 partial awaiting a bid is expanded to cover every remaining unit. If a completed index candle spans T1, only its close can prove a subsequent guard touch; its earlier wick remains ambiguous. The durable guard intent has a distinct retry-stable event identity, so an earlier watermark at the same timestamp cannot suppress it.

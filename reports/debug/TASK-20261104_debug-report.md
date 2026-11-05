@@ -26,3 +26,7 @@ The restart regression tests cover restored legacy and full snapshots, route ack
 ## Index guard during an option-history outage
 
 An eligible index-entry guard was queued for reference reconciliation while the paper execution could remain open. The monitor now retains a durable, contract-checked index execution intent and routes it while reference ordering remains pending. It preserves an existing protective intent, expands a pending T1 partial to all remaining units, and restores an acknowledged pending exit after restart. A T1-spanning candle cannot use its potentially pre-T1 wick as proof of a later guard touch; its close can establish the touch. A distinct retry-stable identity prevents an earlier watermark at the same source time from suppressing the new intent. Malformed route metadata is isolated from other trades.
+
+## Quote tied to an ATR raise
+
+A quote in a later batch with the same source timestamp as a committed ATR raise was compared with the newly raised stop, even though its order relative to the raise was unknown. The quote is now rejected with quote monitoring marked unavailable. A later fresh quote uses the retained stop. The tied quote is not used to infer an exit at the prior stop either; no earlier exit is established without further evidence.
