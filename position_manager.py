@@ -2280,6 +2280,18 @@ class PositionManager:
             identity += ":exit:" + ":".join(str(exit_trigger.get(key) or "") for key in (
                 "domain", "reason", "source", "event_at", "received_at", "price",
                 "effective_stop", "stop_source"))
+        for ambiguity_key in ("ambiguous_premium_quote", "ambiguous_premium_bar"):
+            ambiguity = snapshot.get(ambiguity_key)
+            if (isinstance(ambiguity, dict)
+                    and ambiguity.get("status") == "T1_ORDER_UNKNOWN"
+                    and ambiguity.get("ordering_reason") == "COST_STOP_ONLY_BREACH"):
+                # A cost-only T1 ambiguity can arrive after a non-breaching
+                # bar already committed this event-time watermark. Give that
+                # newly observed uncertainty its own retry-stable identity.
+                identity += ":cost-stop-ambiguity:" + ambiguity_key + ":" + ":".join(
+                    str(ambiguity.get(key) or "") for key in (
+                        "event_at", "source_minute", "received_at", "source", "price",
+                        "option_close", "original_option_sl", "entry_premium"))
         resolution = snapshot.get("ambiguity_resolution")
         if resolution:
             # Keep the silent resolution distinct from the watermark snapshot
@@ -2906,6 +2918,7 @@ class PositionManager:
         opt["ambiguous_premium_quote"] = {
             "event_at": observed_at.isoformat(), "price": price,
             "status": "T1_ORDER_UNKNOWN", "received_at": received_at.isoformat(),
+            "source": source,
             "ordering_reason": "COST_STOP_ONLY_BREACH",
             "original_option_sl": original_stop, "entry_premium": entry_premium,
             "tied_index_observations": list(index_observations),
@@ -3122,9 +3135,11 @@ class PositionManager:
                 t1_at = parse_candle_timestamp(opt["t1_at"]) if opt.get("t1_at") else None
                 if t1_at is not None and observed_at == t1_at:
                     opt["quote_watermark"] = observed_at.isoformat()
+                    quote_source = quote.get("source") or "OPTION_QUOTE"
                     ambiguous_quote = {
                         "event_at": observed_at.isoformat(), "price": price,
                         "status": "T1_ORDER_UNKNOWN", "received_at": received_at.isoformat(),
+                        "source": quote_source,
                     }
                     opt["ambiguous_premium_quote"] = ambiguous_quote
                     retained_exit = self._retained_t1_premium_exit(opt)
@@ -3135,11 +3150,18 @@ class PositionManager:
                         await self._record_trade_update(trade, None, None, observed_at.isoformat())
                         continue
                     original_stop = float(opt["original_option_sl"])
+                    entry_premium = float(opt["original_option_entry"])
+                    if original_stop < price <= entry_premium:
+                        ambiguous_quote.update(
+                            ordering_reason="COST_STOP_ONLY_BREACH",
+                            original_option_sl=original_stop,
+                            entry_premium=entry_premium,
+                        )
                     if price <= original_stop:
                         # Under either source ordering the original pre-T1
                         # premium stop has been breached. Preserve the T1
                         # allocation ambiguity, but route paper protection now.
-                        source = quote.get("source") or "OPTION_QUOTE"
+                        source = quote_source
                         protective_exit = {
                             "reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
                             "source": source, "trigger_source": source,

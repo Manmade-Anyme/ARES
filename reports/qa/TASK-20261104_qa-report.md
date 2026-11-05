@@ -6,8 +6,8 @@
 
 | Check | Result | Evidence |
 |---|---|---|
-| Focused lifecycle and routing tests | PASS | 223 passed, 2 warnings in 70.98s |
-| CI test scope (`tests/`) | PASS | 2,437 passed, 45 subtests passed, 12 warnings in 174.65s |
+| Focused current reviewer regressions | PASS | 104 passed, 2 warnings |
+| CI test scope (`tests/`) | PASS | 2,446 passed, 45 subtests passed, 12 warnings in 174.90s |
 | New monitoring-gate statements | PASS | The terminal-route helper and protected-fetch, REST, and tick-poll gates were exercised by the focused coverage run |
 | New monitoring-gate branches | PASS | All three route-queue paths reached the existing dispatcher with no active trades or new candle |
 | Python compilation | PASS | `python -m compileall -q position_manager.py execution/signal_dispatch.py main.py` |
@@ -110,3 +110,17 @@ The tests emitted existing dependency/runtime warnings. The root `pytest -q` com
 - `test_scheduled_flush_rechecks_throttle_after_forced_write` previously exhibited runner-latency flakiness when elapsed time before scheduling exceeded 0.2s.
 - Controlled monotonic clock via monkeypatching `quote_service.time.monotonic` ensures deterministic throttle entry, forced flush recheck, and completion.
 - Suite verified locally: **37 passed in test_quote_integration.py**.
+## Cost-stop-only T1 ambiguity persistence identity
+
+- The regression processes a T1 tick and non-breaching ₹200 option bar at 10:20, then submits a fresh ₹165 quote sourced at 10:20 against the ₹161.05 initial stop and ₹167.20 entry cost.
+- Without the ambiguity suffix, the ledger reuses the earlier bar event ID and creates no new row; the new ambiguity and quote watermark are absent from durable state. With the fix, the quote is marked `COST_STOP_ONLY_BREACH`, a distinct stable event commits the `T1_ORDER_UNKNOWN` snapshot, and an unchanged retry adds no duplicate row.
+- The targeted regression passes. Full CI-scoped local suite: **2,439 passed, 45 subtests passed, 12 warnings** in 174.52 seconds. GitHub Actions run #607 passed for preceding head `36af219`; the cost-ambiguity identity fix requires its own exact-head CI run after push.
+- No live provider, production restart, broker fill, or production record was used to validate this persistence regression.
+
+## V2 milestone labels and break-even repair exclusion
+
+- Fail-first regressions confirmed that v2 T2 exits through `ATR_SL_HIT`, `STOPPED_OUT_AT_BE`, and `OPTION_SL_FLOOR_HIT` returned a loss or no label with `t1_is_win=False`, and that cached normalization dropped v2 canonical outcome metadata.
+- Shared milestone-policy handling now covers v1 and v2 in classification, joined dataset outcome selection, cached `trade_analytics` normalization, and terminal backfills. Legacy break-even repair now excludes both policies.
+- Focused lifecycle, dataset, normalization, and repair checks: **104 passed, 2 warnings**.
+- Full CI-scoped local suite: **2,446 passed, 45 subtests passed, 12 warnings** in 174.90 seconds on the synchronized branch.
+- Exact-head GitHub Actions verification is pending push. No production data or broker execution was used.

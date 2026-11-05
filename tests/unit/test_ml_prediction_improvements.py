@@ -405,6 +405,21 @@ def test_cached_trade_analytics_normalization_matches_live_fetch(tmp_path, monke
             "pnl_points": 25.0,
             "market_context": {},
         },
+        {
+            "id": "trade-option-v2",
+            "entry_timestamp": "2026-10-24T04:30:00Z",
+            "exit_timestamp": "2026-10-24T05:30:00Z",
+            "time_metrics_excluded": False,
+            "result_state": "ATR_SL_HIT",
+            "pnl_points": 0.0,
+            "market_context": {
+                "option_trailing": {
+                    "policy_version": "option_premium_protection_v2",
+                    "highest_milestone": 2,
+                    "remaining_fraction": 0,
+                }
+            },
+        },
     ]
 
     import typing
@@ -416,6 +431,9 @@ def test_cached_trade_analytics_normalization_matches_live_fetch(tmp_path, monke
     assert normalized["trade-option-1"]["result_state"] == "SL_HIT"
     assert "option_trailing" in normalized["trade-option-1"]
     assert "trade_pnl" not in normalized["trade-legacy-1"]
+    assert normalized["trade-option-v2"]["result_state"] == "ATR_SL_HIT"
+    assert normalized["trade-option-v2"]["trade_pnl"] == 0.0
+    assert normalized["trade-option-v2"]["option_trailing"]["highest_milestone"] == 2
 
     # Test full cache-dir ingestion through main()
     cache_dir = tmp_path / "cache"

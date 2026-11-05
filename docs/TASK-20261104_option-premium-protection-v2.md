@@ -68,7 +68,15 @@ Startup restores terminal v2 records with pending execution routes into a separa
 
 The REST fallback, protected candle-fetch path, and tick polling must invoke the protection monitor when this terminal retry queue is non-empty, even if there are no active trades and no completed index candle. The dispatcher then retries pending route markers or resumes an acknowledged `EXIT_PENDING` paper exit using the existing contract and execution checks.
 
+## Cost-stop-only T1 ambiguity persistence identity
+
+A T1-tied quote between the original premium SL and entry cost can arrive after a non-breaching option bar has already committed the same source-time watermark. The quote creates `T1_ORDER_UNKNOWN` even though it does not yet prove whether T1 or the cost stop came first. Include that stable ambiguity identity in the lifecycle event ID so the transition is not treated as an idempotent replay; persist the ambiguity and quote watermark together. Identical retries reuse the same ID. The regression first commits a ₹200 bar at T1, then receives a ₹165 quote against the ₹161.05 initial stop and ₹167.20 entry, and verifies that the committed ledger and restored state retain the unresolved ambiguity.
+
 The recovery guard accepts both `CONFIRMED_PAPER_FILL` and `EXIT_TRIGGERED_PENDING_CONFIRMATION`, because premium-trigger persistence advances the lifecycle status before execution fills. This applies to complete order snapshots and the legacy-context fallback, with all paper-fill and contract validation retained. Recovered bindings are marked exit-only and excluded from pending-entry deduplication, allowing a new valid signal to dispatch while an earlier exit awaits a bid without changing ordinary entry deduplication.
+
+## V2 ML outcome and legacy repair policy
+
+`option_premium_protection_v2` carries the same canonical milestone semantics as `option_atr_v1` through training labels, dataset ingestion, cached `trade_analytics` normalization, and terminal repair. A fully closed T2 trade remains a win when its final stop is `ATR_SL_HIT` or `STOPPED_OUT_AT_BE`, even when the configured T1-only outcome policy treats T1 as a loss. The legacy target-based break-even repair skips both option lifecycle policies so it cannot replace a canonical v2 zero-P&L result.
 
 If certified ordered ticks resolve a v2 entry/T2 ambiguity to a post-T1 index break-even exit, the resolver stores `stop_domain=SPOT_INDEX` and sets the same durable route-pending marker used by direct index-guard exits. The monitor drains this marker through the normal execution dispatcher even though ambiguity resolution returns a boolean rather than an event list.
 

@@ -118,6 +118,57 @@ async def test_post_t1_cost_stop_equality_is_break_even_and_zero_runner_points()
 
 
 @pytest.mark.asyncio
+async def test_t1_cost_stop_quote_after_bar_watermark_has_distinct_persisted_identity():
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    t1_at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    start = t1_at - timedelta(minutes=70)
+    history = [
+        OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                     200.0, 201.0, 199.0, 200.0, 1, "39961")
+        for i in range(14)
+    ]
+    t1_tick = {"price": trade["target_1"], "exchange_at": t1_at.isoformat(),
+               "received_at": t1_at.isoformat(), "source": "dhan_tick"}
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events(
+            [], {"39961": history}, current_time=t1_at + timedelta(seconds=2),
+            index_ticks=[t1_tick])
+
+    assert trade["state"] == "T1_HIT"
+    assert opt["last_processed_option_bar_end"] == t1_at.isoformat()
+    assert not pm.analytics.rows[-1]["option_trailing"].get("ambiguous_premium_quote")
+    watermark_event_ids = set(pm.analytics.events)
+    watermark_row_count = len(pm.analytics.rows)
+
+    quote = _quote(165.0, 20)
+    quote.update(observed_at=t1_at.isoformat(),
+                 received_at=(t1_at + timedelta(seconds=2)).isoformat())
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events(
+            [], {"39961": history}, current_time=t1_at + timedelta(seconds=2),
+            option_quotes=[quote])
+
+    assert opt["ambiguous_premium_quote"]["status"] == "T1_ORDER_UNKNOWN"
+    assert opt["ambiguous_premium_quote"]["price"] == pytest.approx(165.0)
+    assert opt["ambiguous_premium_quote"]["source"] == "dhan_last_trade"
+    assert len(pm.analytics.rows) == watermark_row_count + 1
+    assert opt["ambiguous_premium_quote"]["ordering_reason"] == "COST_STOP_ONLY_BREACH"
+    committed = pm.analytics.rows[-1]["option_trailing"]
+    assert committed["ambiguous_premium_quote"]["price"] == pytest.approx(165.0)
+    assert committed["quote_watermark"] == t1_at.isoformat()
+    ambiguity_event_ids = set(pm.analytics.events) - watermark_event_ids
+    assert len(ambiguity_event_ids) == 1
+
+    await pm._record_trade_update(trade, None, None, t1_at.isoformat())
+    assert len(pm.analytics.rows) == watermark_row_count + 1
+    assert set(pm.analytics.events) == watermark_event_ids | ambiguity_event_ids
+
+
+@pytest.mark.asyncio
 async def test_t1_tied_quote_below_initial_stop_preserves_ambiguity_and_routes_protection():
     trade = _trade()
     opt = trade["market_context"]["option_trailing"]

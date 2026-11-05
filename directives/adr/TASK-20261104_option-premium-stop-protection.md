@@ -91,6 +91,8 @@ When certified ordered ticks resolve a v2 T1/T2-entry ambiguity to an index brea
 
 For v2 trades, keep premium-quote health and ATR-history health as separate monitoring causes. Healthy ATR history cannot clear a quote outage, and a fresh quote cannot clear an ATR-history outage. Emit a restored state only after all feeds required by the trade's ATR configuration have recovered; when ATR is disabled, quote health remains the only required monitoring feed.
 
+The v2 policy uses the same canonical milestone-aware outcome rules as `option_atr_v1` across training labels, dataset ingestion, cached analytics normalization, and terminal backfills. A completed v2 T2 trade remains a win when its final exit is `ATR_SL_HIT` or `STOPPED_OUT_AT_BE`, regardless of the T1-only labeling setting. The legacy target-based break-even repair excludes v2 records so a legitimate weighted zero-P&L result cannot be overwritten.
+
 ## 3. Premium Quote Source and Failure Policy
 
 Current evidence establishes that the option candle path can fetch candles for a pinned security ID (`main._monitor_completed_atr`) and that `price_fetcher.fetch_option_observation(contract)` exists in the selected-option quote flow. The latter currently services a selected dashboard contract, not every active trade. `quote_service` persists `OPTION:SELECTED`, so that global selected quote must not be treated as per-trade protection.
@@ -177,6 +179,8 @@ An option-bar watermark suppresses only bar evidence already consumed by ATR/lif
 When a completed POST_T1 index candle first creates a T2/entry-guard ordering ambiguity, the same transition may also retain the independent index-guard execution intent for an eligible confirmed PAPER runner. Validate against the prior event watermark because the current candle may already have advanced the working watermark. The execution route must not resolve the ambiguity, book T2, change reference allocation, or create execution state for reference-only/mismatched records.
 
 Lifecycle event identity must include any retained premium exit trigger's immutable domain, reason, source, event/receipt times, observed price, effective stop, and stop source. This separates a newly retained trigger from an already committed bar watermark at the same event time while keeping retries stable. Persistence must atomically retain the ambiguity, trigger, and execution-route-pending marker.
+
+A cost-stop-only T1 ambiguity (`T1_ORDER_UNKNOWN` between the original premium SL and entry cost) also needs a distinct event identity when a quote or bar arrives after a non-breaching bar has committed the same source-time watermark. Include its immutable ambiguity type, source/event/receipt times, observed premium, and bracket values so its ambiguity and watermark commit together; an unchanged retry must reuse the identity.
 
 Quote-batch matching is per trade even when several trades share a pinned contract. Preserve the IDs of trades that accepted each quote, then recheck the current trade's quote watermark, stop-effective time, contract, and activation boundary before same-close ambiguity detection can use it. A quote accepted for one trade must not be applied to another whose newer stop makes the source time stale.
 

@@ -39,6 +39,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import create_client
+from ml_signal.labeling import OPTION_MILESTONE_POLICIES
 
 # Trades in these states have not resolved, so they carry no label yet.
 _OPEN_STATES = {"OPEN", None, ""}
@@ -457,7 +458,7 @@ def repair_stuck_open_trades(
             continue
         source = a if is_missing else t
         option_context = (source.get("market_context") or {}).get("option_trailing") or {}
-        option_policy = option_context.get("policy_version") == "option_atr_v1"
+        option_policy = option_context.get("policy_version") in OPTION_MILESTONE_POLICIES
         if a.get("pnl_points_override") is not None:
             pnl = float(a["pnl_points_override"])
         elif option_policy:
@@ -571,7 +572,8 @@ def repair_be_after_t1(
     be_rows = [
         trade for trade in trades
         if trade.get("result_state") == "STOPPED_OUT_AT_BE"
-        and ((trade.get("market_context") or {}).get("option_trailing") or {}).get("policy_version") != "option_atr_v1"
+        and ((trade.get("market_context") or {}).get("option_trailing") or {}).get("policy_version")
+        not in OPTION_MILESTONE_POLICIES
     ]
     zero_rows = [trade for trade in be_rows if _is_zero_pnl(trade.get("pnl_points"))]
     nonzero_rows = [

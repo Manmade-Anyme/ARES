@@ -70,3 +70,10 @@ During CI execution in UTC before 15:30, `_monitor_rest_without_candle` proceede
 ## Scheduled flush throttle recheck timing isolation
 
 In CI, `test_scheduled_flush_rechecks_throttle_after_forced_write` intermittent failure occurred when runner latency between forced flush and flush scheduling exceeded the 0.2s throttle window, resulting in `delay=0` and bypassing `controlled_sleep` so `wait_started.wait()` timed out. The test now controls `quote_service.time.monotonic` deterministically, guaranteeing the throttle wait is entered and subsequent throttle recheck completes without relying on wall-clock timing.
+## Cost-stop-only T1 ambiguity persistence identity
+
+The lifecycle event ID used the trade, update kind, source timestamp, active stop, and processed-bar watermark. A fresh T1-tied quote between the original SL and entry cost could therefore reuse the ID of an earlier non-breaching bar at that timestamp. The database correctly treated it as an idempotent retry, leaving the new `T1_ORDER_UNKNOWN` ambiguity and quote watermark only in memory. The quote branch now labels this case `COST_STOP_ONLY_BREACH`, and lifecycle identity includes the stable ambiguity fields for cost-only T1 quotes/bars. This commits the uncertainty without claiming that T1 or the stop came first.
+
+## V2 outcome labeling and legacy break-even repair
+
+The v2 policy was absent from the milestone-aware labeling checks, so a T2 trade closed by `ATR_SL_HIT` or `STOPPED_OUT_AT_BE` fell through to legacy exit-reason labeling and could be classified as a loss when `t1_is_win=False`. The joined dataset and cached analytics normalizer also did not consistently prefer the canonical v2 `result_state` and `option_trailing` metadata. Shared policy membership now covers v1 and v2 in those paths and terminal repair; the legacy target-based break-even repair excludes v2 to preserve canonical zero-P&L accounting.
