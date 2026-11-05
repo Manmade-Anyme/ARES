@@ -781,7 +781,11 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
             for trade_id, reason in routes:
                 trade = trades_by_id.get(str(trade_id))
                 option = ((trade or {}).get("market_context") or {}).get("option_trailing") or {}
-                exit_state = (option.get("exit")
+                route_trigger = option.get("execution_route_trigger")
+                if route_trigger is not None and not isinstance(route_trigger, dict):
+                    logger.error("Invalid option execution route trigger for trade %s", trade_id)
+                    continue
+                exit_state = (route_trigger or option.get("exit")
                               or (option.get("ambiguous_index_touch") or {}).get("protective_option_exit")
                               or (option.get("ambiguous_premium_bar") or {}).get("protective_option_exit")
                               or (option.get("ambiguous_premium_quote") or {}).get("protective_option_exit")
@@ -789,7 +793,8 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                               or {})
                 stop_domain = exit_state.get("stop_domain")
                 index_stop = (stop_domain == "SPOT_INDEX"
-                              and ((reason == "STOPPED_OUT_AT_BE" and option.get("highest_milestone") == 1)
+                              and ((reason == "STOPPED_OUT_AT_BE" and (
+                                  option.get("highest_milestone") == 1 or option.get("execution_route_trigger") is not None))
                                    or (reason == "SL_HIT" and option.get("highest_milestone") == 0)))
                 route_pending = (option.get("execution_route_pending")
                                  and option.get("execution_route_reason") == reason)

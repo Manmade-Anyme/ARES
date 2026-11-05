@@ -653,10 +653,67 @@ class PositionManager:
         if (opt.get("policy_version") != "option_premium_protection_v2"
                 or opt.get("execution_status") in {"REFERENCE_ONLY", "REFERENCE_TRIGGERED_NO_BROKER_FILL"}):
             return
-        if opt.get("execution_route_pending"):
+        if opt.get("execution_route_pending") or opt.get("execution_route_trigger"):
             return
         opt["execution_route_pending"] = True
         opt["execution_route_reason"] = reason
+
+    @staticmethod
+    def _retain_index_guard_execution_route(trade, event_at, received_at):
+        """Protect a confirmed paper runner while reference history is pending."""
+        from execution.signal_dispatch import SignalDispatcher
+
+        context = trade.get("market_context") or {}
+        opt = context.get("option_trailing") or {}
+        execution = context.get("execution") or {}
+        ambiguity_keys = ("ambiguous_index_touch", "ambiguous_premium_bar", "ambiguous_premium_quote")
+        if any(opt.get(key) is not None and not isinstance(opt[key], dict) for key in ambiguity_keys):
+            return False
+        if (opt.get("policy_version") != "option_premium_protection_v2"
+                or opt.get("phase") != "POST_T1" or opt.get("highest_milestone") != 1
+                or opt.get("index_guard_enabled") is not True
+                or opt.get("index_guard_stop") != trade.get("entry_price")
+                or opt.get("execution_status") != "CONFIRMED_PAPER_FILL"
+                or opt.get("execution_route_pending") or opt.get("execution_route_trigger")
+                or opt.get("exit_trigger") or opt.get("deferred_option_exit")
+                or any((opt.get(key) or {}).get("protective_option_exit") for key in ambiguity_keys)
+                or not isinstance(execution, dict) or execution.get("mode") != "PAPER"
+                or execution.get("protection_confirmed") is not True
+                or execution.get("status") not in {"FILLED", "PARTIALLY_FILLED", "EXIT_PENDING"}
+                or (execution.get("status") == "EXIT_PENDING"
+                    and execution.get("exit_reason") != "T1_HIT")
+                or not (execution.get("t1_hit") is True
+                        or (execution.get("status") == "EXIT_PENDING"
+                            and execution.get("exit_reason") == "T1_HIT"))):
+            return False
+        try:
+            observed_at = parse_candle_timestamp(event_at)
+            if any(observed_at <= parse_candle_timestamp(opt[key])
+                   for key in ("t1_at", "last_index_event_at") if opt.get(key)):
+                return False
+        except (TypeError, ValueError, OverflowError, OSError):
+            return False
+        correlation_id = str(execution.get("correlation_id") or "")
+        if not correlation_id:
+            return False
+        saved = execution.get("order_record")
+        record = (SignalDispatcher._record_from_snapshot(correlation_id, saved)
+                  if isinstance(saved, dict) else SignalDispatcher._record_from_legacy_context(
+                      correlation_id, trade, opt, execution))
+        if (record is None
+                or not (record.t1_hit is True or
+                        (record.status == "EXIT_PENDING" and record.exit_reason == "T1_HIT"))
+                or record.exited_quantity >= record.filled_quantity
+                or record.bracket.signal_id != str(trade.get("signal_uuid") or trade.get("signal_id") or "")
+                or not SignalDispatcher._matches_contract(record.bracket, opt.get("contract") or {})):
+            return False
+        PositionManager._mark_option_execution_route_pending(trade, "STOPPED_OUT_AT_BE")
+        opt["execution_route_trigger"] = {
+            "reason": "STOPPED_OUT_AT_BE", "stop_domain": "SPOT_INDEX",
+            "event_at": event_at, "received_at": received_at,
+            "index_price": trade["entry_price"], "source": "index_guard_observation",
+        }
+        return True
 
     async def acknowledge_option_execution_route(self, trade_id, reason):
         """Clear a durable retry marker without reopening the lifecycle writer."""
@@ -905,6 +962,17 @@ class PositionManager:
                     sign = 1 if trade["direction"] == "BULLISH" else -1
                     touches_t2 = observation_high >= trade["target_2"] if sign == 1 else observation_low <= trade["target_2"]
                     touches_guard = observation_low <= trade["entry_price"] if sign == 1 else observation_high >= trade["entry_price"]
+                    execution_guard_touch = touches_guard
+                    if (candle_timestamp is not None and event_time is None and t1_at is not None
+                            and parse_candle_timestamp(candle_timestamp) <= t1_at):
+                        # A wick in the T1 candle may predate T1. Its close is
+                        # the only value known to occur after activation.
+                        execution_guard_touch = (spot_price <= trade["entry_price"] if sign == 1
+                                                 else spot_price >= trade["entry_price"])
+                    guard_intent = execution_guard_touch and self._retain_index_guard_execution_route(
+                        trade, source_event_ts or event_ts_base, event_ts_base)
+                    if guard_intent:
+                        events.append((trade["id"], "STOPPED_OUT_AT_BE"))
                     t1_premium_ambiguity = (self._unresolved_t1_premium_ambiguity(opt)
                         if opt.get("policy_version") == "option_premium_protection_v2" else None)
                     if t1_premium_ambiguity and (touches_guard or touches_t2):
@@ -914,6 +982,8 @@ class PositionManager:
                         later = t1_premium_ambiguity.setdefault("subsequent_index_observations", [])
                         if observation not in later:
                             later.append(observation)
+                            guard_intent = True
+                        if guard_intent:
                             await self._record_trade_update(trade, None, None, source_event_ts or event_ts_base)
                         continue
                     queued = opt.setdefault("pending_index_observations", [])
@@ -930,6 +1000,8 @@ class PositionManager:
                         if touches_guard:
                             opt["observed_index_guard_exit"] = {"event_at": source_event_ts or event_ts_base,
                                 "index_price": trade["entry_price"], "status": "AWAITING_OPTION_BACKFILL"}
+                        await self._record_trade_update(trade, None, None, source_event_ts or event_ts_base)
+                    elif guard_intent:
                         await self._record_trade_update(trade, None, None, source_event_ts or event_ts_base)
                     continue
                 previous_index = opt.get("last_index_event_at")
@@ -2151,6 +2223,12 @@ class PositionManager:
         # Market identity is stable across retries; it does not depend on a stale revision.
         identity = ":".join(str(v) for v in (trade["id"], update_type or "WATERMARK", event_ts,
                             snapshot.get("locked_option_sl"), snapshot.get("last_processed_option_bar_end")))
+        route_trigger = snapshot.get("execution_route_trigger")
+        if isinstance(route_trigger, dict) and route_trigger:
+            # An earlier watermark at the same source timestamp must not
+            # make this newly observed protective route look like a retry.
+            identity += ":route:" + ":".join(str(route_trigger.get(key) or "") for key in (
+                "stop_domain", "reason", "event_at"))
         resolution = snapshot.get("ambiguity_resolution")
         if resolution:
             # Keep the silent resolution distinct from the watermark snapshot

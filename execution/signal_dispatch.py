@@ -88,7 +88,10 @@ class SignalDispatcher:
         trade_signal = str(trade.get("signal_uuid") or trade.get("signal_id") or "")
         option = ((trade.get("market_context") or {}).get("option_trailing") or {})
         contract = option.get("contract") or {}
-        exit_state = (option.get("exit")
+        route_trigger = option.get("execution_route_trigger")
+        if route_trigger is not None and not isinstance(route_trigger, dict):
+            return False
+        exit_state = (route_trigger or option.get("exit")
                       or (option.get("ambiguous_index_touch") or {}).get("protective_option_exit")
                       or (option.get("ambiguous_premium_bar") or {}).get("protective_option_exit")
                       or (option.get("ambiguous_premium_quote") or {}).get("protective_option_exit")
@@ -98,7 +101,8 @@ class SignalDispatcher:
                          and option.get("execution_route_reason") == reason)
         stop_domain = exit_state.get("stop_domain")
         index_break_even = (stop_domain == "SPOT_INDEX" and reason == "STOPPED_OUT_AT_BE"
-                            and option.get("highest_milestone") == 1)
+                            and (option.get("highest_milestone") == 1
+                                 or option.get("execution_route_trigger") is not None))
         initial_index_stop = (stop_domain == "SPOT_INDEX" and reason == "SL_HIT"
                               and option.get("highest_milestone") == 0)
         if (not trade_signal or option.get("policy_version") != "option_premium_protection_v2"
