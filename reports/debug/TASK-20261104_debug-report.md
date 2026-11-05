@@ -66,3 +66,7 @@ After restart, valid pending execution routes are held in `_option_execution_rou
 ## REST monitor optional oi_fetcher and session time isolation
 
 During CI execution in UTC before 15:30, `_monitor_rest_without_candle` proceeded into option chain retrieval. When invoked with `oi_fetcher=None` (as in isolated unit tests of the terminal route monitoring gate), `await oi_fetcher.get_nearest_expiry()` raised an unhandled `AttributeError`. The REST monitoring gate now checks whether `oi_fetcher` is provided; if absent, it schedules the fallback selected contract quote if available and returns safely. Furthermore, `test_restored_terminal_option_route_is_monitored_without_candle_or_active_trade` now explicitly pins `_session_now` to intraday market hours so its coverage remains deterministic regardless of the wall-clock time of test execution.
+
+## Scheduled flush throttle recheck timing isolation
+
+In CI, `test_scheduled_flush_rechecks_throttle_after_forced_write` intermittent failure occurred when runner latency between forced flush and flush scheduling exceeded the 0.2s throttle window, resulting in `delay=0` and bypassing `controlled_sleep` so `wait_started.wait()` timed out. The test now controls `quote_service.time.monotonic` deterministically, guaranteeing the throttle wait is entered and subsequent throttle recheck completes without relying on wall-clock timing.

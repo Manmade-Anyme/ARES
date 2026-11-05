@@ -104,3 +104,9 @@ The tests emitted existing dependency/runtime warnings. The root `pytest -q` com
 - `_monitor_rest_without_candle` now safely handles `oi_fetcher is None` and guards `engine.clear_cooldown()` against `None`.
 - `test_restored_terminal_option_route_is_monitored_without_candle_or_active_trade` pins `_session_now` to 10:00 to verify no-candle terminal monitoring under intraday market conditions deterministically.
 - Full test suite: **2,435 passed, 45 subtests passed, 12 warnings**.
+
+## Scheduled flush throttle recheck timing isolation
+
+- `test_scheduled_flush_rechecks_throttle_after_forced_write` previously exhibited runner-latency flakiness when elapsed time before scheduling exceeded 0.2s.
+- Controlled monotonic clock via monkeypatching `quote_service.time.monotonic` ensures deterministic throttle entry, forced flush recheck, and completion.
+- Suite verified locally: **37 passed in test_quote_integration.py**.
