@@ -371,17 +371,21 @@ async def test_restored_terminal_option_route_is_monitored_without_candle_or_act
     )
     dispatcher = SimpleNamespace(
         on_option_stop=AsyncMock(return_value=False), on_candles=AsyncMock(),
-        on_spot=AsyncMock(),
+        on_spot=AsyncMock(), on_snapshot=AsyncMock(),
     )
     fetcher = SimpleNamespace(
         watch_candles=[], fetch_latest_candle=AsyncMock(return_value=None),
         fetch_latest_spot=AsyncMock(return_value=24000),
     )
+    oi_fetcher = SimpleNamespace(
+        get_nearest_expiry=AsyncMock(return_value="2026-11-09"),
+        fetch_chain=AsyncMock(return_value=(None, [])),
+    )
 
     if path == "fetch":
         await main._fetch_candle_with_protection(fetcher, positions, dispatcher)
     elif path == "rest":
-        await main._monitor_rest_without_candle(fetcher, None, positions, None, dispatcher)
+        await main._monitor_rest_without_candle(fetcher, oi_fetcher, positions, None, dispatcher)
     else:
         feed = SimpleNamespace(is_active=True, get_latest_price=lambda: None,
                                 get_observations_since=lambda: [])
