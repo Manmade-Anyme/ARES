@@ -134,3 +134,58 @@ def test_ares_engine_emits_iv_breakout_signal():
     assert signal.stop_loss == 24405.0 - 30.0  # 24375.0
     assert signal.target_1 == 24405.0 + 35.0   # 24440.0
 
+
+def test_iv_breakout_defensive_mock_and_string_safety():
+    """QA Test: Ensures MagicMock candles or string timestamps never raise TypeError."""
+    from unittest.mock import MagicMock
+    detector = IVBreakoutDetector()
+
+    mock_candle = MagicMock()
+    mock_candle.high = 24450.0
+    mock_candle.close = 24440.0
+    mock_candle.volume = 100000
+
+    # Should safely return None without throwing TypeError: '<='
+    sig = detector.update(mock_candle, avg_volume=100000, iv_current=12.5)
+    assert sig is None
+
+
+def test_iv_breakout_anchor_observed_during_cooldown():
+    """QA Test: Engine Step 1 observation preserves morning anchor high during cooldown."""
+    from models import OptionRow, ATMStrikes
+    engine = AresEngine()
+    engine.last_signal_time = datetime.now()  # Put engine into active cooldown
+
+    t = datetime(2026, 11, 5, 10, 0, tzinfo=IST)
+    c = OHLCVCandle(timestamp=t, open=24350.0, high=24460.0, low=24340.0, close=24360.0, volume=1000000, vwap=24360.0)
+    atm = ATMStrikes(spot_price=24360.0, ce=OptionRow(strike=24350, option_type="CE", iv=13.0), pe=OptionRow(strike=24350, option_type="PE", iv=13.0))
+
+    result = engine.tick(c, full_chain=[], atm=atm)
+    assert result is None  # Suppressed by cooldown
+
+    # BUT anchor high was observed and updated
+    assert engine.iv_breakout_detector.anchor_high == 24460.0
+
+
+def test_reports_includes_iv_gated_breakout():
+    """QA Test: Verifies reports module tracks IV_GATED_BREAKOUT metrics."""
+    from reports import SETUP_TYPES, SETUP_LABELS, compute_metrics
+    assert "IV_GATED_BREAKOUT" in SETUP_TYPES
+    assert "IV_GATED_BREAKOUT" in SETUP_LABELS
+
+    trades = [{
+        "setup_type": "IV_GATED_BREAKOUT",
+        "pnl_points": 35.0,
+        "net_pnl_points": 35.0,
+        "entry_price": 24405.0,
+        "exit_price": 24440.0,
+        "exit_reason": "T1_HIT",
+        "option_entry_price": 100.0,
+        "option_exit_price": 135.0,
+    }]
+    metrics = compute_metrics(trades)
+    assert "IV_GATED_BREAKOUT" in metrics["per_setup"]
+    assert metrics["per_setup"]["IV_GATED_BREAKOUT"]["trades"] == 1
+    assert metrics["per_setup"]["IV_GATED_BREAKOUT"]["net_points"] == 35.0
+
+

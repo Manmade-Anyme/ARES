@@ -43,6 +43,56 @@ class IVBreakoutDetector:
         self.candle_history.clear()
         self.fired_today = False
 
+    def _parse_time(self, candle: OHLCVCandle) -> Tuple[Optional[Any], str]:
+        """Defensively extract session date and HH:MM time string."""
+        ts = getattr(candle, "timestamp", None)
+        if isinstance(ts, datetime):
+            return ts.date(), ts.strftime("%H:%M")
+        if isinstance(ts, str):
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                return dt.date(), dt.strftime("%H:%M")
+            except Exception:
+                return None, ts[11:16] if len(ts) >= 16 else "12:00"
+        if hasattr(ts, "strftime"):
+            try:
+                val = ts.strftime("%H:%M")
+                if isinstance(val, str):
+                    c_date = getattr(ts, "date", lambda: None)()
+                    return c_date, val
+            except Exception:
+                pass
+        return None, "12:00"
+
+    def observe(self, candle: OHLCVCandle, iv_current: Optional[float] = None) -> None:
+        """
+        Record candle and IV state across every tick regardless of cooldown or priority.
+        Prevents blind spots in morning anchor high tracking.
+        """
+        candle_date, time_str = self._parse_time(candle)
+        if candle_date is not None and self.current_date != candle_date:
+            self.reset_session(candle_date)
+
+        try:
+            self.session_high = max(self.session_high, float(candle.high))
+        except (TypeError, ValueError):
+            pass
+
+        # Avoid duplicating candle history if observe and update are called on the same tick
+        if not self.candle_history or self.candle_history[-1] is not candle:
+            self.candle_history.append(candle)
+
+        if iv_current is not None and iv_current > 0:
+            if not self.iv_history or self.iv_history[-1][0] != candle.timestamp:
+                self.iv_history.append((candle.timestamp, iv_current))
+
+        anchor_end = getattr(settings, "iv_breakout_anchor_end", "12:30")
+        if time_str <= anchor_end:
+            try:
+                self.anchor_high = max(self.anchor_high, float(candle.high))
+            except (TypeError, ValueError):
+                pass
+
     def update(
         self,
         candle: OHLCVCandle,
@@ -53,22 +103,11 @@ class IVBreakoutDetector:
         if not isinstance(getattr(candle, "timestamp", None), datetime):
             return None
 
-        candle_date = candle.timestamp.date()
-        if self.current_date != candle_date:
-            self.reset_session(candle_date)
+        self.observe(candle, iv_current=iv_current)
 
-        time_str = candle.timestamp.strftime("%H:%M")
-        self.session_high = max(self.session_high, candle.high)
-        self.candle_history.append(candle)
-
-        # Buffer IV history
-        if iv_current is not None and iv_current > 0:
-            self.iv_history.append((candle.timestamp, iv_current))
-
-        # Anchor window: 09:15 to 12:30 establishes the range high
+        _, time_str = self._parse_time(candle)
         anchor_end = getattr(settings, "iv_breakout_anchor_end", "12:30")
         if time_str <= anchor_end:
-            self.anchor_high = max(self.anchor_high, candle.high)
             return None
 
         # Entry window: 12:30 to 14:15
@@ -92,7 +131,14 @@ class IVBreakoutDetector:
         else:
             rolling_std = 15.0
 
-        vwap_val = candle.vwap if candle.vwap > 0 else candle.close
+        if getattr(candle, "vwap", 0.0) and candle.vwap > 0:
+            vwap_val = candle.vwap
+        elif len(self.candle_history) >= 5:
+            tot_vol = sum(c.volume for c in self.candle_history)
+            vwap_val = sum(c.close * c.volume for c in self.candle_history) / tot_vol if tot_vol > 0 else candle.close
+        else:
+            vwap_val = candle.close
+
         vwap_zscore = (candle.close - vwap_val) / rolling_std
 
         # 20 EMA approximation from recent closes
@@ -111,8 +157,25 @@ class IVBreakoutDetector:
             return None
 
         # 2. IV Microstructure Velocity Gate
-        iv_prev_1m = self.iv_history[-2][1] if len(self.iv_history) >= 2 else None
-        iv_prev_3m = self.iv_history[-4][1] if len(self.iv_history) >= 4 else iv_prev_1m
+        iv_prev_1m = None
+        iv_prev_3m = None
+        if len(self.iv_history) >= 2:
+            prev_t, prev_v = self.iv_history[-2]
+            if isinstance(candle.timestamp, datetime) and isinstance(prev_t, datetime):
+                if (candle.timestamp - prev_t).total_seconds() <= 180:
+                    iv_prev_1m = prev_v
+            else:
+                iv_prev_1m = prev_v
+
+        if len(self.iv_history) >= 4:
+            prev_t3, prev_v3 = self.iv_history[-4]
+            if isinstance(candle.timestamp, datetime) and isinstance(prev_t3, datetime):
+                if (candle.timestamp - prev_t3).total_seconds() <= 360:
+                    iv_prev_3m = prev_v3
+            else:
+                iv_prev_3m = prev_v3
+        else:
+            iv_prev_3m = iv_prev_1m
 
         iv_ok, iv_reason = evaluate_iv_velocity(
             iv_current=iv_current,
