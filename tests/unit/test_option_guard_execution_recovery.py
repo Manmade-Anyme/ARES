@@ -392,6 +392,36 @@ async def test_guard_routes_while_reference_ambiguity_remains(option_type, ambig
 
 
 @pytest.mark.asyncio
+async def test_new_t1_entry_ambiguity_routes_proven_close_guard_exit():
+    import main
+    trade, positions, dispatcher, record = paper_guard_runtime()
+    option = trade["market_context"]["option_trailing"]
+    option["atr_enabled"] = False
+    option["t1_at"] = datetime(2026, 11, 4, 10, 20, 30, tzinfo=IST).isoformat()
+    start = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    completed = start + timedelta(minutes=1)
+    candle = {"timestamp": start.isoformat(), "open": 24010, "high": 24025,
+              "low": 23995, "close": 23999, "complete": True}
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await positions.update_option_market_events([candle], {}, current_time=completed)
+
+    assert option["ambiguous_index_touch"]["kind"] == "T1_ENTRY"
+    assert trade["state"] == "T1_HIT"
+    assert (trade["id"], "STOPPED_OUT_AT_BE") in events
+    assert option["execution_route_pending"] is True
+    assert option["execution_route_trigger"]["stop_domain"] == "SPOT_INDEX"
+    assert datetime.fromisoformat(option["execution_route_trigger"]["event_at"]) == completed
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await main._monitor_completed_atr([], positions, dispatcher, current_time=completed)
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "STOPPED_OUT_AT_BE"
+    assert trade["state"] == "T1_HIT"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("option_type", ["CE", "PE"])
 async def test_new_t2_entry_ambiguity_routes_paper_guard_exit(option_type):
     import main

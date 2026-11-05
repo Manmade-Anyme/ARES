@@ -180,6 +180,8 @@ Lifecycle event identity must include any retained premium exit trigger's immuta
 
 Quote-batch matching is per trade even when several trades share a pinned contract. Preserve the IDs of trades that accepted each quote, then recheck the current trade's quote watermark, stop-effective time, contract, and activation boundary before same-close ambiguity detection can use it. A quote accepted for one trade must not be applied to another whose newer stop makes the source time stale.
 
+When a completed POST_T1 candle spans T1 and its close confirms a guard touch, preserve the `T1_ENTRY/ORDER_UNKNOWN` reference ambiguity and route a validated PAPER guard intent at the candle close in the same lifecycle snapshot. Validate against the prior index watermark because the candle may advance it before this branch. Reference-only, stale, or mismatched execution state remains unrouted.
+
 ## 7. Definition of Done / Regression Evidence
 
 Implementation and QA must exercise the actual lifecycle entry points and persistence/restart path, with external order execution disabled:

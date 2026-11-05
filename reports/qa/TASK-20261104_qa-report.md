@@ -84,4 +84,10 @@ The test run emitted 12 existing dependency/runtime warnings. No live service re
 - A two-trade regression shares the pinned contract: the first trade accepts a ₹175 quote against its ₹167.20 cost stop while the second trade's ₹180 ATR stop becomes effective one second later. The quote is rejected for the second trade during ingestion; a tied T2 observation cannot turn it into `ATR_SL_HIT` or create a protective route for that trade.
 - Same-close detection receives per-trade acceptance IDs and rechecks the current quote watermark, stop-effective time, pinned contract, and activation time before retaining an ambiguity or routing protection.
 - Focused premium lifecycle, commit-boundary, and paper-route modules: **152 passed, 2 warnings**. The regression failed before the fix with a spurious `ATR_SL_HIT` for the second trade.
-- Full local suite on the combined P1/P2 changes: **2,438 passed, 45 subtests passed, 12 warnings** in 175.15 seconds. `git diff --check` passed. The tests do not establish live broker or production behavior.
+- Full local suite on the combined P1/P2 changes: **2,439 passed, 45 subtests passed, 12 warnings** in 173.80 seconds. `git diff --check` passed. The tests do not establish live broker or production behavior.
+
+## Proven guard while creating T1-entry ambiguity
+
+- The regression reproduces a confirmed PAPER runner with T1 at 10:20:30 and a completed 10:20 candle with high 24025, low 23995, and close 23999 against entry 24000. Before the fix, it created `T1_ENTRY/ORDER_UNKNOWN` without a route event.
+- The close-based guard now persists a `SPOT_INDEX` route intent using the prior index watermark while keeping the reference trade at T1. The paper dispatcher places the remaining quantity in `EXIT_PENDING`; execution confirmation remains separate.
+- Focused premium lifecycle, commit-boundary, and guard-route modules: **153 passed, 2 warnings**. The full local suite passed with **2,439 tests and 45 subtests**; these isolated tests do not establish live broker or production behavior.

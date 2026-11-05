@@ -1172,6 +1172,16 @@ class PositionManager:
                             "event_at": price_event_ts, "high": trade_high, "low": trade_low,
                             "status": "ORDER_UNKNOWN",
                         }
+                        guard_intent = (
+                            opt_ctx.get("policy_version") == "option_premium_protection_v2"
+                            and execution_guard_touch
+                            and self._retain_index_guard_execution_route(
+                                trade, price_event_ts, event_ts_base,
+                                index_watermark_checked=candle_timestamp is not None,
+                                prior_index_watermark=previous_index if candle_timestamp is not None else None)
+                        )
+                        if guard_intent:
+                            events.append((trade["id"], "STOPPED_OUT_AT_BE"))
                         await self._record_trade_update(trade, None, None, price_event_ts)
                         continue
                     trade["state"] = "CLOSED"

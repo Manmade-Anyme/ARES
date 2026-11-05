@@ -54,3 +54,7 @@ A fresh quote tied to an already processed option bar correctly created an in-me
 ## Shared-contract quote ordering
 
 Quote ingestion accepted a shared-contract quote for one trade but rejected it for another because the second trade's ATR stop became effective after the quote timestamp. The same-close detector discarded that per-trade distinction and could apply the quote to both. The quote batch now retains the IDs of trades that passed ingestion, and the detector rechecks each accepted trade's current quote watermark, active-stop time, contract, and activation boundary before using the quote. A two-trade replay reproduces the stale quote rejection and confirms it cannot close the ATR-raised trade.
+
+## Guard routing while creating T1-entry ambiguity
+
+A completed candle spanning T1 can use its close to prove the entry guard was touched after T1, while its wick leaves T1-versus-guard ordering unknown. The `T1_ENTRY` branch retained that ambiguity but returned without routing the proven paper guard. It now records the validated guard intent using the prior index watermark in the same persisted transition. The lifecycle stays at T1; the execution dispatcher receives the remaining-unit exit. The regression verifies the route becomes `EXIT_PENDING` and the reference ambiguity remains.
