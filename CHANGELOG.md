@@ -34,6 +34,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 - **PR #156 quote tie after processed option bar:** Limit `last_processed_option_bar_end` to option-bar replay. A fresh, same-time pinned premium quote is still checked against the active post-T1 stop and can preserve protective ambiguity and route a paper exit before a tied index T2 touch commits. Existing quote freshness, contract, activation-time, and duplicate checks remain in force.
 
+- **PR #156 route guard when creating T2-entry ambiguity:** When a completed post-T1 index candle first touches both T2 and the entry guard, preserve `T2_ENTRY/ORDER_UNKNOWN` for reference ordering and immediately retain/route the independent guard intent for an eligible confirmed PAPER runner. Keep T1 reference allocation and first-intent safeguards; reference-only observations do not create execution routes.
+
 - **Tuesday expiry profile sensitivity tuning (TASK-20261103):** Set expiry OI-wall minimum OI/change to 6,000,000/5.0%, widen approach/test/excursion/retest distances to 60/15/15/15 points, and set breakout writer/IV/weak-volume thresholds to 5%/−3.0/0.75. Set exhaustion volume/IV thresholds to 2.5/3.5, continuation score/resumption-volume/pullback-window to 2/1.2/8 candles, level scan to 400 points, and signal cooldown to 15 minutes. Non-expiry settings and expiry candle-body ratio remain unchanged. Multi-Tuesday replay confirms 5.0% growth eliminates fragile 2.7% false-alarm watches while delivering 1 disciplined trade per session. Dhan replay evidence and limits are in the Ares Build Log.
 
 - **TASK-20261102 Live market quotes persistence for SpanQuant frontend:**

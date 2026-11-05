@@ -392,6 +392,82 @@ async def test_guard_routes_while_reference_ambiguity_remains(option_type, ambig
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+async def test_new_t2_entry_ambiguity_routes_paper_guard_exit(option_type):
+    import main
+    trade, positions, dispatcher, record = paper_guard_runtime(option_type)
+    option = trade["market_context"]["option_trailing"]
+    option["atr_enabled"] = False
+    start = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    completed = start + timedelta(minutes=1)
+    if option_type == "CE":
+        open_price, high, low, close = 24010, 24045, 23995, 23999
+        later_price = 24001
+    else:
+        open_price, high, low, close = 24000, 24005, 23955, 24001
+        later_price = 23999
+    candle = {"timestamp": start.isoformat(), "open": open_price, "high": high,
+              "low": low, "close": close, "complete": True}
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await positions.update_option_market_events(
+            [candle], {}, current_time=completed)
+
+    ambiguity = option["ambiguous_index_touch"]
+    assert ambiguity["kind"] == "T2_ENTRY"
+    assert ambiguity["status"] == "ORDER_UNKNOWN"
+    assert trade["state"] == "T1_HIT"
+    assert option["highest_milestone"] == 1
+    assert option["booked_fraction"] == pytest.approx(0.5)
+    assert option["remaining_fraction"] == pytest.approx(0.5)
+    assert option.get("t2_at") is None
+    assert (trade["id"], "STOPPED_OUT_AT_BE") in events
+    assert option["execution_route_pending"] is True
+    trigger = deepcopy(option["execution_route_trigger"])
+    assert trigger["stop_domain"] == "SPOT_INDEX"
+    assert datetime.fromisoformat(trigger["event_at"]) == completed
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await main._monitor_completed_atr([], positions, dispatcher, current_time=completed)
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "STOPPED_OUT_AT_BE"
+
+    # A later observation that clears the guard but stays short of T2 cannot
+    # replace the first protective trigger or finalize reference ordering.
+    later = completed + timedelta(seconds=1)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        later_events = await positions.update_option_market_events(
+            [], {}, current_time=later,
+            index_ticks=[{"price": later_price, "exchange_at": later.isoformat(),
+                          "received_at": later.isoformat()}])
+    assert later_events == []
+    assert option["ambiguous_index_touch"]["kind"] == "T2_ENTRY"
+    assert option["execution_route_trigger"] == trigger
+    assert trade["state"] == "T1_HIT"
+    assert record.status == "EXIT_PENDING"
+
+
+@pytest.mark.asyncio
+async def test_new_t2_entry_ambiguity_does_not_route_reference_only_trade():
+    trade, positions, _, _ = paper_guard_runtime()
+    option = trade["market_context"]["option_trailing"]
+    option.update(atr_enabled=False, execution_status="REFERENCE_ONLY")
+    start = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    candle = {"timestamp": start.isoformat(), "open": 24010, "high": 24045,
+              "low": 23995, "close": 23999, "complete": True}
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await positions.update_option_market_events(
+            [candle], {}, current_time=start + timedelta(minutes=1))
+
+    assert events == []
+    assert trade["state"] == "T1_HIT"
+    assert option["ambiguous_index_touch"]["kind"] == "T2_ENTRY"
+    assert option.get("execution_route_pending") is not True
+    assert option.get("execution_route_trigger") is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("damage", ["reference_only", "no_execution_t1", "stale"])
 async def test_ambiguous_reference_guard_rejects_invalid_execution_intent(damage):
     trade, positions, dispatcher, record = paper_guard_runtime()

@@ -61,3 +61,12 @@ The test run emitted 12 existing dependency/runtime warnings. No live service re
 - The previously processed bar is not replayed or used to raise ATR again. Existing quote freshness/contract/activation/duplicate filtering and same-batch T2-plus-stop regressions pass.
 - Full local suite: **2,427 passed, 45 subtests passed, 12 warnings** in 176.41 seconds. Coverage run exercised both event-time branches at the changed detector boundary; module-wide coverage is 90.5% statements / 86.9% branches, which is not a changed-code coverage claim.
 - `git diff --check` passed. GitHub Actions run #600 passed on the preceding head `443c87e`; this fix needs its own CI run after push. No live service, broker fill, or production restart was tested.
+
+## Route guard when creating T2-entry ambiguity
+
+- The new CE/PE regressions use a completed post-T1 candle whose range touches both T2 and entry guard. Before the fix, the candle created `T2_ENTRY/ORDER_UNKNOWN` but emitted no route event; after the fix it retains a `SPOT_INDEX` route trigger and remains at T1 with the original 50/50 reference allocation and no `t2_at`.
+- The normal dispatcher turns the intent into `EXIT_PENDING` for the remaining paper quantity. A later tick above entry and below T2 does not replace the first route. A reference-only control preserves the ambiguity without creating execution state.
+- Focused guard and premium lifecycle modules: **134 passed, 2 warnings**. Coverage exercised every branch arc in the changed T2-entry creation/route block; this focused run is not whole-module coverage.
+- Full local suite: **2,430 passed, 45 subtests passed, 12 warnings** in 177.91 seconds.
+- Full-suite coverage exercised every branch arc in the changed T2-entry creation/route block. Module-wide `position_manager.py` coverage was 90.5% statements / 87.0% branches; no whole-module coverage claim is made.
+- GitHub Actions run #601 passed on preceding head `cc6bb8a`; CI for this follow-up commit is required after push.
