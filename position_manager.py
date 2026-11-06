@@ -1226,6 +1226,7 @@ class PositionManager:
                     }
                 if is_option_atr:
                     opt_ctx["phase"] = "POST_T1"
+                    opt_ctx["pending_t1_cost_quotes"] = []
                     opt_ctx["highest_milestone"] = 1
                     if candle_timestamp is None and source_event_ts is not None:
                         t1_event_at = source_event_ts
@@ -2924,7 +2925,7 @@ class PositionManager:
         return "SL_HIT" if opt.get("execution_route_pending") else None
 
     async def _retain_t1_premium_quote_ambiguity(self, trade, quote, event_at, index_observations,
-                                                *, committed_t2_at=None):
+                                                *, committed_t2_at=None, previously_accepted=False):
         """Retain a T1-tied quote that breaches cost only if T1 came first."""
         opt = trade["market_context"]["option_trailing"]
         try:
@@ -2941,7 +2942,8 @@ class PositionManager:
                 or self._unresolved_t1_premium_ambiguity(opt)):
             return False
         watermark = opt.get("quote_watermark")
-        if committed_t2_at is None and self._option_quote_is_replay(opt, observed_at, price):
+        if (committed_t2_at is None and not previously_accepted
+                and self._option_quote_is_replay(opt, observed_at, price)):
             return False
         source = quote.get("source") or "OPTION_QUOTE"
         opt["ambiguous_premium_quote"] = {
@@ -2961,10 +2963,11 @@ class PositionManager:
                                         "post_t2_runner_fraction": float(opt.get("remaining_fraction", 0.2))})
         if not watermark or observed_at > parse_candle_timestamp(watermark):
             opt["quote_watermark"] = observed_at.isoformat()
-        opt["last_option_quote"] = {
-            "price": price, "observed_at": observed_at.isoformat(),
-            "received_at": received_at.isoformat(), "source": source,
-        }
+        if not previously_accepted:
+            opt["last_option_quote"] = {
+                "price": price, "observed_at": observed_at.isoformat(),
+                "received_at": received_at.isoformat(), "source": source,
+            }
         await self._record_trade_update(trade, None, None, observed_at.isoformat())
         return True
 
@@ -3493,6 +3496,12 @@ class PositionManager:
                     "price": price, "observed_at": observed_at.isoformat(),
                     "received_at": received_at.isoformat(), "source": quote.get("source"),
                 }
+                if (phase == "PRE_T1"
+                        and float(opt["original_option_sl"]) < price <= float(opt["original_option_entry"])):
+                    pending = opt.setdefault("pending_t1_cost_quotes", [])
+                    if not any(isinstance(saved, dict) and saved.get("observed_at") == observed_at.isoformat()
+                               for saved in pending):
+                        pending.append({**opt["last_option_quote"], "contract": dict(contract)})
                 if opt.get("policy_version") == "option_premium_protection_v2":
                     _, current_monitoring = self._set_option_monitoring_health(
                         opt, "OPTION_QUOTE", unavailable=False)
@@ -3919,10 +3928,26 @@ class PositionManager:
                     continue
             expected = opt.get("contract") or {}
             accepted_quotes = []
-            for candidate in (premium_quotes or {}).get(event_at, []):
+            candidates = [(candidate, False) for candidate in (premium_quotes or {}).get(event_at, [])]
+            if v2 and trade.get("state") == "OPEN" and opt.get("phase") == "PRE_T1" and not opt.get("t1_at"):
+                pending = []
+                for saved in opt.get("pending_t1_cost_quotes") or []:
+                    try:
+                        saved_at = parse_candle_timestamp(saved["observed_at"])
+                    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                        continue
+                    if not last_index or saved_at >= parse_candle_timestamp(last_index):
+                        pending.append(saved)
+                opt["pending_t1_cost_quotes"] = pending
+                cached = list(pending)
+                last_quote = opt.get("last_option_quote")
+                if isinstance(last_quote, dict):
+                    cached.append({"contract": dict(expected), **last_quote})
+                candidates = [(saved, True) for saved in cached] + candidates
+            for candidate, previously_accepted in candidates:
                 accepted_trade_ids = candidate.get("_accepted_trade_ids")
-                if (not isinstance(accepted_trade_ids, (tuple, list, set))
-                        or str(trade.get("id")) not in {str(value) for value in accepted_trade_ids}):
+                if (not previously_accepted and (not isinstance(accepted_trade_ids, (tuple, list, set))
+                        or str(trade.get("id")) not in {str(value) for value in accepted_trade_ids})):
                     continue
                 try:
                     quote_at = parse_candle_timestamp(candidate["observed_at"])
@@ -3937,7 +3962,7 @@ class PositionManager:
                 if any(str(raw_contract.get(key)) != str(expected.get(key))
                        for key in ("security_id", "exchange_segment", "expiry", "strike", "option_type")):
                     continue
-                if self._option_quote_is_replay(opt, quote_at, candidate.get("price")):
+                if not previously_accepted and self._option_quote_is_replay(opt, quote_at, candidate.get("price")):
                     await self._retain_t2_tied_quote_if_protective(
                         trade, quote_at, received_at, candidate.get("price"),
                         candidate.get("source"), events)
@@ -3945,6 +3970,11 @@ class PositionManager:
                 try:
                     quote_price = float(candidate["price"])
                 except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if (not isfinite(quote_price) or quote_price <= 0
+                        or not 0 <= (received_at - quote_at).total_seconds() <= 5):
+                    continue
+                if previously_accepted and not float(opt["original_option_sl"]) < quote_price <= float(opt["original_option_entry"]):
                     continue
                 if await self._reject_quote_before_active_stop(
                         trade, quote_at, received_at, price=quote_price,
@@ -3956,7 +3986,7 @@ class PositionManager:
                     continue
                 if quote_at <= entry_at:
                     continue
-                accepted_quotes.append(candidate)
+                accepted_quotes.append({**candidate, "_previously_accepted": previously_accepted})
             bar = next((candidate for candidate in histories.get(trade["id"], [])
                         if parse_candle_timestamp(candidate.end_time) == event_at), None)
             bar_watermark = opt.get("last_processed_option_bar_end")
@@ -4077,7 +4107,8 @@ class PositionManager:
                                 events.append((trade["id"], reason))
                         else:
                             await self._retain_t1_premium_quote_ambiguity(
-                                trade, candidate, event_at, t1_ranges)
+                                trade, candidate, event_at, t1_ranges,
+                                previously_accepted=candidate.get("_previously_accepted") is True)
                         break
 
             if (trade.get("state") != "T1_HIT" or opt.get("phase") != "POST_T1"

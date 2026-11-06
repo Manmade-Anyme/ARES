@@ -1,5 +1,12 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: reconcile quote-first evidence before same-time milestones
+
+- All four fail-first replays committed T2 incorrectly when the ₹165 cost-only quote arrived before the matching index tick. The corrected cases cover direct replay, an intervening newer quote, restart with pending evidence, and a legacy last-quote snapshot.
+- Focused lifecycle module: **98 passed, 2 warnings**. Invalid cached contract and receipt-lag evidence is rejected; valid cached evidence defers T2 without an execution route, preserves the maximum watermark, persists ambiguity, and clears the pending cache in the T1 snapshot.
+- Isolated worktree full `tests/`: **2,479 passed, 45 subtests passed, 12 warnings** in 176.86 seconds. Compilation and `git diff --check` pass. Actions for the pushed revision are pending.
+- Work was isolated from the separate active IV-breakout branch. No production data, provider requests, broker orders, deployment, or worker start was used.
+
 ## P2 findings: source-second price changes and delayed T1/T2 cost uncertainty
 
 - Fail-first replays reproduced lost initial/BE/ATR stop breaches for CE/PE price changes at one source second, lost durable price revisions, and missing delayed T1/T2 cost-only ambiguity with or without a newer watermark.

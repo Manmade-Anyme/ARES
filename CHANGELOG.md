@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #156 quote-first T1/T2 reconciliation:** Persist accepted pre-T1 cost-only quotes by source second until the index watermark passes them. Reconcile cached same-time evidence before milestones, including after a newer quote or restart; legacy snapshots can reuse their matching last quote. T1 clears the pending cache while preserving ordering uncertainty.
+
 - **PR #156 source-second quote revisions:** Accept changed premium prices at an already watermarked source second through ingestion and downstream checks, while deduplicating identical observations and preserving stop-effective-time validation. Persist price revisions with their quote identity, preserve existing T1 ambiguity through recovery, and stop a batch after terminal closure.
 - **PR #156 delayed T1/T2 cost uncertainty:** Retain a delayed quote between initial SL and entry cost when T1 and committed T2 share its source time. Persist `T1_ORDER_UNKNOWN/COST_STOP_ONLY_BREACH` and disputed allocation metadata without creating a protective route from that uncertain observation or rolling back committed T2.
 

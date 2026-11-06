@@ -384,6 +384,7 @@ class OptionTrailingContext:
     atr_enabled: bool = False
     premium_stop_source: Optional[str] = None
     last_option_quote: Optional[Dict[str, Any]] = None
+    pending_t1_cost_quotes: List[Dict[str, Any]] = field(default_factory=list)
     quote_watermark: Optional[str] = None
     exit_trigger: Optional[Dict[str, Any]] = None
     deferred_option_exit: Optional[Dict[str, Any]] = None
@@ -446,6 +447,7 @@ class OptionTrailingContext:
             "atr_enabled": self.atr_enabled,
             "premium_stop_source": self.premium_stop_source,
             "last_option_quote": self.last_option_quote,
+            "pending_t1_cost_quotes": self.pending_t1_cost_quotes,
             "quote_watermark": self.quote_watermark,
             "exit_trigger": self.exit_trigger,
             "deferred_option_exit": self.deferred_option_exit,
@@ -536,6 +538,7 @@ class OptionTrailingContext:
             atr_enabled=bool(data.get("atr_enabled", False)),
             premium_stop_source=data.get("premium_stop_source"),
             last_option_quote=data.get("last_option_quote"),
+            pending_t1_cost_quotes=list(data.get("pending_t1_cost_quotes") or []),
             quote_watermark=data.get("quote_watermark"),
             exit_trigger=data.get("exit_trigger"),
             deferred_option_exit=data.get("deferred_option_exit"),

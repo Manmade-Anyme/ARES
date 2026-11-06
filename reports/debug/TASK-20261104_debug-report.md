@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: premium quote accepted before its same-time index milestone
+
+Fail-first replay accepted ₹165 at 09:20 against initial SL ₹161.05 and entry cost ₹167.20, then received a same-source-time T2 tick two seconds later. All four arrival/restart variants committed T2 without cost uncertainty. Accepted cost-only observations now persist by source second and are reconciled before milestones, so T1 is recorded while T2 remains deferred behind `COST_STOP_ONLY_BREACH`. The cache survives an intervening quote and serialization; legacy snapshots reuse matching last-quote evidence. Reconciliation validates contract/receipt time, preserves newer market evidence, and clears pending quotes in the T1 snapshot.
+
 ## P2: changed prices inside a watermarked source second
 
 Fail-first CE/PE replays accepted ₹180 then discarded a changed stop-breaching price at the same source second for initial, break-even, and ATR stops. The ingestion and downstream guards treated every equal timestamp as a replay. A shared timestamp/price replay check now admits changed prices while keeping existing chronology validation. Quote identity includes source/receipt time and price so revisions (including a return to an earlier price) persist without revision rollback. Added regressions preserve T1 ambiguity through recovery and prove both same-batch price orders avoid post-terminal writes.

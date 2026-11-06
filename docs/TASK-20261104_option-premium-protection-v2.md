@@ -2,6 +2,8 @@
 
 ## Scope
 
+Accepted pre-T1 quotes between initial SL and entry cost are retained by source second until the index watermark passes them. The detector reconciles cached evidence before a later same-time T1/T2 tick commits milestones, preserving cost-only uncertainty through newer quotes and restart. T1 clears the pending cache; legacy snapshots can reuse a matching last quote. Cached reconciliation retains contract/time validation and preserves the latest market quote and maximum watermark.
+
 Fresh price changes within one source second pass the same stop checks as newer timestamps; timestamp equality alone does not prove a duplicate. Identical accepted timestamp/price observations are deduplicated. Price revisions persist under distinct quote identities, recovery preserves earlier T1 uncertainty/protection, and a terminal quote stops further processing in its batch.
 
 A delayed cost-only quote tied to both committed T1 and T2 retains `T1_ORDER_UNKNOWN/COST_STOP_ONLY_BREACH` with explicit disputed-allocation metadata. The prior T2 milestone remains recorded, reference finalization waits for ordering evidence, and the uncertain quote alone creates no protective route.
