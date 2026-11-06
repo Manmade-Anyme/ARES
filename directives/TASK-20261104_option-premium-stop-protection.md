@@ -21,6 +21,8 @@ Current source also gates `option_trailing` enrollment on option-ATR configurati
 
 ## Scope
 
+- Revision-conflict recovery preserves the maximum committed/local quote watermark in every queued milestone and terminal snapshot, in live state, and in nested alert snapshots. A newer live quote remains authoritative; observed quote and exit provenance are not rewritten to match the recovered watermark.
+
 - Trace and update option-tracked trade enrollment, premium stop lifecycle, T1 activation, ATR updates, price monitoring, terminal persistence, restart recovery, and alerts.
 - Keep the currently configured option ATR formula and timeframe unless the Architect verifies a concrete source/config discrepancy. The current code specifies five-minute option candles, Wilder ATR(5), HHV lookback 10 of `high - 2.5 * ATR`, and completed-candle ATR updates. The supplied one-minute chart does not authorize changing that timeframe.
 - Use the selected contract identity throughout: security ID, exchange segment, expiry, strike, and CE/PE.

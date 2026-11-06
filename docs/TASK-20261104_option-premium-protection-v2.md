@@ -2,6 +2,8 @@
 
 ## Scope
 
+Revision-conflict recovery preserves the maximum committed/local quote watermark in every queued milestone and terminal snapshot, in live state, and in nested alert snapshots. A newer live quote remains authoritative; observed quote and exit provenance are not rewritten to match the recovered watermark.
+
 Conflict recovery adopts a higher committed stop together with its source, activation time, previous stop and protection mode. This applies to queued milestones and terminal exits; observed exit provenance remains intact and a newer, higher live stop is preserved.
 
 A T1-tied bar above entry cost but at/below an ATR stop seeded at that timestamp retains `ATR_STOP_ONLY_BREACH` ordering uncertainty and the seeded level. It does not trigger the newly activated stop retroactively. That ambiguity survives persistence and blocks assumed reference finalization while later proven protection can route separately.

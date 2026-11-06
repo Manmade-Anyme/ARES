@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: quote-watermark regression during revision repair
+
+Three fail-first milestone, terminal, and outage/newer-local-quote replays violated the SQL monotonic quote-watermark invariant, leaving writes queued. Recovery now rebases queued snapshots to the committed watermark, advances live state only when newer, and refreshes alerts after rebasing. Quote/exit observation provenance remains intact.
+
 ## P2: partial stop metadata during revision repair
 
 Fail-first replays used a local ₹167.20 cost stop and a committed ₹180 ATR stop. Recovery copied the higher stop but retained `BREAK_EVEN_COST`, violating the v2 SQL source/price invariant and leaving the write queued while the database stayed at T1. Four milestone/terminal and immediate/outage-retry variants reproduced the failure. Both adoption branches now copy the full stop revision into queued and eligible live/alert state. Tests validate queue drainage, serialization, subsequent ATR protection, and immutable observed break-even exit provenance.

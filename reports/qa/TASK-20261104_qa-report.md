@@ -1,5 +1,11 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: quote-watermark recovery across conflicting writers
+
+- Three fail-first replays cover T2, terminal exit, and T2 with a newer local quote during an outage. The ledger enforces the SQL monotonic-watermark rule.
+- Focused conflict and premium lifecycle modules: **130 passed, 2 warnings**. Checks cover drained queues, persisted/live/restored maxima, matching alert snapshots, and unchanged terminal exit evidence.
+- Full isolated `tests/`: **2,490 passed, 45 subtests passed, 12 warnings** in 174.21 seconds. Compilation and `git diff --check` pass; exact-head Actions verification pending. No production data, broker orders, deployment, or worker start used.
+
 ## P2: coherent stop metadata after revision-conflict recovery
 
 - Four fail-first milestone/terminal and immediate/outage-retry cases left the database at T1 with an invalid ₹180 `BREAK_EVEN_COST` snapshot queued. The test ledger now enforces the v2 SQL source/price invariants.

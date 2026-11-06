@@ -2547,10 +2547,18 @@ class PositionManager:
                                                 alert["option_trailing"] = deepcopy(candidate)
                                                 alert["option_trailing"].pop("alert_events", None)
                                                 alert["trade"]["market_context"]["option_trailing"] = deepcopy(alert["option_trailing"])
-                                        for field in ("last_processed_option_bar_end", "last_valid_option_bar_end", "last_index_event_at"):
+                                        for field in ("last_processed_option_bar_end", "last_valid_option_bar_end", "last_index_event_at", "quote_watermark"):
                                             committed_at = persisted_opt.get(field)
                                             if committed_at and (not candidate.get(field) or parse_candle_timestamp(candidate[field]) < parse_candle_timestamp(committed_at)):
                                                 candidate[field] = committed_at
+                                        quote_watermark = candidate.get("quote_watermark")
+                                        if quote_watermark and (not opt.get("quote_watermark") or parse_candle_timestamp(opt["quote_watermark"]) < parse_candle_timestamp(quote_watermark)):
+                                            opt["quote_watermark"] = quote_watermark
+                                        alert = kept_payload.get("alert_snapshot")
+                                        if alert:
+                                            alert["option_trailing"] = deepcopy(candidate)
+                                            alert["option_trailing"].pop("alert_events", None)
+                                            alert["trade"]["market_context"]["option_trailing"] = deepcopy(alert["option_trailing"])
                                     pending[:] = kept
                                     if not pending:
                                         opt.update(persisted_opt)

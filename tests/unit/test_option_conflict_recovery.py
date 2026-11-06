@@ -28,6 +28,9 @@ class ConflictLedger(Ledger):
         candidate = payload['option_trailing']
         assert candidate['highest_milestone'] >= previous['highest_milestone']
         assert candidate['locked_option_sl'] >= previous['locked_option_sl']
+        if previous.get('quote_watermark'):
+            assert candidate.get('quote_watermark')
+            assert datetime.fromisoformat(candidate['quote_watermark']) >= datetime.fromisoformat(previous['quote_watermark'])
         if candidate.get('policy_version') == 'option_premium_protection_v2':
             if candidate.get('premium_stop_source') == 'BREAK_EVEN_COST':
                 assert candidate['locked_option_sl'] == candidate['original_option_entry']
@@ -109,6 +112,55 @@ async def test_v2_conflict_adopts_complete_committed_stop_metadata(terminal, ret
             events = await pm.update_option_market_events([], {}, current_time=later_at, option_quotes=[later])
             assert (trade['id'], 'ATR_SL_HIT') in events
             assert opt['exit']['option_stop'] == pytest.approx(180.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('transition', ['t2', 'terminal', 't2_with_newer_local'])
+async def test_v2_conflict_preserves_maximum_quote_watermark(transition):
+    from unittest.mock import AsyncMock, patch
+    from models import OptionTrailingContext
+    from tests.unit.test_option_premium_protection_v2 import _trade, _manager, _quote
+
+    trade = _trade(phase='POST_T1')
+    opt = trade['market_context']['option_trailing']
+    opt.update(premium_stop_source='BREAK_EVEN_COST', quote_watermark='2026-11-04T10:19:00+05:30',
+               execution_status='CONFIRMED_PAPER_FILL', atr_enabled=transition == 'terminal')
+    committed = {**deepcopy(opt), 'quote_watermark': '2026-11-04T10:20:00+05:30'}
+    pm = _manager(trade)
+    pm.analytics = ConflictLedger(committed)
+    pm.analytics.fail = transition == 't2_with_newer_local'
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    expected_watermark = committed['quote_watermark']
+    with patch('position_manager.send_option_lifecycle_event', new=AsyncMock(return_value='DELIVERED')):
+        if transition == 'terminal':
+            end = at.replace(minute=25)
+            bar = OptionCandle(end - timedelta(minutes=5), end, 168, 169, 165, 166, 1, '39961')
+            await pm.update_option_atr_trailing({'39961': [bar]}, current_time=end)
+        else:
+            tick = {'price': trade['target_2'], 'exchange_at': at.isoformat(),
+                    'received_at': at.isoformat(), 'source': 'dhan_tick'}
+            await pm.update_option_market_events([], {}, current_time=at, index_ticks=[tick])
+        if transition == 't2_with_newer_local':
+            later_at = at + timedelta(minutes=1)
+            newer = {**_quote(180.0, 22), 'observed_at': later_at.isoformat(), 'received_at': later_at.isoformat()}
+            await pm.update_option_market_events([], {}, current_time=later_at, option_quotes=[newer])
+            expected_watermark = later_at.isoformat()
+            pm.analytics.fail = False
+            await pm.retry_option_lifecycle_writes()
+    expected_state = 'CLOSED' if transition == 'terminal' else 'T2_REACHED'
+    assert pm.analytics.rows[-1]['active_state'] == trade['state'] == expected_state
+    assert not pm._option_pending[trade['id']]
+    assert opt['quote_watermark'] == expected_watermark
+    persisted = pm.analytics.rows[-1]['option_trailing']
+    assert persisted['quote_watermark'] == expected_watermark
+    assert OptionTrailingContext.from_dict(persisted).quote_watermark == expected_watermark
+    for row in pm.analytics.rows[1:]:
+        alert = row.get('alert_snapshot')
+        if alert:
+            assert alert['option_trailing']['quote_watermark'] == row['option_trailing']['quote_watermark']
+    if transition == 'terminal':
+        assert persisted['exit_trigger']['price'] == pytest.approx(166.0)
+        assert datetime.fromisoformat(persisted['exit_trigger']['event_at']) == end
 
 
 @pytest.mark.parametrize('replacement_active', [False, True])
