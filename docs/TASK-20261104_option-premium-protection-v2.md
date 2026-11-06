@@ -2,6 +2,8 @@
 
 ## Scope
 
+Conflict recovery adopts a higher committed stop together with its source, activation time, previous stop and protection mode. This applies to queued milestones and terminal exits; observed exit provenance remains intact and a newer, higher live stop is preserved.
+
 A T1-tied bar above entry cost but at/below an ATR stop seeded at that timestamp retains `ATR_STOP_ONLY_BREACH` ordering uncertainty and the seeded level. It does not trigger the newly activated stop retroactively. That ambiguity survives persistence and blocks assumed reference finalization while later proven protection can route separately.
 
 Accepted pre-T1 quotes between initial SL and entry cost are retained by source second until the index watermark passes them. The detector reconciles cached evidence before a later same-time T1/T2 tick commits milestones, preserving cost-only uncertainty through newer quotes and restart. T1 clears the pending cache; legacy snapshots can reuse a matching last quote. Cached reconciliation retains contract/time validation and preserves the latest market quote and maximum watermark.

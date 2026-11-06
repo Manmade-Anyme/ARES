@@ -1,5 +1,12 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: coherent stop metadata after revision-conflict recovery
+
+- Four fail-first milestone/terminal and immediate/outage-retry cases left the database at T1 with an invalid ₹180 `BREAK_EVEN_COST` snapshot queued. The test ledger now enforces the v2 SQL source/price invariants.
+- Conflict recovery plus premium lifecycle modules: **127 passed, 2 warnings**. Cases verify adoption of the full committed stop revision in live, persisted, restored and alert contexts; the queue drains, later protection uses ATR, and recorded break-even exit provenance remains intact.
+- Full isolated `tests/`: **2,487 passed, 45 subtests passed, 12 warnings** in 178.58 seconds. Compilation and `git diff --check` pass; Actions for the pushed revision are pending.
+- No production data, provider requests, broker orders, deployment, or worker start was used.
+
 ## P2: T1 bar tied to an ATR stop seeded above cost
 
 - Four fail-first CE/PE same/split-batch cases emitted an unwarranted `ATR_SL_HIT` for a ₹190 T1-tied bar against the newly seeded ₹196 stop, despite initial SL ₹161.05 and entry cost ₹167.20.

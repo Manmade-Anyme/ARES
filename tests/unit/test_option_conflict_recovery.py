@@ -28,6 +28,11 @@ class ConflictLedger(Ledger):
         candidate = payload['option_trailing']
         assert candidate['highest_milestone'] >= previous['highest_milestone']
         assert candidate['locked_option_sl'] >= previous['locked_option_sl']
+        if candidate.get('policy_version') == 'option_premium_protection_v2':
+            if candidate.get('premium_stop_source') == 'BREAK_EVEN_COST':
+                assert candidate['locked_option_sl'] == candidate['original_option_entry']
+            if candidate.get('premium_stop_source') == 'ATR_TRAILING':
+                assert candidate['locked_option_sl'] > candidate['original_option_entry']
         return super().apply_option_lifecycle_transition(trade_id, revision, event_id, payload)
 
     def get_option_lifecycle_state(self, trade_id):
@@ -49,6 +54,61 @@ def post_t1(trade, stop=127):
 def exit_bar(close):
     end = datetime(2026, 10, 23, 10, 55, tzinfo=IST)
     return OptionCandle(end-timedelta(minutes=5), end, 200, 201, close-1, close, 1, '51333')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('terminal', [False, True])
+@pytest.mark.parametrize('retry_after_outage', [False, True])
+async def test_v2_conflict_adopts_complete_committed_stop_metadata(terminal, retry_after_outage):
+    from unittest.mock import AsyncMock, patch
+    from models import OptionTrailingContext
+    from tests.unit.test_option_premium_protection_v2 import _trade, _manager, _quote
+
+    trade = _trade(phase='POST_T1')
+    opt = trade['market_context']['option_trailing']
+    opt.update(premium_stop_source='BREAK_EVEN_COST', stop_effective_at=opt['t1_at'],
+               previous_locked_option_sl=161.05, execution_status='CONFIRMED_PAPER_FILL')
+    committed = {**deepcopy(opt), 'locked_option_sl': 180.0, 'protection_mode': 'ATR',
+                 'premium_stop_source': 'ATR_TRAILING', 'previous_locked_option_sl': 175.0,
+                 'stop_effective_at': '2026-11-04T10:20:00+05:30'}
+    pm = _manager(trade)
+    pm.analytics = ConflictLedger(committed)
+    pm.analytics.fail = retry_after_outage
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    with patch('position_manager.send_option_lifecycle_event', new=AsyncMock(return_value='DELIVERED')):
+        if terminal:
+            quote = {**_quote(166.0, 21), 'observed_at': at.isoformat(), 'received_at': at.isoformat()}
+            await pm.update_option_market_events([], {}, current_time=at, option_quotes=[quote])
+        else:
+            tick = {'price': trade['target_2'], 'exchange_at': at.isoformat(),
+                    'received_at': at.isoformat(), 'source': 'dhan_tick'}
+            await pm.update_option_market_events([], {}, current_time=at, index_ticks=[tick])
+        if retry_after_outage:
+            pm.analytics.fail = False
+            await pm.retry_option_lifecycle_writes()
+        expected_state = 'CLOSED' if terminal else 'T2_REACHED'
+        assert pm.analytics.rows[-1]['active_state'] == trade['state'] == expected_state
+        assert pm.analytics.conflicts == 1
+        assert not pm._option_pending[trade['id']]
+        persisted = pm.analytics.rows[-1]['option_trailing']
+        restored = OptionTrailingContext.from_dict(persisted).to_dict()
+        contexts = [opt, persisted, restored]
+        alert = pm.analytics.rows[-1].get('alert_snapshot')
+        if alert:
+            contexts.extend([alert['option_trailing'], alert['trade']['market_context']['option_trailing']])
+        for context in contexts:
+            for field in ('locked_option_sl', 'protection_mode', 'premium_stop_source',
+                          'stop_effective_at', 'previous_locked_option_sl'):
+                assert context[field] == committed[field]
+        if terminal:
+            assert opt['exit']['option_stop'] == pytest.approx(167.2)
+            assert opt['exit']['stop_source'] == 'BREAK_EVEN_COST'
+        else:
+            later_at = at + timedelta(minutes=1)
+            later = {**_quote(170.0, 22), 'observed_at': later_at.isoformat(), 'received_at': later_at.isoformat()}
+            events = await pm.update_option_market_events([], {}, current_time=later_at, option_quotes=[later])
+            assert (trade['id'], 'ATR_SL_HIT') in events
+            assert opt['exit']['option_stop'] == pytest.approx(180.0)
 
 
 @pytest.mark.parametrize('replacement_active', [False, True])

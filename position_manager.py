@@ -2395,6 +2395,8 @@ class PositionManager:
                         try:
                             persisted = await loop.run_in_executor(None, lambda: self.analytics.get_option_lifecycle_state(trade_id))
                             persisted_opt = persisted.get("option_trailing") or {}
+                            stop_fields = ("locked_option_sl", "protection_mode", "premium_stop_source",
+                                           "stop_effective_at", "previous_locked_option_sl")
                             committed_rev = persisted_opt.get("revision")
                             if committed_rev and committed_rev != revision:
                                 self._option_revisions[trade_id] = committed_rev
@@ -2437,8 +2439,7 @@ class PositionManager:
                                             committed_stop = persisted_opt.get("locked_option_sl")
                                             observed_stop = candidate.get("locked_option_sl")
                                             if committed_stop is not None and (observed_stop is None or committed_stop > observed_stop):
-                                                candidate["locked_option_sl"] = committed_stop
-                                                candidate["protection_mode"] = persisted_opt.get("protection_mode", candidate.get("protection_mode"))
+                                                candidate.update({field: deepcopy(persisted_opt.get(field)) for field in stop_fields})
                                             candidate.update(phase="CLOSED", remaining_fraction=0.0)
                                             queued["score"] = candidate["highest_milestone"]
                                             rebased_trade = deepcopy(trade)
@@ -2454,7 +2455,9 @@ class PositionManager:
                                                 alert["option_trailing"] = deepcopy(candidate)
                                                 alert["option_trailing"].pop("alert_events", None)
                                                 alert["trade"]["market_context"]["option_trailing"] = deepcopy(alert["option_trailing"])
-                                            opt.update({key: candidate[key] for key in ("highest_milestone", "booked_fraction", "locked_option_sl", "protection_mode", "exit") if key in candidate})
+                                            opt.update({key: candidate[key] for key in
+                                                        ("highest_milestone", "booked_fraction", "exit") + stop_fields
+                                                        if key in candidate})
                                             kept.append((queued_id, queued))
                                         elif older_phase and candidate.get("locked_option_sl") is not None and (
                                                 persisted_opt.get("locked_option_sl") is None or candidate["locked_option_sl"] > persisted_opt["locked_option_sl"]):
@@ -2486,8 +2489,7 @@ class PositionManager:
                                                 or (not older_phase and (candidate.get("pending_index_observations") or candidate.get("observed_index_guard_exit")))):
                                             # Milestone progress and stop strength are independent:
                                             # retain new touches/backfill guards with committed protection.
-                                            candidate["locked_option_sl"] = persisted_opt["locked_option_sl"]
-                                            candidate["protection_mode"] = persisted_opt.get("protection_mode", candidate.get("protection_mode"))
+                                            candidate.update({field: deepcopy(persisted_opt.get(field)) for field in stop_fields})
                                             alert = queued.get("alert_snapshot")
                                             if alert:
                                                 alert["option_trailing"] = deepcopy(candidate)
@@ -2495,7 +2497,7 @@ class PositionManager:
                                                 alert["trade"]["market_context"]["option_trailing"] = deepcopy(alert["option_trailing"])
                                             # Later queued bars may already have raised live protection.
                                             if opt.get("locked_option_sl") is None or candidate["locked_option_sl"] > opt["locked_option_sl"]:
-                                                opt.update({key: candidate[key] for key in ("locked_option_sl", "protection_mode")})
+                                                opt.update({key: candidate[key] for key in stop_fields})
                                             kept.append((queued_id, queued))
                                         elif not older_phase and not older_stop:
                                             kept.append((queued_id, queued))

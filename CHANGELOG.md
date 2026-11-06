@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #156 recovered stop metadata:** Revision-conflict recovery now adopts a higher committed stop together with its premium source, effective time, previous stop and protection mode for milestone and terminal transitions. This keeps v2 writes consistent with the SQL stop-source invariant while preserving observed exit provenance and newer live protection.
+
 - **PR #156 T1-seeded ATR bar ordering:** A T1-tied option close above cost but at/below an ATR stop seeded at that timestamp now retains `ATR_STOP_ONLY_BREACH` uncertainty instead of closing retroactively. Persist the seeded stop and stable ambiguity identity; later proven protection routes separately while reference finalization waits.
 
 - **PR #156 quote-first T1/T2 reconciliation:** Persist accepted pre-T1 cost-only quotes by source second until the index watermark passes them. Reconcile cached same-time evidence before milestones, including after a newer quote or restart; legacy snapshots can reuse their matching last quote. T1 clears the pending cache while preserving ordering uncertainty.

@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: partial stop metadata during revision repair
+
+Fail-first replays used a local ₹167.20 cost stop and a committed ₹180 ATR stop. Recovery copied the higher stop but retained `BREAK_EVEN_COST`, violating the v2 SQL source/price invariant and leaving the write queued while the database stayed at T1. Four milestone/terminal and immediate/outage-retry variants reproduced the failure. Both adoption branches now copy the full stop revision into queued and eligible live/alert state. Tests validate queue drainage, serialization, subsequent ATR protection, and immutable observed break-even exit provenance.
+
 ## P2: T1-tied bar below a newly seeded ATR stop
 
 Fail-first CE/PE replays seeded ₹196 ATR at a 10:30 T1 tick, then closed on the simultaneous ₹190 option bar despite original SL ₹161.05 and entry cost ₹167.20. Same-batch and split-batch cases all emitted an unwarranted ATR exit. The T1 ambiguity helper now recognizes this seeded-stop-only range, stores `ATR_STOP_ONLY_BREACH` and the seeded level under a distinct stable identity, and defers reference finalization. Regression coverage verifies persistence/retry, recovery without erasure, and a later genuine ATR breach routing protection separately.
