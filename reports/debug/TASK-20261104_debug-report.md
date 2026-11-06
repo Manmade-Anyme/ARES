@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: T1-tied bar below a newly seeded ATR stop
+
+Fail-first CE/PE replays seeded ₹196 ATR at a 10:30 T1 tick, then closed on the simultaneous ₹190 option bar despite original SL ₹161.05 and entry cost ₹167.20. Same-batch and split-batch cases all emitted an unwarranted ATR exit. The T1 ambiguity helper now recognizes this seeded-stop-only range, stores `ATR_STOP_ONLY_BREACH` and the seeded level under a distinct stable identity, and defers reference finalization. Regression coverage verifies persistence/retry, recovery without erasure, and a later genuine ATR breach routing protection separately.
+
 ## P2: premium quote accepted before its same-time index milestone
 
 Fail-first replay accepted ₹165 at 09:20 against initial SL ₹161.05 and entry cost ₹167.20, then received a same-source-time T2 tick two seconds later. All four arrival/restart variants committed T2 without cost uncertainty. Accepted cost-only observations now persist by source second and are reconciled before milestones, so T1 is recorded while T2 remains deferred behind `COST_STOP_ONLY_BREACH`. The cache survives an intervening quote and serialization; legacy snapshots reuse matching last-quote evidence. Reconciliation validates contract/receipt time, preserves newer market evidence, and clears pending quotes in the T1 snapshot.

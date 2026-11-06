@@ -1,5 +1,12 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: T1 bar tied to an ATR stop seeded above cost
+
+- Four fail-first CE/PE same/split-batch cases emitted an unwarranted `ATR_SL_HIT` for a ₹190 T1-tied bar against the newly seeded ₹196 stop, despite initial SL ₹161.05 and entry cost ₹167.20.
+- Focused module: **102 passed, 2 warnings**. Corrected cases retain `T1_ORDER_UNKNOWN/ATR_STOP_ONLY_BREACH` and the seeded level, persist/restore it, deduplicate unchanged retries, survive recovery, and route a later true breach while reference finalization remains deferred.
+- Full isolated `tests/`: **2,483 passed, 45 subtests passed, 12 warnings** in 175.12 seconds. Compilation and `git diff --check` pass; Actions for the pushed revision are pending.
+- No production data, provider requests, broker orders, deployment, or worker start was used.
+
 ## P2: reconcile quote-first evidence before same-time milestones
 
 - All four fail-first replays committed T2 incorrectly when the ₹165 cost-only quote arrived before the matching index tick. The corrected cases cover direct replay, an intervening newer quote, restart with pending evidence, and a legacy last-quote snapshot.

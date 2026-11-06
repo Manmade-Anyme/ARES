@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #156 T1-seeded ATR bar ordering:** A T1-tied option close above cost but at/below an ATR stop seeded at that timestamp now retains `ATR_STOP_ONLY_BREACH` uncertainty instead of closing retroactively. Persist the seeded stop and stable ambiguity identity; later proven protection routes separately while reference finalization waits.
+
 - **PR #156 quote-first T1/T2 reconciliation:** Persist accepted pre-T1 cost-only quotes by source second until the index watermark passes them. Reconcile cached same-time evidence before milestones, including after a newer quote or restart; legacy snapshots can reuse their matching last quote. T1 clears the pending cache while preserving ordering uncertainty.
 
 - **PR #156 source-second quote revisions:** Accept changed premium prices at an already watermarked source second through ingestion and downstream checks, while deduplicating identical observations and preserving stop-effective-time validation. Persist price revisions with their quote identity, preserve existing T1 ambiguity through recovery, and stop a batch after terminal closure.

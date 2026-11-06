@@ -2,6 +2,8 @@
 
 ## Scope
 
+A T1-tied bar above entry cost but at/below an ATR stop seeded at that timestamp retains `ATR_STOP_ONLY_BREACH` ordering uncertainty and the seeded level. It does not trigger the newly activated stop retroactively. That ambiguity survives persistence and blocks assumed reference finalization while later proven protection can route separately.
+
 Accepted pre-T1 quotes between initial SL and entry cost are retained by source second until the index watermark passes them. The detector reconciles cached evidence before a later same-time T1/T2 tick commits milestones, preserving cost-only uncertainty through newer quotes and restart. T1 clears the pending cache; legacy snapshots can reuse a matching last quote. Cached reconciliation retains contract/time validation and preserves the latest market quote and maximum watermark.
 
 Fresh price changes within one source second pass the same stop checks as newer timestamps; timestamp equality alone does not prove a duplicate. Identical accepted timestamp/price observations are deduplicated. Price revisions persist under distinct quote identities, recovery preserves earlier T1 uncertainty/protection, and a terminal quote stops further processing in its batch.

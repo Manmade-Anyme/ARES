@@ -2315,14 +2315,18 @@ class PositionManager:
             ambiguity = snapshot.get(ambiguity_key)
             if (isinstance(ambiguity, dict)
                     and ambiguity.get("status") == "T1_ORDER_UNKNOWN"
-                    and ambiguity.get("ordering_reason") == "COST_STOP_ONLY_BREACH"):
+                    and ambiguity.get("ordering_reason") in {"COST_STOP_ONLY_BREACH", "ATR_STOP_ONLY_BREACH"}):
                 # A cost-only T1 ambiguity can arrive after a non-breaching
                 # bar already committed this event-time watermark. Give that
                 # newly observed uncertainty its own retry-stable identity.
-                identity += ":cost-stop-ambiguity:" + ambiguity_key + ":" + ":".join(
+                label = ("seeded-atr-ambiguity" if ambiguity.get("ordering_reason") == "ATR_STOP_ONLY_BREACH"
+                         else "cost-stop-ambiguity")
+                identity += ":" + label + ":" + ambiguity_key + ":" + ":".join(
                     str(ambiguity.get(key) or "") for key in (
                         "event_at", "source_minute", "received_at", "source", "price",
                         "option_close", "original_option_sl", "entry_premium"))
+                if label == "seeded-atr-ambiguity":
+                    identity += ":" + str(ambiguity.get("seeded_option_sl"))
         resolution = snapshot.get("ambiguity_resolution")
         if resolution:
             # Keep the silent resolution distinct from the watermark snapshot
@@ -2787,7 +2791,7 @@ class PositionManager:
                 continue
             if ambiguity.get("protective_option_exit"):
                 return ambiguity
-            if ambiguity.get("ordering_reason") == "COST_STOP_ONLY_BREACH":
+            if ambiguity.get("ordering_reason") in {"COST_STOP_ONLY_BREACH", "ATR_STOP_ONLY_BREACH"}:
                 return ambiguity
             try:
                 price = float(ambiguity["price"])
@@ -2845,26 +2849,37 @@ class PositionManager:
         return "SL_HIT" if opt.get("execution_route_pending") else None
 
     async def _retain_t1_premium_bar_ambiguity(self, trade, bar, index_observations=None):
-        """Keep a T1-tied close between the initial stop and cost from replaying."""
+        """Keep a T1-tied close from applying a newly activated cost or seeded ATR stop."""
         opt = trade["market_context"]["option_trailing"]
         try:
             price = float(bar.close)
             original_stop = float(opt["original_option_sl"])
             entry_premium = float(opt["original_option_entry"])
             event_at = parse_candle_timestamp(bar.end_time)
+            seeded_stop = None
+            if (opt.get("policy_version") == "option_premium_protection_v2"
+                    and opt.get("premium_stop_source") == "ATR_TRAILING"
+                    and opt.get("t1_at") and opt.get("stop_effective_at")
+                    and event_at == parse_candle_timestamp(opt["t1_at"])
+                    and event_at == parse_candle_timestamp(opt["stop_effective_at"])):
+                seeded_stop = float(opt["locked_option_sl"])
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError, OSError):
             return False
-        if (not isfinite(price) or price <= original_stop or price > entry_premium
+        ceiling = max(entry_premium, seeded_stop) if seeded_stop is not None and isfinite(seeded_stop) else entry_premium
+        if (not isfinite(price) or price <= original_stop or price > ceiling
                 or self._retained_t1_premium_exit(opt)):
             return False
         opt["ambiguous_premium_bar"] = {
             "status": "T1_ORDER_UNKNOWN", "event_at": event_at.isoformat(),
             "source_minute": parse_candle_timestamp(bar.start_time).isoformat(),
-            "option_close": price, "ordering_reason": "COST_STOP_ONLY_BREACH",
+            "option_close": price,
+            "ordering_reason": "ATR_STOP_ONLY_BREACH" if price > entry_premium else "COST_STOP_ONLY_BREACH",
             "original_option_sl": original_stop,
             "entry_premium": entry_premium,
             "tied_index_observations": list(index_observations or []),
         }
+        if price > entry_premium:
+            opt["ambiguous_premium_bar"]["seeded_option_sl"] = seeded_stop
         opt["source_candle"] = {"start_time": bar.start_time, "end_time": bar.end_time,
                                 "close": price}
         opt["last_valid_option_bar_end"] = bar.end_time

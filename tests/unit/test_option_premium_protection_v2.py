@@ -193,6 +193,54 @@ async def test_post_t1_cost_stop_equality_is_break_even_and_zero_runner_points()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+@pytest.mark.parametrize("split_batches", [False, True])
+async def test_t1_seeded_atr_bar_retains_ordering_without_retroactive_exit(option_type, split_batches):
+    trade = _trade(option_type=option_type)
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    start = datetime(2026, 11, 4, 9, 15, tzinfo=IST)
+    history = [OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                            200, 201, 199, 200, 1, "39961") for i in range(14)]
+    history.append(OptionCandle(start + timedelta(minutes=70), start + timedelta(minutes=75),
+                                190, 191, 189, 190, 1, "39961"))
+    at = history[-1].end_time
+    tick = {"price": trade["target_1"], "exchange_at": at.isoformat(),
+            "received_at": at.isoformat(), "source": "dhan_tick"}
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        if split_batches:
+            await pm.update_option_market_events([], {"39961": history[:-1]}, current_time=at, index_ticks=[tick])
+            events = await pm.update_option_market_events([], {"39961": history}, current_time=at + timedelta(seconds=2))
+        else:
+            events = await pm.update_option_market_events([], {"39961": history}, current_time=at, index_ticks=[tick])
+        assert ("v2-trade", "ATR_SL_HIT") not in events
+        assert trade["state"] == "T1_HIT"
+        assert opt["locked_option_sl"] == pytest.approx(196.0)
+        ambiguity = opt["ambiguous_premium_bar"]
+        assert ambiguity["status"] == "T1_ORDER_UNKNOWN"
+        assert ambiguity["ordering_reason"] == "ATR_STOP_ONLY_BREACH"
+        assert ambiguity["seeded_option_sl"] == pytest.approx(196.0)
+        assert not opt.get("execution_route_pending")
+        assert not opt.get("exit_trigger")
+        persisted = pm.analytics.rows[-1]["option_trailing"]
+        assert OptionTrailingContext.from_dict(persisted).ambiguous_premium_bar == ambiguity
+        rows = len(pm.analytics.rows)
+        await pm._record_trade_update(trade, None, None, at.isoformat())
+        assert len(pm.analytics.rows) == rows
+        for minute, price in [(31, 200.0), (32, 195.0)]:
+            quote_at = at + timedelta(minutes=minute - 30)
+            quote = {**_quote(price, minute, option_type=option_type),
+                     "observed_at": quote_at.isoformat(), "received_at": quote_at.isoformat()}
+            later = await pm.update_option_market_events([], {}, current_time=quote_at, option_quotes=[quote])
+    assert ("v2-trade", "ATR_SL_HIT") in later
+    assert trade["state"] == "T1_HIT"
+    assert opt.get("exit") is None
+    assert opt["ambiguous_premium_bar"]["option_close"] == pytest.approx(190.0)
+    assert opt["execution_route_pending"] is True
+
+
+@pytest.mark.asyncio
 async def test_t1_cost_stop_quote_after_bar_watermark_has_distinct_persisted_identity():
     trade = _trade()
     opt = trade["market_context"]["option_trailing"]
