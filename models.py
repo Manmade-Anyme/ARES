@@ -26,11 +26,13 @@ class SetupType(Enum):
         OI_WALL_REJECTION: Triggered by rejection at strikes with massive fresh Open Interest.
         EXHAUSTION_REVERSAL: Triggered by volume climaxes and indecision at price extremes.
         TREND_CONTINUATION: Triggered by a shallow pullback and resumption within a persistent regime.
+        IV_GATED_BREAKOUT: Triggered by afternoon range breakout confirmed by expanding Call IV.
     """
     FAILED_BREAKOUT = "FAILED_BREAKOUT"
     OI_WALL_REJECTION = "OI_WALL_REJECTION"
     EXHAUSTION_REVERSAL = "EXHAUSTION_REVERSAL"
     TREND_CONTINUATION = "TREND_CONTINUATION"
+    IV_GATED_BREAKOUT = "IV_GATED_BREAKOUT"
 
 
 class Direction(Enum):

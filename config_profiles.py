@@ -70,6 +70,7 @@ _PER_TYPE_LEVELS_DEFAULT = {
     "TREND_CONTINUATION":  SetupLevels(25.0, 25.0, 80.0),
     "OI_WALL_REJECTION":   SetupLevels(16.0, 25.0, 40.0),
     "FAILED_BREAKOUT":     SetupLevels(12.0, 20.0, 55.0),
+    "IV_GATED_BREAKOUT":   SetupLevels(30.0, 35.0, 70.0),
 }
 
 
@@ -86,7 +87,7 @@ class TuningConfig:
 
     # Engine
     poll_interval_seconds: int = 60
-    signal_cooldown_minutes: int = 15
+    signal_cooldown_minutes: int = 10
     candle_buffer_size: int = 30
     iv_buffer_size: int = 10
 
@@ -195,6 +196,15 @@ class TuningConfig:
     continuation_resume_volume_ratio: float = 1.2
     continuation_min_score: int = 2
 
+    # IV-Gated Dynamic Breakout Detector (Zero static time boundaries)
+    iv_breakout_enabled: bool = True
+    iv_breakout_lookback_candles: int = 25
+    iv_breakout_max_base_range_pts: float = 55.0
+    iv_breakout_volume_ratio: float = 1.15
+    iv_breakout_buffer_pts: float = 2.0
+    iv_breakout_min_zscore: float = 0.8
+    iv_breakout_min_warmup_candles: int = 15
+
     # Per-setup-type SL / T1 / T2 (TASK-185). Applied centrally in the engine,
     # keyed by SetupType.value. See SetupLevels above. Same table in both
     # profiles for now; expiry may diverge after a month of live re-tuning.
@@ -228,7 +238,7 @@ class TuningConfig:
 # ─── The two profiles ────────────────────────────────────────────────────────
 
 NON_EXPIRY_CONFIG = TuningConfig(
-    signal_cooldown_minutes=15,
+    signal_cooldown_minutes=10,
     breakout_confirmation_candles=3,
     breakout_weak_volume_ratio=0.75,
     breakout_iv_falling_threshold=-3.0,
@@ -250,7 +260,7 @@ NON_EXPIRY_CONFIG = TuningConfig(
 )
 
 EXPIRY_CONFIG = TuningConfig(
-    signal_cooldown_minutes=15,
+    signal_cooldown_minutes=10,
 
     # Trade quality gates
     min_rr_ratio=1.0,

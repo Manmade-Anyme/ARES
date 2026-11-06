@@ -36,12 +36,14 @@ SETUP_TYPES = [
     "OI_WALL_REJECTION",
     "EXHAUSTION_REVERSAL",
     "TREND_CONTINUATION",
+    "IV_GATED_BREAKOUT",
 ]
 SETUP_LABELS = {
     "FAILED_BREAKOUT": "Failed Breakout",
     "OI_WALL_REJECTION": "OI Wall Rejection",
     "EXHAUSTION_REVERSAL": "Exhaustion Reversal",
     "TREND_CONTINUATION": "Trend Continuation",
+    "IV_GATED_BREAKOUT": "IV-Gated Breakout",
 }
 
 

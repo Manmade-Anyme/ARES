@@ -4,6 +4,22 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **IV-Gated Breakout Expansion Strategy & Signal Cooldown Reduction (TASK-20261106):**
+  - Integrated 5th setup type `SetupType.IV_GATED_BREAKOUT` into core ARES detection engine (`detectors/iv_breakout.py`, `models.py`, `engine.py`).
+  - Replaced static time barriers (12:30 anchor cutoff and 14:15 entry cutoff) with dynamic, time-agnostic consolidation base detection (`iv_breakout_lookback_candles=25`, `iv_breakout_max_base_range_pts=55.0`, `iv_breakout_volume_ratio=1.15`, `iv_breakout_buffer_pts=2.0`, `iv_breakout_min_zscore=0.8`). Allows immediate breakout entries across morning, midday, and afternoon regimes whenever tight consolidation base breaks out with volume and VWAP confirmation.
+  - Added pure mathematical helper `evaluate_iv_velocity()` in `options_math.py` implementing the calibrated Asymmetric Anti-Crush Gate ($d\text{IV}_{1\text{m}} \le -0.30\%$ or $d\text{IV}_{3\text{m}} \le -0.40\%$) and Late-Stage Climax Gate ($Z_{VWAP} > 2.2$ with non-positive IV delta).
+  - Evaluated against 90 days / 62 sessions of 1-minute Dhan native ATM Call IV feeds (`dhan.expired_options_data` + intraday feeds): empirical grid search yields +401.1 net spot pts across 38 trades (52.6% win/BE rate) under ARES Position Manager lifecycle.
+  - Reduced `signal_cooldown_minutes` from 15 to 10 across `TuningConfig`, `NON_EXPIRY_CONFIG`, and `EXPIRY_CONFIG` to allow faster resumption after completed trades.
+  - Setup levels configured centrally in `config_profiles.py`: SL 30.0 pts, T1 35.0 pts, T2 fallback 70.0 pts, fully integrated with ARES Option ATR lifecycle trailing.
+  - Added unit test suite `tests/unit/test_iv_breakout_detector.py` and POC audit tests `tests/unit/test_iv_breakout_expansion.py`.
+  - QA & PR Review hardening:
+    - Decoupled `IVBreakoutDetector.observe()` from `update()` in `engine.py` Step 1, ensuring base candle history is never skipped during signal cooldowns or higher-priority detector execution.
+    - Added defensive timestamp parsing (`_parse_time`) in `IVBreakoutDetector` to prevent `TypeError` when processing mock candles or string timestamps.
+    - Added freshness time window checks (<=180s for 1m, <=360s for 3m) in IV microstructure velocity evaluation.
+    - Registered `IV_GATED_BREAKOUT` in `reports.py` (`SETUP_TYPES` and `SETUP_LABELS`) for Discord daily/monthly performance reporting.
+    - Added `IV_GATED_BREAKOUT` to `tests/unit/test_per_type_levels.py` approved tables and full regression suite.
+
+
 - **Tuesday expiry profile sensitivity tuning (TASK-20261103):** Set expiry OI-wall minimum OI/change to 6,000,000/5.0%, widen approach/test/excursion/retest distances to 60/15/15/15 points, and set breakout writer/IV/weak-volume thresholds to 5%/−3.0/0.75. Set exhaustion volume/IV thresholds to 2.5/3.5, continuation score/resumption-volume/pullback-window to 2/1.2/8 candles, level scan to 400 points, and signal cooldown to 15 minutes. Non-expiry settings and expiry candle-body ratio remain unchanged. Multi-Tuesday replay confirms 5.0% growth eliminates fragile 2.7% false-alarm watches while delivering 1 disciplined trade per session. Dhan replay evidence and limits are in the Ares Build Log.
 
 - **TASK-20261102 Live market quotes persistence for SpanQuant frontend:**
