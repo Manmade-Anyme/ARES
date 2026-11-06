@@ -196,12 +196,14 @@ class TuningConfig:
     continuation_resume_volume_ratio: float = 1.2
     continuation_min_score: int = 2
 
-    # IV-Gated Breakout Expansion Detector
+    # IV-Gated Dynamic Breakout Detector (Zero static time boundaries)
     iv_breakout_enabled: bool = True
-    iv_breakout_anchor_end: str = "12:30"
-    iv_breakout_cutoff_time: str = "14:15"
+    iv_breakout_lookback_candles: int = 25
+    iv_breakout_max_base_range_pts: float = 55.0
+    iv_breakout_volume_ratio: float = 1.15
     iv_breakout_buffer_pts: float = 2.0
     iv_breakout_min_zscore: float = 0.8
+    iv_breakout_min_warmup_candles: int = 15
 
     # Per-setup-type SL / T1 / T2 (TASK-185). Applied centrally in the engine,
     # keyed by SetupType.value. See SetupLevels above. Same table in both

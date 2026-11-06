@@ -35,37 +35,35 @@ def test_evaluate_iv_velocity_approvals_and_rejections():
 
 
 def test_iv_breakout_detector_lifecycle():
-    """Tests the IVBreakoutDetector across session progression."""
+    """Tests the IVBreakoutDetector dynamic base breakout across any session time."""
     detector = IVBreakoutDetector()
     date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
 
-    # 1. Morning candles establishing anchor high at 24400.0
-    for m in range(0, 195):  # 09:15 to 12:30
+    # 1. 25 base candles establishing consolidation range (24340 - 24365, range=25 pts)
+    for m in range(0, 25):
         t = date_now + timedelta(minutes=m)
         c = OHLCVCandle(
             timestamp=t,
             open=24350.0,
-            high=24400.0 if m == 30 else 24380.0,
+            high=24365.0,
             low=24340.0,
-            close=24360.0,
+            close=24355.0,
             volume=1000000,
-            vwap=24360.0
+            vwap=24355.0
         )
         sig = detector.update(c, avg_volume=1000000, iv_current=13.0)
-        assert sig is None  # No entries before 12:30
+        assert sig is None  # Establishing 25-bar consolidation base
 
-    assert detector.anchor_high == 24400.0
-
-    # 2. Breakout candle at 13:00 above anchor high (24405 > 24402) with rising IV
-    t_bo = date_now + timedelta(minutes=225)  # 13:00
+    # 2. Breakout candle at 09:41 AM (minute 26) breaking above 24365.0 + 2.0 with volume surge
+    t_bo = date_now + timedelta(minutes=26)
     c_bo = OHLCVCandle(
         timestamp=t_bo,
-        open=24395.0,
-        high=24408.0,
-        low=24390.0,
-        close=24405.0,
-        volume=1500000,
-        vwap=24370.0
+        open=24360.0,
+        high=24375.0,
+        low=24358.0,
+        close=24370.0,
+        volume=1300000,
+        vwap=24356.0
     )
     # Provide expanding IV
     detector.iv_history.append((t_bo - timedelta(minutes=3), 12.8))
@@ -76,9 +74,10 @@ def test_iv_breakout_detector_lifecycle():
     assert sig is not None
     assert sig.setup_type == SetupType.IV_GATED_BREAKOUT
     assert sig.direction == Direction.BULLISH
-    assert sig.trigger_price == 24405.0
+    assert sig.trigger_price == 24370.0
     assert sig.option_type == "CE"
     assert sig.confidence == "HIGH"
+    assert "Dynamic Base Breakout past 24365.00" in sig.reasons[0]
 
 
 def test_iv_breakout_levels_configured():
@@ -96,33 +95,33 @@ def test_ares_engine_emits_iv_breakout_signal():
     engine = AresEngine()
     date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
 
-    # Prime anchor high
-    for m in range(0, 195):
+    # 25 base candles
+    for m in range(0, 25):
         t = date_now + timedelta(minutes=m)
         c = OHLCVCandle(
-            timestamp=t, open=24350.0, high=24400.0, low=24340.0, close=24360.0,
-            volume=1000000, vwap=24360.0
+            timestamp=t, open=24350.0, high=24365.0, low=24340.0, close=24355.0,
+            volume=1000000, vwap=24355.0
         )
         atm = ATMStrikes(
-            spot_price=24360.0,
+            spot_price=24355.0,
             ce=OptionRow(strike=24350, option_type="CE", iv=13.0),
             pe=OptionRow(strike=24350, option_type="PE", iv=13.0)
         )
         engine.tick(c, full_chain=[], atm=atm)
 
-    # Breakout candle at 13:00
-    t_bo = date_now + timedelta(minutes=225)
+    # Breakout candle at minute 26 (09:41 AM)
+    t_bo = date_now + timedelta(minutes=26)
     c_bo = OHLCVCandle(
-        timestamp=t_bo, open=24395.0, high=24408.0, low=24390.0, close=24405.0,
-        volume=1500000, vwap=24370.0
+        timestamp=t_bo, open=24360.0, high=24375.0, low=24358.0, close=24370.0,
+        volume=1300000, vwap=24356.0
     )
     # Give expanding IV
     engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=3), 12.8))
     engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=1), 13.0))
     atm_bo = ATMStrikes(
-        spot_price=24405.0,
-        ce=OptionRow(strike=24400, option_type="CE", iv=13.2),
-        pe=OptionRow(strike=24400, option_type="PE", iv=13.2)
+        spot_price=24370.0,
+        ce=OptionRow(strike=24350, option_type="CE", iv=13.2),
+        pe=OptionRow(strike=24350, option_type="PE", iv=13.2)
     )
 
     signal = engine.tick(c_bo, full_chain=[], atm=atm_bo)
@@ -131,8 +130,8 @@ def test_ares_engine_emits_iv_breakout_signal():
     assert signal.setup_type == SetupType.IV_GATED_BREAKOUT
     assert signal.direction == Direction.BULLISH
     # Engine levels assigned via apply_per_type_levels
-    assert signal.stop_loss == 24405.0 - 30.0  # 24375.0
-    assert signal.target_1 == 24405.0 + 35.0   # 24440.0
+    assert signal.stop_loss == 24370.0 - 30.0  # 24340.0
+    assert signal.target_1 == 24370.0 + 35.0   # 24405.0
 
 
 def test_iv_breakout_defensive_mock_and_string_safety():
@@ -145,13 +144,12 @@ def test_iv_breakout_defensive_mock_and_string_safety():
     mock_candle.close = 24440.0
     mock_candle.volume = 100000
 
-    # Should safely return None without throwing TypeError: '<='
     sig = detector.update(mock_candle, avg_volume=100000, iv_current=12.5)
     assert sig is None
 
 
-def test_iv_breakout_anchor_observed_during_cooldown():
-    """QA Test: Engine Step 1 observation preserves morning anchor high during cooldown."""
+def test_iv_breakout_buffer_observed_during_cooldown():
+    """QA Test: Engine Step 1 observation preserves candle and IV history during cooldown."""
     from models import OptionRow, ATMStrikes
     engine = AresEngine()
     engine.last_signal_time = datetime.now()  # Put engine into active cooldown
@@ -163,8 +161,9 @@ def test_iv_breakout_anchor_observed_during_cooldown():
     result = engine.tick(c, full_chain=[], atm=atm)
     assert result is None  # Suppressed by cooldown
 
-    # BUT anchor high was observed and updated
-    assert engine.iv_breakout_detector.anchor_high == 24460.0
+    # BUT history was observed and updated
+    assert len(engine.iv_breakout_detector.candle_history) == 1
+    assert engine.iv_breakout_detector.session_high == 24460.0
 
 
 def test_reports_includes_iv_gated_breakout():
@@ -207,16 +206,26 @@ async def test_iv_breakout_end_to_end_ml_prediction_and_collection():
     engine = AresEngine()
     date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
 
-    # Establish 09:15-12:30 anchor high at 24400.0
-    for m in range(0, 195):
+    # Establish 25-candle base (09:15-09:39) with high at 24365.0
+    for m in range(0, 25):
         t = date_now + timedelta(minutes=m)
-        c = OHLCVCandle(timestamp=t, open=24350.0, high=24400.0 if m == 30 else 24380.0, low=24340.0, close=24360.0, volume=1000000, vwap=24360.0)
-        atm = ATMStrikes(spot_price=24360.0, ce=OptionRow(strike=24350, option_type="CE", iv=13.0, oi=5000000, delta=0.52), pe=OptionRow(strike=24350, option_type="PE", iv=13.0, oi=4000000, delta=-0.48))
+        c = OHLCVCandle(
+            timestamp=t, open=24350.0, high=24365.0, low=24340.0, close=24355.0,
+            volume=1000000, vwap=24352.0
+        )
+        atm = ATMStrikes(
+            spot_price=24355.0,
+            ce=OptionRow(strike=24350, option_type="CE", iv=13.0, oi=5000000, delta=0.52),
+            pe=OptionRow(strike=24350, option_type="PE", iv=13.0, oi=4000000, delta=-0.48)
+        )
         engine.tick(c, full_chain=[], atm=atm)
 
-    # 13:00 Breakout candle past 24400
-    t_bo = date_now + timedelta(minutes=225)
-    c_bo = OHLCVCandle(timestamp=t_bo, open=24395.0, high=24408.0, low=24390.0, close=24405.0, volume=1500000, vwap=24370.0)
+    # Breakout candle at minute 26 (09:41 AM) breaking 24365.0 base high
+    t_bo = date_now + timedelta(minutes=26)
+    c_bo = OHLCVCandle(
+        timestamp=t_bo, open=24365.0, high=24410.0, low=24360.0, close=24405.0,
+        volume=1500000, vwap=24370.0
+    )
     engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=3), 12.8))
     engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=1), 13.0))
 

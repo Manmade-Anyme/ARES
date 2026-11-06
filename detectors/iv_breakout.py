@@ -1,8 +1,9 @@
 """
-IV-Gated Breakout Expansion Detector
-====================================
-Identifies true afternoon range breakouts confirmed by expanding Call IV,
+IV-Gated Dynamic Breakout Detector
+==================================
+Identifies genuine dynamic range breakouts confirmed by expanding Call IV,
 while rejecting vol-crush bull traps and late-stage exhaustion traps.
+Operates dynamically across all market sessions without static time boundaries.
 """
 
 from collections import deque
@@ -23,12 +24,12 @@ from options_math import evaluate_iv_velocity
 
 class IVBreakoutDetector:
     """
-    Detects Afternoon Range Breakouts (12:30 - 14:15) gated by Call IV velocity.
+    Detects dynamic consolidation base breakouts gated by Call IV velocity and VWAP momentum.
+    Zero static time-of-day constraints.
     """
 
     def __init__(self, calibration_policy=None):
         self.calibration_policy = calibration_policy
-        self.anchor_high: float = 0.0
         self.session_high: float = 0.0
         self.current_date = None
         self.iv_history: deque = deque(maxlen=60)
@@ -36,7 +37,6 @@ class IVBreakoutDetector:
         self.fired_today: bool = False
 
     def reset_session(self, candle_date) -> None:
-        self.anchor_high = 0.0
         self.session_high = 0.0
         self.current_date = candle_date
         self.iv_history.clear()
@@ -67,9 +67,9 @@ class IVBreakoutDetector:
     def observe(self, candle: OHLCVCandle, iv_current: Optional[float] = None) -> None:
         """
         Record candle and IV state across every tick regardless of cooldown or priority.
-        Prevents blind spots in morning anchor high tracking.
+        Maintains rolling buffers for dynamic base evaluation.
         """
-        candle_date, time_str = self._parse_time(candle)
+        candle_date, _ = self._parse_time(candle)
         if candle_date is not None and self.current_date != candle_date:
             self.reset_session(candle_date)
 
@@ -86,13 +86,6 @@ class IVBreakoutDetector:
             if not self.iv_history or self.iv_history[-1][0] != candle.timestamp:
                 self.iv_history.append((candle.timestamp, iv_current))
 
-        anchor_end = getattr(settings, "iv_breakout_anchor_end", "12:30")
-        if time_str <= anchor_end:
-            try:
-                self.anchor_high = max(self.anchor_high, float(candle.high))
-            except (TypeError, ValueError):
-                pass
-
     def update(
         self,
         candle: OHLCVCandle,
@@ -105,25 +98,34 @@ class IVBreakoutDetector:
 
         self.observe(candle, iv_current=iv_current)
 
-        _, time_str = self._parse_time(candle)
-        anchor_end = getattr(settings, "iv_breakout_anchor_end", "12:30")
-        if time_str <= anchor_end:
+        if self.fired_today:
             return None
 
-        # Entry window: 12:30 to 14:15
-        cutoff_time = getattr(settings, "iv_breakout_cutoff_time", "14:15")
-        if not (anchor_end < time_str <= cutoff_time):
+        lookback = getattr(settings, "iv_breakout_lookback_candles", 25)
+        min_warmup = getattr(settings, "iv_breakout_min_warmup_candles", 15)
+
+        # Require minimum session candles to establish dynamic base
+        if len(self.candle_history) < max(lookback + 1, min_warmup + 1):
             return None
 
-        if self.anchor_high <= 0 or self.fired_today:
+        # Exclude immediate current candle to determine base resistance
+        history_list = list(self.candle_history)
+        base_candles = history_list[-(lookback + 1):-1]
+        base_high = max(c.high for c in base_candles)
+        base_low = min(c.low for c in base_candles)
+        base_range = base_high - base_low
+
+        max_base_range = getattr(settings, "iv_breakout_max_base_range_pts", 55.0)
+        if base_range > max_base_range:
             return None
 
-        # 1. Price Breakout Conditions
+        # 1. Dynamic Price Breakout Conditions
         buffer_pts = getattr(settings, "iv_breakout_buffer_pts", 2.0)
         min_zscore = getattr(settings, "iv_breakout_min_zscore", 0.8)
+        vol_ratio = getattr(settings, "iv_breakout_volume_ratio", 1.15)
 
         # Approximate 20-candle standard deviation for Z-score
-        recent = list(self.candle_history)[-20:]
+        recent = history_list[-20:]
         if len(recent) >= 5:
             mean_c = sum(c.close for c in recent) / len(recent)
             variance = sum((c.close - mean_c) ** 2 for c in recent) / len(recent)
@@ -146,11 +148,11 @@ class IVBreakoutDetector:
         ema20 = sum(closes) / len(closes) if closes else candle.close
 
         is_breakout = (
-            candle.close > (self.anchor_high + buffer_pts) and
+            candle.close > (base_high + buffer_pts) and
             candle.close > vwap_val and
             candle.close > ema20 and
             vwap_zscore >= min_zscore and
-            candle.volume >= 0.95 * avg_volume
+            candle.volume >= (vol_ratio * avg_volume)
         )
 
         if not is_breakout:
@@ -196,7 +198,7 @@ class IVBreakoutDetector:
         )
 
         reasons = [
-            f"Afternoon Range Breakout past {self.anchor_high:.2f}",
+            f"Dynamic Base Breakout past {base_high:.2f} ({lookback}-bar consolidation range: {base_range:.1f} pts)",
             f"VWAP Z-Score {vwap_zscore:.2f} confirms directional momentum",
             f"IV Velocity confirmed ({iv_reason})"
         ]
@@ -217,4 +219,5 @@ class IVBreakoutDetector:
         )
 
         return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal
+
 
