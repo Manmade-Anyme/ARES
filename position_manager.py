@@ -2412,6 +2412,79 @@ class PositionManager:
                                     kept = []
                                     for queued_id, queued in pending:
                                         candidate = queued["option_trailing"]
+                                        unresolved = next((key for key in (
+                                            "ambiguous_index_touch", "ambiguous_premium_quote", "ambiguous_premium_bar")
+                                            if (persisted_opt.get(key) or {}).get("status") in {
+                                                "ORDER_UNKNOWN", "T1_ORDER_UNKNOWN", "T2_ORDER_UNKNOWN"}), None)
+                                        if not unresolved and persisted_opt.get("deferred_option_exit"):
+                                            unresolved = "deferred_option_exit"
+                                        if persisted_opt.get("policy_version") == "option_premium_protection_v2" and unresolved:
+                                            # A stale writer cannot certify an allocation or erase
+                                            # another writer's unresolved protective observation.
+                                            rebased = deepcopy(persisted_opt)
+                                            ambiguity = rebased[unresolved]
+                                            for key in ("subsequent_index_observations", "subsequent_premium_observations"):
+                                                observations = ambiguity.setdefault(key, [])
+                                                for context in (opt, candidate):
+                                                    for item in (context.get(unresolved) or {}).get(key) or []:
+                                                        if item not in observations:
+                                                            observations.append(deepcopy(item))
+                                            mark = candidate.get("last_index_mark")
+                                            if mark:
+                                                mark = {**mark, "high": mark["price"], "low": mark["price"], "candle_timestamp": None}
+                                            if mark and mark not in ambiguity["subsequent_index_observations"]:
+                                                ambiguity["subsequent_index_observations"].append(deepcopy(mark))
+                                            trigger = candidate.get("exit_trigger")
+                                            if trigger and trigger != rebased.get("exit_trigger"):
+                                                observations = ambiguity["subsequent_premium_observations"]
+                                                if trigger not in observations:
+                                                    observations.append(deepcopy(trigger))
+                                                if not rebased.get("exit_trigger"):
+                                                    # Cost-only uncertainty may have no proven exit.
+                                                    # A later local breach still routes protection,
+                                                    # while its reference closure remains deferred.
+                                                    rebased["exit_trigger"] = deepcopy(trigger)
+                                                    for field in ("execution_route_pending", "execution_route_reason", "execution_route_trigger"):
+                                                        rebased[field] = deepcopy(candidate.get(field))
+                                                    protective = candidate.get("exit") or candidate.get("deferred_option_exit")
+                                                    if protective:
+                                                        ambiguity.setdefault("protective_option_exit", deepcopy(protective))
+                                            observations = rebased.setdefault("pending_index_observations", [])
+                                            for item in candidate.get("pending_index_observations") or []:
+                                                if item not in observations:
+                                                    observations.append(deepcopy(item))
+                                            quote = candidate.get("last_option_quote")
+                                            previous_quote = rebased.get("last_option_quote") or {}
+                                            if quote and (not previous_quote.get("observed_at") or
+                                                    parse_candle_timestamp(quote["observed_at"]) >= parse_candle_timestamp(previous_quote["observed_at"])):
+                                                rebased["last_option_quote"] = deepcopy(quote)
+                                            if (candidate.get("locked_option_sl") is not None and
+                                                    candidate["locked_option_sl"] > (rebased.get("locked_option_sl") or 0)):
+                                                rebased.update({field: deepcopy(candidate.get(field)) for field in stop_fields})
+                                            for field in ("last_processed_option_bar_end", "last_valid_option_bar_end",
+                                                          "last_index_event_at", "quote_watermark"):
+                                                value = candidate.get(field)
+                                                if value and (not rebased.get(field) or parse_candle_timestamp(value) > parse_candle_timestamp(rebased[field])):
+                                                    rebased[field] = value
+                                            queued.update(option_trailing=rebased, active_state=persisted.get("active_state"),
+                                                          score=rebased.get("highest_milestone"), update_type=None,
+                                                          alert_snapshot=None, exit_reason=None, exit_price=None,
+                                                          exit_timestamp=None, pnl_points=None, option_pnl_points=None)
+                                            candidate = rebased
+                                            # Reconcile lifecycle/protection intent without rolling
+                                            # back newer live market evidence or a queued stop raise.
+                                            for field in ("phase", "highest_milestone", "booked_fraction", "remaining_fraction",
+                                                          "t1_at", "t2_at", "index_guard_enabled", "index_guard_stop",
+                                                          "ambiguous_index_touch", "ambiguous_premium_quote", "ambiguous_premium_bar",
+                                                          "pending_index_observations", "observed_index_guard_exit", "deferred_option_exit",
+                                                          "exit", "exit_trigger", "execution_route_pending", "execution_route_reason",
+                                                          "execution_route_trigger", "execution_status", "accounting",
+                                                          "monitoring_status", "monitoring_detail"):
+                                                opt[field] = deepcopy(rebased.get(field))
+                                            if (opt.get("locked_option_sl") is None or
+                                                    (rebased.get("locked_option_sl") or 0) > opt["locked_option_sl"]):
+                                                opt.update({field: deepcopy(rebased.get(field)) for field in stop_fields})
+                                            trade["state"] = queued["active_state"]
                                         if candidate.get("accounting_formula_version") == "one_lot_reference_v1":
                                             candidate["accounting"] = self._merge_reference_evidence(
                                                 persisted_opt.get("accounting"), candidate.get("accounting"))

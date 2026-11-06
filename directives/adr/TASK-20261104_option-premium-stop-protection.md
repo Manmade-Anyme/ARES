@@ -95,6 +95,8 @@ The v2 policy uses the same canonical milestone-aware outcome rules as `option_a
 
 ## 3. Premium Quote Source and Failure Policy
 
+On revision conflict, committed unresolved premium/index ordering and deferred protective exits take precedence over stale milestone or terminal snapshots. Rebase to the committed allocation, retain the first protective trigger and execution route, and store later local observations for reconciliation instead of emitting a stale T2/exit alert. Preserve stronger local stops and maximum watermarks; cost-only uncertainty still permits a later proven breach to route protection without finalizing reference accounting.
+
 Revision-conflict recovery preserves the maximum committed/local quote watermark in every queued milestone and terminal snapshot, in live state, and in nested alert snapshots. A newer live quote remains authoritative; observed quote and exit provenance are not rewritten to match the recovered watermark.
 
 When revision-conflict recovery adopts the committed higher `locked_option_sl`, copy the corresponding `protection_mode`, `premium_stop_source`, `stop_effective_at` and `previous_locked_option_sl` as one stop revision. Apply this to milestone-progress and terminal-observation rebases and their live/alert snapshots. A still-higher live stop keeps its own metadata. Observed exit-trigger/exit metadata remains immutable and distinct from the recovered canonical stop; the recovery must drain under the SQL v2 source/price invariant rather than pairing an ATR price with a stale break-even source.

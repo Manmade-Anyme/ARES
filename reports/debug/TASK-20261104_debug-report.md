@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P1: stale writer erased committed protective intent
+
+Four fail-first immediate/outage and T2/terminal replays erased the committed SPOT_OPTION_EXIT_TIE, first trigger, and pending route. Recovery now rebases stale transitions to the committed unresolved allocation and intent, retains later observations, and suppresses stale milestone/exit alerts. Additional cases cover deferred exits, queued stronger stops, serialization, and a later proven breach while committed cost-only uncertainty has no route.
+
 ## P2: quote-watermark regression during revision repair
 
 Three fail-first milestone, terminal, and outage/newer-local-quote replays violated the SQL monotonic quote-watermark invariant, leaving writes queued. Recovery now rebases queued snapshots to the committed watermark, advances live state only when newer, and refreshes alerts after rebasing. Quote/exit observation provenance remains intact.

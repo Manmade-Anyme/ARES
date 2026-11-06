@@ -1,5 +1,11 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P1: retain concurrent protection across stale lifecycle writes
+
+- Four fail-first cases reproduce lost protective intent after T2 or terminal writes, immediately and after outage. Expanded coverage includes deferred exits and queued stronger stops.
+- Focused conflict and premium lifecycle modules: **143 passed, 2 warnings**. Assertions verify pending routes, immutable first trigger, unresolved allocation, retained observations, serialization, queue drainage, and a later proven route following cost-only uncertainty.
+- Full isolated `tests/`: **2,503 passed, 45 subtests passed, 12 warnings** in 174.86 seconds. Compilation and `git diff --check` passed; exact-head Actions pending. No production data, provider requests, broker orders, deployment, or worker start used.
+
 ## P2: quote-watermark recovery across conflicting writers
 
 - Three fail-first replays cover T2, terminal exit, and T2 with a newer local quote during an outage. The ledger enforces the SQL monotonic-watermark rule.

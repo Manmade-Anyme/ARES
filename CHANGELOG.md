@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #156 concurrent protective intent:** On revision conflict, committed unresolved premium/index ordering and deferred protective exits take precedence over stale milestone or terminal snapshots. Rebase to the committed allocation, retain the first protective trigger and execution route, and store later local observations for reconciliation instead of emitting a stale T2/exit alert. Preserve stronger local stops and maximum watermarks; cost-only uncertainty still permits a later proven breach to route protection without finalizing reference accounting.
+
 - **PR #156 recovered quote watermark:** Revision-conflict recovery preserves the maximum committed/local quote watermark in every queued milestone and terminal snapshot, in live state, and in nested alert snapshots. A newer live quote remains authoritative; observed quote and exit provenance are not rewritten to match the recovered watermark.
 
 - **PR #156 recovered stop metadata:** Revision-conflict recovery now adopts a higher committed stop together with its premium source, effective time, previous stop and protection mode for milestone and terminal transitions. This keeps v2 writes consistent with the SQL stop-source invariant while preserving observed exit provenance and newer live protection.

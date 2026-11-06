@@ -115,6 +115,111 @@ async def test_v2_conflict_adopts_complete_committed_stop_metadata(terminal, ret
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('transition', ['t2', 'terminal', 'newer_stop'])
+@pytest.mark.parametrize('retry_after_outage', [False, True])
+@pytest.mark.parametrize('deferred', [False, True])
+async def test_v2_conflict_preserves_committed_pending_protection(transition, retry_after_outage, deferred):
+    from unittest.mock import AsyncMock, patch
+    from models import OptionTrailingContext
+    from tests.unit.test_option_premium_protection_v2 import _trade, _manager, _quote
+
+    first = _trade(phase='POST_T1')
+    first_opt = first['market_context']['option_trailing']
+    first_opt.update(premium_stop_source='BREAK_EVEN_COST', execution_status='CONFIRMED_PAPER_FILL')
+    stale = deepcopy(first)
+    writer_a = _manager(first)
+    at = datetime(2026, 11, 4, 10, 20, tzinfo=IST)
+    quote = {**_quote(166.0, 20), 'observed_at': at.isoformat(), 'received_at': at.isoformat()}
+    tick = {'price': first['target_2'], 'exchange_at': at.isoformat(),
+            'received_at': at.isoformat(), 'source': 'dhan_tick'}
+    with patch('position_manager.send_option_lifecycle_event', new=AsyncMock(return_value='DELIVERED')):
+        await writer_a.update_option_market_events([], {}, current_time=at,
+                                                   index_ticks=[tick], option_quotes=[quote])
+        committed = deepcopy(writer_a.analytics.rows[-1]['option_trailing'])
+        assert committed['ambiguous_index_touch']['kind'] == 'SPOT_OPTION_EXIT_TIE'
+        assert committed['execution_route_pending'] is True
+        if deferred:
+            ambiguity = committed.pop('ambiguous_index_touch')
+            committed['deferred_option_exit'] = ambiguity['protective_option_exit']
+            committed['pending_index_observations'] = [{
+                'event_at': at.isoformat(), 'price': first['target_2'],
+                'high': first['target_2'], 'low': first['target_2'],
+                'touches_t2': True, 'touches_guard': False, 'candle_timestamp': None}]
+        writer_b = _manager(stale)
+        writer_b.analytics = ConflictLedger(committed)
+        writer_b.analytics.fail = retry_after_outage
+        later_at = at + timedelta(minutes=1)
+        if transition == 'terminal':
+            later = {**quote, 'observed_at': later_at.isoformat(), 'received_at': later_at.isoformat()}
+            await writer_b.update_option_market_events([], {}, current_time=later_at, option_quotes=[later])
+        else:
+            later = {**tick, 'exchange_at': later_at.isoformat(), 'received_at': later_at.isoformat()}
+            await writer_b.update_option_market_events([], {}, current_time=later_at, index_ticks=[later])
+        if transition == 'newer_stop':
+            local = stale['market_context']['option_trailing']
+            local.update(locked_option_sl=180.0, premium_stop_source='ATR_TRAILING', protection_mode='ATR',
+                         stop_effective_at=(later_at + timedelta(minutes=1)).isoformat(),
+                         quote_watermark=(later_at + timedelta(minutes=1)).isoformat())
+            await writer_b._record_option_transition(stale, None, 'OPTION_SL_RATCHETED', local['stop_effective_at'])
+        if retry_after_outage:
+            writer_b.analytics.fail = False
+            await writer_b.retry_option_lifecycle_writes()
+    persisted = writer_b.analytics.rows[-1]['option_trailing']
+    live = stale['market_context']['option_trailing']
+    restored = OptionTrailingContext.from_dict(persisted).to_dict()
+    assert stale['state'] == writer_b.analytics.rows[-1]['active_state'] == 'T1_HIT'
+    for context in (persisted, live, restored):
+        assert context['phase'] == 'POST_T1'
+        assert context['highest_milestone'] == 1
+        assert context['remaining_fraction'] == .5
+        assert context['exit_trigger'] == committed['exit_trigger']
+        assert context['execution_route_pending'] is True
+        assert context['execution_route_reason'] == committed['execution_route_reason']
+        assert context.get('exit') is None
+        if transition == 'newer_stop':
+            assert context['locked_option_sl'] == 180.0
+            assert context['quote_watermark'] == (later_at + timedelta(minutes=1)).isoformat()
+        if deferred:
+            assert context['deferred_option_exit']['event_at'] == committed['deferred_option_exit']['event_at']
+            assert context['pending_index_observations']
+        else:
+            assert context['ambiguous_index_touch']['protective_option_exit'] == committed['ambiguous_index_touch']['protective_option_exit']
+            assert context['ambiguous_index_touch']['subsequent_index_observations'] or transition == 'terminal'
+    assert not writer_b._option_pending[stale['id']]
+    assert all(row.get('update_type') != 'T2_HIT' for row in writer_b.analytics.rows[1:])
+
+
+@pytest.mark.asyncio
+async def test_v2_conflict_cost_uncertainty_keeps_later_proven_protection():
+    from unittest.mock import AsyncMock, patch
+    from tests.unit.test_option_premium_protection_v2 import _trade, _manager, _quote
+
+    trade = _trade(phase='POST_T1')
+    opt = trade['market_context']['option_trailing']
+    opt.update(premium_stop_source='BREAK_EVEN_COST', execution_status='CONFIRMED_PAPER_FILL')
+    committed = deepcopy(opt)
+    committed['ambiguous_premium_quote'] = {
+        'status': 'T1_ORDER_UNKNOWN', 'ordering_reason': 'COST_STOP_ONLY_BREACH',
+        'price': 165.0, 'event_at': opt['t1_at']}
+    pm = _manager(trade)
+    pm.analytics = ConflictLedger(committed)
+    at = datetime(2026, 11, 4, 10, 21, tzinfo=IST)
+    quote = {**_quote(166.0, 21), 'observed_at': at.isoformat(), 'received_at': at.isoformat()}
+    with patch('position_manager.send_option_lifecycle_event', new=AsyncMock(return_value='DELIVERED')):
+        await pm.update_option_market_events([], {}, current_time=at, option_quotes=[quote])
+    persisted = pm.analytics.rows[-1]['option_trailing']
+    for context in (opt, persisted):
+        assert context['ambiguous_premium_quote']['ordering_reason'] == 'COST_STOP_ONLY_BREACH'
+        assert context['ambiguous_premium_quote']['protective_option_exit']['event_at'] == at.isoformat()
+        assert context['exit_trigger']['price'] == 166.0
+        assert context['execution_route_pending'] is True
+        assert context['execution_route_reason'] == 'STOPPED_OUT_AT_BE'
+        assert context.get('exit') is None
+    assert trade['state'] == pm.analytics.rows[-1]['active_state'] == 'T1_HIT'
+    assert not pm._option_pending[trade['id']]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('transition', ['t2', 'terminal', 't2_with_newer_local'])
 async def test_v2_conflict_preserves_maximum_quote_watermark(transition):
     from unittest.mock import AsyncMock, patch

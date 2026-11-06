@@ -21,6 +21,8 @@ Current source also gates `option_trailing` enrollment on option-ATR configurati
 
 ## Scope
 
+- On revision conflict, committed unresolved premium/index ordering and deferred protective exits take precedence over stale milestone or terminal snapshots. Rebase to the committed allocation, retain the first protective trigger and execution route, and store later local observations for reconciliation instead of emitting a stale T2/exit alert. Preserve stronger local stops and maximum watermarks; cost-only uncertainty still permits a later proven breach to route protection without finalizing reference accounting.
+
 - Revision-conflict recovery preserves the maximum committed/local quote watermark in every queued milestone and terminal snapshot, in live state, and in nested alert snapshots. A newer live quote remains authoritative; observed quote and exit provenance are not rewritten to match the recovered watermark.
 
 - Trace and update option-tracked trade enrollment, premium stop lifecycle, T1 activation, ATR updates, price monitoring, terminal persistence, restart recovery, and alerts.

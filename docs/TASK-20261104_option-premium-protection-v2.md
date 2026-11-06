@@ -2,6 +2,8 @@
 
 ## Scope
 
+On revision conflict, committed unresolved premium/index ordering and deferred protective exits take precedence over stale milestone or terminal snapshots. Rebase to the committed allocation, retain the first protective trigger and execution route, and store later local observations for reconciliation instead of emitting a stale T2/exit alert. Preserve stronger local stops and maximum watermarks; cost-only uncertainty still permits a later proven breach to route protection without finalizing reference accounting.
+
 Revision-conflict recovery preserves the maximum committed/local quote watermark in every queued milestone and terminal snapshot, in live state, and in nested alert snapshots. A newer live quote remains authoritative; observed quote and exit provenance are not rewritten to match the recovered watermark.
 
 Conflict recovery adopts a higher committed stop together with its source, activation time, previous stop and protection mode. This applies to queued milestones and terminal exits; observed exit provenance remains intact and a newer, higher live stop is preserved.
