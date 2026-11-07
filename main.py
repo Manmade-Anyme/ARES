@@ -493,6 +493,15 @@ def _close_bounded_delay(requested_seconds):
     return max(0.0, min(requested_seconds, (close - now).total_seconds()))
 
 
+async def _ensure_performance_reports_sent(supabase, now, weekly_sent: bool, monthly_sent: bool) -> tuple[bool, bool]:
+    """Ensure weekly and monthly digests are delivered once per period."""
+    if now.weekday() == 4 and not weekly_sent:
+        weekly_sent = await send_performance_report(supabase, now, "weekly")
+    if is_last_trading_day_of_month(now.date()) and not monthly_sent:
+        monthly_sent = await send_performance_report(supabase, now, "monthly")
+    return weekly_sent, monthly_sent
+
+
 def _mark_signal_session_closed(signal):
     signal.bracket = None
     signal.suggested_lots = 0
@@ -1140,10 +1149,9 @@ async def run():
             # gives the 60s poll another chance, though a longer delayed cycle can still miss.
             # Persist a per-period marker if missed deliveries or in-window restarts matter.
             if is_performance_report_window(now):
-                if now.weekday() == 4 and not weekly_report_sent:  # Friday
-                    weekly_report_sent = await send_performance_report(storage.supabase, now, "weekly")
-                if is_last_trading_day_of_month(now.date()) and not monthly_report_sent:
-                    monthly_report_sent = await send_performance_report(storage.supabase, now, "monthly")
+                weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
+                    storage.supabase, now, weekly_report_sent, monthly_report_sent
+                )
 
             if current_time >= time(15, 30):
                 # One bounded drain belongs only to an already-running session.
@@ -1157,6 +1165,9 @@ async def run():
                 )
                 if not finalizing:
                     print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
+                    weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
+                        storage.supabase, now, weekly_report_sent, monthly_report_sent
+                    )
                     break
             
             if current_time < time(9, 15):
@@ -1526,6 +1537,10 @@ async def run():
                     await position_manager.flush_pending_trade_updates()
                     await _drain_selected_option_quote(position_manager)
                     await _drain_quote_flush(position_manager)
+                    if session_activity_date == now.date():
+                        weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
+                            storage.supabase, now, weekly_report_sent, monthly_report_sent
+                        )
                 except Exception as drain_err:
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)
                 finally:

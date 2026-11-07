@@ -490,3 +490,36 @@ async def test_completed_atr_monitors_both_run_independently(failed):
     await main._monitor_completed_atr(candles, positions, dispatcher)
     positions.update_atr_trailing.assert_awaited_once_with(candles)
     dispatcher.on_candles.assert_awaited_once_with(candles)
+
+
+@pytest.mark.asyncio
+async def test_ensure_performance_reports_sent_delivers_on_friday_when_unsent():
+    from datetime import datetime
+    now_friday = datetime(2026, 11, 6, 15, 30, 0)
+    mock_supabase = MagicMock()
+    
+    with patch("main.send_performance_report", new_callable=AsyncMock) as mock_send, \
+         patch("main.is_last_trading_day_of_month", return_value=False):
+        mock_send.return_value = True
+        weekly_sent, monthly_sent = await main._ensure_performance_reports_sent(
+            mock_supabase, now_friday, weekly_sent=False, monthly_sent=False
+        )
+        mock_send.assert_awaited_once_with(mock_supabase, now_friday, "weekly")
+        assert weekly_sent is True
+        assert monthly_sent is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_performance_reports_sent_skips_when_already_sent():
+    from datetime import datetime
+    now_friday = datetime(2026, 11, 6, 15, 30, 0)
+    mock_supabase = MagicMock()
+    
+    with patch("main.send_performance_report", new_callable=AsyncMock) as mock_send:
+        weekly_sent, monthly_sent = await main._ensure_performance_reports_sent(
+            mock_supabase, now_friday, weekly_sent=True, monthly_sent=True
+        )
+        mock_send.assert_not_called()
+        assert weekly_sent is True
+        assert monthly_sent is True
+

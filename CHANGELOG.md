@@ -4,6 +4,11 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Weekly & Monthly Performance Report Delivery Recovery (TASK-20261107):**
+  - Restored guaranteed session-end delivery fallback for weekly (Friday) and monthly (month-end) performance digests in `main.py` when the live `[15:28, 15:30)` window is missed or the session terminates early.
+  - Added session cleanup drain invocation in `main.py`'s `finally:` block to ensure digests are never silently skipped during process scale-down.
+  - Added `alerts.send_error_alert` notification on report posting exceptions in `reports.py` to prevent silent delivery failure.
+  - Applied Ponytail engineering ladder: zero unnecessary abstraction, zero new dependencies, reusing existing report and alert primitives.
 - **PR #156 pending paper exits use pinned quote depth:** Protective and selected-option quote observations retain validated bid/ask depth. Fresh, contract-matched positive bids now flow to paper execution and confirm `EXIT_PENDING` exits; crossed, stale, or mismatched observations are rejected. Restored terminal routes continue receiving pinned quotes.
 
 - **PR #156 v2 readiness requires ML-label access:** The option-premium protection capability check now requires `service_role` to have both `SELECT` and `UPDATE` on `public.ml_collection`. Terminal lifecycle transitions update outcome labels transactionally, so readiness fails closed if either privilege is absent. The isolated PostgreSQL regression revokes each privilege independently and checks that v2 is not ready.
