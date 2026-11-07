@@ -369,5 +369,82 @@ def test_load_all_cached_sessions_date_filtering():
         assert "2026-08-10" in sessions
 
 
+def test_ratcheted_stop_rechecked_on_target_candle():
+    """Verify that when a candle hits T1 and pulls back below the ratcheted stop, it exits immediately."""
+    engine = TrendExpansionEngine()
+    start_dt = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+    rows = []
+
+    # 1. Morning impulse (09:15-10:15): 24300 to 24400 (impulse = 100 pts)
+    for i in range(61):
+        cur_dt = start_dt + timedelta(minutes=i)
+        t = cur_dt.strftime("%H:%M")
+        p = 24300.0 + (i / 60.0) * 100.0
+        rows.append({
+            "timestamp": int(cur_dt.timestamp()), "dt": cur_dt, "time_str": t,
+            "open": p - 0.5, "high": p + 1.0, "low": p - 1.0, "close": p + 0.5, "volume": 500000
+        })
+
+    # 2. Pullback below VWAP (10:16-10:45): sweep to 24340 (retrace 60 pts, 60% in [35%, 68%])
+    for i in range(61, 91):
+        cur_dt = start_dt + timedelta(minutes=i)
+        t = cur_dt.strftime("%H:%M")
+        p = 24340.0
+        rows.append({
+            "timestamp": int(cur_dt.timestamp()), "dt": cur_dt, "time_str": t,
+            "open": p - 0.5, "high": p + 1.0, "low": p - 1.0, "close": p + 0.5, "volume": 500000
+        })
+
+    # 3. Entry candle at 10:46: reclaim VWAP at close 24365
+    cur_dt = start_dt + timedelta(minutes=91)
+    t = cur_dt.strftime("%H:%M")
+    rows.append({
+        "timestamp": int(cur_dt.timestamp()), "dt": cur_dt, "time_str": t,
+        "open": 24355.0, "high": 24368.0, "low": 24350.0, "close": 24365.0, "volume": 800000
+    })
+
+    # 4. Spike candle at 10:47: High hits T1 (24405 >= 24400), Low drops below ratcheted SL (24360 <= 24367)
+    # Note: Initial SL = sweep_low - 3.0 = 24339.0 - 3.0 = 24336.0 (Low 24360 > 24336)
+    # Ratcheted SL = entry_price + 2.0 = 24365.0 + 2.0 = 24367.0
+    cur_dt = start_dt + timedelta(minutes=92)
+    t = cur_dt.strftime("%H:%M")
+    rows.append({
+        "timestamp": int(cur_dt.timestamp()), "dt": cur_dt, "time_str": t,
+        "open": 24370.0, "high": 24410.0, "low": 24360.0, "close": 24390.0, "volume": 1200000
+    })
+
+    # Remaining day flat to 15:30
+    for i in range(93, 375):
+        cur_dt = start_dt + timedelta(minutes=i)
+        t = cur_dt.strftime("%H:%M")
+        rows.append({
+            "timestamp": int(cur_dt.timestamp()), "dt": cur_dt, "time_str": t,
+            "open": 24390.0, "high": 24392.0, "low": 24388.0, "close": 24390.0, "volume": 200000
+        })
+
+    df = pd.DataFrame(rows)
+    trades = engine.run_session(df, "2026-11-05")
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.t1_hit is True
+    assert trade.exit_time == "10:47"
+    assert trade.exit_reason == "SL_HIT"
+    assert trade.exit_price == trade.entry_price + 2.0
+    assert trade.pnl_points == 2.0
+
+    # Also verify GatedRegimeExpansionEngine handles the exact same ratcheted stop recheck
+    gated_engine = GatedRegimeExpansionEngine(min_regime_score=0)
+    gated_trades = gated_engine.run_session(df, "2026-11-05", pdc=24200.0, pdh=24400.0, pdl=24150.0)
+    assert len(gated_trades) == 1
+    gated_trade = gated_trades[0]
+    assert gated_trade.t1_hit is True
+    assert gated_trade.exit_time == "10:47"
+    assert gated_trade.exit_reason == "SL_HIT"
+    assert gated_trade.exit_price == gated_trade.entry_price + 2.0
+    assert gated_trade.pnl_points == 2.0
+
+
+
 
 

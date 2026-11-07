@@ -154,6 +154,18 @@ class TrendExpansionEngine:
                     active_trade.t1_time = t
                     # Ratchet Stop Loss to Breakeven + 2 pts buffer
                     active_trade.stop_loss = active_trade.entry_price + 2.0
+                    # Recheck ratcheted stop if the same candle pulled back below breakeven
+                    if candle["low"] <= active_trade.stop_loss:
+                        active_trade.exit_time = t
+                        active_trade.exit_price = active_trade.stop_loss
+                        active_trade.exit_reason = "SL_HIT"
+                        active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
+                        completed_trades.append(active_trade)
+                        active_trade = None
+                        cooldown_until_idx = i + 10
+                        dipped_below_vwap = False
+                        sweep_low = 999999.0
+                        continue
 
                 # 20 EMA Trailing Exit (activated after 13:30 IST)
                 if active_trade.t1_hit and candle["close"] < candle["ema20"] and t >= "13:30":
