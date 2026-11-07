@@ -424,4 +424,9 @@ async def send_performance_report(supabase: Any, now_ist: datetime, period: str)
         # Log only the exception type — the message can embed the webhook URL
         # (and its secret token) via httpx's raise_for_status().
         print(f"[-] {period_label} performance report failed: {type(e).__name__}")
+        try:
+            from alerts import send_error_alert
+            await send_error_alert(f"{period_label} performance report failed: {type(e).__name__}")
+        except Exception:
+            pass
         return False
