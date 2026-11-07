@@ -10,8 +10,8 @@ We have adopted a layered architecture to separate concerns and ensure maintaina
     - Centralizes the "tick" logic.
     - Decisions: Maintains stateful rolling buffers (Volume, IV) to provide context to detectors.
 - **Layer 3: Detection (Detectors)**
-    - Pure logic layer.
-    - Decisions: Short-circuit evaluation (Priority: Breakout > OI Wall > Exhaustion) to prevent signal overlap and ensure the highest confidence setup is prioritized.
+    - Pure detection logic; detectors do not perform I/O.
+    - Decisions: Short-circuit signal priority is Failed Breakout > OI Wall > Gated Trend Expansion > Trend Continuation > Exhaustion, preventing lower-priority signals from overlapping higher-priority setups.
 - **Layer 4: Persistence (Storage)**
     - Supabase (PostgreSQL).
     - Decisions: Execute DB calls in an executor to prevent blocking the main event loop.
@@ -32,9 +32,9 @@ We have adopted a layered architecture to separate concerns and ensure maintaina
 - **Supabase**: Chosen for its easy-to-use API and reliable PostgreSQL backend, facilitating remote logging.
 
 ## 3. Key Design Patterns
-- **Stateless Detectors (mostly)**: Detectors primarily evaluate the current state provided by the engine. The `FailedBreakout` detector is the only stateful component, tracking active level crosses across multiple candles.
+- **Stateful Detectors (where required)**: Most detectors evaluate the current state provided by the engine. `FailedBreakout` tracks level crosses, while `TrendExpansion` retains current-session candles and indicator state for its regime gate and setups.
 - **Domain-Driven Models**: Everything from a single candle (`OHLCVCandle`) to a full signal (`AresSignal`) is represented by a strict dataclass to avoid "dictionary-passing" anti-patterns.
-- **Zero Hardcoded Values**: All detection parameters (ratios, offsets, thresholds) are moved to environment variables.
+- **Configuration Ownership**: Detection thresholds and strategy toggles live in `TuningConfig` profiles; credentials and deployment secrets are loaded through Pydantic Settings from environment variables.
 
 ## 4. Error Handling
 - **Non-Fatal DB Errors**: Database logging failures should never crash the engine; they are caught and logged to console.

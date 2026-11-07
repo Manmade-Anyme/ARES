@@ -3,7 +3,7 @@
 **Author:** ARES Engineering  
 **Implementation:** [`detectors/trend_expansion.py`](file:///Users/manmadeanyme/Documents/Work/ARES/detectors/trend_expansion.py) | [`engine.py`](file:///Users/manmadeanyme/Documents/Work/ARES/engine.py)  
 **Tests:** [`tests/unit/test_trend_expansion_detector.py`](file:///Users/manmadeanyme/Documents/Work/ARES/tests/unit/test_trend_expansion_detector.py)  
-**Status:** Live Signal Candidate (`SIGNAL_REFERENCE` mode)  
+**Status:** Production signal path (`SIGNAL_REFERENCE` mode; manual references only)
 
 ---
 
@@ -21,7 +21,7 @@ Two complementary setups are evaluated:
 
 Evaluated at or after **10:30 IST**. Requires at least **2 of 4** volatility factors to qualify the session:
 
-| Factor | Metric | Default Threshold (`RegimeThresholds`) |
+| Factor | Metric | Default Threshold (`TuningConfig`) |
 |---|---|---|
 | **1. Overnight Gap** | $\|\text{Open}_{09:15} - \text{PDC}\|$ | $\ge 70.0$ pts |
 | **2. Opening Range Width** | $\text{High}_{09:15\text{-}09:45} - \text{Low}_{09:15\text{-}09:45}$ | $\ge 85.0$ pts |
@@ -37,11 +37,11 @@ Evaluated at or after **10:30 IST**. Requires at least **2 of 4** volatility fac
 ### Setup A: `VWAP_RECLAIM`
 - **Window:** 10:30 – 12:30 IST.
 - **Impulse Filter:** Morning leg ($\text{High}_{morning} - \text{Low}_{morning}$) $\ge 70$ pts.
-- **Sweep Boundary:** Pullback flushes below VWAP, bounded by $0.35 \le \frac{\text{High}_{morning} - \text{Low}_{sweep}}{\text{Impulse}} \le 0.68$, holding above the session low.
+- **Sweep Boundary:** Pullback reaches the configured VWAP buffer, bounded by $0.35 \le \frac{\text{High}_{morning} - \text{Low}_{sweep}}{\text{Impulse}} \le 0.68$, holding above the session low.
 - **Trigger:** 1-minute close crosses back above computed session VWAP with $\text{EMA}_9 \ge \text{EMA}_{20}$.
-- **Stop Loss:** $\text{Low}_{sweep} - 3.0$ pts (clamped between 15 and 35 pts risk).
+- **Stop Loss:** $\text{Low}_{sweep} - 3.0$ pts; signals are rejected unless entry risk is between 15 and 35 pts.
 - **Target 1 (T1):** Retest of morning high ($\text{High}_{morning}$).
-- **Target 2 (T2):** Structural projection ($\text{High}_{morning} + 0.5 \times \text{Impulse}$).
+- **Target 2 (T2):** Nearest eligible structural level beyond T1, or the configured reference fallback.
 
 ### Setup B: `AFTERNOON_BREAKOUT`
 - **Window:** 12:30 – 14:15 IST.
@@ -51,23 +51,22 @@ Evaluated at or after **10:30 IST**. Requires at least **2 of 4** volatility fac
   - $Z_{VWAP} = \frac{\text{Close} - \text{VWAP}}{\sigma_{VWAP}} \ge 0.8$
   - $\text{Volume} \ge 0.95 \times \text{SMA}_{20}(\text{Volume})$
   - $\text{BBW Expansion} = \frac{\text{BBW}}{\text{SMA}_{20}(\text{BBW})} \ge 1.0$
-- **Stop Loss:** $\text{Low}_{base} - 3.0$ pts (clamped between 12 and 35 pts risk).
+- **Stop Loss:** The higher of the preceding 20-candle base low and entry minus 35 pts; signals are rejected if risk is below 12 pts.
 - **Target 1 (T1):** $\text{Entry} + 35.0$ pts.
-- **Target 2 (T2):** $\text{Entry} + 70.0$ pts.
+- **Target 2 (T2):** Nearest eligible structural level beyond T1, or the configured reference fallback.
 
 ---
 
 ## 4. Lifecycle & Risk Invariants
 
-1. **Conservative OHLC Order:** Prior candle stop is checked before T1 on the current candle. A T1 ratchet (to Breakeven $+ 2$ pts) becomes effective on subsequent candles to eliminate unsupported same-candle fills.
-2. **Trailing Runner:** After 13:30 IST, positions trail the 1-minute $\text{EMA}_{20}$.
-3. **Hard EOD Cutoff:** All open positions close at 15:15 IST.
-4. **State Reset:** On signal generation, stop hit, exit, or sweep low invalidation, transient sweep state (`_sweep_low`, `_dipped_below_vwap`) is immediately reset.
+1. **Signal-only boundary:** This detector emits manual spot-signal references and submits no broker orders. It does not own position exits, EOD square-off, or a strategy-specific trailing stop.
+2. **Session state:** Missing prior-day close or an incomplete 09:15-starting candle stream fails the regime gate closed for that session.
+3. **Sweep state:** Transient sweep state (`_sweep_low`, `_dipped_below_vwap`) is reset when a reclaim is emitted or suppressed, or when the sweep is invalidated. Registered-trade lifecycle follows the system's shared position-management policy.
 
 ---
 
 ## 5. Telemetry & Live Signal Integration
 
 - **Execution Mode:** Emits manual `SIGNAL_REFERENCE` alerts. Does not submit paper or live broker orders.
-- **Persistence:** Stored in Supabase `ares_signals` with `setup_type = "VWAP_RECLAIM"` or `"AFTERNOON_BREAKOUT"`.
-- **Config Toggle:** Configured in `TuningConfig` under `trend_expansion_enabled` (default `True` in all profiles) with custom parameter overrides via `RegimeThresholds`.
+- **Persistence:** Stored in Supabase `ares_signals` with `setup_type = "TREND_EXPANSION_RECLAIM"` or `"TREND_EXPANSION_BREAKOUT"`; `market_context.trend_expansion_setup` records `"VWAP_RECLAIM"` or `"AFTERNOON_BREAKOUT"`.
+- **Config Toggle:** Configured in `TuningConfig` under `trend_expansion_enabled` (default `True` in both profiles); strategy thresholds and setup parameters are the `trend_expansion_*` profile fields.

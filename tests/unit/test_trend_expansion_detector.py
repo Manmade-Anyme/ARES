@@ -176,6 +176,24 @@ def test_regime_evaluation_survives_1030_timestamp_jitter():
     assert result is not None
     assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
 
+    jittered_detector = TrendExpansionDetector()
+    jittered_candles = [
+        replace(c, timestamp=c.timestamp + timedelta(seconds=15))
+        if c.timestamp.strftime("%H:%M") == "10:30"
+        else c
+        for c in _session_candles()
+    ]
+    result = None
+    for candle in jittered_candles:
+        result = jittered_detector.update(candle, pdc=24200.0, levels=[])
+        if result is not None:
+            break
+
+    assert jittered_detector._regime_evaluated is True
+    assert jittered_detector._regime_score >= 2
+    assert result is not None
+    assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
+
 
 def test_internal_vwap_used_when_candle_vwap_is_zero():
     """Verify detector computes and uses its own VWAP when candle.vwap is default 0.0."""
@@ -224,8 +242,8 @@ def test_midday_gap_after_1030_does_not_block_afternoon_breakout():
     assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
 
 
-def test_suppressed_reclaim_resets_state_under_allow_signal_false():
-    """Verify that when a reclaim setup passes under allow_signal=False, state resets cleanly."""
+def test_suppressed_reclaim_resets_state_without_candle_vwap():
+    """Verify internal VWAP qualifies a suppressed reclaim and its sweep state resets."""
     start_time = datetime(2026, 11, 5, 9, 15)
     detector = TrendExpansionDetector()
     detector._session_date = start_time.date()
@@ -250,7 +268,7 @@ def test_suppressed_reclaim_resets_state_under_allow_signal_false():
     # Candle dipping below VWAP (sweep low = 24340, close = 24345 < vwap 24350)
     dip_candle = OHLCVCandle(
         timestamp=datetime(2026, 11, 5, 10, 35),
-        open=24352.0, high=24352.0, low=24340.0, close=24345.0, volume=1000, vwap=24350.0
+        open=24352.0, high=24352.0, low=24340.0, close=24345.0, volume=1000, vwap=0.0
     )
     detector.update(dip_candle, pdc=24200.0, allow_signal=False)
     assert detector._dipped_below_vwap is True
@@ -259,11 +277,10 @@ def test_suppressed_reclaim_resets_state_under_allow_signal_false():
     # Reclaim candle that meets all criteria, but allow_signal is False (e.g. cooldown active)
     reclaim_candle = OHLCVCandle(
         timestamp=datetime(2026, 11, 5, 10, 45),
-        open=24346.0, high=24390.0, low=24346.0, close=24385.0, volume=1000, vwap=24350.0
+        open=24346.0, high=24390.0, low=24346.0, close=24385.0, volume=1000, vwap=0.0
     )
     sig = detector.update(reclaim_candle, pdc=24200.0, allow_signal=False)
     assert sig is None
     # State MUST be reset so it cannot leak and trigger late
     assert detector._dipped_below_vwap is False
     assert detector._sweep_low == float("inf")
-
