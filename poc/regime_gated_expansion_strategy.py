@@ -53,7 +53,8 @@ class GatedRegimeExpansionEngine:
         t1_reward_pts: float = 35.0,
         max_stop_loss_pts: float = 35.0,
         min_impulse_pts: float = 70.0,
-        min_regime_score: int = 2
+        min_regime_score: int = 2,
+        min_bbw_expansion: float = 1.0
     ):
         self.range_anchor_end = range_anchor_end
         self.entry_cutoff_time = entry_cutoff_time
@@ -63,21 +64,23 @@ class GatedRegimeExpansionEngine:
         self.max_stop_loss_pts = max_stop_loss_pts
         self.min_impulse_pts = min_impulse_pts
         self.min_regime_score = min_regime_score
+        self.min_bbw_expansion = min_bbw_expansion
 
     def enrich_session(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Computes VWAP, VWAP Standard Deviation, Bollinger Bandwidth, and EMAs."""
+        """Computes VWAP, VWAP Standard Deviation around session mean, Bollinger Bandwidth, and EMAs."""
         d = df.copy()
         
-        # 1. VWAP and VWAP Dispersion (Standard Deviation)
+        # 1. VWAP and VWAP Dispersion (Standard Deviation around current session mean)
         d["typical_price"] = (d["high"] + d["low"] + d["close"]) / 3.0
         d["cum_vol"] = d["volume"].cumsum()
         d["cum_tp_vol"] = (d["typical_price"] * d["volume"]).cumsum()
+        d["cum_tp2_vol"] = ((d["typical_price"] ** 2) * d["volume"]).cumsum()
         d["vwap"] = (d["cum_tp_vol"] / d["cum_vol"].replace(0, np.nan)).ffill()
 
-        # Cumulative volume-weighted variance
-        d["dev2"] = (d["typical_price"] - d["vwap"]) ** 2
-        d["cum_dev2_vol"] = (d["dev2"] * d["volume"]).cumsum()
-        d["vwap_std"] = np.sqrt(d["cum_dev2_vol"] / d["cum_vol"].replace(0, np.nan)).ffill().replace(0, 1.0)
+        # True running volume-weighted variance: E[TP^2] - (E[TP])^2
+        mean_tp2 = (d["cum_tp2_vol"] / d["cum_vol"].replace(0, np.nan)).ffill()
+        vwap_var = (mean_tp2 - (d["vwap"] ** 2)).clip(lower=0.0)
+        d["vwap_std"] = np.sqrt(vwap_var).replace(0, 1.0).fillna(1.0)
         d["vwap_zscore"] = (d["close"] - d["vwap"]) / d["vwap_std"]
 
         # 2. Bollinger Bandwidth (BBW)
@@ -263,12 +266,13 @@ class GatedRegimeExpansionEngine:
             # SETUP B: AFTERNOON_BAND_EXPANSION (12:30 to 14:15)
             if t > self.range_anchor_end and t <= self.entry_cutoff_time:
                 if range_high > 0:
-                    # Breakout above range high + confirmed Z-score >= +1.0 + BBW expansion
+                    # Breakout above range high + confirmed Z-score >= +0.8 + volume + BBW expansion
                     if (candle["close"] > range_high + 2.0 and
                         candle["close"] > candle["vwap"] and
                         candle["close"] > candle["ema20"] and
                         candle["vwap_zscore"] >= 0.8 and
-                        candle["volume"] >= 0.95 * candle["vol_sma20"]):
+                        candle["volume"] >= 0.95 * candle["vol_sma20"] and
+                        candle["bbw_expansion_ratio"] >= self.min_bbw_expansion):
 
                         # Structural Base Low in last 20 candles
                         base_low = df.iloc[max(0, i - 20):i]["low"].min()

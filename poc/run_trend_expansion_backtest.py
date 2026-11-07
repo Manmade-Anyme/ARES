@@ -46,16 +46,21 @@ def init_dhan():
     return dhanhq(context)
 
 
-def load_supabase_ares_pnl(since_date: str) -> Dict[str, float]:
+def load_supabase_ares_pnl(since_date: str, until_date: Optional[str] = None) -> Dict[str, float]:
     try:
         supabase = create_client(settings.supabase_url, settings.supabase_key)
-        res = supabase.table("trade_analytics").select("entry_timestamp, pnl_points").gte("entry_timestamp", since_date).execute()
+        q = supabase.table("trade_analytics").select("entry_timestamp, pnl_points").gte("entry_timestamp", since_date)
+        if until_date:
+            q = q.lte("entry_timestamp", f"{until_date}T23:59:59")
+        res = q.execute()
         if not res.data:
             return {}
         df_ares = pd.DataFrame(res.data)
         df_ares["dt"] = pd.to_datetime(df_ares["entry_timestamp"]).dt.tz_convert(IST)
         df_ares["date"] = df_ares["dt"].dt.strftime("%Y-%m-%d")
         df_ares["pnl_points"] = df_ares["pnl_points"].astype(float)
+        if until_date:
+            df_ares = df_ares[(df_ares["date"] >= since_date) & (df_ares["date"] <= until_date)]
         return df_ares.groupby("date")["pnl_points"].sum().to_dict()
     except Exception as exc:
         print(f"[-] Supabase query error: {exc}")

@@ -56,7 +56,8 @@ class TrendExpansionEngine:
         max_trades_per_day: int = 2,
         t1_reward_pts: float = 35.0,
         max_stop_loss_pts: float = 35.0,
-        min_impulse_pts: float = 60.0
+        min_impulse_pts: float = 60.0,
+        min_volume_ratio: float = 1.0
     ):
         self.range_anchor_end = range_anchor_end
         self.entry_cutoff_time = entry_cutoff_time
@@ -65,6 +66,7 @@ class TrendExpansionEngine:
         self.t1_reward_pts = t1_reward_pts
         self.max_stop_loss_pts = max_stop_loss_pts
         self.min_impulse_pts = min_impulse_pts
+        self.min_volume_ratio = min_volume_ratio
 
     def compute_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Enrich 1-minute candles with VWAP, EMAs, and ATR."""
@@ -198,7 +200,8 @@ class TrendExpansionEngine:
                 if range_high > 0:
                     if (candle["close"] > range_high + 2.0 and
                         candle["close"] > candle["vwap"] and
-                        candle["close"] > candle["ema20"]):
+                        candle["close"] > candle["ema20"] and
+                        candle["volume"] >= self.min_volume_ratio * candle["vol_sma20"]):
 
                         base_low = df.iloc[max(0, i - 20):i]["low"].min()
                         sl = max(base_low, candle["close"] - self.max_stop_loss_pts)

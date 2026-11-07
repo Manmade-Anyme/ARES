@@ -54,17 +54,20 @@ def load_cached_sessions_and_pdl():
     return sessions, pdl_map
 
 
-def load_supabase_ares_trades():
+def load_supabase_ares_trades(start_date: str = "2026-08-07", end_date: str = "2026-11-05") -> pd.DataFrame:
     storage.load_dhan_credentials_from_supabase()
     supabase = create_client(settings.supabase_url, settings.supabase_key)
     res = supabase.table("trade_analytics").select(
         "entry_timestamp, pnl_points, setup_type, result_state"
-    ).gte("entry_timestamp", "2026-08-07").execute()
+    ).gte("entry_timestamp", start_date).lte("entry_timestamp", f"{end_date}T23:59:59").execute()
 
     df_ares = pd.DataFrame(res.data)
+    if df_ares.empty:
+        return pd.DataFrame()
     df_ares["dt"] = pd.to_datetime(df_ares["entry_timestamp"]).dt.tz_convert(IST)
     df_ares["date"] = df_ares["dt"].dt.strftime("%Y-%m-%d")
     df_ares["pnl_points"] = df_ares["pnl_points"].astype(float)
+    df_ares = df_ares[(df_ares["date"] >= start_date) & (df_ares["date"] <= end_date)]
     return df_ares
 
 
@@ -75,7 +78,11 @@ def main():
     print("=" * 80)
 
     sessions, pdl_map = load_cached_sessions_and_pdl()
-    df_ares = load_supabase_ares_trades()
+    session_dates = sorted(sessions.keys())
+    start_date = session_dates[0] if session_dates else "2026-08-07"
+    end_date = session_dates[-1] if session_dates else "2026-11-05"
+
+    df_ares = load_supabase_ares_trades(start_date=start_date, end_date=end_date)
     ares_daily = df_ares.groupby("date")["pnl_points"].sum().to_dict()
 
     gated_engine = GatedRegimeExpansionEngine()

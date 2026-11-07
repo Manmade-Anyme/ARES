@@ -4,6 +4,16 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #157 Review Hardening: Trend Expansion & 5th Strategy POC (TASK-20261105):**
+  - Resolved automated PR review findings on PR #157 (`feature/TASK-20261105-trend-expansion-poc`).
+  - Added typing imports (`Dict`, `List`, `Optional`) in `poc/run_90day_audit.py` to prevent `NameError` during annotation evaluation.
+  - Enforced volume participation confirmation (`volume >= min_volume_ratio * vol_sma20`) on raw afternoon breakouts in `poc/trend_expansion_poc.py`.
+  - Refactored session VWAP dispersion (`vwap_std`) in `poc/regime_gated_expansion_strategy.py` to compute running volume-weighted standard deviation around the current session VWAP mean ($E[TP^2] - (E[TP])^2$), correcting historical running mean distortion.
+  - Added Bollinger Bandwidth expansion verification (`bbw_expansion_ratio >= min_bbw_expansion`, default 1.0) before triggering gated afternoon breakout entries in `poc/regime_gated_expansion_strategy.py`.
+  - Bounded ARES Supabase benchmark queries to the audit window (`gte start_date` and `lte end_date` with in-memory exact date filtering) across `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, and `poc/run_trend_expansion_backtest.py`.
+  - Added unit test suite in `tests/unit/test_poc_trend_expansion.py` covering annotation resolution, volume filtering, VWAP dispersion accuracy, BBW gating, and query date bounding.
+
+
 - **Tuesday expiry profile sensitivity tuning (TASK-20261103):** Set expiry OI-wall minimum OI/change to 6,000,000/5.0%, widen approach/test/excursion/retest distances to 60/15/15/15 points, and set breakout writer/IV/weak-volume thresholds to 5%/−3.0/0.75. Set exhaustion volume/IV thresholds to 2.5/3.5, continuation score/resumption-volume/pullback-window to 2/1.2/8 candles, level scan to 400 points, and signal cooldown to 15 minutes. Non-expiry settings and expiry candle-body ratio remain unchanged. Multi-Tuesday replay confirms 5.0% growth eliminates fragile 2.7% false-alarm watches while delivering 1 disciplined trade per session. Dhan replay evidence and limits are in the Ares Build Log.
 
 - **TASK-20261102 Live market quotes persistence for SpanQuant frontend:**

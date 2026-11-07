@@ -96,3 +96,14 @@ Evaluated on 7 consecutive sessions documented in the Obsidian Daily Market Obse
 3. Add a time-of-day activation gate in `engine.py` (allowing breakout detectors only post-12:30 IST to eliminate midday fakeouts).
 4. Update `config_profiles.py` with the validated geometry parameters.
 
+---
+
+## 6. PR #157 Review Hardening (2026-11-07)
+
+- **Annotation Import Safety:** Added `from typing import Dict, List, Optional` in audit modules to eliminate runtime `NameError` during annotation introspection.
+- **Volume Confirmation:** Enforced `volume >= min_volume_ratio * vol_sma20` (default 1.0) on raw afternoon breakouts to reject low-participation chop.
+- **Exact Session VWAP Dispersion:** Corrected cumulative variance calculation to evaluate deviations around current session VWAP mean ($E[TP^2] - (E[TP])^2$).
+- **BBW Expansion Gate:** Enforced `bbw_expansion_ratio >= min_bbw_expansion` (default 1.0) before triggering gated afternoon breakouts.
+- **Audit Date Bounding:** Bounded all Supabase comparative queries to `[start_date, end_date]` with exact session calendar filtering.
+
+
