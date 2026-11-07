@@ -1061,10 +1061,13 @@ async def run():
     # Make this dynamic via Yahoo Finance Oracle
     previous_day_verified = True
     try:
-        pdh, pdl = await price_fetcher.fetch_previous_day_ohlc()
+        pdh, pdl, pdc = await price_fetcher.fetch_previous_day_context()
+        if pdc is None:
+            print(f"{Y}[!] Previous-day close unavailable; Gated Trend Expansion will remain dormant.{RESET}")
     except Exception as e:
         print(f"{Y}[-] WARNING: Dynamic PDH/PDL fetch failed ({e}). Using last known safe defaults.{RESET}")
         pdh, pdl = 24100.0, 23900.0
+        pdc = None
         previous_day_verified = False
         
     level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
@@ -1258,7 +1261,7 @@ async def run():
                 # Once prerequisites succeed, consume before the stateful engine:
                 # a detector exception can occur after its rolling buffers mutate.
                 price_fetcher.acknowledge_candle(candle)
-                signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
+                signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl, pdc)
 
                 # Close expired watches before publishing fresh watches, retrying failures.
                 last_watch_candle = candle

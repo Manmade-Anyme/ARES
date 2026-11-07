@@ -91,12 +91,17 @@ Evaluated on 7 consecutive sessions documented in the Obsidian Daily Market Obse
 
 ---
 
-## 5. Next Steps for ARES Core Integration
+## 5. Live Signal Integration (PR #157)
 
-1. Port `VWAPReclaimStrategy` into `detectors/vwap_reclaim.py`.
-2. Port `AfternoonBreakoutStrategy` into `detectors/range_breakout.py`.
-3. Add a time-of-day activation gate in `engine.py` (allowing breakout detectors only post-12:30 IST to eliminate midday fakeouts).
-4. Update `config_profiles.py` with the validated geometry parameters.
+The gated strategy is now wired into `AresEngine` as the fifth live signal strategy. It evaluates completed one-minute candles incrementally, after the existing failed-breakout and OI-wall priority checks and before trend continuation/exhaustion. The regime gate uses the defaults documented in section 6 and requires at least two of four factors.
+
+The live detector emits manual `SIGNAL_REFERENCE` candidates through ARES's existing option-reference, Supabase tracking, and Discord-alert path. It does **not** submit paper or broker entry orders. No Supabase schema migration is required: signal setup types are stored as text, and ML detector-score keys are generated from `SetupType`.
+
+The regime gate requires the previous trading day's close (PDC). The detector also requires an uninterrupted stream of completed current-session candles starting at 09:15 IST; missing PDC, a late process start, or a gap in that stream keeps it dormant for the session. This avoids reconstructing intraday state from bars that the production engine intentionally does not replay after startup.
+
+The live signals preserve the POC's dynamic geometry: reclaim SL is set below the tracked sweep and T1 is the morning high; afternoon-breakout SL uses the recent base within the configured maximum risk and T1 is the configured point reward. T2 is a structural/reference target, with a configured fallback. Both profiles enable the strategy by default; `trend_expansion_enabled` is the explicit off-switch.
+
+These are live signal rules, not a claim that the historical performance table validates current production outcomes. The historical results above were not rerun under the conservative lifecycle, and live integration does not itself establish profitability or option fills.
 
 ---
 
@@ -113,3 +118,5 @@ Evaluated on 7 consecutive sessions documented in the Obsidian Daily Market Obse
 - **Configurable regime thresholds:** Added `RegimeThresholds` as the gated strategy's focused settings object. Defaults preserve existing behavior: absolute overnight gap from PDC ≥ 70 spot points; 09:15–09:45 opening-range width ≥ 85 points; cumulative VWAP standard deviation by 10:30 ≥ 25 points; and absolute opening-to-09:45 close displacement ≥ 45 points. Each threshold can be overridden independently.
 - **Shared position lifecycle:** Raw and gated engines now use the same helper for stop, T1 stop ratchet, EMA20 trailing exit, EOD close, cooldown, and setup-state reset behavior.
 - **Conservative OHLC ordering:** On each completed one-minute candle, the stop that was active before that candle is checked before T1. A T1-triggered stop ratchet becomes effective on the next candle; the same candle's high and low are not used to claim that T1 occurred before a retracement through the new stop. Thus ambiguous candles do not produce an unsupported same-candle stop fill.
+- **Live detector integration:** PR #157 adds the gated strategy as an enabled-by-default fifth detector using incremental completed-candle state. It requires verified PDC and a continuous session stream from 09:15 IST, emits manual signal references only, and preserves dynamic POC SL/T1 geometry. No broker-entry routing or database migration is included.
+- **Runtime tuning:** Both profiles default the regime factors to gap ≥70 pts, opening range ≥85 pts, VWAP dispersion ≥25 pts, and directional displacement ≥45 pts, with two factors required. Setup defaults also retain the POC geometry: 09:15–12:30 range anchor, 14:15 entry cutoff, 70-pt minimum impulse, 35%–68% reclaim retracement, 2-pt VWAP sweep buffer, 3-pt reclaim stop buffer, 15–35 pt reclaim risk, 12–35 pt breakout risk, 30-pt PDL safety buffer, 35-pt breakout T1, ≥0.95x volume, ≥1.0 BBW expansion, and afternoon VWAP z-score ≥0.8. Each is explicitly configurable in `TuningConfig`.

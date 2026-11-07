@@ -84,7 +84,10 @@ SESSION_DISPLAY = "09:15 to 15:30 IST"
 
 def detector_names() -> list:
     """The detectors the engine will actually run, given the active profile."""
-    names = ["Failed Breakout", "OI Wall", "Exhaustion"]
+    names = ["Failed Breakout", "OI Wall"]
+    if settings.trend_expansion_enabled:
+        names.append("Gated Trend Expansion")
     if settings.continuation_enabled:
         names.append("Trend Continuation")
+    names.append("Exhaustion")
     return names

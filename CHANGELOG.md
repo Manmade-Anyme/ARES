@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #157 live gated Trend Expansion signals:** Wire the regime-gated POC strategy into `AresEngine` as the fifth enabled-by-default detector. Emit manual signal references through the existing persistence/alert path only; no broker entry orders or Supabase migration. Require verified prior-day close and an uninterrupted completed-candle stream from 09:15 IST, fail closed when inputs are missing, preserve dynamic reclaim/breakout stop and T1 geometry, and expose regime/setup thresholds through both tuning profiles. Add setup reporting and focused detector, engine, configuration, and previous-day-context tests.
+
 - **PR #157 Review Hardening & Edge-Case Audit: Trend Expansion & 5th Strategy POC (TASK-20261105):**
   - Resolved automated PR review findings on PR #157 (`feature/TASK-20261105-trend-expansion-poc`).
   - Added typing imports (`Dict`, `List`, `Optional`) in `poc/run_90day_audit.py` to prevent `NameError` during annotation evaluation.
