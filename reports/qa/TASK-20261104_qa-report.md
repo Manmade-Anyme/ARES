@@ -4,14 +4,15 @@
 
 - Pinned Dhan and selected-option chain observations now preserve finite positive bid/ask depth; crossed depth cannot be used for an exit.
 - Focused runtime, quote-service, price-fetcher, evidence, dispatcher, and selected-quote regressions: **141 passed** after the final fail-closed guards. Coverage includes source/receipt freshness, contract matching, crossed depth, paper exit at the observed bid, non-v2 isolation, selected-option fallback, and polling of restored terminal `EXIT_PENDING` routes.
-- Repository suite: **2,511 passed, 45 subtests passed, 12 warnings** in 172.03 seconds. Final defensive guards and the selected-option fallback were then checked in the focused suite. Compilation and `git diff --check` pass; exact-head Actions awaits the push.
+- Repository suite: **2,511 passed, 45 subtests passed, 12 warnings** in 172.03 seconds. Final defensive guards and the selected-option fallback were then checked in the focused suite. Compilation and `git diff --check` pass.
+- Exact-head Actions **run #633** passed on `f36ff9f`: Python tests and both PostgreSQL lifecycle checks succeeded; deploy and notify were skipped.
 - No production data, live provider request, broker order, deployment, or worker start was used.
 
 ## P2: require ML-label table access for v2 readiness
 
 - Added `SELECT` and `UPDATE` checks for `public.ml_collection` to the v2 capability RPC. The isolated PostgreSQL regression removes each privilege independently and asserts `ready=false`.
 - Repository suite: **2,507 passed, 45 subtests passed, 12 warnings** in 176.02 seconds. `node --check tests/integration/option_accounting_sql.mjs` and `git diff --check` passed.
-- PGlite was unavailable locally; exact-head Actions run **#632 passed** on `bcde770`, including both PostgreSQL lifecycle checks. That run predates the current depth-bid follow-up, which needs its own latest-head run. No production data, provider requests, broker orders, deployment, or worker start used.
+- PGlite was unavailable locally; exact-head Actions runs **#632** on `bcde770` and **#633** on `f36ff9f` passed, including both PostgreSQL lifecycle checks. No production data, provider requests, broker orders, deployment, or worker start used.
 
 ## P2: fractional-fill quote overlap
 
@@ -79,7 +80,7 @@
 - Focused lifecycle module: **76 passed, 2 warnings**. Full `tests/`: **2,459 passed, 45 subtests passed, 12 warnings** in 176.86 seconds. Compilation and `git diff --check` pass. Actions for the pushed revision are pending.
 - No production data, provider requests, broker orders, deployment, or worker start was used.
 
-**Verdict:** PASS — local full and focused tests pass; exact-head GitHub Actions for the depth-bid follow-up is pending push.
+**Verdict:** PASS — local full and focused tests pass, and exact-head Actions #633 passed on the pushed PR head.
 
 ## Verification
 
@@ -91,7 +92,7 @@
 | New monitoring-gate branches | PASS | All three route-queue paths reached the existing dispatcher with no active trades or new candle |
 | Python compilation | PASS | `python -m compileall -q position_manager.py execution/signal_dispatch.py main.py` |
 | Whitespace validation | PASS | `git diff --check` |
-| Latest-head GitHub Actions | PENDING | Push is required before CI can run against the depth-bid follow-up |
+| Latest-head GitHub Actions | PASS | Run #633 on `f36ff9f`; Python tests and both PostgreSQL lifecycle checks passed; deploy and notify skipped |
 
 The tests emitted existing dependency/runtime warnings. The root `pytest -q` command also collects ignored scratch scripts that call Supabase during import and failed collection under the offline sandbox; the repository CI command `python -m pytest tests/ -q` passed. No live service restart, broker interaction, or production trade was performed. The PR remains for human review; no approval or merge is implied by this report.
 
