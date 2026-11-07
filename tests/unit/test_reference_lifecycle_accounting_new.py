@@ -58,6 +58,65 @@ async def test_same_candle_t2_and_guard_remains_unresolved():
     assert opt["ambiguous_index_touch"]["status"] == "ORDER_UNKNOWN"
 
 
+@pytest.mark.asyncio
+async def test_v2_premium_exit_waits_for_earlier_t2_guard_ambiguity_resolution():
+    pm = _make_pm()
+    trade = reference_trade()
+    trade["state"] = "T1_HIT"
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(policy_version="option_premium_protection_v2", phase="POST_T1", highest_milestone=1,
+               t1_at="2026-10-23T10:00:00+05:30", booked_fraction=.5, remaining_fraction=.5,
+               atr_enabled=False, locked_option_sl=139.25, premium_stop_source="BREAK_EVEN_COST",
+               stop_effective_at="2026-10-23T10:00:00+05:30", index_guard_enabled=True,
+               index_guard_stop=trade["entry_price"])
+    pm.active_trades = [trade]
+    minute = datetime(2026, 10, 23, 10, 20, tzinfo=IST)
+    observed_at = minute + timedelta(minutes=1, seconds=1)
+    received_at = observed_at + timedelta(seconds=1)
+    quote = {"contract": opt["contract"], "price": 130.0,
+             "observed_at": observed_at.isoformat(), "received_at": received_at.isoformat(),
+             "source": "dhan_last_trade"}
+    sign = 1 if trade["direction"] == "BULLISH" else -1
+    candle_high = max(trade["target_2"] + sign, trade["entry_price"] - sign)
+    candle_low = min(trade["target_2"] + sign, trade["entry_price"] - sign)
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(trade["entry_price"], candle_high=candle_high, candle_low=candle_low,
+                               candle_timestamp=minute, event_time=minute + timedelta(minutes=1))
+        events = await pm.update_option_market_events(
+            [], {}, current_time=received_at, quote_freshness_at=received_at, option_quotes=[quote])
+
+        ambiguity = opt["ambiguous_index_touch"]
+        assert events == [(trade["id"], "STOPPED_OUT_AT_BE")]
+        assert trade["state"] == "T1_HIT"
+        assert opt["phase"] == "POST_T1"
+        assert opt.get("exit") is None
+        assert ambiguity["kind"] == "T2_ENTRY"
+        assert ambiguity["protective_option_exit"]["event_at"] == observed_at.isoformat()
+
+        ticks = [
+            {"observed_at": (minute + timedelta(seconds=10)).isoformat(),
+             "price": trade["target_2"] + sign, "source": "complete_tick_history"},
+            {"observed_at": (minute + timedelta(seconds=30)).isoformat(),
+             "price": trade["entry_price"] - sign, "source": "complete_tick_history"},
+        ]
+        assert await pm.resolve_reference_ambiguity(trade["id"], ticks, complete=True)
+
+    assert trade["state"] == "CLOSED"
+    assert opt["highest_milestone"] == 2
+    assert opt["ambiguity_resolution"]["outcome"] == "T2_HIT"
+    assert opt["ambiguous_index_touch"] is None
+    assert opt["exit"]["reason"] == "STOPPED_OUT_AT_BE"
+    assert opt["exit"]["stop_domain"] == "OPTION_PREMIUM"
+    assert opt["exit"]["exited_fraction"] == .2
+    assert opt["exit"]["runner_option_points"] == 0.0
+    exit_leg = opt["accounting"]["legs"]["EXIT"]
+    assert exit_leg["option_source"] == "dhan_last_trade"
+    assert exit_leg["trigger_price"] == 130.0
+    assert exit_leg["effective_stop"] == 139.25
+    assert opt["accounting"]["legs"]["T2"]["spot_price"] == trade["target_2"]
+
+
 @pytest.mark.parametrize("fresh", [True, False])
 @pytest.mark.asyncio
 async def test_option_policy_uses_only_fresh_receipt_fallback_ticks(monkeypatch, fresh):
@@ -1006,7 +1065,7 @@ async def test_legacy_option_trade_keeps_target_first_and_legacy_points():
 
 
 @pytest.mark.asyncio
-async def test_new_trade_includes_accounting_version_marker(monkeypatch):
+async def test_new_trade_uses_v2_protection_with_independent_atr_gate(monkeypatch):
     from config import settings
     from position_manager import PositionManager
     from tests.unit.test_manm176_review_persistence import MemoryDatabase, make_signal
@@ -1019,10 +1078,13 @@ async def test_new_trade_includes_accounting_version_marker(monkeypatch):
     signal.option_sl = 95
     signal.market_context = {"tracking_mode": "SIGNAL_REFERENCE"}
     with patch("position_manager.create_client", return_value=MemoryDatabase()), patch("position_manager.AnalyticsLogger") as logger:
-        logger.return_value.option_reference_accounting_ready.return_value = True
+        logger.return_value.option_premium_protection_ready.return_value = True
         pm = PositionManager()
         await pm.add_trade(signal, 24000)
-    assert pm.active_trades[0]["market_context"]["option_trailing"]["accounting_formula_version"] == "one_lot_reference_v1"
+    option = pm.active_trades[0]["market_context"]["option_trailing"]
+    assert option["policy_version"] == "option_premium_protection_v2"
+    assert option["accounting_formula_version"] == "one_lot_reference_v1"
+    assert option["atr_enabled"] is True
 
 
 @pytest.mark.asyncio

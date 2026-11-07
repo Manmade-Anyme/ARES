@@ -774,9 +774,13 @@ class TestPositionManagerQuoteIntegration:
     async def test_scheduled_flush_rechecks_throttle_after_forced_write(self, monkeypatch):
         """A forced write during the wait must not strand the next snapshot."""
         import asyncio
+        import time
         import main
         import quote_service
         from quote_service import QuotePersistenceService
+
+        current_time = [1000.0]
+        monkeypatch.setattr(quote_service.time, "monotonic", lambda: current_time[0])
 
         wait_started = asyncio.Event()
         release_wait = asyncio.Event()
@@ -787,7 +791,8 @@ class TestPositionManagerQuoteIntegration:
                 wait_started.set()
                 await release_wait.wait()
             else:
-                await real_sleep(delay)
+                current_time[0] += delay
+                await real_sleep(0)
 
         monkeypatch.setattr(quote_service, "async_sleep", controlled_sleep)
         supabase = MagicMock()
@@ -798,6 +803,7 @@ class TestPositionManagerQuoteIntegration:
         service.record_spot_quote(24001, "2026-11-03T05:00:01Z")
         task = main._schedule_quote_flush(pm, service)
         await asyncio.wait_for(wait_started.wait(), timeout=1.0)
+        current_time[0] += 0.05
         await service.flush(force=True)
         service.record_spot_quote(24002, "2026-11-03T05:00:02Z")
         release_wait.set()

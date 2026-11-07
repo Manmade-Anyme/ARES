@@ -545,7 +545,7 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
 def _option_lifecycle_estimate(trade, spot, update_type):
     """Project option lifecycle outcomes without mislabelling spot events as fills."""
     opt_ctx = (trade.get("market_context") or {}).get("option_trailing")
-    if opt_ctx and opt_ctx.get("policy_version") == "option_atr_v1":
+    if opt_ctx and opt_ctx.get("policy_version") in {"option_atr_v1", "option_premium_protection_v2"}:
         raise RuntimeError("Versioned lifecycle alerts require persisted immutable event snapshots")
 
     sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
@@ -646,6 +646,11 @@ def render_option_lifecycle_event(event: dict) -> dict:
     if kind not in cards:
         raise ValueError(f"Unsupported option lifecycle event: {kind}")
     card, action = cards[kind]
+    premium_domain = exit_info.get("stop_domain") == "OPTION_PREMIUM"
+    if kind == "SL_HIT" and premium_domain:
+        action = "Initial option-premium SL hit — reference closed"
+    elif kind == "STOPPED_OUT_AT_BE" and premium_domain:
+        action = "Option-premium break-even stop hit — reference closed"
     display_id = trade.get("display_id") or trade.get("signal_id") or trade.get("id", "unavailable")
     target_booked = .8 if milestone >= 2 else .5 if milestone == 1 else 0.
     remaining = context.get("remaining_fraction", 1. - target_booked)
@@ -691,9 +696,12 @@ def render_option_lifecycle_event(event: dict) -> dict:
     original_sl = context.get("original_option_sl")
     locked_sl = context.get("locked_option_sl")
     mode = context.get("protection_mode", "NONE")
+    if context.get("entry_premium_basis_source"):
+        lines.append(f"Option entry premium basis: ₹ {_number(context.get('original_option_entry'))} ({context['entry_premium_basis_source']})")
     lines.append(f"Original option SL: ₹ {_number(original_sl)} premium")
     if locked_sl is not None and mode != "NONE":
-        lines.append(f"{'Last locked' if terminal else 'Active'} option SL: ₹ {_number(locked_sl)} premium ({mode})")
+        source = context.get("premium_stop_source") or mode
+        lines.append(f"{'Last effective' if terminal else 'Active'} premium SL: ₹ {_number(locked_sl)} ({source})")
     elif milestone >= 2:
         lines.append(f"Active option SL: ₹ {_number(original_sl)} premium (ORIGINAL_OPTION_SL_FLOOR)")
     else:
@@ -704,12 +712,17 @@ def render_option_lifecycle_event(event: dict) -> dict:
             f"Index entry / SL / T1 / T2 (points): {_number(trade.get('entry_price'))} / {_number(trade.get('stop_loss'))} / {_number(trade.get('target_1'))} / {_number(trade.get('target_2'))}",
             f"Option entry / SL / T1 / T2 (₹ premium, Greeks bracket): {_number(context.get('original_option_entry'))} / {_number(original_sl)} / {_number(sizing.get('target_1'))} / {_number(sizing.get('target_2'))}",
             f"Suggested lots: {_number(sizing.get('final_lots', sizing.get('lots', sizing.get('suggested_lots'))), '.0f')} | Risk status: {sizing.get('status', trade.get('options_sizing_status', 'unavailable'))}",
-            "Option ATR begins after index T1; original index SL protects until then.",
+            ("Initial option-premium SL protects before T1; T1 moves the premium stop to entry cost."
+             if context.get("policy_version") == "option_premium_protection_v2" else
+             "Option ATR begins after index T1; original index SL protects until then."),
         ]
     if kind in {"T2_HIT", "T2_REACHED"}:
         lines.append("Additional target allocation: 30% of original; cumulative 80%. Final 20% remains OPEN.")
     if kind == "T1_HIT":
-        lines.append("Index SL moved to entry; option ATR protects remaining 50% when eligible.")
+        if context.get("policy_version") == "option_premium_protection_v2":
+            lines.append("Index SL moved to entry; premium SL moved to entry cost for the remaining 50%. ATR may tighten only above that cost.")
+        else:
+            lines.append("Index SL moved to entry; option ATR protects remaining 50% when eligible.")
     if kind in {"OPTION_SL_RATCHETED", "ATR_SL_UPDATED"}:
         previous = event.get("previous_stop", context.get("previous_locked_option_sl"))
         lines.append(f"Option SL raised: ₹ {_number(previous)} → ₹ {_number(locked_sl)} premium")
@@ -717,15 +730,30 @@ def render_option_lifecycle_event(event: dict) -> dict:
         start = candle.get("start_time") or candle.get("start") or exit_info.get("candle_start")
         end = candle.get("end_time") or candle.get("end") or exit_info.get("candle_end") or context.get("last_processed_option_bar_end")
         lines.append(f"Source completed 5m candle: {_lifecycle_event_time(start)} → {_lifecycle_event_time(end)}")
-        lines.append("Exit rule: completed option 5m close strictly below previously active SL; wick/equality ignored.")
+        if context.get("policy_version") == "option_premium_protection_v2":
+            lines.append("ATR candidates use completed, contract-pinned 5m option bars. A fresh premium quote at or below the effective SL triggers independently of the 5m cadence.")
+        else:
+            lines.append("Exit rule: completed option 5m close strictly below previously active SL; wick/equality ignored.")
     if kind in {"ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
         stop = exit_info.get("option_stop", event.get("previous_stop", locked_sl))
         close = exit_info.get("option_close", candle.get("close"))
-        lines.append(f"Confirmed option close: ₹ {_number(close)} premium | Previously active SL: ₹ {_number(stop)} premium")
+        if premium_domain:
+            lines.append(f"Observed option premium exit mark: ₹ {_number(close)} | Previously active premium SL: ₹ {_number(stop)}")
+        else:
+            lines.append(f"Confirmed option close: ₹ {_number(close)} premium | Previously active SL: ₹ {_number(stop)} premium")
+    if premium_domain:
+        trigger = context.get("exit_trigger") or {}
+        source_at = trigger.get("event_at") or exit_info.get("event_at")
+        lines.append(f"Premium stop domain: OPTION_PREMIUM | Source: {trigger.get('source') or exit_info.get('trigger_source') or 'unavailable'}")
+        lines.append(f"Trigger mark: ₹ {_number(trigger.get('price', exit_info.get('trigger_price')))} at {_lifecycle_event_time(source_at)} | Effective stop: ₹ {_number(trigger.get('effective_stop', exit_info.get('option_stop')))}")
+        lines.append(f"Observed/reference exit: ₹ {_number(exit_info.get('reference_exit_price', exit_info.get('option_close')))} | Confirmed fill: {_number(exit_info.get('fill_price'))}")
+        if "runner_option_points" in exit_info:
+            lines.append(f"Runner stop-out points: {_number(exit_info.get('runner_option_points'), '+.2f')} (reference/model)")
     if kind in {"MONITORING_UNAVAILABLE", "MONITORING_RESTORED"}:
         lines += [f"Monitoring detail: {event.get('detail') or 'unavailable'}",
+                  f"Last valid option quote: {_lifecycle_event_time((context.get('last_option_quote') or {}).get('observed_at'))}",
                   f"Last valid option candle end: {_lifecycle_event_time(context.get('last_valid_option_bar_end'))}",
-                  "Last locked stop retained; missing candles must be recovered before chronological processing resumes."]
+                  "Last effective stop retained; missing market data does not clear or lower protection."]
     lines.append("Reference/model tracking; allocations and candle closes are not broker fills. Index break-even does not guarantee option break-even.")
     return {"embeds": [{"title": f"#{display_id} · Card {card} · {action}",
                          "color": 15158332 if terminal or persistence_failed else 3066993,

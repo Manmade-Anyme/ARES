@@ -1,15 +1,17 @@
 """Review regressions exercise real order dispatch against an isolated database boundary."""
 import asyncio
+import hashlib
 from copy import deepcopy
 from datetime import datetime
+from dataclasses import asdict
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from config import settings
 from alerts import _option_lifecycle_estimate
-from execution.order_manager import OrderManager
+from execution.order_manager import OrderManager, OrderRecord
 from execution.signal_dispatch import SignalDispatcher
 from models import AresSignal, Direction, OptionGreeks, OptionOrderBracket, SetupType
 from position_manager import PositionManager
@@ -91,6 +93,172 @@ def make_signal():
     return signal
 
 
+def legacy_route_payload():
+    signal_id = "signal-terminal-retry"
+    correlation_id = hashlib.sha256(signal_id.encode()).hexdigest()[:24]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO",
+                "expiry": "2099-01-01", "strike": 24000, "option_type": "CE"}
+    option = {"policy_version": "option_premium_protection_v2",
+              "execution_status": "CONFIRMED_PAPER_FILL", "contract": contract,
+              "original_option_sl": 95, "original_option_entry": 100}
+    execution = {"mode": "PAPER", "correlation_id": correlation_id, "status": "FILLED",
+                 "filled_quantity": 130, "fill_price": 100, "protection_confirmed": True,
+                 "exited_quantity": 65, "spot_at_fill": 24002}
+    trade = {"id": "terminal-trade", "signal_uuid": signal_id, "entry_price": 24000,
+             "stop_loss": 23990, "target_1": 24020, "target_2": 24040,
+             "market_context": {"options_sizing": {
+                 "entry_limit": 100, "option_sl": 95, "target_1": 110, "target_2": 120,
+                 "lots": 2, "lot_size": 65, "synthetic_spot_sl": 23990,
+             }, "execution": execution, "option_trailing": option}}
+    return trade, option, execution, correlation_id
+
+
+@pytest.mark.parametrize("damage", [
+    "wrong_type", "wrong_correlation", "missing_bracket", "greeks_type",
+    "greeks_fields", "missing_bracket_field",
+])
+def test_persisted_order_snapshot_parser_rejects_malformed_records(damage):
+    bracket = OptionOrderBracket(
+        security_id="123", expiry_date="2099-01-01", strike=24000, option_type="CE",
+        entry_limit=100, synthetic_spot_sl=23990, catastrophic_opt_sl=95,
+        target_1=110, target_2=120, lots=2, greeks=None, is_valid=True,
+        signal_id="signal-terminal-retry", spot_entry=24002,
+        spot_target_1=24020, spot_target_2=24040,
+    )
+    snapshot = asdict(OrderRecord(
+        correlation_id="correlation", bracket=bracket, status="FILLED",
+        filled_quantity=130, fill_price=100, protection_confirmed=True,
+    ))
+    if damage == "wrong_type":
+        snapshot = "invalid"
+    elif damage == "wrong_correlation":
+        snapshot["correlation_id"] = "another-order"
+    elif damage == "missing_bracket":
+        snapshot.pop("bracket")
+    elif damage == "greeks_type":
+        snapshot["bracket"]["greeks"] = "invalid"
+    elif damage == "greeks_fields":
+        snapshot["bracket"]["greeks"] = {"delta": 0.5}
+    elif damage == "missing_bracket_field":
+        snapshot["bracket"].pop("security_id")
+
+    assert SignalDispatcher._record_from_snapshot("correlation", snapshot) is None
+
+
+def test_persisted_order_snapshot_parser_restores_greeks_mapping():
+    bracket = OptionOrderBracket(
+        security_id="123", expiry_date="2099-01-01", strike=24000, option_type="CE",
+        entry_limit=100, synthetic_spot_sl=23990, catastrophic_opt_sl=95,
+        target_1=110, target_2=120, lots=2,
+        greeks=OptionGreeks(.5, .001, -10, 2, 15), is_valid=True,
+        signal_id="signal-terminal-retry",
+    )
+    snapshot = asdict(OrderRecord(
+        correlation_id="correlation", bracket=bracket, status="FILLED",
+        filled_quantity=130, fill_price=100, protection_confirmed=True,
+    ))
+
+    restored = SignalDispatcher._record_from_snapshot("correlation", snapshot)
+
+    assert restored.bracket.greeks == bracket.greeks
+
+
+@pytest.mark.parametrize("damage", [
+    "wrong_mode", "bad_context", "bad_sizing", "boolean_quantity",
+    "missing_sizing", "bad_contract", "quantity_overrun", "malformed_target", "unsupported_status",
+])
+def test_legacy_execution_snapshot_fallback_rejects_unverifiable_state(damage):
+    trade, option, execution, correlation_id = legacy_route_payload()
+    if damage == "wrong_mode":
+        execution["mode"] = "LIVE"
+    elif damage == "bad_context":
+        trade["market_context"] = []
+    elif damage == "bad_sizing":
+        trade["market_context"]["options_sizing"] = []
+    elif damage == "boolean_quantity":
+        execution["filled_quantity"] = True
+    elif damage == "missing_sizing":
+        trade["market_context"].pop("options_sizing")
+        execution["filled_quantity"] = True
+    elif damage == "bad_contract":
+        option["contract"] = ["invalid"]
+    elif damage == "quantity_overrun":
+        execution["exited_quantity"] = 131
+    elif damage == "malformed_target":
+        trade["market_context"]["options_sizing"]["target_2"] = "invalid"
+    elif damage == "unsupported_status":
+        execution["status"] = "SUBMITTED"
+
+    assert SignalDispatcher._record_from_legacy_context(
+        correlation_id, trade, option, execution,
+    ) is None
+
+
+def test_restart_binding_rejects_missing_or_mismatched_paper_orders():
+    trade, option, execution, correlation_id = legacy_route_payload()
+    dispatcher = SignalDispatcher(OrderManager(), SimpleNamespace(active_trades=[]))
+    trade["market_context"] = None
+    assert dispatcher._restore_option_execution_binding(
+        trade, trade["signal_uuid"], option,
+    ) is False
+
+    trade, option, execution, correlation_id = legacy_route_payload()
+    execution.pop("correlation_id")
+    assert dispatcher._restore_option_execution_binding(
+        trade, trade["signal_uuid"], option,
+    ) is False
+
+    trade, option, execution, correlation_id = legacy_route_payload()
+    execution["mode"] = "LIVE"
+    assert dispatcher._restore_option_execution_binding(
+        trade, trade["signal_uuid"], option,
+    ) is False
+
+    trade, option, execution, correlation_id = legacy_route_payload()
+    trade["market_context"]["execution"] = {**execution, "filled_quantity": "invalid"}
+    assert dispatcher._restore_option_execution_binding(
+        trade, trade["signal_uuid"], option,
+    ) is False
+
+    trade, option, _, correlation_id = legacy_route_payload()
+    bracket = OptionOrderBracket(
+        security_id="123", expiry_date="2099-01-01", strike=24000, option_type="CE",
+        entry_limit=100, synthetic_spot_sl=23990, catastrophic_opt_sl=95,
+        target_1=110, target_2=120, lots=2, greeks=None, is_valid=True,
+        signal_id=trade["signal_uuid"],
+    )
+    dispatcher.orders.records[correlation_id] = OrderRecord(
+        correlation_id=correlation_id, bracket=bracket, status="FILLED",
+        filled_quantity=130, fill_price=100, protection_confirmed=True,
+    )
+    option["contract"]["strike"] = 24050
+    assert dispatcher._restore_option_execution_binding(
+        trade, trade["signal_uuid"], option,
+    ) is False
+
+
+@pytest.mark.parametrize("damage", ["empty", "bad_expiry", "boolean_strike", "wrong_type"])
+def test_recovered_execution_contract_validation_rejects_bad_pins(damage):
+    trade, option, _, _ = legacy_route_payload()
+    bracket = OptionOrderBracket(
+        security_id="123", expiry_date="2099-01-01", strike=24000, option_type="CE",
+        entry_limit=100, synthetic_spot_sl=23990, catastrophic_opt_sl=95,
+        target_1=110, target_2=120, lots=2, greeks=None, is_valid=True,
+        signal_id=trade["signal_uuid"],
+    )
+    contract = dict(option["contract"])
+    if damage == "empty":
+        contract["security_id"] = ""
+    elif damage == "bad_expiry":
+        contract["expiry"] = "not-a-date"
+    elif damage == "boolean_strike":
+        contract["strike"] = True
+    elif damage == "wrong_type":
+        contract = []
+
+    assert SignalDispatcher._matches_contract(bracket, contract) is False
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode,column",[("bridge","signal_uuid"),("greenfield","signal_id")])
 async def test_same_quote_roundtrip_persists_loss_and_waits_for_later_ml_snapshot(mode,column):
@@ -135,6 +303,157 @@ async def test_sync_reports_pending_until_snapshot_is_durable():
         assert await positions.sync_execution(candidate,execution) is True
     saved = database.table("trade_analytics").select("*").eq("id","t1").execute().data[0]
     assert saved["market_context"]["audit"] == "keep"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persist_order_record", [False, True])
+@pytest.mark.parametrize("execution_status", [
+    "CONFIRMED_PAPER_FILL", "EXIT_TRIGGERED_PENDING_CONFIRMATION",
+])
+async def test_restart_restores_terminal_pending_paper_exit_and_execution_binding(
+        persist_order_record, execution_status):
+    signal_id = "signal-terminal-retry"
+    trade_id = "terminal-trade"
+    correlation_id = hashlib.sha256(signal_id.encode()).hexdigest()[:24]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO",
+                "expiry": "2099-01-01", "strike": 24000, "option_type": "CE"}
+    execution = {
+        "mode": "PAPER", "correlation_id": correlation_id, "status": "FILLED",
+        "filled_quantity": 130, "fill_price": 100, "protection_confirmed": True,
+        "exited_quantity": 65, "realized_pnl": 650, "spot_at_fill": 24002,
+        "entry_spot": 24002, "t1_hit": True,
+    }
+    if persist_order_record:
+        saved_bracket = OptionOrderBracket(
+            security_id="123", expiry_date="2099-01-01", strike=24000, option_type="CE",
+            entry_limit=100, synthetic_spot_sl=23990, catastrophic_opt_sl=95,
+            target_1=110, target_2=120, lots=2, greeks=None, is_valid=True,
+            signal_id=signal_id, spot_entry=24002, spot_target_1=24020, spot_target_2=24040,
+        )
+        execution["order_record"] = asdict(OrderRecord(
+            correlation_id=correlation_id, bracket=saved_bracket, status="FILLED",
+            filled_quantity=130, fill_price=100, entry_spot=24002,
+            protection_confirmed=True, exited_quantity=65, realized_pnl=650,
+            active_spot_sl=24000, t1_hit=True,
+        ))
+    market_context = {
+        "options_sizing": {
+            "entry_limit": 100, "option_sl": 95, "target_1": 110, "target_2": 120,
+            "lots": 2, "final_lots": 2, "lot_size": 65, "is_valid": True,
+            "synthetic_spot_sl": 23990,
+        },
+        "execution": execution,
+        "option_trailing": {
+            "policy_version": "option_premium_protection_v2",
+            "execution_status": execution_status,
+            "execution_route_pending": True, "execution_route_reason": "ATR_SL_HIT",
+            "contract": contract,
+            "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+        },
+    }
+    database = MemoryDatabase()
+    database.rows["active_trades"] = [{
+        "id": trade_id, "signal_uuid": signal_id, "state": "CLOSED",
+        "entry_price": 24000, "stop_loss": 23990, "target_1": 24020, "target_2": 24040,
+        "market_context": {},
+    }]
+    database.rows["trade_analytics"] = [{
+        "id": trade_id, "signal_uuid": signal_id, "result_state": "CLOSED",
+        "market_context": market_context,
+    }]
+    database.rows["ml_collection"] = [{"signal_uuid": signal_id, "trade_id": trade_id}]
+
+    with patch("position_manager.create_client", return_value=database), \
+            patch("position_manager.AnalyticsLogger"), \
+            patch.object(settings, "signal_schema_mode", "bridge"):
+        positions = PositionManager()
+        def acknowledge(trade_id_arg, reason):
+            database.rows["trade_analytics"][0]["market_context"]["option_trailing"][
+                "execution_route_pending"] = False
+            return {"success": True, "acknowledged": True}
+        positions.analytics.acknowledge_option_execution_route = Mock(side_effect=acknowledge)
+        assert positions.active_trades == []
+        assert [row["id"] for row in positions._option_execution_route_trades] == [trade_id]
+
+        orders = OrderManager()
+        dispatcher = SignalDispatcher(orders, positions)
+        restored_trade = positions._option_execution_route_trades[0]
+        assert await dispatcher.on_option_stop(restored_trade, "ATR_SL_HIT") is True
+
+        record = orders.records[correlation_id]
+        assert record.bracket.security_id == contract["security_id"]
+        assert record.status == "EXIT_PENDING"
+        assert record.exited_quantity == 65
+        assert record.pending_exit_quantity == 65
+        saved_execution = database.rows["trade_analytics"][0]["market_context"]["execution"]
+        assert saved_execution["order_record"]["pending_exit_quantity"] == 65
+
+        assert await positions.acknowledge_option_execution_route(trade_id, "ATR_SL_HIT") is True
+        assert restored_trade["market_context"]["option_trailing"]["execution_route_pending"] is False
+        assert [row["id"] for row in positions._option_execution_route_trades] == [trade_id]
+
+        # The lifecycle route is acknowledged, but the paper exit still needs
+        # an observed bid. A second restart must restore that execution intent.
+        restarted = PositionManager()
+        pending_trade = restarted._option_execution_route_trades[0]
+        assert pending_trade["market_context"]["option_trailing"]["execution_route_pending"] is False
+        assert pending_trade["market_context"]["execution"]["status"] == "EXIT_PENDING"
+        resumed = SignalDispatcher(OrderManager(), restarted)
+        assert await resumed.on_option_stop(pending_trade, "ATR_SL_HIT") is True
+        pending_record = resumed.orders.records[correlation_id]
+        before_entry = asdict(pending_record)
+        new_signal = make_signal()
+        assert await resumed.dispatch(new_signal, 24000, [{
+            "strike": 24000, "expiry_date": "2099-01-01", "ce_security_id": "123",
+            "ce_ask": 100, "ce_bid": 99, "underlying_spot": 24000,
+        }]) is True
+        assert asdict(pending_record) == before_entry
+        assert len(resumed.orders.records) == 2
+        duplicate = make_signal()
+        assert await resumed.dispatch(duplicate, 24000, []) is False
+        assert duplicate.trade_binding_status == "DUPLICATE_SKIPPED"
+        assert len(resumed.orders.records) == 2
+        await resumed.on_snapshot([{
+            "strike": 24000, "expiry_date": "2099-01-01", "ce_security_id": "123",
+            "ce_ask": 100, "ce_bid": 99, "underlying_spot": 24000,
+        }], 24000)
+        assert pending_trade["market_context"]["execution"]["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persist_order_record", [False, True])
+@pytest.mark.parametrize("damage", [
+    "reference_only", "reference_triggered", "live", "unprotected", "zero_fill", "wrong_contract",
+])
+async def test_triggered_restart_does_not_bypass_paper_fill_validation(persist_order_record, damage):
+    trade, option, execution, correlation_id = legacy_route_payload()
+    record = SignalDispatcher._record_from_legacy_context(correlation_id, trade, option, execution)
+    option.update(
+        execution_status="EXIT_TRIGGERED_PENDING_CONFIRMATION",
+        execution_route_pending=True, execution_route_reason="ATR_SL_HIT",
+        exit={"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    )
+    if damage == "reference_only":
+        option["execution_status"] = "REFERENCE_ONLY"
+    elif damage == "reference_triggered":
+        option["execution_status"] = "REFERENCE_TRIGGERED_NO_BROKER_FILL"
+    elif damage == "live":
+        execution["mode"] = record.mode = "LIVE"
+    elif damage == "unprotected":
+        execution["protection_confirmed"] = record.protection_confirmed = False
+    elif damage == "zero_fill":
+        execution["filled_quantity"] = record.filled_quantity = 0
+    elif damage == "wrong_contract":
+        option["contract"]["exchange_segment"] = "NSE_EQ"
+    if persist_order_record:
+        execution["order_record"] = asdict(record)
+    positions = SimpleNamespace(active_trades=[], sync_execution=AsyncMock(return_value=True))
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+
+    assert await dispatcher.on_option_stop(trade, "ATR_SL_HIT") is False
+    assert dispatcher._signals == {}
+    assert option["execution_route_pending"] is True
+    positions.sync_execution.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -199,6 +518,55 @@ def test_startup_merges_matching_analytics_context_and_preserves_legacy(legacy_c
     assert trades["legacy"]["market_context"] == {"active_only": "legacy"}
     assert "market_context" not in trades["unmatched"]
     assert database.rows["active_trades"][-1]["state"] == "CLOSED"
+
+
+@pytest.mark.parametrize("invalid_context", ["root", "execution"])
+def test_terminal_startup_safely_handles_malformed_analytics_context(invalid_context):
+    database = MemoryDatabase()
+    database.rows["active_trades"] = [{"id": "terminal", "state": "CLOSED"}]
+    if invalid_context == "root":
+        context = ["invalid"]
+    else:
+        context = {
+            "execution": ["invalid"],
+            "option_trailing": {
+                "policy_version": "option_premium_protection_v2",
+                "execution_route_pending": True,
+                "execution_route_reason": "ATR_SL_HIT",
+            },
+        }
+    database.rows["trade_analytics"] = [{
+        "id": "terminal", "result_state": "CLOSED", "market_context": context,
+    }]
+
+    with patch("position_manager.create_client", return_value=database), \
+            patch("position_manager.AnalyticsLogger"):
+        restored = PositionManager()
+
+    assert restored.is_initialized
+    if invalid_context == "root":
+        assert restored._option_execution_route_trades == []
+    else:
+        assert [row["id"] for row in restored._option_execution_route_trades] == ["terminal"]
+
+
+def test_terminal_context_fetch_failure_keeps_startup_available():
+    database = MemoryDatabase()
+    database.rows["active_trades"] = [{"id": "terminal", "state": "CLOSED"}]
+    original_table = database.table
+
+    def table(name):
+        if name == "trade_analytics":
+            raise RuntimeError("analytics context unavailable")
+        return original_table(name)
+
+    database.table = table
+    with patch("position_manager.create_client", return_value=database), \
+            patch("position_manager.AnalyticsLogger"):
+        restored = PositionManager()
+
+    assert restored.is_initialized
+    assert restored._option_execution_route_trades == []
 
 
 def test_analytics_outage_preserves_active_trade_monitoring():

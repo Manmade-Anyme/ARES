@@ -133,6 +133,7 @@ def ratchet_option_stop(
     original_option_sl: float,
     *,
     protection_mode: str = "NONE",
+    entry_premium_floor: Optional[float] = None,
 ) -> tuple[float, str, bool]:
     """Apply upward-only ratchet rules for option premium protection.
 
@@ -146,6 +147,14 @@ def ratchet_option_stop(
     Returns:
         (locked_stop, new_protection_mode, did_ratchet_increase)
     """
+    if entry_premium_floor is not None:
+        floor = max(float(original_option_sl), float(entry_premium_floor))
+        current = max(floor, float(current_stop or 0.0))
+        if new_raw_line is not None and float(new_raw_line) > current:
+            return float(new_raw_line), "ATR", True
+        mode = "ATR" if protection_mode == "ATR" else "BREAK_EVEN_COST"
+        return current, mode, current_stop is None or current > float(current_stop)
+
     if protection_mode == "ORIGINAL_OPTION_SL_FLOOR":
         base_floor = float(original_option_sl)
         if new_raw_line is not None and new_raw_line > base_floor:

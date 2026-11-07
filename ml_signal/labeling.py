@@ -3,12 +3,17 @@ from typing import Optional, List
 import pandas as pd
 import numpy as np
 
+OPTION_MILESTONE_POLICIES = frozenset({
+    "option_atr_v1",
+    "option_premium_protection_v2",
+})
+
 
 def classify_ares_outcome(
     result_state: str, t1_is_win: bool = True, option_trailing: Optional[dict] = None,
 ) -> Optional[int]:
     """Pure function to map an ARES result state to a binary ML label."""
-    if option_trailing and option_trailing.get("policy_version") == "option_atr_v1":
+    if option_trailing and option_trailing.get("policy_version") in OPTION_MILESTONE_POLICIES:
         # A visible milestone score is not a final training outcome while a
         # runner remains open. Canonical milestones survive every exit reason.
         if result_state in ("OPEN", "T1_HIT", "T2_REACHED", None, ""):

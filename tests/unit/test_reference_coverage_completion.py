@@ -619,26 +619,29 @@ async def test_position_manager_flush_pending_trade_updates_timeout_and_unpersis
 
 
 @pytest.mark.asyncio
-async def test_position_manager_add_trade_ready_check_exception(monkeypatch):
-    """Lines 335-336: add_trade capability check exception."""
+async def test_position_manager_add_trade_v2_ready_check_exception_disables_option_enrollment(monkeypatch):
+    """A v2 backend readiness failure must not enroll or fall back to spot ATR."""
     monkeypatch.setattr("position_manager.logger", logging.getLogger("position_manager"), raising=False)
     database = MemoryDatabase()
     monkeypatch.setattr(settings, "option_atr_enabled", True)
     monkeypatch.setattr(settings, "option_atr_approved_version", "option_atr_v1")
     monkeypatch.setattr(settings, "supabase_service_role_key", "test-key")
     signal = _make_signal()
-    signal.metadata = {
+    signal.market_context = {
         "options_sizing": {
-            "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "strike": 24000, "option_type": "CE"},
-            "option_sl": 100.0,
-            "entry_limit": 110.0,
+            "security_id": "123", "exchange_segment": "NSE_FNO", "expiry_date": _TEST_OPTION_EXPIRY,
+            "strike": 24000, "option_type": "CE", "lot_size": 25,
+            "option_sl": 100.0, "entry_limit": 110.0,
         }
     }
     with patch("position_manager.create_client", return_value=database), patch("position_manager.AnalyticsLogger") as analytics_cls:
-        analytics_cls.return_value.option_reference_accounting_ready.side_effect = RuntimeError("db error")
+        analytics_cls.return_value.option_premium_protection_ready.side_effect = RuntimeError("db error")
         pm = PositionManager()
         await pm.add_trade(signal, 22500.0)
-        assert pm.active_trades[-1]["market_context"].get("option_atr_unavailable") is not None
+        context = pm.active_trades[-1]["market_context"]
+        assert context.get("option_protection_unavailable") is not None
+        assert "option_trailing" not in context
+        assert context.get("legacy_t2_tracking_approved") is True
 
 
 @pytest.mark.asyncio

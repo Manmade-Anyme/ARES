@@ -50,17 +50,56 @@ def test_alert_ack_uses_dedicated_rpc_without_lifecycle_mutation():
     client.table.assert_not_called()
 
 
-def record(result="OPTION_SL_FLOOR_HIT", milestone=2, remaining=0):
+def test_execution_route_ack_uses_terminal_safe_rpc_without_lifecycle_mutation():
+    client = Mock()
+    client.rpc.return_value.execute.return_value = SimpleNamespace(
+        data={"success": True, "acknowledged": True})
+    result = logger_with_client(client).acknowledge_option_execution_route("trade", "ATR_SL_HIT")
+    assert result["acknowledged"] is True
+    assert client.rpc.call_args.args[0] == "acknowledge_option_execution_route"
+    assert client.rpc.call_args.args[1] == {"p_trade_id": "trade", "p_reason": "ATR_SL_HIT"}
+    client.table.assert_not_called()
+
+
+def test_execution_route_ack_requires_supported_reason():
+    client = Mock()
+    with pytest.raises(ValueError, match="Unsupported option execution route reason"):
+        logger_with_client(client).acknowledge_option_execution_route("trade", "T2_HIT")
+    client.rpc.assert_not_called()
+
+
+def record(result="OPTION_SL_FLOOR_HIT", milestone=2, remaining=0, policy="option_atr_v1"):
     return {"id": "option", "result_state": result, "entry_timestamp": "2026-10-23T05:00:00Z",
             "entry_price": 22434.8, "direction": "BEARISH", "score": 2,
-            "market_context": {"option_trailing": {"policy_version": "option_atr_v1",
+            "market_context": {"option_trailing": {"policy_version": policy,
                                "highest_milestone": milestone, "remaining_fraction": remaining}}}
 
 
-@pytest.mark.parametrize("reason", ["ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"])
-def test_t2_terminal_label_is_win_even_when_t1_only_policy_is_loss(reason):
-    labeled = label_from_ares_outcome([record(reason)], t1_is_win=False)
+@pytest.mark.parametrize("policy", ["option_atr_v1", "option_premium_protection_v2"])
+@pytest.mark.parametrize("reason", ["ATR_SL_HIT", "STOPPED_OUT_AT_BE", "OPTION_SL_FLOOR_HIT"])
+def test_t2_terminal_label_is_win_even_when_t1_only_policy_is_loss(policy, reason):
+    labeled = label_from_ares_outcome([record(reason, policy=policy)], t1_is_win=False)
     assert labeled["label"].tolist() == [1]
+
+
+def test_v2_dataset_ingestion_uses_canonical_terminal_outcome_and_t2_milestone():
+    from ml_signal.dataset import build_real_outcome_frame
+
+    option_state = {
+        "policy_version": "option_premium_protection_v2",
+        "highest_milestone": 2,
+        "remaining_fraction": 0,
+    }
+    frame = build_real_outcome_frame([{
+        "trade_outcome": "OPEN",  # stale ml_collection state
+        "result_state": "ATR_SL_HIT",  # canonical trade_analytics state
+        "entry_timestamp": "2026-10-23T05:00:00Z",
+        "entry_price": 22434.8,
+        "direction": "BEARISH",
+        "option_trailing": option_state,
+    }], t1_is_win=False)
+
+    assert frame["label"].tolist() == [1]
 
 
 def test_open_runner_score_two_never_becomes_training_label():
@@ -71,8 +110,9 @@ def test_terminal_name_with_nonzero_allocation_is_not_final_training_label():
     assert label_from_ares_outcome([record(remaining=.2)]).empty
 
 
-def test_repair_retains_t2_floor_score_and_unknown_index_exit():
-    rows = {"trade_analytics": [record("OPEN", remaining=.2)], "active_trades": [{
+@pytest.mark.parametrize("policy", ["option_atr_v1", "option_premium_protection_v2"])
+def test_repair_retains_t2_floor_score_and_unknown_index_exit(policy):
+    rows = {"trade_analytics": [record("OPEN", remaining=.2, policy=policy)], "active_trades": [{
         "id": "option", "state": "CLOSED", "exit_type": "OPTION_SL_FLOOR_HIT",
         "exit_price": None, "exit_timestamp": "2026-10-23T06:00:00Z", "pnl_points_override": None}]}
     assert repair_stuck_open_trades(_FakeSupabase(rows), apply=True) == 1
@@ -106,9 +146,10 @@ def test_missing_backend_credential_rejects_rpc_before_network():
     client.rpc.assert_not_called()
 
 
-def test_legacy_be_repair_never_replaces_new_policy_weighted_pnl():
+@pytest.mark.parametrize("policy", ["option_atr_v1", "option_premium_protection_v2"])
+def test_legacy_be_repair_never_replaces_new_policy_weighted_pnl(policy):
     from ml_signal.backfill_labels import repair_be_after_t1
-    trade = record("STOPPED_OUT_AT_BE", milestone=1)
+    trade = record("STOPPED_OUT_AT_BE", milestone=1, policy=policy)
     trade["pnl_points"] = 0
     rows = {"trade_analytics": [trade], "active_trades": [{"id": "option", "target_1": 22409.8}],
             "ares_signals": [], "ml_collection": []}

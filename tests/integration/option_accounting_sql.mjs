@@ -6,7 +6,11 @@ const db = new PGlite();
 const id = '00000000-0000-0000-0000-000000000001';
 const q = (sql, args = []) => db.query(sql, args);
 const rpc = async (name, args) => (await q(`SELECT public.${name}(${args.map((_, i) => `$${i + 1}`).join(',')}) AS result`, args)).rows[0].result;
-const correction = (revision, event, accounting, spot = null, option = null) => rpc('apply_option_accounting_correction', [id, revision, event, JSON.stringify(accounting), spot, option]);
+const acknowledgeRoute = (tradeId, reason) => rpc('acknowledge_option_execution_route', [tradeId, reason]);
+const correctionFor = (tradeId, revision, event, accounting, spot = null, option = null) =>
+  rpc('apply_option_accounting_correction', [tradeId, revision, event, JSON.stringify(accounting), spot, option]);
+const correction = (revision, event, accounting, spot = null, option = null) =>
+  correctionFor(id, revision, event, accounting, spot, option);
 try {
   await db.exec(`CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;
     CREATE TABLE public.active_trades(id uuid primary key,state text,stop_loss numeric,
@@ -17,7 +21,8 @@ try {
     CREATE TABLE public.ml_collection(id integer primary key,trade_id uuid,signal_uuid uuid,signal_id text,trade_outcome text,trade_score integer,trade_pnl numeric);
     GRANT USAGE ON SCHEMA public TO service_role,anon,authenticated;
     GRANT SELECT,UPDATE ON public.active_trades,public.trade_analytics,public.ml_collection TO service_role;`);
-  for (const name of ['20261023_option_lifecycle_transition.sql', '20261029_option_trade_accounting.sql']) {
+  for (const name of ['20261023_option_lifecycle_transition.sql', '20261029_option_trade_accounting.sql',
+    '20261104_option_premium_protection_v2.sql']) {
     const sql = await readFile(new URL(`../../migrations/${name}`, import.meta.url), 'utf8');
     await db.exec(sql); await db.exec(sql);
   }
@@ -33,6 +38,7 @@ try {
     await assert.rejects(() => correction(1, 'denied', {legs: {}}), /permission denied/);
     await assert.rejects(() => rpc('list_incomplete_option_accounting', [100, 0]), /permission denied/);
     await assert.rejects(() => rpc('sync_option_reference_ml_label', [id]), /permission denied/);
+    await assert.rejects(() => acknowledgeRoute(id, 'ATR_SL_HIT'), /permission denied/);
     await db.exec('RESET ROLE');
   }
   await db.exec('SET ROLE service_role');
@@ -112,6 +118,40 @@ try {
   assert.equal((await rpc('sync_option_reference_ml_label', [id])).matched, 0);
   assert.equal((await q('SELECT trade_outcome FROM public.ml_collection WHERE id=3')).rows[0].trade_outcome, null);
 
+  const v2Id = '00000000-0000-0000-0000-000000000002';
+  const premiumMetadata = {option_approximate: false, trigger_price: 120,
+    effective_stop: 121, stop_source: 'ATR_TRAILING'};
+  const v2Closed = {option_trailing: {policy_version: 'option_premium_protection_v2',
+    accounting_formula_version: 'one_lot_reference_v1', phase: 'CLOSED', highest_milestone: 1,
+    original_option_entry: 100, accounting: {legs: {T1: {spot_price: 22010},
+      EXIT: {...premiumMetadata, option_price: 120, option_source: 'dhan_last_trade'}}}}};
+  await db.exec('RESET ROLE;');
+  await q("INSERT INTO public.active_trades(id,state,stop_loss,entry_price,direction) VALUES ($1,'CLOSED',22000,22000,'BULLISH')", [v2Id]);
+  await q("INSERT INTO public.trade_analytics(id,result_state,market_context) VALUES ($1,'ATR_SL_HIT',$2)",
+    [v2Id, JSON.stringify(v2Closed)]);
+  await db.exec('SET ROLE service_role;');
+  const v2RecoveryRows = await rpc('list_incomplete_option_accounting', [100, 0]);
+  assert.equal(v2RecoveryRows.length, 1);
+  assert.equal(v2RecoveryRows[0].option_trailing.policy_version, 'option_premium_protection_v2');
+  const v2Evidence = {legs: {
+    T1: {option_price: 110, option_source: 'recovered_history'},
+    EXIT: {...premiumMetadata, spot_price: 22020, spot_source: 'recovered_history',
+      option_price: 120, option_source: 'dhan_last_trade'},
+  }, spot_total_points: 15, option_total_points: 15};
+  const v2Corrected = await correctionFor(v2Id, 1, 'recover-v2', v2Evidence, 15, 15);
+  assert.equal(v2Corrected.revision, 2);
+  assert.equal(Number(v2Corrected.pnl_points), 15);
+  assert.equal(Number(v2Corrected.option_pnl_points), 15);
+  assert.equal(v2Corrected.option_trailing.policy_version, 'option_premium_protection_v2');
+  assert.equal(v2Corrected.option_trailing.accounting_corrections['recover-v2'].accounting.option_total_points, 15);
+  assert.equal((await correctionFor(v2Id, 1, 'recover-v2', v2Evidence, 15, 15)).idempotent_skip, true);
+  for (const [key, value] of Object.entries(premiumMetadata)) {
+    assert.equal(v2Corrected.option_trailing.accounting.legs.EXIT[key], value);
+    const changed = typeof value === 'boolean' ? !value : typeof value === 'number' ? value + 1 : 'BREAK_EVEN_COST';
+    await assert.rejects(() => correctionFor(v2Id, 2, `change-${key}`,
+      {legs: {EXIT: {[key]: changed}}}), /Cannot overwrite existing accounting evidence/);
+  }
+
   await assert.rejects(() => correction(4, 'overwrite', {legs: {}}, 71, null), /Cannot overwrite/);
   // A later stale client snapshot cannot erase or rewrite an already committed leg.
   await db.exec('RESET ROLE; TRUNCATE public.active_trades, public.trade_analytics, public.ml_collection;');
@@ -165,6 +205,78 @@ try {
   await db.exec('SET ROLE service_role;');
   assert.equal((await rpc('list_incomplete_option_accounting', [100, 0])).length, 0);
   await assert.rejects(() => correction(6, 'old-trade', {legs: {}}), /not enrolled in one-lot/);
+  // The new policy commits break-even premium protection atomically and keeps
+  // its status/fill evidence distinct from the reference mark.
+  await db.exec('RESET ROLE; TRUNCATE public.active_trades, public.trade_analytics, public.ml_collection;');
+  const v2 = {option_trailing: {policy_version: 'option_premium_protection_v2',
+    accounting_formula_version: 'one_lot_reference_v1', revision: 1, phase: 'PRE_T1',
+    highest_milestone: 0, remaining_fraction: 1, original_option_sl: 90,
+    original_option_entry: 100, entry_premium_basis_source: 'REFERENCE_ENTRY_LIMIT',
+    locked_option_sl: 90, premium_stop_source: 'INITIAL_OPTION_SL',
+    contract: {security_id: '123', exchange_segment: 'NSE_FNO', expiry: '2026-11-09', strike: 23950, option_type: 'CE'},
+    quote_watermark: null, accounting: {legs: {}, spot_booked_points: null, option_booked_points: null}}};
+  await q("INSERT INTO public.active_trades(id,state,stop_loss,entry_price,direction,signal_uuid) VALUES ($1,'OPEN',22000,22000,'BULLISH','00000000-0000-0000-0000-000000000099')", [id]);
+  await q("INSERT INTO public.trade_analytics(id,result_state,market_context,signal_uuid) VALUES ($1,'OPEN',$2,'00000000-0000-0000-0000-000000000099')", [id, JSON.stringify(v2)]);
+  await db.exec('SET ROLE service_role');
+  assert.deepEqual(await rpc('option_premium_protection_capabilities', []),
+    {schema_version: 'option_premium_protection_v2', ready: true});
+  await db.exec('RESET ROLE; REVOKE EXECUTE ON FUNCTION public.acknowledge_option_execution_route(uuid,text) FROM service_role; SET ROLE service_role;');
+  assert.equal((await rpc('option_premium_protection_capabilities', [])).ready, false);
+  await db.exec('RESET ROLE; GRANT EXECUTE ON FUNCTION public.acknowledge_option_execution_route(uuid,text) TO service_role; SET ROLE service_role;');
+  for (const privilege of ['SELECT', 'UPDATE']) {
+    await db.exec(`RESET ROLE; REVOKE ${privilege} ON public.ml_collection FROM service_role; SET ROLE service_role;`);
+    assert.equal((await rpc('option_premium_protection_capabilities', [])).ready, false,
+      `v2 readiness must require ml_collection ${privilege}`);
+    await db.exec(`RESET ROLE; GRANT ${privilege} ON public.ml_collection TO service_role; SET ROLE service_role;`);
+  }
+  const v2T1 = {active_state: 'T1_HIT', score: 1, option_trailing: {
+    phase: 'POST_T1', highest_milestone: 1, booked_fraction: .5, remaining_fraction: .5,
+    locked_option_sl: 100, protection_mode: 'BREAK_EVEN_COST', premium_stop_source: 'BREAK_EVEN_COST',
+    t1_at: '2026-11-04T04:00:00Z',
+    accounting: {legs: {T1: {event_at: '2026-11-04T04:00:00Z', spot_price: null,
+      option_price: 110, option_source: 'reference_quote'}}, spot_booked_points: null, option_booked_points: 5}}};
+  const v2Transition = (revision, event, payload) => rpc('apply_option_lifecycle_transition',
+    [id, revision, event, JSON.stringify(payload)]);
+  const committedT1 = await v2Transition(1, 'v2-t1', v2T1);
+  assert.equal(committedT1.option_trailing.locked_option_sl, 100);
+  const watermark = await v2Transition(2, 'v2-quote-watermark', {active_state: 'T1_HIT', score: 1,
+    option_trailing: {...v2T1.option_trailing, quote_watermark: '2026-11-04T04:07:00Z'}});
+  await assert.rejects(() => v2Transition(3, 'v2-backward-watermark', {active_state: 'T1_HIT', score: 1,
+    option_trailing: {...v2T1.option_trailing, quote_watermark: '2026-11-04T04:06:00Z'}}), /watermark cannot move backward/);
+  assert.equal(watermark.revision, 3);
+  const v2Exit = {active_state: 'CLOSED', score: 1, exit_reason: 'STOPPED_OUT_AT_BE',
+    exit_timestamp: '2026-11-04T04:08:00Z', exit_price: null, pnl_points: null, option_pnl_points: 5,
+    option_trailing: {phase: 'CLOSED', highest_milestone: 1, booked_fraction: .5, remaining_fraction: 0,
+      locked_option_sl: 100, protection_mode: 'BREAK_EVEN_COST', premium_stop_source: 'BREAK_EVEN_COST',
+      quote_watermark: '2026-11-04T04:08:00Z', exit_trigger: {domain: 'OPTION_PREMIUM', price: 100},
+      execution_route_pending: true, execution_route_reason: 'STOPPED_OUT_AT_BE',
+      exit: {reason: 'STOPPED_OUT_AT_BE', stop_domain: 'OPTION_PREMIUM', stop_source: 'BREAK_EVEN_COST',
+        option_close: 100, reference_exit_price: 100, runner_option_points: 0},
+      accounting: {legs: {T1: {event_at: '2026-11-04T04:00:00Z', option_price: 110, option_source: 'reference_quote'},
+        EXIT: {event_at: '2026-11-04T04:08:00Z', spot_price: null, option_price: 100, option_source: 'dhan_last_trade'}},
+        spot_booked_points: null, option_booked_points: 5}}};
+  const committedExit = await v2Transition(3, 'v2-premium-be-exit', v2Exit);
+  assert.equal(committedExit.result_state, 'STOPPED_OUT_AT_BE');
+  assert.equal(committedExit.option_trailing.exit.runner_option_points, 0);
+  assert.equal(Number((await q('SELECT option_pnl_points FROM public.trade_analytics WHERE id=$1', [id])).rows[0].option_pnl_points), 5);
+  await assert.rejects(() => v2Transition(4, 'v2-reopen', v2Exit), /Terminal trade/);
+  const routeAcknowledged = await acknowledgeRoute(id, 'STOPPED_OUT_AT_BE');
+  assert.equal(routeAcknowledged.acknowledged, true);
+  assert.equal(routeAcknowledged.option_trailing.phase, 'CLOSED');
+  assert.equal(routeAcknowledged.option_trailing.revision, 4, 'route acknowledgement does not advance lifecycle revision');
+  assert.equal(routeAcknowledged.option_trailing.execution_route_pending, false);
+  assert.equal(routeAcknowledged.option_trailing.execution_route_reason, 'STOPPED_OUT_AT_BE');
+  assert.equal((await acknowledgeRoute(id, 'STOPPED_OUT_AT_BE')).acknowledged, true,
+    'lost acknowledgement response can be retried idempotently');
+  assert.equal((await acknowledgeRoute(id, 'ATR_SL_HIT')).acknowledged, false,
+    'a different reason cannot acknowledge this route');
+  const terminalAfterRouteAck = (await q('SELECT state FROM public.active_trades WHERE id=$1', [id])).rows[0];
+  const analyticsAfterRouteAck = (await q('SELECT result_state,exit_timestamp,option_pnl_points FROM public.trade_analytics WHERE id=$1', [id])).rows[0];
+  assert.equal(terminalAfterRouteAck.state, 'CLOSED');
+  assert.equal(analyticsAfterRouteAck.result_state, 'STOPPED_OUT_AT_BE');
+  assert.equal(new Date(analyticsAfterRouteAck.exit_timestamp).toISOString(), '2026-11-04T04:08:00.000Z');
+  assert.equal(Number(analyticsAfterRouteAck.option_pnl_points), 5);
+  await assert.rejects(() => v2Transition(4, 'v2-reopen-after-route-ack', v2Exit), /Terminal trade/);
   await db.exec('RESET ROLE; REVOKE UPDATE ON public.trade_analytics FROM service_role; SET ROLE service_role;');
   assert.equal((await rpc('option_reference_accounting_capabilities', [])).ready, false);
   console.log('Option accounting isolated PostgreSQL checks passed');

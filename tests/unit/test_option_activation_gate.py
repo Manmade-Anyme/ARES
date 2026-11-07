@@ -12,12 +12,14 @@ from tests.unit.test_manm176_review_persistence import MemoryDatabase, make_sign
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('enabled,approved,backend,ready,enrolled', [
-    (False, '', True, True, False), (True, '', True, True, False),
-    (True, 'unverified', True, True, False), (True, 'option_atr_v1', False, True, False),
-    (True, 'option_atr_v1', True, False, False), (True, 'option_atr_v1', True, True, True),
+@pytest.mark.parametrize('enabled,approved,backend,protection_ready,enrolled,atr_on', [
+    (False, '', True, True, True, False), (True, '', True, True, True, False),
+    (True, 'unverified', True, True, True, False), (True, 'option_atr_v1', False, True, False, False),
+    (True, 'option_atr_v1', True, False, False, False), (False, '', True, False, False, False),
+    (True, 'option_atr_v1', True, True, True, True),
 ])
-async def test_actual_entry_requires_all_release_gates_and_preserves_prices(monkeypatch, enabled, approved, backend, ready, enrolled):
+async def test_actual_entry_requires_protection_schema_and_keeps_atr_gate_independent(
+        monkeypatch, enabled, approved, backend, protection_ready, enrolled, atr_on):
     database = MemoryDatabase()
     monkeypatch.setattr(settings, 'option_atr_enabled', enabled)
     monkeypatch.setattr(settings, 'option_atr_approved_version', approved)
@@ -29,7 +31,7 @@ async def test_actual_entry_requires_all_release_gates_and_preserves_prices(monk
     signal.market_context = {'tracking_mode':'SIGNAL_REFERENCE', 'unrelated': {'preserved':True}}
     original = deepcopy(signal.bracket)
     with patch('position_manager.create_client',return_value=database), patch('position_manager.AnalyticsLogger') as analytics:
-        analytics.return_value.option_reference_accounting_ready.return_value = ready
+        analytics.return_value.option_premium_protection_ready.return_value = protection_ready
         pm = PositionManager()
         await pm.add_trade(signal, 24000)
     trade = pm.active_trades[0]
@@ -40,9 +42,13 @@ async def test_actual_entry_requires_all_release_gates_and_preserves_prices(monk
     assert [trade[key] for key in ('entry_price','stop_loss','target_1','target_2')] == [24000,23990,24020,24040]
     assert trade['market_context']['unrelated'] == {'preserved':True}
     if enrolled:
+        assert opt['policy_version'] == 'option_premium_protection_v2'
+        assert opt['atr_enabled'] is atr_on
         assert opt['contract']['security_id'] == '123'
         assert opt['contract']['expiry'] == '2099-01-01'
         assert opt['original_option_entry'] == 100
+        assert opt['entry_premium_basis_source'] == 'REFERENCE_ENTRY_LIMIT'
+        assert opt['entry_premium_basis_at'] == trade['entry_timestamp']
         assert opt['original_option_sl'] == 95
         assert opt['activated_at'] == trade['created_at']
         assert datetime.fromisoformat(opt['activated_at']) > datetime.fromisoformat(trade['entry_timestamp'])
