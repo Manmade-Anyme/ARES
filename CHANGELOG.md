@@ -4,6 +4,20 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #157 Review Hardening & Edge-Case Audit: Trend Expansion & 5th Strategy POC (TASK-20261105):**
+  - Resolved automated PR review findings on PR #157 (`feature/TASK-20261105-trend-expansion-poc`).
+  - Added typing imports (`Dict`, `List`, `Optional`) in `poc/run_90day_audit.py` to prevent `NameError` during annotation evaluation.
+  - Enforced volume participation confirmation (`volume >= min_volume_ratio * vol_sma20`) on raw afternoon breakouts in `poc/trend_expansion_poc.py`.
+  - Refactored session VWAP dispersion (`vwap_std`) in `poc/regime_gated_expansion_strategy.py` to compute running volume-weighted standard deviation around the current session VWAP mean ($E[TP^2] - (E[TP])^2$), correcting historical running mean distortion.
+  - Added Bollinger Bandwidth expansion verification (`bbw_expansion_ratio >= min_bbw_expansion`, default 1.0) before triggering gated afternoon breakout entries in `poc/regime_gated_expansion_strategy.py`.
+  - Bounded ARES Supabase benchmark queries to the audit window (`gte start_date` and `lte end_date` with in-memory exact date filtering) across `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, and `poc/run_trend_expansion_backtest.py`.
+  - Enforced 35%–68% Fibonacci retracement boundary (`min_retrace_ratio <= retrace_depth / impulse_len <= max_retrace_ratio`) across raw and gated VWAP reclaims to eliminate rogue trade triggers.
+  - Added state isolation resetting `sweep_low` and `dipped_below_vwap` on trade entries, SL hits, trailing exits, and morning low violations.
+  - Isolated prior-day context files from `sessions` and benchmark data in `load_cached_sessions_and_pdl`, ensuring exact 1-to-1 session alignment with the evaluated strategy window.
+  - Added division-by-zero guards for empty benchmark or zero-loss analytics outputs.
+  - Added same-candle ratcheted stop recheck on Target 1 activation in both raw and gated expansion engines, ensuring candles that reach T1 and retrace below breakeven-plus-buffer exit immediately with `SL_HIT`.
+  - Expanded unit test suite in `tests/unit/test_poc_trend_expansion.py` (13/13 passing), mocking parquet I/O so tests execute cleanly in CI without requiring optional binary engines (`pyarrow`/`fastparquet`).
+
 - **PR #156 pending paper exits use pinned quote depth:** Protective and selected-option quote observations retain validated bid/ask depth. Fresh, contract-matched positive bids now flow to paper execution and confirm `EXIT_PENDING` exits; crossed, stale, or mismatched observations are rejected. Restored terminal routes continue receiving pinned quotes.
 
 - **PR #156 v2 readiness requires ML-label access:** The option-premium protection capability check now requires `service_role` to have both `SELECT` and `UPDATE` on `public.ml_collection`. Terminal lifecycle transitions update outcome labels transactionally, so readiness fails closed if either privilege is absent. The isolated PostgreSQL regression revokes each privilege independently and checks that v2 is not ready.
