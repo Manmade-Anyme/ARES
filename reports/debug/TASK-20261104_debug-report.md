@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: T1-tied quote against a newly seeded ATR stop
+
+Fail-first CE/PE replay seeded a ₹196 ATR stop at T1, then rejected a fresh ₹190 quote from the same source second. If the quote followed T1, it should leave reference exit ordering unresolved and prevent later T2 from being treated as certain. The targeted guard retains `T1_ORDER_UNKNOWN/ATR_STOP_ONLY_BREACH`, the seeded level, and quote provenance without creating an exit route.
+
 ## P1: stale writer erased committed protective intent
 
 Four fail-first immediate/outage and T2/terminal replays erased the committed SPOT_OPTION_EXIT_TIE, first trigger, and pending route. Recovery now rebases stale transitions to the committed unresolved allocation and intent, retains later observations, and suppresses stale milestone/exit alerts. Additional cases cover deferred exits, queued stronger stops, serialization, and a later proven breach while committed cost-only uncertainty has no route.

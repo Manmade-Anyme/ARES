@@ -1,5 +1,11 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: T1-tied quote after ATR seeding
+
+- CE and PE fail-first cases use the reported ₹161.05 initial stop, ₹167.20 entry, ₹196 T1-seeded ATR stop, and ₹190 quote received two seconds after its T1 source time.
+- Focused conflict and premium modules: **145 passed, 2 warnings**. The new quote remains durable through serialization, creates no execution route, and prevents the following T2 tick from committing an assumed allocation.
+- Full isolated `tests/`: **2,505 passed, 45 subtests passed, 12 warnings** in 175.30 seconds. Compilation and `git diff --check` passed; exact-head Actions pending. No production data, provider requests, broker orders, deployment, or worker start used.
+
 ## P1: retain concurrent protection across stale lifecycle writes
 
 - Four fail-first cases reproduce lost protective intent after T2 or terminal writes, immediately and after outage. Expanded coverage includes deferred exits and queued stronger stops.

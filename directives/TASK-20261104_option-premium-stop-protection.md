@@ -21,6 +21,8 @@ Current source also gates `option_trailing` enrollment on option-ATR configurati
 
 ## Scope
 
+- A fresh quote tied to a T1 transition that seeds ATR above cost is retained as `T1_ORDER_UNKNOWN/ATR_STOP_ONLY_BREACH`, with the seeded stop and quote provenance. It creates no execution exit from uncertain ordering and blocks later T2 allocation until the source ordering is reconciled.
+
 - On revision conflict, committed unresolved premium/index ordering and deferred protective exits take precedence over stale milestone or terminal snapshots. Rebase to the committed allocation, retain the first protective trigger and execution route, and store later local observations for reconciliation instead of emitting a stale T2/exit alert. Preserve stronger local stops and maximum watermarks; cost-only uncertainty still permits a later proven breach to route protection without finalizing reference accounting.
 
 - Revision-conflict recovery preserves the maximum committed/local quote watermark in every queued milestone and terminal snapshot, in live state, and in nested alert snapshots. A newer live quote remains authoritative; observed quote and exit provenance are not rewritten to match the recovered watermark.

@@ -3258,6 +3258,9 @@ class PositionManager:
     async def _reject_quote_before_active_stop(self, trade, observed_at, received_at, *, price=None,
                                                source=None, events=None):
         opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+        if await self._retain_t1_seeded_atr_quote_ambiguity(
+                trade, observed_at, received_at, price, source):
+            return True
         t2_value = opt.get("t2_at")
         if (opt.get("phase") == "POST_T2" and t2_value
                 and observed_at <= parse_candle_timestamp(t2_value)):
@@ -3295,6 +3298,43 @@ class PositionManager:
             opt["monitoring_status"] = "UNAVAILABLE"
             opt["monitoring_detail"] = detail
             await self._record_trade_update(trade, None, "MONITORING_UNAVAILABLE", received_at.isoformat())
+        return True
+
+    async def _retain_t1_seeded_atr_quote_ambiguity(self, trade, observed_at, received_at, price, source):
+        """Retain a quote tied to T1 that may have followed an ATR stop seeded there."""
+        opt = (trade.get("market_context") or {}).get("option_trailing") or {}
+        try:
+            t1_at = parse_candle_timestamp(opt["t1_at"])
+            effective_at = parse_candle_timestamp(opt["stop_effective_at"])
+            quote_price = float(price)
+            entry = float(opt["original_option_entry"])
+            original_stop = float(opt["original_option_sl"])
+            seeded_stop = float(opt["locked_option_sl"])
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            return False
+        if (opt.get("policy_version") != "option_premium_protection_v2"
+                or opt.get("phase") != "POST_T1" or trade.get("state") != "T1_HIT"
+                or opt.get("premium_stop_source") != "ATR_TRAILING"
+                or observed_at != t1_at or effective_at != t1_at
+                or not all(isfinite(value) for value in (quote_price, entry, original_stop, seeded_stop))
+                or not original_stop < entry < quote_price <= seeded_stop):
+            return False
+        existing = opt.get("ambiguous_premium_quote")
+        if isinstance(existing, dict) and existing.get("status") == "T1_ORDER_UNKNOWN":
+            return False
+        source = source or "OPTION_QUOTE"
+        opt["quote_watermark"] = observed_at.isoformat()
+        opt["last_option_quote"] = {"price": quote_price, "observed_at": observed_at.isoformat(),
+                                    "received_at": received_at.isoformat(), "source": source}
+        opt["ambiguous_premium_quote"] = {
+            "status": "T1_ORDER_UNKNOWN", "ordering_reason": "ATR_STOP_ONLY_BREACH",
+            "event_at": observed_at.isoformat(), "source_minute": observed_at.replace(second=0, microsecond=0).isoformat(),
+            "received_at": received_at.isoformat(), "source": source, "price": quote_price,
+            "original_option_sl": original_stop, "entry_premium": entry,
+            "seeded_option_sl": seeded_stop,
+        }
+        self._set_option_monitoring_health(opt, "OPTION_QUOTE", unavailable=False)
+        await self._record_trade_update(trade, None, None, observed_at.isoformat())
         return True
 
     async def _retain_t2_tied_quote_if_protective(self, trade, observed_at, received_at,

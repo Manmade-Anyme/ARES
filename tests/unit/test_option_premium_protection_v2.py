@@ -292,6 +292,46 @@ async def test_t1_cost_stop_quote_after_bar_watermark_has_distinct_persisted_ide
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("option_type", ["CE", "PE"])
+async def test_t1_seeded_atr_quote_retains_ordering_without_exit(option_type):
+    trade = _trade(option_type=option_type)
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(atr_enabled=True, execution_status="CONFIRMED_PAPER_FILL")
+    pm = _manager(trade)
+    t1_at = datetime(2026, 11, 4, 10, 30, tzinfo=IST)
+    start = t1_at - timedelta(minutes=75)
+    history = [OptionCandle(start + timedelta(minutes=5 * i), start + timedelta(minutes=5 * (i + 1)),
+                            200, 201, 199, 200, 1, "39961") for i in range(14)]
+    history.append(OptionCandle(t1_at - timedelta(minutes=5), t1_at, 190, 191, 189, 190, 1, "39961"))
+    tick = {"price": trade["target_1"], "exchange_at": t1_at.isoformat(),
+            "received_at": t1_at.isoformat(), "source": "dhan_tick"}
+    quote = {**_quote(190.0, 30, option_type=option_type),
+             "observed_at": t1_at.isoformat(),
+             "received_at": (t1_at + timedelta(seconds=2)).isoformat()}
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events([], {"39961": history}, current_time=t1_at, index_ticks=[tick])
+        assert opt["locked_option_sl"] == pytest.approx(196.0)
+        events = await pm.update_option_market_events(
+            [], {}, current_time=t1_at + timedelta(seconds=2), option_quotes=[quote])
+        assert (trade["id"], "ATR_SL_HIT") not in events
+        ambiguity = opt["ambiguous_premium_quote"]
+        assert ambiguity["status"] == "T1_ORDER_UNKNOWN"
+        assert ambiguity["ordering_reason"] == "ATR_STOP_ONLY_BREACH"
+        assert ambiguity["seeded_option_sl"] == pytest.approx(196.0)
+        assert not opt.get("execution_route_pending")
+        persisted = pm.analytics.rows[-1]["option_trailing"]
+        assert OptionTrailingContext.from_dict(persisted).ambiguous_premium_quote == ambiguity
+        t2_at = t1_at + timedelta(minutes=1)
+        t2 = {"price": trade["target_2"], "exchange_at": t2_at.isoformat(),
+              "received_at": t2_at.isoformat(), "source": "dhan_tick"}
+        later = await pm.update_option_market_events([], {}, current_time=t2_at, index_ticks=[t2])
+    assert (trade["id"], "T2_HIT") not in later
+    assert trade["state"] == "T1_HIT"
+    assert opt["ambiguous_premium_quote"]["price"] == pytest.approx(190.0)
+    assert not opt.get("execution_route_pending")
+
+
+@pytest.mark.asyncio
 async def test_t1_cost_quote_after_atr_seed_keeps_ambiguity_across_batches():
     trade = _trade()
     opt = trade["market_context"]["option_trailing"]
