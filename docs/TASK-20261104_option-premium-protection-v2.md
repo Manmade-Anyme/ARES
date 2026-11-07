@@ -114,7 +114,7 @@ ATR candidates still come only from completed, contiguous, contract-pinned 5-min
 
 ## Persistence and rollout
 
-`migrations/20261104_option_premium_protection_v2.sql` replaces the lifecycle RPC with v2 policy support, enforces immutable contract and premium basis, monotonic premium-stop/quote watermarks and the post-T1 entry-cost floor, and adds a service-role-only capability RPC. It contains a read-only open-record preview and performs no trade enrollment or historical rewrite. New trades enroll only when this backend capability is ready. Existing v1 and unversioned trades are not retrofitted.
+`migrations/20261104_option_premium_protection_v2.sql` replaces the lifecycle RPC with v2 policy support, enforces immutable contract and premium basis, monotonic premium-stop/quote watermarks and the post-T1 entry-cost floor, and adds a service-role-only capability RPC. Readiness requires `service_role` to have `SELECT` and `UPDATE` on `public.ml_collection` because terminal lifecycle transitions update the canonical label in the same transaction. Missing either privilege makes readiness false and prevents enrollment. The migration contains a read-only open-record preview and performs no trade enrollment or historical rewrite. Existing v1 and unversioned trades are not retrofitted.
 
 The code change does not apply the migration, alter runtime config, enable ATR, deploy, restart a worker, or submit orders. Production v2 protection requires the migration and the separately reviewed runtime rollout. Until that occurs, records that cannot pass the v2 backend capability check remain unenrolled in premium protection and are explicitly excluded from spot ATR fallback.
 

@@ -364,6 +364,8 @@ RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = '' AS $$
         AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.trade_analytics', 'UPDATE')
         AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.active_trades', 'SELECT')
         AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.active_trades', 'UPDATE')
+        AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.ml_collection', 'SELECT')
+        AND pg_catalog.has_table_privilege(CURRENT_USER, 'public.ml_collection', 'UPDATE')
         AND pg_catalog.has_function_privilege(CURRENT_USER,
             pg_catalog.to_regprocedure('public.apply_option_lifecycle_transition(uuid,integer,text,jsonb)'), 'EXECUTE')
         AND pg_catalog.has_function_privilege(CURRENT_USER,

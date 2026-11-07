@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #156 v2 readiness requires ML-label access:** The option-premium protection capability check now requires `service_role` to have both `SELECT` and `UPDATE` on `public.ml_collection`. Terminal lifecycle transitions update outcome labels transactionally, so readiness fails closed if either privilege is absent. The isolated PostgreSQL regression revokes each privilege independently and checks that v2 is not ready.
+
 - **PR #156 fractional-fill quote overlap:** For Dhan last-trade quotes rounded to whole seconds, compare the full source-second interval with the fractional paper fill time. Reject a quote second only when it ends at or before activation. If a breached quote second overlaps the confirmed PRE_T1 fill and was received after the fill, persist `ENTRY_ORDER_UNKNOWN/FILL_SECOND_OVERLAP` without routing an exit; retain it through quote recovery and defer later milestones until ordering is known.
 
 - **PR #156 T1-seeded ATR quote ordering:** A fresh quote tied to a T1 transition that seeds ATR above cost is retained as `T1_ORDER_UNKNOWN/ATR_STOP_ONLY_BREACH`, with the seeded stop and quote provenance. It creates no execution exit from uncertain ordering and blocks later T2 allocation until the source ordering is reconciled.

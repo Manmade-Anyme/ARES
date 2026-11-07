@@ -223,6 +223,12 @@ try {
   await db.exec('RESET ROLE; REVOKE EXECUTE ON FUNCTION public.acknowledge_option_execution_route(uuid,text) FROM service_role; SET ROLE service_role;');
   assert.equal((await rpc('option_premium_protection_capabilities', [])).ready, false);
   await db.exec('RESET ROLE; GRANT EXECUTE ON FUNCTION public.acknowledge_option_execution_route(uuid,text) TO service_role; SET ROLE service_role;');
+  for (const privilege of ['SELECT', 'UPDATE']) {
+    await db.exec(`RESET ROLE; REVOKE ${privilege} ON public.ml_collection FROM service_role; SET ROLE service_role;`);
+    assert.equal((await rpc('option_premium_protection_capabilities', [])).ready, false,
+      `v2 readiness must require ml_collection ${privilege}`);
+    await db.exec(`RESET ROLE; GRANT ${privilege} ON public.ml_collection TO service_role; SET ROLE service_role;`);
+  }
   const v2T1 = {active_state: 'T1_HIT', score: 1, option_trailing: {
     phase: 'POST_T1', highest_milestone: 1, booked_fraction: .5, remaining_fraction: .5,
     locked_option_sl: 100, protection_mode: 'BREAK_EVEN_COST', premium_stop_source: 'BREAK_EVEN_COST',

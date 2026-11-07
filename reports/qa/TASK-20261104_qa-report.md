@@ -1,5 +1,11 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: require ML-label table access for v2 readiness
+
+- Added `SELECT` and `UPDATE` checks for `public.ml_collection` to the v2 capability RPC. The isolated PostgreSQL regression removes each privilege independently and asserts `ready=false`.
+- Repository suite: **2,507 passed, 45 subtests passed, 12 warnings** in 176.02 seconds. `node --check tests/integration/option_accounting_sql.mjs` and `git diff --check` passed.
+- The PGlite integration was not available locally; verification by the exact-head Actions PostgreSQL lifecycle job is pending. No production data, provider requests, broker orders, deployment, or worker start used.
+
 ## P2: fractional-fill quote overlap
 
 - Regression covers a ₹160 Dhan quote sourced at 10:20:00 against a 10:20:00.500 confirmed fill, quote recovery before the next timestamp, and a later T1 touch. The ambiguity persists through serialization and retry without a route or milestone finalization. A 10:20:00 source second ending before a 10:20:01.500 fill remains rejected.

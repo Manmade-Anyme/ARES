@@ -36,6 +36,8 @@ For a long-premium CE or PE, a fresh valid option-price observation **at or belo
 
 The proposed canonical policy identifier is `option_premium_protection_v2`, separate from the indicator formula identifier `option_atr_v1`. Keep existing `option_atr_enabled`, exact approved-version, service-role, and backend capability requirements for ATR calculation/ratcheting. The ATR component remains off by default and is not activated by this implementation. The baseline premium SL and T1 cost protection are not disabled merely because the ATR parity gate is closed.
 
+The v2 capability RPC must verify that the calling `service_role` can `SELECT` and `UPDATE` `public.ml_collection`, as well as access the lifecycle tables and required functions. Every terminal lifecycle transition synchronizes the canonical outcome label inside the same transaction; without either table privilege, readiness must be false so the trade cannot enroll and later roll back its protective exit.
+
 ### 2.3 ATR calculation contract
 
 Keep the configured indicator timeframe at five minutes; the supplied one-minute chart does not change it. Retain the current option-premium formula in `atr_trailing.py::calculate_option_atr_bars`:
