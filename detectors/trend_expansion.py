@@ -151,11 +151,11 @@ class TrendExpansionDetector:
         return alpha * value + (1.0 - alpha) * previous
 
     def _evaluate_regime(self, pdc: Optional[float]) -> None:
-        self._regime_evaluated = True
         if not self._session_complete or pdc is None or not isfinite(float(pdc)):
             return
+        self._regime_evaluated = True
 
-        opening = [c for c in self._candles if self._time(c) <= REGIME_RANGE_END]
+        opening = [c for c in self._candles if self._time(c) < REGIME_RANGE_END]
         if not opening:
             return
         opening_range = max(c.high for c in opening) - min(c.low for c in opening)
@@ -183,10 +183,10 @@ class TrendExpansionDetector:
         self, candle: OHLCVCandle, levels: List[ResistanceLevel], allow_signal: bool
     ) -> Optional[AresSignal]:
         current_time = self._time(candle)
-        if not RECLAIM_START <= current_time <= self._parse_time(settings.trend_expansion_range_anchor_end):
+        if not RECLAIM_START <= current_time < self._parse_time(settings.trend_expansion_range_anchor_end):
             return None
 
-        morning = [c for c in self._candles if self._time(c) <= MORNING_RANGE_END]
+        morning = [c for c in self._candles if self._time(c) < MORNING_RANGE_END]
         if not morning:
             return None
         morning_high = max(c.high for c in morning)
@@ -255,10 +255,10 @@ class TrendExpansionDetector:
         current_time = self._time(candle)
         anchor_end = self._parse_time(settings.trend_expansion_range_anchor_end)
         cutoff = self._parse_time(settings.trend_expansion_entry_cutoff_time)
-        if not anchor_end < current_time <= cutoff:
+        if not anchor_end <= current_time < cutoff:
             return None
 
-        extended_range = [c for c in self._candles if self._time(c) <= anchor_end]
+        extended_range = [c for c in self._candles if self._time(c) < anchor_end]
         previous_candles = self._candles[:-1]
         if not extended_range or not previous_candles:
             return None

@@ -19,7 +19,7 @@ def _session_candles(start_time=datetime(2026, 11, 5, 9, 15)):
             close = start_price + index * 4.0
         elif time_str <= "10:15":
             close = 24420.0 + (index - 30) * 1.0
-        elif time_str <= "12:30":
+        elif time_str < "12:30":
             close = 24450.0 - (index - 60) * 0.25
         else:
             close = 24460.0 + (index - 195) * 0.5
@@ -75,6 +75,29 @@ def test_trend_expansion_requires_verified_prior_close_and_complete_session():
 
     assert result is None
     assert detector.session_complete is False
+
+
+def test_missing_pdc_does_not_consume_regime_evaluation():
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+    ))
+    detector = TrendExpansionDetector()
+    candles = _session_candles()
+
+    for candle in candles:
+        detector.update(candle, pdc=None)
+        if candle.timestamp.time() >= datetime(2026, 11, 5, 10, 30).time():
+            break
+    assert detector._regime_evaluated is False
+
+    detector.update(
+        OHLCVCandle(datetime(2026, 11, 5, 10, 31), 24400, 24401, 24399, 24400, 1000),
+        pdc=24200.0,
+    )
+
+    assert detector._regime_evaluated is True
+    assert detector._regime_score >= 2
 
 
 def test_dynamic_trend_expansion_levels_are_not_overwritten_by_profile():
@@ -193,6 +216,73 @@ def test_regime_evaluation_survives_1030_timestamp_jitter():
     assert jittered_detector._regime_score >= 2
     assert result is not None
     assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
+
+
+def test_regime_opening_range_excludes_0945_candle():
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_gap_extension_pts=10000.0,
+        trend_expansion_opening_range_pts=100.0,
+        trend_expansion_vwap_dispersion_pts=10000.0,
+        trend_expansion_directional_displacement_pts=10000.0,
+    ))
+    detector = TrendExpansionDetector()
+    detector._session_complete = True
+    detector._candles = [
+        OHLCVCandle(datetime(2026, 11, 5, 9, 15), 24300, 24301, 24299, 24300, 1000),
+        OHLCVCandle(datetime(2026, 11, 5, 9, 44), 24300, 24301, 24299, 24300, 1000),
+        OHLCVCandle(datetime(2026, 11, 5, 9, 45), 24300, 24450, 24299, 24300, 1000),
+        OHLCVCandle(datetime(2026, 11, 5, 10, 30), 24300, 24301, 24299, 24300, 1000),
+    ]
+    detector._cumulative_volume = 4000.0
+    detector._cumulative_tp_volume = 24300.0 * 4000.0
+    detector._cumulative_tp2_volume = 24300.0 ** 2 * 4000.0
+
+    detector._evaluate_regime(pdc=24300.0)
+
+    assert detector._regime_factors["range_expansion"] is False
+
+
+def test_reclaim_morning_range_excludes_1015_candle():
+    settings.apply_profile(NON_EXPIRY_CONFIG)
+    detector = TrendExpansionDetector()
+    detector._candles = [
+        OHLCVCandle(datetime(2026, 11, 5, 9, 15), 100, 131, 90, 100, 1000),
+        OHLCVCandle(datetime(2026, 11, 5, 10, 14), 100, 130, 90, 100, 1000),
+        OHLCVCandle(datetime(2026, 11, 5, 10, 15), 100, 200, 90, 100, 1000),
+    ]
+    current = OHLCVCandle(datetime(2026, 11, 5, 10, 30), 100, 101, 97, 100, 1000, vwap=100)
+
+    detector._check_reclaim(current, levels=[], allow_signal=False)
+
+    assert detector._dipped_below_vwap is False
+
+
+def test_breakout_window_includes_1230_and_excludes_1415():
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+    ))
+    candles = _session_candles()
+
+    breakout_detector = TrendExpansionDetector()
+    for candle in candles:
+        if candle.timestamp.time() < datetime(2026, 11, 5, 12, 30).time():
+            breakout_detector.update(candle, pdc=24200.0, allow_signal=False)
+        else:
+            signal = breakout_detector.update(candle, pdc=24200.0)
+            break
+    assert signal is not None
+    assert signal.timestamp.time() == datetime(2026, 11, 5, 12, 30).time()
+
+    cutoff_detector = TrendExpansionDetector()
+    for candle in candles:
+        if candle.timestamp.time() < datetime(2026, 11, 5, 14, 15).time():
+            cutoff_detector.update(candle, pdc=24200.0, allow_signal=False)
+        else:
+            signal = cutoff_detector.update(candle, pdc=24200.0)
+            break
+    assert signal is None
 
 
 def test_internal_vwap_used_when_candle_vwap_is_zero():

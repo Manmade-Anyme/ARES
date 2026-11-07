@@ -15,6 +15,8 @@ Two complementary setups are evaluated:
 1. **`VWAP_RECLAIM` (10:30 – 12:30 IST):** Higher-low value reversal following a 35%–68% Fibonacci liquidity sweep below VWAP.
 2. **`AFTERNOON_BREAKOUT` (12:30 – 14:15 IST):** Range expansion breakout above morning consolidation (09:15–12:30 IST) with volume and Bollinger Bandwidth participation.
 
+All windows use candle-start timestamps and exclude their end boundary. The 12:30 candle is eligible as a breakout candle but is not part of the range anchor; the last eligible breakout candle starts at 14:14 and completes by 14:15.
+
 ---
 
 ## 2. Multi-Factor Regime Gate
@@ -28,7 +30,7 @@ Evaluated at or after **10:30 IST**. Requires at least **2 of 4** volatility fac
 | **3. VWAP Dispersion** | $\sigma_{VWAP} = \sqrt{E[TP^2] - (E[TP])^2}$ | $\ge 25.0$ pts |
 | **4. Directional Displacement** | $\|\text{Close}_{09:45} - \text{Open}_{09:15}\|$ | $\ge 45.0$ pts |
 
-*Fail-Closed Invariant:* Missing PDC or a broken 1-minute candle stream between 09:15 and 10:30 IST disqualifies the session (`allow_signal = False`).
+*Fail-Closed Invariant:* Missing PDC or a broken 1-minute candle stream from 09:15 through the 10:30 regime check disqualifies the session (`allow_signal = False`). If the startup PDC fetch fails, the live loop retries once at the regime check before failing closed.
 
 ---
 
