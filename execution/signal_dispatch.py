@@ -133,6 +133,94 @@ class SignalDispatcher:
             return await self._sync(record)
         return False
 
+    async def on_option_observations(self, observations, *, as_of=None):
+        """Confirm pending paper exits only from fresh, contract-matched bids."""
+        try:
+            reference = as_of or datetime.now(timezone.utc)
+            if isinstance(reference, str):
+                reference = datetime.fromisoformat(reference.replace("Z", "+00:00"))
+            if not isinstance(reference, datetime) or reference.tzinfo is None:
+                return
+            reference = reference.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return
+
+        for observation in observations or []:
+            if not isinstance(observation, dict) or observation.get("source") not in {
+                    "dhan_last_trade", "dhan_option_chain"}:
+                continue
+            try:
+                received_at = observation.get("received_at")
+                if isinstance(received_at, str):
+                    received_at = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+                if not isinstance(received_at, datetime) or received_at.tzinfo is None:
+                    continue
+                received_at = received_at.astimezone(timezone.utc)
+                age = (reference - received_at).total_seconds()
+                if not 0 <= age <= 5:
+                    continue
+                observed_at = observation.get("observed_at")
+                if isinstance(observed_at, str):
+                    observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+                if not isinstance(observed_at, datetime) or observed_at.tzinfo is None:
+                    continue
+                source_age = (received_at - observed_at.astimezone(timezone.utc)).total_seconds()
+                if not 0 <= source_age <= 5:
+                    continue
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
+
+            raw_bid = observation.get("bid")
+            raw_ask = observation.get("ask")
+            try:
+                bid = None if raw_bid is None or isinstance(raw_bid, bool) else float(raw_bid)
+                ask = None if raw_ask is None or isinstance(raw_ask, bool) else float(raw_ask)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if bid is None or not math.isfinite(bid) or bid <= 0:
+                continue
+            if ask is not None and (not math.isfinite(ask) or ask <= 0 or bid > ask):
+                continue
+
+            for correlation_id, (signal, _) in tuple(self._signals.items()):
+                record = self.orders.records.get(correlation_id)
+                matching_trades = [
+                    *getattr(self.positions, "active_trades", []),
+                    *getattr(self.positions, "_option_execution_route_trades", []),
+                ]
+                trade = (next((item for item in matching_trades
+                               if str(item.get("id")) == str(signal.trade_id)), None)
+                         if signal.trade_id is not None else None)
+                context = trade.get("market_context") if isinstance(trade, dict) else None
+                option = context.get("option_trailing") if isinstance(context, dict) else None
+                if not isinstance(option, dict):
+                    continue
+                if (record is None or record.mode != "PAPER" or record.status != "EXIT_PENDING"
+                        or record.protection_confirmed is not True
+                        or type(record.pending_exit_quantity) is not int
+                        or record.pending_exit_quantity <= 0
+                        or option.get("policy_version") != "option_premium_protection_v2"
+                        or not self._matches_contract(record.bracket, option.get("contract"))
+                        or not self._matches_contract(record.bracket, observation.get("contract"))):
+                    continue
+                try:
+                    self.orders.observe_quote(correlation_id, ask, bid=bid)
+                    self._publish(record)
+                    persisted = await self._sync(record)
+                    if persisted and trade is not None and option.get("execution_route_pending"):
+                        acknowledge = getattr(self.positions, "acknowledge_option_execution_route", None)
+                        reason = option.get("execution_route_reason")
+                        if callable(acknowledge) and reason:
+                            await acknowledge(trade.get("id"), reason)
+                    if (persisted and record.status == "CLOSED" and trade is not None
+                            and not option.get("execution_route_pending")):
+                        routes = getattr(self.positions, "_option_execution_route_trades", [])
+                        if trade in routes:
+                            routes.remove(trade)
+                except Exception:
+                    logger.exception("Paper option exit quote failed for %s; exit remains retryable",
+                                     correlation_id)
+
     def _restore_option_execution_binding(self, trade, trade_signal, option):
         """Rebuild a paper-only route from the execution snapshot after restart."""
         context = trade.get("market_context")
@@ -347,7 +435,8 @@ class SignalDispatcher:
             "order_record": asdict(record),
         }
         signal.market_context["execution"] = execution
-        for trade in self.positions.active_trades:
+        for trade in [*self.positions.active_trades,
+                      *getattr(self.positions, "_option_execution_route_trades", [])]:
             if str(trade.get("signal_uuid")) == str(signal.id):
                 trade.setdefault("market_context", {})["execution"] = execution
         return execution

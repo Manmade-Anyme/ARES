@@ -1,6 +1,6 @@
 """Exercise signal-to-order-to-position flow through real paper execution."""
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -387,6 +387,76 @@ async def test_v2_premium_stop_creates_pending_exit_until_an_observed_bid_confir
     assert record.realized_pnl == pytest.approx(-6.5)
     assert signal.market_context["execution"]["status"] == "CLOSED"
     assert persisted[-1]["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_fresh_pinned_bid_completes_pending_paper_exit_and_rejects_unsafe_observations():
+    positions = Positions()
+    persisted = []
+
+    async def sync_execution(signal, execution):
+        persisted.append(dict(execution))
+        return True
+
+    positions.sync_execution = sync_execution
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    trade = positions.active_trades[0]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                "strike": 24000, "option_type": "CE"}
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "contract": contract,
+        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    }}
+    record = next(iter(dispatcher.orders.records.values()))
+    assert await dispatcher.on_option_stop(trade, "ATR_SL_HIT")
+    assert record.status == "EXIT_PENDING"
+    now = datetime(2026, 11, 4, 10, 20, tzinfo=timezone.utc)
+    base = {"contract": contract, "price": 90, "bid": 90.5, "ask": 90.6,
+            "observed_at": now.isoformat(), "received_at": now.isoformat(), "source": "dhan_last_trade"}
+
+    stale = {**base, "received_at": (now - timedelta(seconds=6)).isoformat()}
+    await dispatcher.on_option_observations([stale], as_of=now)
+    stale_source = {**base, "observed_at": (now - timedelta(seconds=6)).isoformat()}
+    await dispatcher.on_option_observations([stale_source], as_of=now)
+    wrong_contract = {**base, "contract": {**contract, "security_id": "456"}}
+    await dispatcher.on_option_observations([wrong_contract], as_of=now)
+    crossed = {**base, "ask": 90.4}
+    await dispatcher.on_option_observations([crossed], as_of=now)
+    assert record.status == "EXIT_PENDING"
+
+    await dispatcher.on_option_observations([base], as_of=now)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == record.filled_quantity == 130
+    assert record.realized_pnl == pytest.approx((90.5 - 99) * 130)
+    assert signal.market_context["execution"]["status"] == "CLOSED"
+    assert persisted[-1]["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_option_observation_does_not_complete_non_v2_pending_order():
+    positions = Positions()
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    trade = positions.active_trades[0]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                "strike": 24000, "option_type": "CE"}
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_atr_v1", "contract": contract,
+    }}
+    record = next(iter(dispatcher.orders.records.values()))
+    dispatcher.orders.request_option_exit(record.correlation_id, "ATR_SL_HIT")
+    now = datetime(2026, 11, 4, 10, 20, tzinfo=timezone.utc)
+    observation = {"contract": contract, "price": 90, "bid": 90.5, "ask": 90.6,
+                   "observed_at": now.isoformat(), "received_at": now.isoformat(),
+                   "source": "dhan_last_trade"}
+
+    await dispatcher.on_option_observations([observation], as_of=now)
+
+    assert record.status == "EXIT_PENDING"
+    assert record.exited_quantity == 0
 
 
 @pytest.mark.asyncio

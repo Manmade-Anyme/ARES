@@ -58,6 +58,7 @@ Current source also gates `option_trailing` enrollment on option-ATR configurati
 ## Acceptance Criteria
 
 - The v2 backend capability check reports ready only when `service_role` has both `SELECT` and `UPDATE` on `public.ml_collection`, since terminal lifecycle transitions synchronize labels inside the transaction. Missing either privilege prevents enrollment.
+- Every confirmed PAPER exit left pending after a protective stop can be completed from a fresh, validated, contract-matched positive option bid supplied by either the pinned quote batch or selected-option quote path. Reject crossed, stale, malformed, and mismatched observations; keep restored terminal pending exits on the quote-monitor path.
 - An option-tracked trade cannot be enrolled without a complete pinned contract and sourced premium entry/SL values.
 - A pre-T1 premium touch of the original option SL closes through the selected trade's terminal/reference accounting path and cannot invoke ATR. The ADR must define its reason label without reusing the post-T1 break-even reason.
 - T1 immediately and durably protects the remaining position/reference runner at entry cost.

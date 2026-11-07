@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: route pinned depth bids to pending paper exits
+
+The protective quote batch already fetched `top_bid_price`, but discarded the depth and sent only last price to the reference lifecycle. When the option chain was unavailable, a premium stop could create a paper `EXIT_PENDING` order without any path to `OrderManager.observe_quote`'s bid-based confirmation. Pinned batch and selected-option quote observations now retain validated bid/ask depth and pass them to the dispatcher after lifecycle stop routing. The dispatcher checks freshness, positive finite bid, non-crossed depth, and the complete pinned contract; only confirmed PAPER orders with a pending exit can complete. Terminal route queue entries remain quote candidates after restart. Regressions cover bid propagation, crossed/stale/wrong-contract rejection, pending exit completion at the observed bid, and terminal-route polling.
+
 ## P2: quote source second overlaps fractional fill time
 
 A Dhan last-trade quote at 10:20:00 with a ₹160 premium was dropped when the paper fill occurred at 10:20:00.500. Since Dhan reports whole seconds, the trade may have occurred after fill and before recovery. The stop breach is now retained as `ENTRY_ORDER_UNKNOWN/FILL_SECOND_OVERLAP` when receipt follows fill, with no premature execution route. Fully pre-fill seconds remain rejected. A recovered quote and later T1 do not erase or finalize the ambiguity.
@@ -146,4 +150,4 @@ The exact-T2-time exception now retains a quote as `T2_ORDER_UNKNOWN` when it br
 
 ## P2: require ML-label privileges for v2 readiness
 
-The v2 capability RPC checked lifecycle table access and the label-sync function's execute privilege, but did not check `public.ml_collection` table access. A service role missing `SELECT` or `UPDATE` could therefore enroll a trade and later have a terminal lifecycle transaction roll back when label synchronization failed. The capability check now requires both privileges; the isolated PostgreSQL regression revokes each one separately and expects readiness to fail closed. The repository suite passed (2,507 tests and 45 subtests); exact-head PostgreSQL Actions verification is pending.
+The v2 capability RPC checked lifecycle table access and the label-sync function's execute privilege, but did not check `public.ml_collection` table access. A service role missing `SELECT` or `UPDATE` could therefore enroll a trade and later have a terminal lifecycle transaction roll back when label synchronization failed. The capability check now requires both privileges; the isolated PostgreSQL regression revokes each one separately and expects readiness to fail closed. The repository suite passed (2,507 tests and 45 subtests), and exact-head Actions run #632 passed on `bcde770`, including both PostgreSQL lifecycle checks. That CI head predates the depth-bid follow-up.

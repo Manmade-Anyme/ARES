@@ -509,7 +509,8 @@ def _mark_signal_session_closed(signal):
         signal.reasons.append(reason)
 
 
-async def _record_selected_option_quote(position_manager, price_fetcher, quote_service, nearest_expiry, full_chain, *, observed_at=None):
+async def _record_selected_option_quote(position_manager, price_fetcher, quote_service, nearest_expiry, full_chain,
+                                        *, observed_at=None, dispatcher=None):
     """Record a matching quote; report deferral or selection changes for retry."""
     from quote_service import are_option_contracts_equal, match_option_quote_from_chain
 
@@ -545,12 +546,23 @@ async def _record_selected_option_quote(position_manager, price_fetcher, quote_s
         quote_service.record_option_quote(
             selected_contract, observation["price"], observation["observed_at"], source=source
         )
+        execution_observation = {
+            **observation,
+            "contract": {**selected_contract,
+                         "exchange_segment": selected_contract.get("exchange_segment") or "NSE_FNO"},
+            "received_at": observation.get("received_at") or datetime_module.datetime.now(
+                timezone.utc).isoformat(),
+            "source": source,
+        }
+        observe = getattr(dispatcher, "on_option_observations", None)
+        if callable(observe):
+            await observe([execution_observation], as_of=datetime_module.datetime.now(timezone.utc))
 
 
-def _schedule_selected_option_quote(position_manager, price_fetcher, quote_service, expiry, chain):
+def _schedule_selected_option_quote(position_manager, price_fetcher, quote_service, expiry, chain, *, dispatcher=None):
     """Coalesce dashboard quote requests without delaying trade monitoring."""
     position_manager._selected_option_quote_pending = (
-        price_fetcher, quote_service, expiry, chain, datetime_module.datetime.now(timezone.utc)
+        price_fetcher, quote_service, expiry, chain, datetime_module.datetime.now(timezone.utc), dispatcher
     )
     task = getattr(position_manager, "_selected_option_quote_task", None)
     if isinstance(task, asyncio.Task) and not task.done():
@@ -558,12 +570,13 @@ def _schedule_selected_option_quote(position_manager, price_fetcher, quote_servi
 
     async def capture_latest():
         while position_manager._selected_option_quote_pending is not None:
-            fetcher, service, current_expiry, current_chain, observed_at = position_manager._selected_option_quote_pending
+            fetcher, service, current_expiry, current_chain, observed_at, current_dispatcher = (
+                position_manager._selected_option_quote_pending)
             position_manager._selected_option_quote_pending = None
             try:
                 result = await _record_selected_option_quote(
                     position_manager, fetcher, service, current_expiry, current_chain,
-                    observed_at=observed_at,
+                    observed_at=observed_at, dispatcher=current_dispatcher,
                 )
                 _schedule_quote_flush(position_manager, service)
                 if result is not None and position_manager._selected_option_quote_pending is None:
@@ -575,14 +588,15 @@ def _schedule_selected_option_quote(position_manager, price_fetcher, quote_servi
                         current = position_manager.get_selected_option_contract()
                         if status == "deferred" and are_option_contracts_equal(previous_contract, current):
                             position_manager._selected_option_quote_pending = (
-                                fetcher, service, current_expiry, current_chain, observed_at
+                                fetcher, service, current_expiry, current_chain, observed_at, current_dispatcher
                             )
                         else:
                             service.reconcile_selected_contract(current)
                             _schedule_quote_flush(position_manager, service)
                             if validate_option_contract(current) is not None:
                                 position_manager._selected_option_quote_pending = (
-                                    fetcher, service, None, None, datetime_module.datetime.now(timezone.utc)
+                                    fetcher, service, None, None,
+                                    datetime_module.datetime.now(timezone.utc), current_dispatcher
                                 )
             except Exception as exc:
                 logger.warning("Selected option quote capture failed: %s", exc)
@@ -639,7 +653,7 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
             from quote_service import get_quote_service
             qs = get_quote_service()
             _schedule_selected_option_quote(
-                position_manager, price_fetcher, qs, None, None
+                position_manager, price_fetcher, qs, None, None, dispatcher=dispatcher
             )
         except Exception:
             pass
@@ -656,7 +670,7 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
             from quote_service import get_quote_service
             qs = get_quote_service()
             _schedule_selected_option_quote(
-                position_manager, price_fetcher, qs, None, None
+                position_manager, price_fetcher, qs, None, None, dispatcher=dispatcher
             )
         except Exception:
             pass
@@ -664,7 +678,8 @@ async def _monitor_rest_without_candle(price_fetcher, oi_fetcher, position_manag
     try:
         from quote_service import get_quote_service
         qs = get_quote_service()
-        _schedule_selected_option_quote(position_manager, price_fetcher, qs, expiry, full_chain)
+        _schedule_selected_option_quote(position_manager, price_fetcher, qs, expiry, full_chain,
+                                        dispatcher=dispatcher)
     except Exception:
         pass
     if _session_now().time() < time(15, 30):
@@ -699,23 +714,40 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
     """
     option_ticks_replayed = False
     option_stop_events = []
+    option_quotes = []
     if price_fetcher is not None:
         from options_candles import IST
         contracts = {}
         quote_contracts = {}
-        for trade in position_manager.active_trades:
-            option = (trade.get("market_context") or {}).get("option_trailing") or {}
-            if (trade.get("state") in {"CLOSED", "STOPPED_OUT"}
-                    or option.get("policy_version") not in {"option_atr_v1", "option_premium_protection_v2"}):
+        pending_route_trades = list(getattr(position_manager, "_option_execution_route_trades", []))
+        seen_trades = set()
+        for trade in [*position_manager.active_trades, *pending_route_trades]:
+            if id(trade) in seen_trades:
+                continue
+            seen_trades.add(id(trade))
+            context = trade.get("market_context") or {}
+            option = context.get("option_trailing") or {}
+            if not isinstance(option, dict):
+                continue
+            if option.get("policy_version") not in {"option_atr_v1", "option_premium_protection_v2"}:
+                continue
+            execution = context.get("execution") or {}
+            if not isinstance(execution, dict):
+                execution = {}
+            pending_execution = (option.get("execution_route_pending") is True
+                                 or (execution.get("mode") == "PAPER"
+                                     and execution.get("status") == "EXIT_PENDING"))
+            terminal = trade.get("state") in {"CLOSED", "STOPPED_OUT"}
+            if terminal and not pending_execution:
                 continue
             contract = option.get("contract") or {}
             security_id = str(contract.get("security_id") or "")
             if security_id:
                 if option.get("policy_version") == "option_premium_protection_v2":
                     quote_contracts[security_id] = contract
-                needs_atr_history = (option.get("policy_version") == "option_atr_v1"
+                needs_atr_history = (not terminal and (option.get("policy_version") == "option_atr_v1"
                                      or (option.get("policy_version") == "option_premium_protection_v2"
-                                         and option.get("atr_enabled") is True))
+                                         and option.get("atr_enabled") is True)))
                 if not needs_atr_history:
                     continue
                 history_from = option.get("indicator_history_from")
@@ -829,6 +861,13 @@ async def _monitor_completed_atr(candles, position_manager, dispatcher, *, price
                             await acknowledge(trade_id, reason)
                 except Exception:
                     logger.exception("Option stop execution routing failed for trade %s; retry retained", trade_id)
+        on_option_observations = getattr(dispatcher, "on_option_observations", None)
+        if option_quotes and callable(on_option_observations):
+            try:
+                await on_option_observations(
+                    option_quotes, as_of=current_time or datetime.now(timezone.utc))
+            except Exception:
+                logger.exception("Pinned option quote execution observation failed; pending exits retained")
     try:
         if index_ticks is None:
             events = await position_manager.update_atr_trailing(candles)
@@ -1199,7 +1238,8 @@ async def run():
                     )
                     _schedule_quote_flush(position_manager, qs)
                     _schedule_selected_option_quote(
-                        position_manager, price_fetcher, qs, expiry_date, full_chain
+                        position_manager, price_fetcher, qs, expiry_date, full_chain,
+                        dispatcher=order_dispatcher,
                     )
                 except Exception as quote_err:
                     logger.warning("Quote persistence sync failed: %s", quote_err)

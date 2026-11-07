@@ -4,6 +4,8 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #156 pending paper exits use pinned quote depth:** Protective and selected-option quote observations retain validated bid/ask depth. Fresh, contract-matched positive bids now flow to paper execution and confirm `EXIT_PENDING` exits; crossed, stale, or mismatched observations are rejected. Restored terminal routes continue receiving pinned quotes.
+
 - **PR #156 v2 readiness requires ML-label access:** The option-premium protection capability check now requires `service_role` to have both `SELECT` and `UPDATE` on `public.ml_collection`. Terminal lifecycle transitions update outcome labels transactionally, so readiness fails closed if either privilege is absent. The isolated PostgreSQL regression revokes each privilege independently and checks that v2 is not ready.
 
 - **PR #156 fractional-fill quote overlap:** For Dhan last-trade quotes rounded to whole seconds, compare the full source-second interval with the fractional paper fill time. Reject a quote second only when it ends at or before activation. If a breached quote second overlaps the confirmed PRE_T1 fill and was received after the fill, persist `ENTRY_ORDER_UNKNOWN/FILL_SECOND_OVERLAP` without routing an exit; retain it through quote recovery and defer later milestones until ordering is known.

@@ -12,6 +12,16 @@ from config import settings
 from oi_watch_context import IST, build_watch_candles
 
 
+def _positive_quote_price(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return price if isfinite(price) and price > 0 else None
+
+
 class ReferencePriceDeferred(RuntimeError):
     """Lower-priority evidence can be retried without delaying protection."""
 
@@ -444,7 +454,12 @@ class PriceFetcher:
             return None
         if not 0 <= (received - at).total_seconds() <= 5:
             return None
-        return {"price": price, "observed_at": at.isoformat(), "source": "dhan_last_trade"}
+        bid = _positive_quote_price(quote.get("top_bid_price"))
+        ask = _positive_quote_price(quote.get("top_ask_price"))
+        if bid is not None and ask is not None and bid > ask:
+            bid = None
+        return {"price": price, "bid": bid, "ask": ask, "observed_at": at.isoformat(),
+                "received_at": received.isoformat(), "source": "dhan_last_trade"}
 
     async def fetch_option_observations(self, contracts):
         """Fetch one timestamped quote per distinct pinned NSE_FNO security ID."""
@@ -499,6 +514,10 @@ class PriceFetcher:
                 continue
             if not 0 <= (received - at).total_seconds() <= 5:
                 continue
+            bid = _positive_quote_price(quote.get("top_bid_price"))
+            ask = _positive_quote_price(quote.get("top_ask_price"))
+            if bid is not None and ask is not None and bid > ask:
+                bid = None
             observations.append({
                 "contract": {
                     "security_id": security_id, "exchange_segment": exchange,
@@ -506,7 +525,7 @@ class PriceFetcher:
                     "strike": int(contract["strike"]),
                     "option_type": str(contract["option_type"]).upper(),
                 },
-                "price": price, "observed_at": at.isoformat(),
+                "price": price, "bid": bid, "ask": ask, "observed_at": at.isoformat(),
                 "received_at": received.isoformat(), "source": "dhan_last_trade",
             })
         return observations

@@ -1,10 +1,17 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: route pinned depth bids to pending paper exits
+
+- Pinned Dhan and selected-option chain observations now preserve finite positive bid/ask depth; crossed depth cannot be used for an exit.
+- Focused runtime, quote-service, price-fetcher, evidence, dispatcher, and selected-quote regressions: **141 passed** after the final fail-closed guards. Coverage includes source/receipt freshness, contract matching, crossed depth, paper exit at the observed bid, non-v2 isolation, selected-option fallback, and polling of restored terminal `EXIT_PENDING` routes.
+- Repository suite: **2,511 passed, 45 subtests passed, 12 warnings** in 172.03 seconds. Final defensive guards and the selected-option fallback were then checked in the focused suite. Compilation and `git diff --check` pass; exact-head Actions awaits the push.
+- No production data, live provider request, broker order, deployment, or worker start was used.
+
 ## P2: require ML-label table access for v2 readiness
 
 - Added `SELECT` and `UPDATE` checks for `public.ml_collection` to the v2 capability RPC. The isolated PostgreSQL regression removes each privilege independently and asserts `ready=false`.
 - Repository suite: **2,507 passed, 45 subtests passed, 12 warnings** in 176.02 seconds. `node --check tests/integration/option_accounting_sql.mjs` and `git diff --check` passed.
-- The PGlite integration was not available locally; verification by the exact-head Actions PostgreSQL lifecycle job is pending. No production data, provider requests, broker orders, deployment, or worker start used.
+- PGlite was unavailable locally; exact-head Actions run **#632 passed** on `bcde770`, including both PostgreSQL lifecycle checks. That run predates the current depth-bid follow-up, which needs its own latest-head run. No production data, provider requests, broker orders, deployment, or worker start used.
 
 ## P2: fractional-fill quote overlap
 
@@ -72,19 +79,19 @@
 - Focused lifecycle module: **76 passed, 2 warnings**. Full `tests/`: **2,459 passed, 45 subtests passed, 12 warnings** in 176.86 seconds. Compilation and `git diff --check` pass. Actions for the pushed revision are pending.
 - No production data, provider requests, broker orders, deployment, or worker start was used.
 
-**Verdict:** PASS — terminal-route regressions and the CI-scoped test suite pass; latest-head GitHub Actions is pending push.
+**Verdict:** PASS — local full and focused tests pass; exact-head GitHub Actions for the depth-bid follow-up is pending push.
 
 ## Verification
 
 | Check | Result | Evidence |
 |---|---|---|
-| Focused current reviewer regressions | PASS | 104 passed, 2 warnings |
-| CI test scope (`tests/`) | PASS | 2,446 passed, 45 subtests passed, 12 warnings in 174.90s |
+| Focused current reviewer regressions | PASS | 141 passed |
+| CI test scope (`tests/`) | PASS | 2,511 passed, 45 subtests passed, 12 warnings in 172.03s |
 | New monitoring-gate statements | PASS | The terminal-route helper and protected-fetch, REST, and tick-poll gates were exercised by the focused coverage run |
 | New monitoring-gate branches | PASS | All three route-queue paths reached the existing dispatcher with no active trades or new candle |
 | Python compilation | PASS | `python -m compileall -q position_manager.py execution/signal_dispatch.py main.py` |
 | Whitespace validation | PASS | `git diff --check` |
-| Latest-head GitHub Actions | PENDING | Push is required before CI can run against this revision |
+| Latest-head GitHub Actions | PENDING | Push is required before CI can run against the depth-bid follow-up |
 
 The tests emitted existing dependency/runtime warnings. The root `pytest -q` command also collects ignored scratch scripts that call Supabase during import and failed collection under the offline sandbox; the repository CI command `python -m pytest tests/ -q` passed. No live service restart, broker interaction, or production trade was performed. The PR remains for human review; no approval or merge is implied by this report.
 
