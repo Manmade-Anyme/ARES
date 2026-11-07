@@ -86,6 +86,61 @@ def _quote(price, minute, *, option_type="CE", security_id="39961"):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("fill_offset", "ambiguous"), [(500_000, True), (1_500_000, False)])
+async def test_fractional_fill_overlapping_source_second_is_not_discarded(fill_offset, ambiguous):
+    trade = _trade()
+    opt = trade["market_context"]["option_trailing"]
+    fill_at = datetime(2026, 11, 4, 10, 20, tzinfo=IST) + timedelta(microseconds=fill_offset)
+    opt["activated_at"] = fill_at.isoformat()
+    opt["execution_status"] = "CONFIRMED_PAPER_FILL"
+    trade["market_context"]["execution"] = {
+        "mode": "PAPER", "status": "FILLED", "filled_quantity": 65,
+        "fill_price": 167.2, "filled_at": fill_at.isoformat(), "protection_confirmed": True,
+    }
+    pm = _manager(trade)
+    source_at = fill_at.replace(second=0, microsecond=0)
+    received_at = source_at + timedelta(milliseconds=750)
+    quote = {**_quote(160.0, 20), "observed_at": source_at.isoformat(),
+             "received_at": received_at.isoformat()}
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_option_market_events([], {}, current_time=received_at, option_quotes=[quote])
+
+    if ambiguous:
+        ambiguity = opt["ambiguous_premium_quote"]
+        assert ambiguity["status"] == "ENTRY_ORDER_UNKNOWN"
+        assert ambiguity["ordering_reason"] == "FILL_SECOND_OVERLAP"
+        assert ambiguity["fill_at"] == fill_at.isoformat()
+        assert ambiguity["price"] == pytest.approx(160.0)
+        assert trade["state"] == "OPEN"
+        assert not opt.get("execution_route_pending")
+        assert pm.analytics.rows[-1]["option_trailing"]["ambiguous_premium_quote"] == ambiguity
+        restored = OptionTrailingContext.from_dict(pm.analytics.rows[-1]["option_trailing"])
+        assert restored.ambiguous_premium_quote == ambiguity
+        recovery_at = source_at + timedelta(seconds=1)
+        recovery = {**quote, "price": 180.0, "observed_at": recovery_at.isoformat(),
+                    "received_at": recovery_at + timedelta(milliseconds=750)}
+        with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+            await pm.update_option_market_events([], {}, current_time=recovery["received_at"],
+                                                 option_quotes=[recovery])
+        assert opt["ambiguous_premium_quote"] == ambiguity
+        assert not opt.get("execution_route_pending")
+        rows = len(pm.analytics.rows)
+        with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+            await pm.update_option_market_events([], {}, current_time=received_at, option_quotes=[quote])
+        assert len(pm.analytics.rows) == rows
+        t1_at = source_at + timedelta(minutes=1)
+        tick = {"price": trade["target_1"], "exchange_at": t1_at.isoformat(),
+                "received_at": t1_at.isoformat(), "source": "dhan_tick"}
+        with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+            events = await pm.update_option_market_events([], {}, current_time=t1_at, index_ticks=[tick])
+        assert (trade["id"], "T1_HIT") not in events
+        assert trade["state"] == "OPEN"
+    else:
+        assert not opt.get("ambiguous_premium_quote")
+        assert trade["state"] == "OPEN"
+
+
+@pytest.mark.asyncio
 async def test_pre_t1_option_quote_at_initial_stop_closes_in_premium_domain():
     trade = _trade()
     pm = _manager(trade)

@@ -1,5 +1,11 @@
 # QA Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: fractional-fill quote overlap
+
+- Regression covers a ₹160 Dhan quote sourced at 10:20:00 against a 10:20:00.500 confirmed fill, quote recovery before the next timestamp, and a later T1 touch. The ambiguity persists through serialization and retry without a route or milestone finalization. A 10:20:00 source second ending before a 10:20:01.500 fill remains rejected.
+- Focused conflict and premium modules: **147 passed, 2 warnings**. Full isolated `tests/`: **2,507 passed, 45 subtests passed, 12 warnings** in 174.58 seconds. Compilation and `git diff --check` passed; exact-head Actions pending.
+- No production data, provider requests, broker orders, deployment, or worker start used.
+
 ## P2: T1-tied quote after ATR seeding
 
 - CE and PE fail-first cases use the reported ₹161.05 initial stop, ₹167.20 entry, ₹196 T1-seeded ATR stop, and ₹190 quote received two seconds after its T1 source time.

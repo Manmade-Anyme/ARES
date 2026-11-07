@@ -1,5 +1,9 @@
 # Debug Report — PR #156 Terminal Paper Exit Recovery
 
+## P2: quote source second overlaps fractional fill time
+
+A Dhan last-trade quote at 10:20:00 with a ₹160 premium was dropped when the paper fill occurred at 10:20:00.500. Since Dhan reports whole seconds, the trade may have occurred after fill and before recovery. The stop breach is now retained as `ENTRY_ORDER_UNKNOWN/FILL_SECOND_OVERLAP` when receipt follows fill, with no premature execution route. Fully pre-fill seconds remain rejected. A recovered quote and later T1 do not erase or finalize the ambiguity.
+
 ## P2: T1-tied quote against a newly seeded ATR stop
 
 Fail-first CE/PE replay seeded a ₹196 ATR stop at T1, then rejected a fresh ₹190 quote from the same source second. If the quote followed T1, it should leave reference exit ordering unresolved and prevent later T2 from being treated as certain. The targeted guard retains `T1_ORDER_UNKNOWN/ATR_STOP_ONLY_BREACH`, the seeded level, and quote provenance without creating an exit route.

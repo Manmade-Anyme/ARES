@@ -979,7 +979,7 @@ class PositionManager:
                         trade, source_event_ts or event_ts_base, event_ts_base)
                     if guard_intent:
                         events.append((trade["id"], "STOPPED_OUT_AT_BE"))
-                    t1_premium_ambiguity = (self._unresolved_t1_premium_ambiguity(opt)
+                    t1_premium_ambiguity = (self._unresolved_premium_quote_ambiguity(opt)
                         if opt.get("policy_version") == "option_premium_protection_v2" else None)
                     if t1_premium_ambiguity and (touches_guard or touches_t2):
                         observation = {"event_at": source_event_ts or event_ts_base, "price": spot_price,
@@ -1048,6 +1048,18 @@ class PositionManager:
             reference_accounting = is_option_atr and opt_ctx.get("accounting_formula_version") == "one_lot_reference_v1"
             transition_event_ts = price_event_ts if is_option_atr else event_ts
 
+            activation_ambiguity = self._unresolved_premium_quote_ambiguity(opt_ctx or {})
+            if (activation_ambiguity
+                    and activation_ambiguity.get("ordering_reason") == "FILL_SECOND_OVERLAP"):
+                observation = {"event_at": price_event_ts, "price": spot_price,
+                    "high": observation_high, "low": observation_low,
+                    "candle_timestamp": candle_timestamp.isoformat() if candle_timestamp else None}
+                later = activation_ambiguity.setdefault("subsequent_index_observations", [])
+                if observation not in later:
+                    later.append(observation)
+                    await self._record_trade_update(trade, None, None, transition_event_ts)
+                continue
+
             # Post-T1 touch evaluations
             if trade["state"] == "T1_HIT":
                 if not is_option_atr:
@@ -1105,7 +1117,7 @@ class PositionManager:
                         if changed or guard_intent:
                             await self._record_trade_update(trade, None, None, transition_event_ts)
                     continue
-                t1_premium_ambiguity = self._unresolved_t1_premium_ambiguity(opt_ctx)
+                t1_premium_ambiguity = self._unresolved_premium_quote_ambiguity(opt_ctx)
                 if (opt_ctx.get("policy_version") == "option_premium_protection_v2"
                         and t1_premium_ambiguity):
                     if target_2_hit or be_hit:
@@ -1316,7 +1328,7 @@ class PositionManager:
                 # Target-first: If single index observation established both T1 and T2, apply T1 then T2 exactly once
                 if (target_2_hit and is_option_atr
                         and not (opt_ctx.get("policy_version") == "option_premium_protection_v2"
-                                 and self._unresolved_t1_premium_ambiguity(opt_ctx))
+                                 and self._unresolved_premium_quote_ambiguity(opt_ctx))
                         and (not reference_accounting or candle_timestamp is None or not (
                             trade_low <= trade["entry_price"] if sign == 1 else trade_high >= trade["entry_price"]))):
                     trade["state"] = "T2_REACHED"
@@ -1995,7 +2007,7 @@ class PositionManager:
             return False
         if ambiguity.get("kind") not in {"T1_ENTRY", "T2_ENTRY", "T1_PHASE_ENTRY"}:
             return False
-        if self._unresolved_t1_premium_ambiguity(opt):
+        if self._unresolved_premium_quote_ambiguity(opt):
             # Certified index ticks establish index-touch order only. They do
             # not order an option quote/bar against those touches at T1.
             return False
@@ -2314,17 +2326,21 @@ class PositionManager:
         for ambiguity_key in ("ambiguous_premium_quote", "ambiguous_premium_bar"):
             ambiguity = snapshot.get(ambiguity_key)
             if (isinstance(ambiguity, dict)
-                    and ambiguity.get("status") == "T1_ORDER_UNKNOWN"
-                    and ambiguity.get("ordering_reason") in {"COST_STOP_ONLY_BREACH", "ATR_STOP_ONLY_BREACH"}):
+                    and ((ambiguity.get("status") == "T1_ORDER_UNKNOWN"
+                          and ambiguity.get("ordering_reason") in {"COST_STOP_ONLY_BREACH", "ATR_STOP_ONLY_BREACH"})
+                         or (ambiguity.get("status") == "ENTRY_ORDER_UNKNOWN"
+                             and ambiguity.get("ordering_reason") == "FILL_SECOND_OVERLAP"))):
                 # A cost-only T1 ambiguity can arrive after a non-breaching
                 # bar already committed this event-time watermark. Give that
                 # newly observed uncertainty its own retry-stable identity.
                 label = ("seeded-atr-ambiguity" if ambiguity.get("ordering_reason") == "ATR_STOP_ONLY_BREACH"
+                         else "fill-overlap-ambiguity" if ambiguity.get("ordering_reason") == "FILL_SECOND_OVERLAP"
                          else "cost-stop-ambiguity")
                 identity += ":" + label + ":" + ambiguity_key + ":" + ":".join(
                     str(ambiguity.get(key) or "") for key in (
                         "event_at", "source_minute", "received_at", "source", "price",
-                        "option_close", "original_option_sl", "entry_premium"))
+                        "option_close", "original_option_sl", "entry_premium", "fill_at",
+                        "source_second_end"))
                 if label == "seeded-atr-ambiguity":
                     identity += ":" + str(ambiguity.get("seeded_option_sl"))
         resolution = snapshot.get("ambiguity_resolution")
@@ -2415,7 +2431,8 @@ class PositionManager:
                                         unresolved = next((key for key in (
                                             "ambiguous_index_touch", "ambiguous_premium_quote", "ambiguous_premium_bar")
                                             if (persisted_opt.get(key) or {}).get("status") in {
-                                                "ORDER_UNKNOWN", "T1_ORDER_UNKNOWN", "T2_ORDER_UNKNOWN"}), None)
+                                                "ORDER_UNKNOWN", "T1_ORDER_UNKNOWN", "T2_ORDER_UNKNOWN",
+                                                "ENTRY_ORDER_UNKNOWN"}), None)
                                         if not unresolved and persisted_opt.get("deferred_option_exit"):
                                             unresolved = "deferred_option_exit"
                                         if persisted_opt.get("policy_version") == "option_premium_protection_v2" and unresolved:
@@ -2867,9 +2884,12 @@ class PositionManager:
         return None
 
     @staticmethod
-    def _unresolved_t1_premium_ambiguity(opt):
+    def _unresolved_premium_quote_ambiguity(opt):
         for key in ("ambiguous_premium_bar", "ambiguous_premium_quote"):
             ambiguity = opt.get(key) or {}
+            if (ambiguity.get("status") == "ENTRY_ORDER_UNKNOWN"
+                    and ambiguity.get("ordering_reason") == "FILL_SECOND_OVERLAP"):
+                return ambiguity
             if ambiguity.get("status") != "T1_ORDER_UNKNOWN":
                 continue
             if ambiguity.get("protective_option_exit"):
@@ -3037,7 +3057,7 @@ class PositionManager:
         if (observed_at != event_at or received_at < observed_at
                 or received_at - observed_at > timedelta(seconds=5)
                 or not isfinite(price) or not original_stop < price <= entry_premium
-                or self._unresolved_t1_premium_ambiguity(opt)):
+                or self._unresolved_premium_quote_ambiguity(opt)):
             return False
         watermark = opt.get("quote_watermark")
         if (committed_t2_at is None and not previously_accepted
@@ -3108,7 +3128,7 @@ class PositionManager:
             trigger["stop_ordering_status"] = stop_ordering_status
         if raised_stop is not None:
             trigger["raised_stop"] = float(raised_stop)
-        t1_premium_ambiguity = self._unresolved_t1_premium_ambiguity(opt)
+        t1_premium_ambiguity = self._unresolved_premium_quote_ambiguity(opt)
         ambiguity = opt.get("ambiguous_index_touch") or t1_premium_ambiguity
         queued_index_before_or_at_exit = False
         for observation in opt.get("pending_index_observations") or []:
@@ -3300,6 +3320,52 @@ class PositionManager:
             await self._record_trade_update(trade, None, "MONITORING_UNAVAILABLE", received_at.isoformat())
         return True
 
+    async def _retain_fill_overlapping_quote_ambiguity(self, trade, observed_at, received_at, price, source):
+        """Keep a breached Dhan source second that straddles a fractional paper fill."""
+        context = trade.get("market_context") or {}
+        opt = context.get("option_trailing") or {}
+        execution = context.get("execution") or {}
+        if (source != "dhan_last_trade" or observed_at.microsecond != 0
+                or opt.get("policy_version") != "option_premium_protection_v2"
+                or opt.get("phase") != "PRE_T1"
+                or opt.get("execution_status") != "CONFIRMED_PAPER_FILL"
+                or execution.get("mode") != "PAPER"
+                or execution.get("protection_confirmed") is not True):
+            return False
+        try:
+            fill_at = parse_candle_timestamp(execution.get("filled_at") or opt.get("activated_at"))
+            source_second_end = observed_at + timedelta(seconds=1)
+            stop = float(opt["original_option_sl"])
+            quote_price = float(price)
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            return False
+        if (not observed_at < fill_at < source_second_end or received_at < fill_at
+                or not isfinite(stop) or not isfinite(quote_price)
+                or quote_price <= 0 or quote_price > stop):
+            return False
+        existing = opt.get("ambiguous_premium_quote")
+        if isinstance(existing, dict):
+            return (existing.get("status") == "ENTRY_ORDER_UNKNOWN"
+                    and existing.get("ordering_reason") == "FILL_SECOND_OVERLAP")
+        opt["ambiguous_premium_quote"] = {
+            "status": "ENTRY_ORDER_UNKNOWN", "ordering_reason": "FILL_SECOND_OVERLAP",
+            "event_at": observed_at.isoformat(), "source_second_end": source_second_end.isoformat(),
+            "received_at": received_at.isoformat(), "fill_at": fill_at.isoformat(),
+            "source": source, "price": quote_price, "original_option_sl": stop,
+        }
+        watermark = opt.get("quote_watermark")
+        if not watermark or observed_at > parse_candle_timestamp(watermark):
+            opt["quote_watermark"] = observed_at.isoformat()
+        previous_quote = opt.get("last_option_quote") or {}
+        if (not previous_quote.get("observed_at")
+                or observed_at >= parse_candle_timestamp(previous_quote["observed_at"])):
+            opt["last_option_quote"] = {
+                "price": quote_price, "observed_at": observed_at.isoformat(),
+                "received_at": received_at.isoformat(), "source": source,
+            }
+        await self._record_trade_update(trade, None, None, observed_at.isoformat())
+        return True
+
     async def _retain_t1_seeded_atr_quote_ambiguity(self, trade, observed_at, received_at, price, source):
         """Retain a quote tied to T1 that may have followed an ATR stop seeded there."""
         opt = (trade.get("market_context") or {}).get("option_trailing") or {}
@@ -3385,7 +3451,7 @@ class PositionManager:
                     trade, {"observed_at": quote_at.isoformat(), "received_at": received.isoformat(),
                             "price": trigger_price, "source": source}, quote_at, [],
                     committed_t2_at=t2_at)
-                return retained or bool(self._unresolved_t1_premium_ambiguity(opt)), None
+                return retained or bool(self._unresolved_premium_quote_ambiguity(opt)), None
             active_stop = original_stop
             stop_source = "INITIAL_OPTION_SL"
             reason = "SL_HIT"
@@ -3530,9 +3596,15 @@ class PositionManager:
                 if incoming != expected_contract:
                     continue
                 if self._option_quote_is_replay(opt, observed_at, price):
+                    if await self._retain_fill_overlapping_quote_ambiguity(
+                            trade, observed_at, received_at, price, quote.get("source")):
+                        continue
                     await self._retain_t2_tied_quote_if_protective(
                         trade, observed_at, received_at, price,
                         quote.get("source"), events)
+                    continue
+                if await self._retain_fill_overlapping_quote_ambiguity(
+                        trade, observed_at, received_at, price, quote.get("source")):
                     continue
                 if await self._reject_quote_before_active_stop(
                         trade, observed_at, received_at, price=price,
@@ -3547,7 +3619,7 @@ class PositionManager:
                 if t1_at is not None and observed_at == t1_at:
                     retained_exit = self._retained_t1_premium_exit(opt)
                     prior_quote = opt.get("ambiguous_premium_quote")
-                    prior_uncertainty = self._unresolved_t1_premium_ambiguity(opt)
+                    prior_uncertainty = self._unresolved_premium_quote_ambiguity(opt)
                     opt["quote_watermark"] = observed_at.isoformat()
                     quote_source = quote.get("source") or "OPTION_QUOTE"
                     opt["last_option_quote"] = {
@@ -3934,9 +4006,15 @@ class PositionManager:
                 if incoming_contract != expected_contract:
                     continue
                 if self._option_quote_is_replay(opt, observed_at, value):
+                    if await self._retain_fill_overlapping_quote_ambiguity(
+                            trade, observed_at, received_at, value, quote.get("source")):
+                        continue
                     await self._retain_t2_tied_quote_if_protective(
                         trade, observed_at, received_at, value,
                         quote.get("source"), events)
+                    continue
+                if await self._retain_fill_overlapping_quote_ambiguity(
+                        trade, observed_at, received_at, value, quote.get("source")):
                     continue
                 if await self._reject_quote_before_active_stop(
                         trade, observed_at, received_at, price=value,
