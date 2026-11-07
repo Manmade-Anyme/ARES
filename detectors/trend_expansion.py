@@ -65,25 +65,21 @@ class TrendExpansionDetector:
         if not SESSION_START <= timestamp.time() < SESSION_END:
             return None
 
+        current_time = timestamp.time()
         if timestamp.date() != self._session_date:
-            self._reset_session(timestamp.date(), timestamp.time())
+            self._reset_session(timestamp.date(), current_time)
         elif self._candles:
             previous = self._local_timestamp(self._candles[-1].timestamp)
             if timestamp <= previous:
                 return None
-            if (timestamp - previous).total_seconds() != 60:
+            if current_time <= REGIME_DISPERSION_TIME and (timestamp - previous).total_seconds() != 60:
                 self._session_complete = False
 
         self._candles.append(candle)
         self._update_indicators(candle)
 
-        current_time = timestamp.time()
-        if not self._regime_evaluated:
-            if current_time == REGIME_DISPERSION_TIME:
-                self._evaluate_regime(pdc)
-            elif current_time > REGIME_DISPERSION_TIME:
-                self._regime_evaluated = True
-                self._regime_factors = {}
+        if not self._regime_evaluated and current_time >= REGIME_DISPERSION_TIME:
+            self._evaluate_regime(pdc)
 
         if (
             not self._session_complete
@@ -203,7 +199,8 @@ class TrendExpansionDetector:
         ):
             return None
 
-        if candle.low < candle.vwap + settings.trend_expansion_sweep_vwap_buffer_pts:
+        vwap = self._current_vwap(candle.vwap if candle.vwap > 0 else candle.close)
+        if candle.low < vwap + settings.trend_expansion_sweep_vwap_buffer_pts:
             self._dipped_below_vwap = True
             self._sweep_low = min(self._sweep_low, candle.low)
         if not self._dipped_below_vwap:
@@ -220,9 +217,11 @@ class TrendExpansionDetector:
             <= settings.trend_expansion_max_retrace_ratio * impulse
         ):
             return None
-        if candle.close <= candle.vwap or self._ema9 < self._ema20:
+        if candle.close <= vwap or self._ema9 < self._ema20:
             return None
         if not allow_signal:
+            self._dipped_below_vwap = False
+            self._sweep_low = float("inf")
             return None
 
         stop_loss = self._sweep_low - settings.trend_expansion_reclaim_stop_buffer_pts
@@ -281,7 +280,7 @@ class TrendExpansionDetector:
 
         if not (
             candle.close > range_high + settings.trend_expansion_breakout_buffer_pts
-            and candle.close > candle.vwap
+            and candle.close > vwap
             and candle.close > self._ema20
             and vwap_zscore >= settings.trend_expansion_min_afternoon_vwap_zscore
             and candle.volume >= settings.trend_expansion_min_volume_ratio * volume_sma
@@ -367,6 +366,11 @@ class TrendExpansionDetector:
             },
         )
         return self.calibration_policy.apply_to_signal(signal) if self.calibration_policy else signal
+
+    def _current_vwap(self, fallback: float) -> float:
+        if self._cumulative_volume > 0:
+            return self._cumulative_tp_volume / self._cumulative_volume
+        return fallback
 
     def _current_bbw(self) -> float:
         return self._bbw_history[-1] if self._bbw_history else 0.0

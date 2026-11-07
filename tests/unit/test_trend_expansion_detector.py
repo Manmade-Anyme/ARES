@@ -151,3 +151,119 @@ def test_engine_wires_trend_expansion_before_continuation():
     )
     engine.continuation_detector.update.assert_not_called()
     assert engine.last_signal_time is not None
+
+
+def test_regime_evaluation_survives_1030_timestamp_jitter():
+    """Verify regime is evaluated even if 10:30 candle arrives with sub-minute seconds or is skipped."""
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+    ))
+    detector = TrendExpansionDetector()
+    candles = _session_candles()
+
+    # Skip exact 10:30 candle (index 75) to simulate API poll delay (74 -> 76 at 10:31)
+    candles_with_gap = [c for c in candles if c.timestamp.strftime("%H:%M") != "10:30"]
+
+    result = None
+    for candle in candles_with_gap:
+        result = detector.update(candle, pdc=24200.0, levels=[])
+        if result is not None:
+            break
+
+    assert detector._regime_evaluated is True
+    assert detector._regime_score >= 2
+    assert result is not None
+    assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
+
+
+def test_internal_vwap_used_when_candle_vwap_is_zero():
+    """Verify detector computes and uses its own VWAP when candle.vwap is default 0.0."""
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+    ))
+    detector = TrendExpansionDetector()
+
+    # Pass candles with default vwap=0.0
+    zero_vwap_candles = [
+        replace(c, vwap=0.0) for c in _session_candles()
+    ]
+
+    result = None
+    for candle in zero_vwap_candles:
+        result = detector.update(candle, pdc=24200.0, levels=[])
+        if result is not None:
+            break
+
+    assert result is not None
+    assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
+
+
+def test_midday_gap_after_1030_does_not_block_afternoon_breakout():
+    """Verify an isolated 1-minute data drop during midday chop does not kill afternoon breakout."""
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+    ))
+    detector = TrendExpansionDetector()
+    candles = _session_candles()
+
+    # Introduce a 2-minute gap at 11:45 (drop 11:45 candle)
+    candles_with_midday_drop = [
+        c for c in candles if c.timestamp.strftime("%H:%M") != "11:45"
+    ]
+
+    result = None
+    for candle in candles_with_midday_drop:
+        result = detector.update(candle, pdc=24200.0, levels=[])
+        if result is not None:
+            break
+
+    assert result is not None
+    assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
+
+
+def test_suppressed_reclaim_resets_state_under_allow_signal_false():
+    """Verify that when a reclaim setup passes under allow_signal=False, state resets cleanly."""
+    start_time = datetime(2026, 11, 5, 9, 15)
+    detector = TrendExpansionDetector()
+    detector._session_date = start_time.date()
+    detector._regime_evaluated = True
+    detector._regime_score = 3
+    detector._session_complete = True
+    detector._trades_today = 0
+    detector._ema9 = 24400.0
+    detector._ema20 = 24390.0
+
+    # Add morning candles to establish impulse: 24300 to 24420
+    for i in range(61):
+        detector._candles.append(
+            OHLCVCandle(
+                timestamp=start_time + timedelta(minutes=i),
+                open=24300.0, high=24420.0, low=24300.0, close=24400.0, volume=1000, vwap=24350.0
+            )
+        )
+    detector._cumulative_volume = 100000.0
+    detector._cumulative_tp_volume = 24350.0 * 100000.0
+
+    # Candle dipping below VWAP (sweep low = 24340, close = 24345 < vwap 24350)
+    dip_candle = OHLCVCandle(
+        timestamp=datetime(2026, 11, 5, 10, 35),
+        open=24352.0, high=24352.0, low=24340.0, close=24345.0, volume=1000, vwap=24350.0
+    )
+    detector.update(dip_candle, pdc=24200.0, allow_signal=False)
+    assert detector._dipped_below_vwap is True
+    assert detector._sweep_low == 24340.0
+
+    # Reclaim candle that meets all criteria, but allow_signal is False (e.g. cooldown active)
+    reclaim_candle = OHLCVCandle(
+        timestamp=datetime(2026, 11, 5, 10, 45),
+        open=24346.0, high=24390.0, low=24346.0, close=24385.0, volume=1000, vwap=24350.0
+    )
+    sig = detector.update(reclaim_candle, pdc=24200.0, allow_signal=False)
+    assert sig is None
+    # State MUST be reset so it cannot leak and trigger late
+    assert detector._dipped_below_vwap is False
+    assert detector._sweep_low == float("inf")
+

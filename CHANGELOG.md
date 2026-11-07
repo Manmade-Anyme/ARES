@@ -4,6 +4,17 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #157 promote Trend Expansion strategy to production and remove POC files (TASK-20261105):**
+  - Removed deprecated prototype modules and audit runners (`poc/trend_expansion_poc.py`, `poc/regime_gated_expansion_strategy.py`, `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, `poc/run_trend_expansion_backtest.py`, `poc/position_management.py`, and `tests/unit/test_poc_trend_expansion.py`).
+  - Promoted `TrendExpansionDetector` in `detectors/trend_expansion.py` as canonical production implementation wired into `AresEngine`.
+  - Hardened regime evaluation against sub-second timestamp jitter by checking `current_time >= REGIME_DISPERSION_TIME`.
+  - Replaced external candle VWAP dependency with internal volume-weighted session VWAP calculation (`_current_vwap`), eliminating silent failures when candles lack pre-calculated VWAP.
+  - Scoped strict 60s stream continuity requirement to the morning phase (`current_time <= REGIME_DISPERSION_TIME`), ensuring midday data gaps do not block afternoon breakouts.
+  - Added state reset for `_sweep_low` and `_dipped_below_vwap` when reclaim criteria are met under dormant regime conditions.
+  - Simplified price fetcher index lookup in `fetchers/price_fetcher.py`.
+  - Streamlined and condensed strategy documentation across repo (`docs/POC_Trend_Expansion_Strategy_Validation.md`) and Obsidian vault (`~/Documents/Obsidian/Projects/Ares/ARES 5th Strategy Gated Expansion Architecture.md`).
+  - Expanded production unit tests in `tests/unit/test_trend_expansion_detector.py` covering timestamp jitter, missing VWAP fallback, midday gaps, and dormant state resets.
+
 - **PR #157 live gated Trend Expansion signals:** Wire the regime-gated POC strategy into `AresEngine` as the fifth enabled-by-default detector. Emit manual signal references through the existing persistence/alert path only; no broker entry orders or Supabase migration. Require verified prior-day close and an uninterrupted completed-candle stream from 09:15 IST, fail closed when inputs are missing, preserve dynamic reclaim/breakout stop and T1 geometry, and expose regime/setup thresholds through both tuning profiles. Add setup reporting and focused detector, engine, configuration, and previous-day-context tests.
 
 - **PR #157 Review Hardening & Edge-Case Audit: Trend Expansion & 5th Strategy POC (TASK-20261105):**

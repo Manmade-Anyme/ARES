@@ -613,12 +613,11 @@ class PriceFetcher:
         pdc = None
         closes = data.get("close", [])
         if len(closes) == len(timestamps):
-            close_idx = len(timestamps) - 1 if idx == -1 else len(timestamps) - 2
             try:
-                close_value = float(closes[close_idx])
+                close_value = float(closes[idx])
                 if isfinite(close_value) and close_value > 0:
                     pdc = round_to_tick(close_value)
-            except (TypeError, ValueError, OverflowError):
+            except (TypeError, ValueError, OverflowError, IndexError):
                 pdc = None
 
         return pdh, pdl, pdc
