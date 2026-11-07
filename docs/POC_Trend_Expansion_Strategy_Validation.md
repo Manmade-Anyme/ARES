@@ -22,7 +22,7 @@ We designed and backtested a specialized **Trend Expansion POC Strategy** incorp
    - Leverages options call-writer short-covering cascades.
 2. **`VWAP_RECLAIM` (Structural Shakeout & Higher-Low Reversal):**
    - Requires a $\ge 60$ pt morning impulse.
-   - Waits for a deep 40%–65% Fibonacci liquidity sweep below VWAP that respects the day low.
+   - Waits for a 35%–68% Fibonacci liquidity sweep (38.2% to 66.7% golden ratio zone) below VWAP that respects the day low.
    - Enters on a verified VWAP reclaim candle with $\text{EMA}_9 \ge \text{EMA}_{20}$.
 
 ---
@@ -98,12 +98,15 @@ Evaluated on 7 consecutive sessions documented in the Obsidian Daily Market Obse
 
 ---
 
-## 6. PR #157 Review Hardening (2026-11-07)
+## 6. PR #157 Review Hardening & Edge-Case Audit (2026-11-07)
 
 - **Annotation Import Safety:** Added `from typing import Dict, List, Optional` in audit modules to eliminate runtime `NameError` during annotation introspection.
 - **Volume Confirmation:** Enforced `volume >= min_volume_ratio * vol_sma20` (default 1.0) on raw afternoon breakouts to reject low-participation chop.
 - **Exact Session VWAP Dispersion:** Corrected cumulative variance calculation to evaluate deviations around current session VWAP mean ($E[TP^2] - (E[TP])^2$).
 - **BBW Expansion Gate:** Enforced `bbw_expansion_ratio >= min_bbw_expansion` (default 1.0) before triggering gated afternoon breakouts.
-- **Audit Date Bounding:** Bounded all Supabase comparative queries to `[start_date, end_date]` with exact session calendar filtering.
+- **Fibonacci Retracement Gating:** Bounded pullback depth to `[min_retrace_ratio, max_retrace_ratio]` (35% to 68%), enforcing upper and lower limits on raw and gated reclaims.
+- **State Invalidation & Isolation:** Reset `sweep_low` and `dipped_below_vwap` on trade entry, SL hit, trailing exit, and if price flushes beneath morning low.
+- **Audit Context & Date Isolation:** Bounded `load_all_cached_sessions` and `load_cached_sessions_and_pdl` strictly to `[start_date, end_date]`, ensuring prior-day context files do not leak into ARES benchmark calculations.
+- **Division-by-Zero Hardening:** Guarded against empty trade sets in audit summary calculations.
 
 

@@ -54,7 +54,9 @@ class GatedRegimeExpansionEngine:
         max_stop_loss_pts: float = 35.0,
         min_impulse_pts: float = 70.0,
         min_regime_score: int = 2,
-        min_bbw_expansion: float = 1.0
+        min_bbw_expansion: float = 1.0,
+        min_retrace_ratio: float = 0.35,
+        max_retrace_ratio: float = 0.68
     ):
         self.range_anchor_end = range_anchor_end
         self.entry_cutoff_time = entry_cutoff_time
@@ -65,6 +67,8 @@ class GatedRegimeExpansionEngine:
         self.min_impulse_pts = min_impulse_pts
         self.min_regime_score = min_regime_score
         self.min_bbw_expansion = min_bbw_expansion
+        self.min_retrace_ratio = min_retrace_ratio
+        self.max_retrace_ratio = max_retrace_ratio
 
     def enrich_session(self, df: pd.DataFrame) -> pd.DataFrame:
         """Computes VWAP, VWAP Standard Deviation around session mean, Bollinger Bandwidth, and EMAs."""
@@ -199,6 +203,8 @@ class GatedRegimeExpansionEngine:
                     completed_trades.append(active_trade)
                     active_trade = None
                     cooldown_until_idx = i + 15
+                    dipped_below_vwap = False
+                    sweep_low = 999999.0
                     continue
 
                 # Target 1 check
@@ -217,6 +223,8 @@ class GatedRegimeExpansionEngine:
                     completed_trades.append(active_trade)
                     active_trade = None
                     cooldown_until_idx = i + 10
+                    dipped_below_vwap = False
+                    sweep_low = 999999.0
                     continue
 
                 continue
@@ -237,31 +245,37 @@ class GatedRegimeExpansionEngine:
                         dipped_below_vwap = True
                         sweep_low = min(sweep_low, candle["low"])
 
-                    if dipped_below_vwap and sweep_low > m_low:
-                        retrace_depth = m_high - sweep_low
-                        if retrace_depth >= 0.35 * impulse_len:
-                            # Reclaims VWAP (Z-score >= 0) with EMA9 >= EMA20
-                            if candle["close"] > candle["vwap"] and candle["ema9"] >= candle["ema20"]:
-                                # Structural Stop Loss beneath sweep low
-                                sl = sweep_low - 3.0
-                                sl_pts = candle["close"] - sl
-                                if 15.0 <= sl_pts <= self.max_stop_loss_pts:
-                                    active_trade = GatedTradeRecord(
-                                        strategy="VWAP_ZSCORE_RECLAIM",
-                                        date=date_str,
-                                        direction="BULLISH",
-                                        entry_time=t,
-                                        entry_price=candle["close"],
-                                        stop_loss=sl,
-                                        risk_pts=sl_pts,
-                                        target_1=m_high,
-                                        regime_score=regime_score,
-                                        vwap_zscore=float(candle["vwap_zscore"]),
-                                        bbw_expansion=float(candle["bbw_expansion_ratio"])
-                                    )
-                                    trades_count += 1
-                                    dipped_below_vwap = False
-                                    continue
+                    if dipped_below_vwap:
+                        # Invalidate setup if price flushes beneath morning low
+                        if sweep_low <= m_low:
+                            dipped_below_vwap = False
+                            sweep_low = 999999.0
+                        else:
+                            retrace_depth = m_high - sweep_low
+                            if self.min_retrace_ratio * impulse_len <= retrace_depth <= self.max_retrace_ratio * impulse_len:
+                                # Reclaims VWAP (Z-score >= 0) with EMA9 >= EMA20
+                                if candle["close"] > candle["vwap"] and candle["ema9"] >= candle["ema20"]:
+                                    # Structural Stop Loss beneath sweep low
+                                    sl = sweep_low - 3.0
+                                    sl_pts = candle["close"] - sl
+                                    if 15.0 <= sl_pts <= self.max_stop_loss_pts:
+                                        active_trade = GatedTradeRecord(
+                                            strategy="VWAP_ZSCORE_RECLAIM",
+                                            date=date_str,
+                                            direction="BULLISH",
+                                            entry_time=t,
+                                            entry_price=candle["close"],
+                                            stop_loss=sl,
+                                            risk_pts=sl_pts,
+                                            target_1=m_high,
+                                            regime_score=regime_score,
+                                            vwap_zscore=float(candle["vwap_zscore"]),
+                                            bbw_expansion=float(candle["bbw_expansion_ratio"])
+                                        )
+                                        trades_count += 1
+                                        dipped_below_vwap = False
+                                        sweep_low = 999999.0
+                                        continue
 
             # SETUP B: AFTERNOON_BAND_EXPANSION (12:30 to 14:15)
             if t > self.range_anchor_end and t <= self.entry_cutoff_time:

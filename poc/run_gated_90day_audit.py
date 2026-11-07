@@ -25,7 +25,7 @@ from poc.trend_expansion_poc import TrendExpansionEngine
 IST = pytz.timezone("Asia/Kolkata")
 
 
-def load_cached_sessions_and_pdl():
+def load_cached_sessions_and_pdl(start_date: str = "2026-08-07", end_date: str = "2026-11-05"):
     parquet_files = sorted(glob.glob("scratch/data_cache/*.parquet"))
     sessions = {}
     pdl_map = {}
@@ -36,14 +36,15 @@ def load_cached_sessions_and_pdl():
         df = pd.read_parquet(f)
         df["dt"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert(IST)
         df["time_str"] = df["dt"].dt.strftime("%H:%M")
-        sessions[d] = df
 
-        if prev is not None:
+        if prev is not None and start_date <= d <= end_date:
+            sessions[d] = df
             pdl_map[d] = {
                 "pdc": prev["close"],
                 "pdh": prev["high"],
                 "pdl": prev["low"]
             }
+
         prev = {
             "open": df.iloc[0]["open"],
             "high": df["high"].max(),
@@ -72,18 +73,23 @@ def load_supabase_ares_trades(start_date: str = "2026-08-07", end_date: str = "2
 
 
 def main():
+    start_date = "2026-08-07"
+    end_date = "2026-11-05"
+
     print("=" * 80)
     print("ARES 5TH STRATEGY: MULTI-FACTOR GATED REGIME AUDIT (90 DAYS)")
-    print("Period: 2026-08-07 to 2026-11-05 (62 Trading Days)")
+    print(f"Period: {start_date} to {end_date} (62 Trading Days)")
     print("=" * 80)
 
-    sessions, pdl_map = load_cached_sessions_and_pdl()
-    session_dates = sorted(sessions.keys())
-    start_date = session_dates[0] if session_dates else "2026-08-07"
-    end_date = session_dates[-1] if session_dates else "2026-11-05"
+    sessions, pdl_map = load_cached_sessions_and_pdl(start_date=start_date, end_date=end_date)
+    audited_dates = sorted(sessions.keys())
+    actual_start = audited_dates[0] if audited_dates else start_date
+    actual_end = audited_dates[-1] if audited_dates else end_date
 
-    df_ares = load_supabase_ares_trades(start_date=start_date, end_date=end_date)
-    ares_daily = df_ares.groupby("date")["pnl_points"].sum().to_dict()
+    df_ares = load_supabase_ares_trades(start_date=actual_start, end_date=actual_end)
+    if not df_ares.empty and audited_dates:
+        df_ares = df_ares[df_ares["date"].isin(audited_dates)]
+    ares_daily = df_ares.groupby("date")["pnl_points"].sum().to_dict() if not df_ares.empty else {}
 
     gated_engine = GatedRegimeExpansionEngine()
     raw_engine = TrendExpansionEngine()
@@ -167,6 +173,9 @@ def main():
     s_gated = calc_stats(gated_trades)
     s_raw = calc_stats(raw_trades)
 
+    ares_pnl = df_ares["pnl_points"].sum() if not df_ares.empty else 0.0
+    ares_wr = (len(df_ares[df_ares["pnl_points"] > 0]) / len(df_ares) * 100) if not df_ares.empty else 0.0
+
     print("\n" + "=" * 80)
     print("3-WAY COMPARISON: ARES CORE VS RAW POC VS 5TH STRATEGY (GATED)")
     print("=" * 80)
@@ -174,7 +183,7 @@ def main():
     print(f"Regime Gate Active Days:      {active_days} (Strategy Armed)")
     print(f"Regime Gate Dormant Days:     {dormant_days} (Capital Preserved)")
     print("-" * 80)
-    print(f"1. ARES Core Live PnL:        {df_ares['pnl_points'].sum():+9.2f} pts | Trades: {len(df_ares)} | WR: {len(df_ares[df_ares['pnl_points']>0])/len(df_ares)*100:.1f}%")
+    print(f"1. ARES Core Live PnL:        {ares_pnl:+9.2f} pts | Trades: {len(df_ares)} | WR: {ares_wr:.1f}%")
     print(f"2. Raw POC PnL (No Gate):     {s_raw['pnl']:+9.2f} pts | Trades: {s_raw['trades']:2d} | WR: {s_raw['wr']:.1f}% | PF: {s_raw['pf']:.2f}")
     print(f"3. 5th Strategy (Gated):      {s_gated['pnl']:+9.2f} pts | Trades: {s_gated['trades']:2d} | WR: {s_gated['wr']:.1f}% | PF: {s_gated['pf']:.2f}")
     print("-" * 80)

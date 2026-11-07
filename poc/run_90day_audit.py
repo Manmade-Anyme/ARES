@@ -22,15 +22,16 @@ from poc.trend_expansion_poc import TrendExpansionEngine, TradeRecord
 IST = pytz.timezone("Asia/Kolkata")
 
 
-def load_all_cached_sessions() -> Dict[str, pd.DataFrame]:
+def load_all_cached_sessions(start_date: str = "2026-08-07", end_date: str = "2026-11-05") -> Dict[str, pd.DataFrame]:
     parquet_files = sorted(glob.glob("scratch/data_cache/*.parquet"))
     sessions = {}
     for f in parquet_files:
         d_str = os.path.basename(f).replace(".parquet", "")
-        df = pd.read_parquet(f)
-        df["dt"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert(IST)
-        df["time_str"] = df["dt"].dt.strftime("%H:%M")
-        sessions[d_str] = df
+        if start_date <= d_str <= end_date:
+            df = pd.read_parquet(f)
+            df["dt"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert(IST)
+            df["time_str"] = df["dt"].dt.strftime("%H:%M")
+            sessions[d_str] = df
     return sessions
 
 
@@ -53,19 +54,24 @@ def load_supabase_ares_trades(start_date: str = "2026-08-07", end_date: str = "2
 
 
 def main():
+    start_date = "2026-08-07"
+    end_date = "2026-11-05"
+
     print("=" * 80)
     print("STARTING 90-DAY COMPREHENSIVE MARKET AUDIT & BACKTEST")
-    print("Period: 2026-08-07 to 2026-11-05 (62 Trading Days)")
+    print(f"Period: {start_date} to {end_date} (62 Trading Days)")
     print("=" * 80)
 
-    sessions = load_all_cached_sessions()
+    sessions = load_all_cached_sessions(start_date=start_date, end_date=end_date)
     print(f"[+] Loaded {len(sessions)} trading sessions from cache.")
 
     session_dates = sorted(sessions.keys())
-    start_date = session_dates[0] if session_dates else "2026-08-07"
-    end_date = session_dates[-1] if session_dates else "2026-11-05"
+    actual_start = session_dates[0] if session_dates else start_date
+    actual_end = session_dates[-1] if session_dates else end_date
 
-    df_ares = load_supabase_ares_trades(start_date=start_date, end_date=end_date)
+    df_ares = load_supabase_ares_trades(start_date=actual_start, end_date=actual_end)
+    if not df_ares.empty and session_dates:
+        df_ares = df_ares[df_ares["date"].isin(session_dates)]
     ares_daily = df_ares.groupby("date")["pnl_points"].sum().to_dict() if not df_ares.empty else {}
     print(f"[+] Loaded {len(df_ares)} ARES trades from Supabase across {len(ares_daily)} active days.")
 
@@ -131,20 +137,25 @@ def main():
     avg_loss = np.mean(losses) if losses else 0
     profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else np.nan
 
+    ares_wr = (len(df_ares[df_ares["pnl_points"] > 0]) / len(df_ares) * 100) if not df_ares.empty else 0.0
+    rr_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else 0.0
+    poc_daily_rate = (len(all_poc_trades) / len(sessions)) if sessions else 0.0
+    ares_daily_rate = (len(df_ares) / len(sessions)) if sessions else 0.0
+
     print("\n" + "=" * 80)
     print("90-DAY STRATEGY COMPARISON: POC VS ARES CORE")
     print("=" * 80)
     print(f"Total Trading Days: {len(sessions)}")
-    print(f"POC Total Trades:   {len(all_poc_trades)} ({len(all_poc_trades)/len(sessions):.1f} / day)")
-    print(f"ARES Total Trades:  {len(df_ares)} ({len(df_ares)/len(sessions):.1f} / day)")
+    print(f"POC Total Trades:   {len(all_poc_trades)} ({poc_daily_rate:.1f} / day)")
+    print(f"ARES Total Trades:  {len(df_ares)} ({ares_daily_rate:.1f} / day)")
     print("-" * 80)
     print(f"POC Win Rate:       {wr:.1f}% ({len(wins)}W / {len(losses)}L)")
-    print(f"ARES Win Rate:      {len(df_ares[df_ares['pnl_points'] > 0]) / len(df_ares) * 100:.1f}%")
+    print(f"ARES Win Rate:      {ares_wr:.1f}%")
     print("-" * 80)
     print(f"POC Total PnL:      {total_poc_pnl:+.2f} pts")
-    print(f"ARES Total PnL:     {df_ares['pnl_points'].sum():+.2f} pts")
+    print(f"ARES Total PnL:     {df_ares['pnl_points'].sum() if not df_ares.empty else 0.0:+.2f} pts")
     print("-" * 80)
-    print(f"POC Avg Win / Loss: {avg_win:+.2f} pts / {avg_loss:+.2f} pts (RR: {abs(avg_win/avg_loss):.2f}:1)")
+    print(f"POC Avg Win / Loss: {avg_win:+.2f} pts / {avg_loss:+.2f} pts (RR: {rr_ratio:.2f}:1)")
     print(f"POC Profit Factor:  {profit_factor:.2f}")
     print(f"POC Max Drawdown:   {max_poc_dd:.2f} pts")
     print(f"ARES Max Drawdown:  {max_ares_dd:.2f} pts")

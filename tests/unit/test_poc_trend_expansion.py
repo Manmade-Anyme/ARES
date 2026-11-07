@@ -222,4 +222,146 @@ def test_gated_afternoon_bbw_expansion_triggered_when_ratio_sufficient():
     assert first_trade.bbw_expansion >= 0.0
 
 
+def test_vwap_reclaim_retracement_bounds():
+    """Verify that VWAP reclaim enforces both min and max retracement ratio bounds."""
+    # min_retrace_ratio = 0.35, max_retrace_ratio = 0.68
+    engine = TrendExpansionEngine(min_retrace_ratio=0.35, max_retrace_ratio=0.68)
+
+    # Base candle template
+    start_dt = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+    def create_session(sweep_price: float):
+        rows = []
+        for i in range(375):  # 09:15 to 15:30
+            cur_dt = start_dt + timedelta(minutes=i)
+            t = cur_dt.strftime("%H:%M")
+            # Morning impulse: 24300 to 24400 (impulse_len = 100)
+            if t <= "10:15":
+                p = 24300.0 + (i / 60.0) * 100.0
+            # Pullback to sweep_price between 10:16 and 11:00
+            elif t <= "11:00":
+                p = sweep_price
+            # Reclaim VWAP (> 24350) with upward momentum
+            else:
+                p = 24370.0
+
+            rows.append({
+                "timestamp": int(cur_dt.timestamp()),
+                "dt": cur_dt,
+                "time_str": t,
+                "open": p - 0.5,
+                "high": p + 1.0,
+                "low": p - 1.0,
+                "close": p + 0.5,
+                "volume": 500000
+            })
+        return pd.DataFrame(rows)
+
+    # Case 1: Shallow pullback: sweep = 24380 (retrace = 20 pts, 20% < 35%) -> NO TRADE
+    df_shallow = create_session(sweep_price=24380.0)
+    trades_shallow = engine.run_session(df_shallow, "2026-11-05")
+    reclaims_shallow = [t for t in trades_shallow if t.strategy == "VWAP_RECLAIM"]
+    assert len(reclaims_shallow) == 0
+
+    # Case 2: Deep breakdown: sweep = 24320 (retrace = 80 pts, 80% > 68%) -> NO TRADE
+    df_deep = create_session(sweep_price=24320.0)
+    trades_deep = engine.run_session(df_deep, "2026-11-05")
+    reclaims_deep = [t for t in trades_deep if t.strategy == "VWAP_RECLAIM"]
+    assert len(reclaims_deep) == 0
+
+    # Case 3: Golden zone pullback: sweep = 24350 (retrace = 50 pts, 50% in [35%, 68%]) -> TRIGGERS
+    df_valid = create_session(sweep_price=24350.0)
+    trades_valid = engine.run_session(df_valid, "2026-11-05")
+    reclaims_valid = [t for t in trades_valid if t.strategy == "VWAP_RECLAIM"]
+    assert len(reclaims_valid) == 1
+    assert reclaims_valid[0].entry_price > 24360.0
+
+
+def test_sweep_low_reset_on_breakdown():
+    """Verify that sweep_low and dipped_below_vwap reset if price flushes beneath morning low."""
+    engine = TrendExpansionEngine()
+    start_dt = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+    rows = []
+    for i in range(200):
+        cur_dt = start_dt + timedelta(minutes=i)
+        t = cur_dt.strftime("%H:%M")
+        # Morning impulse: open 24300, low 24300, high 24400
+        if t <= "10:15":
+            p = 24300.0 + (i / 60.0) * 100.0
+        # Severe crash below morning low: 24280 (< 24300 m_low)
+        elif t <= "10:45":
+            p = 24280.0
+        # Rebound back above VWAP
+        else:
+            p = 24360.0
+
+        rows.append({
+            "timestamp": int(cur_dt.timestamp()),
+            "dt": cur_dt,
+            "time_str": t,
+            "open": p - 0.5,
+            "high": p + 1.0,
+            "low": p - 1.0,
+            "close": p + 0.5,
+            "volume": 500000
+        })
+    df = pd.DataFrame(rows)
+    trades = engine.run_session(df, "2026-11-05")
+    reclaims = [t for t in trades if t.strategy == "VWAP_RECLAIM"]
+    # Must NOT enter because morning low was violated
+    assert len(reclaims) == 0
+
+
+def test_load_cached_sessions_and_pdl_context_isolation(tmp_path):
+    """Verify context-only session is excluded from audited sessions in load_cached_sessions_and_pdl."""
+    # Create 3 mock parquet files: Day 0 (prior context), Day 1, Day 2
+    dates = ["2026-08-07", "2026-08-10", "2026-08-11"]
+    for d in dates:
+        df = pd.DataFrame({
+            "timestamp": [1700000000],
+            "open": [24000.0],
+            "high": [24100.0],
+            "low": [23900.0],
+            "close": [24050.0],
+            "volume": [1000]
+        })
+        df.to_parquet(tmp_path / f"{d}.parquet")
+
+    with patch("poc.run_gated_90day_audit.glob.glob", return_value=sorted(str(p) for p in tmp_path.glob("*.parquet"))):
+        # Requesting audit window from 2026-08-10 to 2026-08-11
+        sessions, pdl_map = gated_audit_module.load_cached_sessions_and_pdl(start_date="2026-08-10", end_date="2026-08-11")
+
+        # 2026-08-07 should NOT be in sessions or pdl_map
+        assert "2026-08-07" not in sessions
+        assert "2026-08-07" not in pdl_map
+
+        # 2026-08-10 should be in sessions and have 2026-08-07 close (24050.0) as pdc
+        assert "2026-08-10" in sessions
+        assert "2026-08-10" in pdl_map
+        assert pdl_map["2026-08-10"]["pdc"] == 24050.0
+
+        # 2026-08-11 should be in sessions
+        assert "2026-08-11" in sessions
+
+
+def test_load_all_cached_sessions_date_filtering(tmp_path):
+    """Verify load_all_cached_sessions restricts files strictly to [start_date, end_date]."""
+    for d in ["2026-08-01", "2026-08-10", "2026-11-10"]:
+        df = pd.DataFrame({
+            "timestamp": [1700000000],
+            "open": [24000.0],
+            "high": [24100.0],
+            "low": [23900.0],
+            "close": [24050.0],
+            "volume": [1000]
+        })
+        df.to_parquet(tmp_path / f"{d}.parquet")
+
+    with patch("poc.run_90day_audit.glob.glob", return_value=sorted(str(p) for p in tmp_path.glob("*.parquet"))):
+        sessions = audit_module.load_all_cached_sessions(start_date="2026-08-07", end_date="2026-11-05")
+        assert "2026-08-01" not in sessions
+        assert "2026-11-10" not in sessions
+        assert "2026-08-10" in sessions
+
+
+
 
