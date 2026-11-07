@@ -19,6 +19,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
+from poc.position_management import ReclaimSetupState, manage_long_position
+
 
 @dataclass
 class TradeRecord:
@@ -115,71 +117,29 @@ class TrendExpansionEngine:
         range_low = ext_df["low"].min() if not ext_df.empty else 0
 
         # State variables for VWAP Reclaim setup
-        dipped_below_vwap = False
-        sweep_low = 999999.0
+        reclaim_state = ReclaimSetupState()
 
         for i in range(len(df)):
             candle = df.iloc[i]
             t = candle["time_str"]
 
-            # 1. EOD Exit
-            if t >= self.eod_exit_time:
-                if active_trade is not None:
-                    active_trade.exit_time = t
-                    active_trade.exit_price = candle["close"]
-                    active_trade.exit_reason = "EOD_CLOSE"
-                    active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
+            if active_trade is not None:
+                result = manage_long_position(
+                    active_trade,
+                    candle,
+                    i,
+                    cooldown_until_idx,
+                    self.eod_exit_time,
+                    reclaim_state,
+                )
+                cooldown_until_idx = result.cooldown_until_idx
+                if result.exited:
                     completed_trades.append(active_trade)
                     active_trade = None
+                    continue
                 continue
 
-            # 2. Position Management for Active Trade
-            if active_trade is not None:
-                # Stop Loss Check
-                if candle["low"] <= active_trade.stop_loss:
-                    active_trade.exit_time = t
-                    active_trade.exit_price = active_trade.stop_loss
-                    active_trade.exit_reason = "SL_HIT"
-                    active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
-                    completed_trades.append(active_trade)
-                    active_trade = None
-                    cooldown_until_idx = i + 15  # 15 candle cooldown after loss
-                    dipped_below_vwap = False
-                    sweep_low = 999999.0
-                    continue
-
-                # Target 1 Check
-                if not active_trade.t1_hit and candle["high"] >= active_trade.target_1:
-                    active_trade.t1_hit = True
-                    active_trade.t1_time = t
-                    # Ratchet Stop Loss to Breakeven + 2 pts buffer
-                    active_trade.stop_loss = active_trade.entry_price + 2.0
-                    # Recheck ratcheted stop if the same candle pulled back below breakeven
-                    if candle["low"] <= active_trade.stop_loss:
-                        active_trade.exit_time = t
-                        active_trade.exit_price = active_trade.stop_loss
-                        active_trade.exit_reason = "SL_HIT"
-                        active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
-                        completed_trades.append(active_trade)
-                        active_trade = None
-                        cooldown_until_idx = i + 10
-                        dipped_below_vwap = False
-                        sweep_low = 999999.0
-                        continue
-
-                # 20 EMA Trailing Exit (activated after 13:30 IST)
-                if active_trade.t1_hit and candle["close"] < candle["ema20"] and t >= "13:30":
-                    active_trade.exit_time = t
-                    active_trade.exit_price = candle["close"]
-                    active_trade.exit_reason = "EMA20_TRAIL"
-                    active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
-                    completed_trades.append(active_trade)
-                    active_trade = None
-                    cooldown_until_idx = i + 10
-                    dipped_below_vwap = False
-                    sweep_low = 999999.0
-                    continue
-
+            if t >= self.eod_exit_time:
                 continue
 
             # 3. New Trade Entry Scanning
@@ -191,19 +151,18 @@ class TrendExpansionEngine:
                 impulse_len = m_high - m_low
                 if impulse_len >= self.min_impulse_pts and m_high > m_open:
                     if candle["low"] < candle["vwap"] + 2.0:
-                        dipped_below_vwap = True
-                        sweep_low = min(sweep_low, candle["low"])
+                        reclaim_state.dipped_below_vwap = True
+                        reclaim_state.sweep_low = min(reclaim_state.sweep_low, candle["low"])
 
-                    if dipped_below_vwap:
+                    if reclaim_state.dipped_below_vwap:
                         # Invalidate setup if price flushes beneath morning low
-                        if sweep_low <= m_low:
-                            dipped_below_vwap = False
-                            sweep_low = 999999.0
+                        if reclaim_state.sweep_low <= m_low:
+                            reclaim_state.reset()
                         else:
-                            retrace_depth = m_high - sweep_low
+                            retrace_depth = m_high - reclaim_state.sweep_low
                             if self.min_retrace_ratio * impulse_len <= retrace_depth <= self.max_retrace_ratio * impulse_len:
                                 if candle["close"] > candle["vwap"] and candle["ema9"] >= candle["ema20"]:
-                                    sl = sweep_low - 3.0
+                                    sl = reclaim_state.sweep_low - 3.0
                                     sl_pts = candle["close"] - sl
                                     if 15.0 <= sl_pts <= self.max_stop_loss_pts:
                                         active_trade = TradeRecord(
@@ -217,8 +176,7 @@ class TrendExpansionEngine:
                                             target_1=m_high
                                         )
                                         trades_count += 1
-                                        dipped_below_vwap = False
-                                        sweep_low = 999999.0
+                                        reclaim_state.reset()
                                         continue
 
             # SETUP B: Afternoon Expansion Breakout (Window: 12:30 to 14:15)
@@ -248,4 +206,3 @@ class TrendExpansionEngine:
                             continue
 
         return completed_trades
-

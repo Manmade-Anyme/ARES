@@ -15,8 +15,9 @@ All notable changes to the ARES trading system will be documented in this file.
   - Added state isolation resetting `sweep_low` and `dipped_below_vwap` on trade entries, SL hits, trailing exits, and morning low violations.
   - Isolated prior-day context files from `sessions` and benchmark data in `load_cached_sessions_and_pdl`, ensuring exact 1-to-1 session alignment with the evaluated strategy window.
   - Added division-by-zero guards for empty benchmark or zero-loss analytics outputs.
-  - Added same-candle ratcheted stop recheck on Target 1 activation in both raw and gated expansion engines, ensuring candles that reach T1 and retrace below breakeven-plus-buffer exit immediately with `SL_HIT`.
-  - Expanded unit test suite in `tests/unit/test_poc_trend_expansion.py` (13/13 passing), mocking parquet I/O so tests execute cleanly in CI without requiring optional binary engines (`pyarrow`/`fastparquet`).
+  - Applied a conservative OHLC convention: the pre-candle stop is evaluated first and a T1 stop ratchet takes effect on the next candle. Both raw and gated engines now share the same position lifecycle and reclaim-state reset helper, including EMA20 trailing exits.
+  - Made gated regime factor thresholds configurable through `RegimeThresholds`, preserving defaults of 70/85/25/45 points; clarified in the POC validation document that option price changes are hypothetical reference-mark changes, not fills or realized P&L.
+  - Expanded `tests/unit/test_poc_trend_expansion.py` coverage for configurable regime thresholds and ambiguous same-candle T1/stop ordering; mocked parquet I/O so tests run in CI without optional binary engines (`pyarrow`/`fastparquet`).
 
 - **PR #156 pending paper exits use pinned quote depth:** Protective and selected-option quote observations retain validated bid/ask depth. Fresh, contract-matched positive bids now flow to paper execution and confirm `EXIT_PENDING` exits; crossed, stale, or mismatched observations are rejected. Restored terminal routes continue receiving pinned quotes.
 

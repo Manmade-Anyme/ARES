@@ -16,6 +16,18 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
+from poc.position_management import ReclaimSetupState, manage_long_position
+
+
+@dataclass(frozen=True)
+class RegimeThresholds:
+    """Configurable cutoffs for the gated strategy's four expansion factors."""
+
+    gap_extension_pts: float = 70.0
+    opening_range_pts: float = 85.0
+    vwap_dispersion_pts: float = 25.0
+    directional_displacement_pts: float = 45.0
+
 
 @dataclass
 class GatedTradeRecord:
@@ -56,7 +68,8 @@ class GatedRegimeExpansionEngine:
         min_regime_score: int = 2,
         min_bbw_expansion: float = 1.0,
         min_retrace_ratio: float = 0.35,
-        max_retrace_ratio: float = 0.68
+        max_retrace_ratio: float = 0.68,
+        regime_thresholds: RegimeThresholds = RegimeThresholds(),
     ):
         self.range_anchor_end = range_anchor_end
         self.entry_cutoff_time = entry_cutoff_time
@@ -69,6 +82,7 @@ class GatedRegimeExpansionEngine:
         self.min_bbw_expansion = min_bbw_expansion
         self.min_retrace_ratio = min_retrace_ratio
         self.max_retrace_ratio = max_retrace_ratio
+        self.regime_thresholds = regime_thresholds
 
     def enrich_session(self, df: pd.DataFrame) -> pd.DataFrame:
         """Computes VWAP, VWAP Standard Deviation around session mean, Bollinger Bandwidth, and EMAs."""
@@ -113,10 +127,10 @@ class GatedRegimeExpansionEngine:
         """
         Multi-Factor Volatility Regime Gate:
         Evaluates 4 independent non-ATR volatility expansion factors:
-        Factor 1: Overnight Gap Extension (|Open - PDC| >= 70 pts)
-        Factor 2: Opening Range Expansion (30-min range >= 85 pts)
-        Factor 3: Session VWAP Dispersion (vwap_std >= 25 pts by 10:30)
-        Factor 4: Morning Directional Displacement (|Close_30m - Open| >= 45 pts)
+        Factor 1: Overnight gap extension (default threshold: 70 pts)
+        Factor 2: Opening range expansion (default threshold: 85 pts)
+        Factor 3: VWAP dispersion by 10:30 (default threshold: 25 pts)
+        Factor 4: Morning directional displacement (default threshold: 45 pts)
         """
         df_enriched = self.enrich_session(df)
         open_price = df_enriched.iloc[0]["open"]
@@ -130,10 +144,12 @@ class GatedRegimeExpansionEngine:
         vwap_dispersion = m60["vwap_std"].iloc[-1] if not m60.empty else 0.0
 
         factors = {
-            "gap_extension": gap >= 70.0,
-            "range_expansion": range_30m >= 85.0,
-            "vwap_dispersion": vwap_dispersion >= 25.0,
-            "directional_displacement": displacement_30m >= 45.0
+            "gap_extension": gap >= self.regime_thresholds.gap_extension_pts,
+            "range_expansion": range_30m >= self.regime_thresholds.opening_range_pts,
+            "vwap_dispersion": vwap_dispersion >= self.regime_thresholds.vwap_dispersion_pts,
+            "directional_displacement": (
+                displacement_30m >= self.regime_thresholds.directional_displacement_pts
+            ),
         }
 
         score = int(sum(factors.values()))
@@ -174,71 +190,29 @@ class GatedRegimeExpansionEngine:
         range_low = ext_df["low"].min() if not ext_df.empty else 0.0
 
         # VWAP Reclaim state
-        dipped_below_vwap = False
-        sweep_low = 999999.0
+        reclaim_state = ReclaimSetupState()
 
         for i in range(len(df)):
             candle = df.iloc[i]
             t = candle["time_str"]
 
-            # 1. EOD Exit
-            if t >= self.eod_exit_time:
-                if active_trade is not None:
-                    active_trade.exit_time = t
-                    active_trade.exit_price = candle["close"]
-                    active_trade.exit_reason = "EOD_CLOSE"
-                    active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
+            if active_trade is not None:
+                result = manage_long_position(
+                    active_trade,
+                    candle,
+                    i,
+                    cooldown_until_idx,
+                    self.eod_exit_time,
+                    reclaim_state,
+                )
+                cooldown_until_idx = result.cooldown_until_idx
+                if result.exited:
                     completed_trades.append(active_trade)
                     active_trade = None
+                    continue
                 continue
 
-            # 2. Position Management
-            if active_trade is not None:
-                # Stop Loss check
-                if candle["low"] <= active_trade.stop_loss:
-                    active_trade.exit_time = t
-                    active_trade.exit_price = active_trade.stop_loss
-                    active_trade.exit_reason = "SL_HIT"
-                    active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
-                    completed_trades.append(active_trade)
-                    active_trade = None
-                    cooldown_until_idx = i + 15
-                    dipped_below_vwap = False
-                    sweep_low = 999999.0
-                    continue
-
-                # Target 1 check
-                if not active_trade.t1_hit and candle["high"] >= active_trade.target_1:
-                    active_trade.t1_hit = True
-                    active_trade.t1_time = t
-                    # Ratchet SL to Breakeven + 2 pts buffer
-                    active_trade.stop_loss = active_trade.entry_price + 2.0
-                    # Recheck ratcheted stop if the same candle pulled back below breakeven
-                    if candle["low"] <= active_trade.stop_loss:
-                        active_trade.exit_time = t
-                        active_trade.exit_price = active_trade.stop_loss
-                        active_trade.exit_reason = "SL_HIT"
-                        active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
-                        completed_trades.append(active_trade)
-                        active_trade = None
-                        cooldown_until_idx = i + 10
-                        dipped_below_vwap = False
-                        sweep_low = 999999.0
-                        continue
-
-                # 20 EMA Trailing Exit (activated after 13:30)
-                if active_trade.t1_hit and candle["close"] < candle["ema20"] and t >= "13:30":
-                    active_trade.exit_time = t
-                    active_trade.exit_price = candle["close"]
-                    active_trade.exit_reason = "EMA20_TRAIL"
-                    active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
-                    completed_trades.append(active_trade)
-                    active_trade = None
-                    cooldown_until_idx = i + 10
-                    dipped_below_vwap = False
-                    sweep_low = 999999.0
-                    continue
-
+            if t >= self.eod_exit_time:
                 continue
 
             # 3. New Entry Scans
@@ -254,21 +228,20 @@ class GatedRegimeExpansionEngine:
                 impulse_len = m_high - m_low
                 if impulse_len >= self.min_impulse_pts and m_high > m_open:
                     if candle["low"] < candle["vwap"] + 2.0:
-                        dipped_below_vwap = True
-                        sweep_low = min(sweep_low, candle["low"])
+                        reclaim_state.dipped_below_vwap = True
+                        reclaim_state.sweep_low = min(reclaim_state.sweep_low, candle["low"])
 
-                    if dipped_below_vwap:
+                    if reclaim_state.dipped_below_vwap:
                         # Invalidate setup if price flushes beneath morning low
-                        if sweep_low <= m_low:
-                            dipped_below_vwap = False
-                            sweep_low = 999999.0
+                        if reclaim_state.sweep_low <= m_low:
+                            reclaim_state.reset()
                         else:
-                            retrace_depth = m_high - sweep_low
+                            retrace_depth = m_high - reclaim_state.sweep_low
                             if self.min_retrace_ratio * impulse_len <= retrace_depth <= self.max_retrace_ratio * impulse_len:
                                 # Reclaims VWAP (Z-score >= 0) with EMA9 >= EMA20
                                 if candle["close"] > candle["vwap"] and candle["ema9"] >= candle["ema20"]:
                                     # Structural Stop Loss beneath sweep low
-                                    sl = sweep_low - 3.0
+                                    sl = reclaim_state.sweep_low - 3.0
                                     sl_pts = candle["close"] - sl
                                     if 15.0 <= sl_pts <= self.max_stop_loss_pts:
                                         active_trade = GatedTradeRecord(
@@ -285,8 +258,7 @@ class GatedRegimeExpansionEngine:
                                             bbw_expansion=float(candle["bbw_expansion_ratio"])
                                         )
                                         trades_count += 1
-                                        dipped_below_vwap = False
-                                        sweep_low = 999999.0
+                                        reclaim_state.reset()
                                         continue
 
             # SETUP B: AFTERNOON_BAND_EXPANSION (12:30 to 14:15)

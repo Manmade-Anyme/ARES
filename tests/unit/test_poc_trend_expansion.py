@@ -2,14 +2,20 @@ import pytest
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import pytz
 
 from poc.trend_expansion_poc import TrendExpansionEngine, TradeRecord
-from poc.regime_gated_expansion_strategy import GatedRegimeExpansionEngine, GatedTradeRecord
+from poc.regime_gated_expansion_strategy import (
+    GatedRegimeExpansionEngine,
+    GatedTradeRecord,
+    RegimeThresholds,
+)
 import poc.run_90day_audit as audit_module
 import poc.run_gated_90day_audit as gated_audit_module
 import poc.run_trend_expansion_backtest as backtest_module
+from poc.position_management import ReclaimSetupState, manage_long_position
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -369,8 +375,8 @@ def test_load_all_cached_sessions_date_filtering():
         assert "2026-08-10" in sessions
 
 
-def test_ratcheted_stop_rechecked_on_target_candle():
-    """Verify that when a candle hits T1 and pulls back below the ratcheted stop, it exits immediately."""
+def test_ratcheted_stop_waits_until_candle_after_ambiguous_target_candle():
+    """A same-candle T1/ratcheted-stop overlap cannot establish intrabar event order."""
     engine = TrendExpansionEngine()
     start_dt = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
     rows = []
@@ -403,7 +409,8 @@ def test_ratcheted_stop_rechecked_on_target_candle():
         "open": 24355.0, "high": 24368.0, "low": 24350.0, "close": 24365.0, "volume": 800000
     })
 
-    # 4. Spike candle at 10:47: High hits T1 (24405 >= 24400), Low drops below ratcheted SL (24360 <= 24367)
+    # 4. Ambiguous spike candle at 10:47: High hits T1 (24405 >= 24400) and
+    # Low crosses the newly ratcheted stop (24360 <= 24367), but not the old stop.
     # Note: Initial SL = sweep_low - 3.0 = 24339.0 - 3.0 = 24336.0 (Low 24360 > 24336)
     # Ratcheted SL = entry_price + 2.0 = 24365.0 + 2.0 = 24367.0
     cur_dt = start_dt + timedelta(minutes=92)
@@ -413,8 +420,16 @@ def test_ratcheted_stop_rechecked_on_target_candle():
         "open": 24370.0, "high": 24410.0, "low": 24360.0, "close": 24390.0, "volume": 1200000
     })
 
+    # 5. The ratcheted stop is effective from the next candle.
+    cur_dt = start_dt + timedelta(minutes=93)
+    t = cur_dt.strftime("%H:%M")
+    rows.append({
+        "timestamp": int(cur_dt.timestamp()), "dt": cur_dt, "time_str": t,
+        "open": 24390.0, "high": 24392.0, "low": 24360.0, "close": 24365.0, "volume": 500000
+    })
+
     # Remaining day flat to 15:30
-    for i in range(93, 375):
+    for i in range(94, 375):
         cur_dt = start_dt + timedelta(minutes=i)
         t = cur_dt.strftime("%H:%M")
         rows.append({
@@ -428,23 +443,76 @@ def test_ratcheted_stop_rechecked_on_target_candle():
     assert len(trades) == 1
     trade = trades[0]
     assert trade.t1_hit is True
-    assert trade.exit_time == "10:47"
+    assert trade.t1_time == "10:47"
+    assert trade.exit_time == "10:48"
     assert trade.exit_reason == "SL_HIT"
     assert trade.exit_price == trade.entry_price + 2.0
     assert trade.pnl_points == 2.0
 
-    # Also verify GatedRegimeExpansionEngine handles the exact same ratcheted stop recheck
+    # Both engines use the same conservative lifecycle rule.
     gated_engine = GatedRegimeExpansionEngine(min_regime_score=0)
     gated_trades = gated_engine.run_session(df, "2026-11-05", pdc=24200.0, pdh=24400.0, pdl=24150.0)
     assert len(gated_trades) == 1
     gated_trade = gated_trades[0]
     assert gated_trade.t1_hit is True
-    assert gated_trade.exit_time == "10:47"
+    assert gated_trade.t1_time == "10:47"
+    assert gated_trade.exit_time == "10:48"
     assert gated_trade.exit_reason == "SL_HIT"
     assert gated_trade.exit_price == gated_trade.entry_price + 2.0
     assert gated_trade.pnl_points == 2.0
 
 
+def test_gated_regime_thresholds_are_configurable():
+    """The four regime factor thresholds can be tuned without changing defaults."""
+    df = generate_mock_session_df()
+    assert RegimeThresholds() == RegimeThresholds(70.0, 85.0, 25.0, 45.0)
+    thresholds = RegimeThresholds(
+        gap_extension_pts=1000.0,
+        opening_range_pts=1000.0,
+        vwap_dispersion_pts=1000.0,
+        directional_displacement_pts=1000.0,
+    )
+    engine = GatedRegimeExpansionEngine(regime_thresholds=thresholds)
 
+    is_expansion, score, factors, _ = engine.evaluate_regime(
+        df, pdc=df.iloc[0]["open"], pdh=24400.0, pdl=24150.0
+    )
+
+    assert engine.regime_thresholds == thresholds
+    assert score == 0
+    assert is_expansion is False
+    assert not any(factors.values())
+
+
+def test_ema20_trailing_exit_resets_reclaim_setup_state():
+    trade = SimpleNamespace(
+        entry_price=100.0,
+        stop_loss=102.0,
+        target_1=110.0,
+        t1_hit=True,
+        t1_time="12:00",
+        exit_time=None,
+        exit_price=None,
+        exit_reason=None,
+        pnl_points=0.0,
+    )
+    candle = pd.Series({
+        "time_str": "13:30",
+        "low": 103.0,
+        "high": 105.0,
+        "close": 99.0,
+        "ema20": 100.0,
+    })
+    reclaim_state = ReclaimSetupState(dipped_below_vwap=True, sweep_low=95.0)
+
+    result = manage_long_position(
+        trade, candle, candle_index=20, cooldown_until_idx=0,
+        eod_exit_time="15:15", reclaim_state=reclaim_state,
+    )
+
+    assert result.exited is True
+    assert result.cooldown_until_idx == 30
+    assert trade.exit_reason == "EMA20_TRAIL"
+    assert (reclaim_state.dipped_below_vwap, reclaim_state.sweep_low) == (False, 999999.0)
 
 

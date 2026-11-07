@@ -29,6 +29,8 @@ We designed and backtested a specialized **Trend Expansion POC Strategy** incorp
 
 ## 2. Comparative Performance: ARES Live vs POC Strategy
 
+**Historical results note:** The comparative table and 2026-11-05 trade figures below were produced by an earlier POC lifecycle and have not been rerun with the conservative OHLC ordering documented in section 6. Treat them as historical spot-point backtest outputs, not validation of the current lifecycle or evidence of executed trades. Option values are reference marks only.
+
 Evaluated on 7 consecutive sessions documented in the Obsidian Daily Market Observation notes:
 
 | Date | NIFTY Range (Net Move) | Obsidian ARES PnL | POC Strategy PnL | Delta (Outperformance) | Market Regime |
@@ -52,7 +54,7 @@ Evaluated on 7 consecutive sessions documented in the Obsidian Daily Market Obse
 - **Target 1:** 24,442.20 (Morning high reached at 12:36 IST, ratcheted SL to BE + 2 pts).
 - **Exit:** 13:55 IST @ **24,529.35** on 20 EMA trailing break.
 - **Spot PnL:** **+157.15 pts**
-- **Option Contract (24400 CE):** Entry ~138.00 $\rightarrow$ Exit ~250.00 (**+112.00 pts / +81.2%**).
+- **Option-reference marks (24400 CE):** Approximate entry mark ~138.00 $\rightarrow$ approximate exit mark ~250.00 (**+112.00 premium points / +81.2% reference-mark change**). These are hypothetical market-reference marks only: they are not executed fills, do not assert that either price was executable, and are not realized or after-cost account P&L. The strategy's reported result is a spot-point backtest output.
 
 ### Trade 2: `AFTERNOON_BREAKOUT`
 - **Entry:** 14:05 IST @ **24,563.90**
@@ -108,5 +110,6 @@ Evaluated on 7 consecutive sessions documented in the Obsidian Daily Market Obse
 - **State Invalidation & Isolation:** Reset `sweep_low` and `dipped_below_vwap` on trade entry, SL hit, trailing exit, and if price flushes beneath morning low.
 - **Audit Context & Date Isolation:** Bounded `load_all_cached_sessions` and `load_cached_sessions_and_pdl` strictly to `[start_date, end_date]`, ensuring prior-day context files do not leak into ARES benchmark calculations.
 - **Division-by-Zero Hardening:** Guarded against empty trade sets in audit summary calculations.
-
-
+- **Configurable regime thresholds:** Added `RegimeThresholds` as the gated strategy's focused settings object. Defaults preserve existing behavior: absolute overnight gap from PDC ≥ 70 spot points; 09:15–09:45 opening-range width ≥ 85 points; cumulative VWAP standard deviation by 10:30 ≥ 25 points; and absolute opening-to-09:45 close displacement ≥ 45 points. Each threshold can be overridden independently.
+- **Shared position lifecycle:** Raw and gated engines now use the same helper for stop, T1 stop ratchet, EMA20 trailing exit, EOD close, cooldown, and setup-state reset behavior.
+- **Conservative OHLC ordering:** On each completed one-minute candle, the stop that was active before that candle is checked before T1. A T1-triggered stop ratchet becomes effective on the next candle; the same candle's high and low are not used to claim that T1 occurred before a retracement through the new stop. Thus ambiguous candles do not produce an unsupported same-candle stop fill.
