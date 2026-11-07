@@ -26,6 +26,7 @@ from sklearn.metrics import (
 
 from .config import MLConfig, DEFAULT_CONFIG
 from .dataset import feature_columns
+from .labeling import OPTION_MILESTONE_POLICIES
 from .calibration import compute_brier_decomposition, compute_calibration_curve, test_tier_significance
 from .calibrator import ProbabilityCalibrator
 from .stratified_evaluator import StratifiedCalibrationEvaluator
@@ -1224,7 +1225,7 @@ def _normalize_trade_analytics_records(trades: Sequence[dict]) -> Dict[str, dict
                 "time_metrics_excluded": trade.get("time_metrics_excluded", False),
             }
             option_state = (trade.get("market_context") or {}).get("option_trailing") or trade.get("option_trailing")
-            if option_state and option_state.get("policy_version") == "option_atr_v1":
+            if option_state and option_state.get("policy_version") in OPTION_MILESTONE_POLICIES:
                 meta["option_trailing"] = option_state
                 meta["result_state"] = trade.get("result_state")
                 pnl = trade.get("pnl_points")

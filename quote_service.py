@@ -44,6 +44,16 @@ logger = logging.getLogger("ares.quotes")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
+def _positive_market_price(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return price if isfinite(price) and price > 0 else None
+
+
 def _to_utc_iso(ts: Any) -> Optional[str]:
     """Convert a datetime, epoch, or ISO timestamp into precise normalized UTC ISO 8601.
 
@@ -310,9 +320,17 @@ def match_option_quote_from_chain(
             try:
                 price = float(ltp)
                 if isfinite(price) and price > 0:
+                    side = target_type.lower()
+                    bid = _positive_market_price(row.get(f"{side}_bid"))
+                    ask = _positive_market_price(row.get(f"{side}_ask"))
+                    if bid is not None and ask is not None and bid > ask:
+                        bid = None
                     return {
                         **validated,
+                        "exchange_segment": contract.get("exchange_segment") or "NSE_FNO",
                         "price": price,
+                        "bid": bid,
+                        "ask": ask,
                         "observed_at": _to_utc_iso(timestamp) or _to_utc_iso(datetime.now(timezone.utc)),
                         "source": "dhan_option_chain",
                     }

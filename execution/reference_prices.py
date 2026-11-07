@@ -130,11 +130,33 @@ def option_target_evidence(event_at, *, observations=(), option_minutes=(), sour
     return _minute_close(option_minutes, minute, now)
 
 
-def spot_exit_evidence(exit_at, *, spot_minutes=(), observations=(), observed_at=None):
-    """Find the spot minute ending at an ATR close, else a nearby quote."""
+def is_premium_trigger_exit(option, leg):
+    """Recognize premium exits while retaining their original price provenance."""
+    return ((option.get("exit") or {}).get("stop_domain") == "OPTION_PREMIUM"
+            or leg.get("option_source") in {"dhan_last_trade", "completed_5m_option_close"})
+
+
+def spot_exit_evidence(exit_at, *, spot_minutes=(), observations=(), observed_at=None,
+                       allow_intraminute=False):
+    """Recover spot evidence at a bar close or an explicitly allowed premium trigger.
+
+    Premium triggers prefer a nearby quote; intraminute triggers can fall back
+    to their containing completed minute close, marked as approximate.
+    """
     event = _timestamp(exit_at)
     now = _timestamp(observed_at or datetime.now(timezone.utc))
-    if event is None or now is None or event > now or event.second or event.microsecond:
+    if event is None or now is None or event > now:
+        return None
+    if allow_intraminute:
+        quote = _nearest_observation(observations, event, now)
+        if quote:
+            return quote
+        if event.second or event.microsecond:
+            minute = event.replace(second=0, microsecond=0)
+            if not time(9, 15) <= minute.time() < time(15, 30):
+                return None
+            return _minute_close(spot_minutes, minute, now)
+    elif event.second or event.microsecond:
         return None
     minute = event - timedelta(minutes=1)
     if not time(9, 15) <= minute.time() < time(15, 30):

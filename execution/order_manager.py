@@ -250,6 +250,37 @@ class OrderManager:
                 record.atr_last_bar = datetime.now(timezone.utc).isoformat()
         self._save()
 
+    def request_option_exit(self, correlation_id, reason):
+        """Turn a protective lifecycle trigger into an intent, never a synthetic fill."""
+        record = self.records[correlation_id]
+        if record.status in {"CANCELLED", "REJECTED", "CLOSED"}:
+            return record
+        if record.mode != "PAPER" or self.broker is not None:
+            record.status = "RECONCILIATION_REQUIRED"
+            record.protection_confirmed = False
+            self._save()
+            return record
+        if record.status == "EXIT_PENDING":
+            remaining = record.filled_quantity - record.exited_quantity
+            if remaining > 0:
+                # A protective premium stop supersedes a pending partial T1
+                # exit and must cover every still-open unit.
+                record.pending_exit_quantity = remaining
+                record.exit_reason = reason
+                self._save()
+            return record
+        remaining = record.filled_quantity - record.exited_quantity
+        if remaining <= 0:
+            if record.status == "SUBMITTED":
+                record.status = "CANCELLED"
+                record.rejection_reason = f"OPTION_PREMIUM_STOP_TRIGGERED_UNFILLED:{reason}"
+                self._save()
+            return record
+        # The lifecycle trigger is not an executable bid. Wait for a later
+        # observed premium bid before confirming the paper exit.
+        self._paper_exit(record, remaining, None, reason)
+        return record
+
     def on_spot(self, correlation_id, spot, option_bid=None):
         """Invalidate pending entries and trigger directional synthetic paper exits."""
         record = self.records[correlation_id]

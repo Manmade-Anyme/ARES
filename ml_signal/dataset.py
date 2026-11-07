@@ -342,7 +342,7 @@ def build_real_outcome_frame(
     Flatten + label using real historical ARES trade outcomes.
     Filters the dataset to only include rows where `trade_outcome` is a definitive win or loss.
     """
-    from ml_signal.labeling import classify_ares_outcome
+    from ml_signal.labeling import OPTION_MILESTONE_POLICIES, classify_ares_outcome
     
     valid_rows = []
     labels = []
@@ -354,7 +354,7 @@ def build_real_outcome_frame(
     for r in rows:
         outcome = r.get("trade_outcome")
         option_state = r.get("option_trailing") or (r.get("market_context") or {}).get("option_trailing")
-        if option_state and option_state.get("policy_version") == "option_atr_v1":
+        if option_state and option_state.get("policy_version") in OPTION_MILESTONE_POLICIES:
             # Joined analytics outrank stale ml_collection terminal telemetry.
             outcome = r.get("result_state", outcome)
         if not outcome:
