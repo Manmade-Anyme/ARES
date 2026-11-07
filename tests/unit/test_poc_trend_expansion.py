@@ -311,22 +311,24 @@ def test_sweep_low_reset_on_breakdown():
     assert len(reclaims) == 0
 
 
-def test_load_cached_sessions_and_pdl_context_isolation(tmp_path):
+def test_load_cached_sessions_and_pdl_context_isolation():
     """Verify context-only session is excluded from audited sessions in load_cached_sessions_and_pdl."""
-    # Create 3 mock parquet files: Day 0 (prior context), Day 1, Day 2
-    dates = ["2026-08-07", "2026-08-10", "2026-08-11"]
-    for d in dates:
-        df = pd.DataFrame({
-            "timestamp": [1700000000],
-            "open": [24000.0],
-            "high": [24100.0],
-            "low": [23900.0],
-            "close": [24050.0],
-            "volume": [1000]
-        })
-        df.to_parquet(tmp_path / f"{d}.parquet")
+    mock_files = [
+        "scratch/data_cache/2026-08-07.parquet",
+        "scratch/data_cache/2026-08-10.parquet",
+        "scratch/data_cache/2026-08-11.parquet",
+    ]
+    mock_df = pd.DataFrame({
+        "timestamp": [1700000000],
+        "open": [24000.0],
+        "high": [24100.0],
+        "low": [23900.0],
+        "close": [24050.0],
+        "volume": [1000]
+    })
 
-    with patch("poc.run_gated_90day_audit.glob.glob", return_value=sorted(str(p) for p in tmp_path.glob("*.parquet"))):
+    with patch("poc.run_gated_90day_audit.glob.glob", return_value=mock_files), \
+         patch("poc.run_gated_90day_audit.pd.read_parquet", side_effect=lambda f: mock_df.copy()):
         # Requesting audit window from 2026-08-10 to 2026-08-11
         sessions, pdl_map = gated_audit_module.load_cached_sessions_and_pdl(start_date="2026-08-10", end_date="2026-08-11")
 
@@ -343,20 +345,24 @@ def test_load_cached_sessions_and_pdl_context_isolation(tmp_path):
         assert "2026-08-11" in sessions
 
 
-def test_load_all_cached_sessions_date_filtering(tmp_path):
+def test_load_all_cached_sessions_date_filtering():
     """Verify load_all_cached_sessions restricts files strictly to [start_date, end_date]."""
-    for d in ["2026-08-01", "2026-08-10", "2026-11-10"]:
-        df = pd.DataFrame({
-            "timestamp": [1700000000],
-            "open": [24000.0],
-            "high": [24100.0],
-            "low": [23900.0],
-            "close": [24050.0],
-            "volume": [1000]
-        })
-        df.to_parquet(tmp_path / f"{d}.parquet")
+    mock_files = [
+        "scratch/data_cache/2026-08-01.parquet",
+        "scratch/data_cache/2026-08-10.parquet",
+        "scratch/data_cache/2026-11-10.parquet",
+    ]
+    mock_df = pd.DataFrame({
+        "timestamp": [1700000000],
+        "open": [24000.0],
+        "high": [24100.0],
+        "low": [23900.0],
+        "close": [24050.0],
+        "volume": [1000]
+    })
 
-    with patch("poc.run_90day_audit.glob.glob", return_value=sorted(str(p) for p in tmp_path.glob("*.parquet"))):
+    with patch("poc.run_90day_audit.glob.glob", return_value=mock_files), \
+         patch("poc.run_90day_audit.pd.read_parquet", side_effect=lambda f: mock_df.copy()):
         sessions = audit_module.load_all_cached_sessions(start_date="2026-08-07", end_date="2026-11-05")
         assert "2026-08-01" not in sessions
         assert "2026-11-10" not in sessions

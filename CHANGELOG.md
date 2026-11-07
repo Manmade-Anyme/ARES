@@ -15,7 +15,7 @@ All notable changes to the ARES trading system will be documented in this file.
   - Added state isolation resetting `sweep_low` and `dipped_below_vwap` on trade entries, SL hits, trailing exits, and morning low violations.
   - Isolated prior-day context files from `sessions` and benchmark data in `load_cached_sessions_and_pdl`, ensuring exact 1-to-1 session alignment with the evaluated strategy window.
   - Added division-by-zero guards for empty benchmark or zero-loss analytics outputs.
-  - Expanded unit test suite in `tests/unit/test_poc_trend_expansion.py` (12/12 passing).
+  - Expanded unit test suite in `tests/unit/test_poc_trend_expansion.py` (12/12 passing), mocking parquet I/O so tests execute cleanly in CI without requiring optional binary engines (`pyarrow`/`fastparquet`).
 
 - **PR #156 pending paper exits use pinned quote depth:** Protective and selected-option quote observations retain validated bid/ask depth. Fresh, contract-matched positive bids now flow to paper execution and confirm `EXIT_PENDING` exits; crossed, stale, or mismatched observations are rejected. Restored terminal routes continue receiving pinned quotes.
 
