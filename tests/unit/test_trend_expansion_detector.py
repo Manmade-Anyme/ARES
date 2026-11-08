@@ -64,6 +64,126 @@ def test_trend_expansion_detects_rolling_breakout_before_1030():
     assert result.timestamp.time() < datetime(2026, 11, 5, 10, 30).time()
 
 
+@pytest.mark.asyncio
+async def test_morning_trend_expansion_flows_through_ml_snapshot_and_alert(monkeypatch):
+    import json
+
+    import alerts
+    from alerts import format_signal
+    from main import _attach_ml_prediction_to_signal
+    from ml_signal.collector import MLCollector
+    from ml_signal.predictor import SignalPredictor
+    from models import OptionRow, ResistanceLevel
+
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+    ))
+    detector = TrendExpansionDetector()
+    signal = None
+    candles = _session_candles()
+    for candle in candles:
+        signal = detector.update(
+            candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0
+        )
+        if signal is not None:
+            break
+
+    assert signal is not None
+    assert signal.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
+    assert signal.timestamp.time() < datetime(2026, 11, 5, 10, 30).time()
+
+    predictor = SignalPredictor()
+    predictor.load_model()
+    atm_ce = OptionRow(
+        strike=24450, option_type="CE", iv=15.0, oi=5_000_000,
+        delta=0.52, gamma=0.002, theta=-12.0, vega=8.0,
+    )
+    atm_pe = OptionRow(
+        strike=24450, option_type="PE", iv=15.0, oi=4_000_000,
+        delta=-0.48, gamma=0.002, theta=-11.0, vega=7.5,
+    )
+    prediction = predictor.predict_from_raw(
+        candle=MLCollector._candle_to_dict(candle),
+        volume_history=[1_000_000, 1_200_000, candle.volume],
+        iv_history=[14.8, 14.9, 15.0],
+        atm_ce=MLCollector._option_row_to_dict(atm_ce),
+        atm_pe=MLCollector._option_row_to_dict(atm_pe),
+        total_ce_oi=20_000_000,
+        total_pe_oi=18_000_000,
+        all_ce_oi=[5_000_000],
+        all_pe_oi=[4_000_000],
+        levels=MLCollector._levels_to_prices([ResistanceLevel(price=24500, source="OI_WALL", strength=3)]),
+        timestamp=signal.timestamp,
+        spot=signal.trigger_price,
+        pdh=24450.0,
+        pdl=24300.0,
+        dte=5,
+        is_expiry=False,
+        direction=signal.direction.value,
+    )
+    _attach_ml_prediction_to_signal(signal, prediction)
+
+    rendered = format_signal(signal, signal.trigger_price)
+    assert "TREND_EXPANSION_BREAKOUT (BULLISH)" in rendered
+    assert f"ML Prediction: {int(prediction['probability'] * 100)}%" in rendered
+
+    class DiscordResponse:
+        def raise_for_status(self):
+            pass
+
+    class DiscordClient:
+        payload = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def post(self, _url, *, json):
+            self.payload = json
+            return DiscordResponse()
+
+    discord_client = DiscordClient()
+    monkeypatch.setattr(alerts.settings, "discord_webhook_url", "https://discord.test/webhook")
+    monkeypatch.setattr(alerts.httpx, "AsyncClient", lambda: discord_client)
+    assert await alerts.send_discord(signal, signal.trigger_price)
+    embed = discord_client.payload["embeds"][0]
+    assert "TREND_EXPANSION_BREAKOUT (BULLISH)" in embed["title"]
+    embed_fields = {field["name"]: field["value"] for field in embed["fields"]}
+    assert f"{int(prediction['probability'] * 100)}%" in embed_fields["🤖 ML Prediction"]
+    assert "IV velocity confirmed" in embed_fields["📝 Reasons"]
+
+    persisted = []
+    monkeypatch.setattr("ml_signal.collector.create_client", lambda *_: MagicMock())
+    collector = MLCollector("https://dummy.supabase.co", "dummy_key")
+    collector._upsert_signal_snapshot = lambda record: (
+        persisted.append(record)
+        or [{"signal_uuid": str(signal.id), "trade_id": None}]
+    )
+    await collector.snapshot(
+        candle=candle,
+        atm=ATMStrikes(spot_price=signal.trigger_price, ce=atm_ce, pe=atm_pe),
+        full_chain=[],
+        levels=[],
+        spot=signal.trigger_price,
+        signal=signal,
+        pdh=24450.0,
+        pdl=24300.0,
+        is_expiry=False,
+        dte=5,
+        timestamp=signal.timestamp,
+    )
+
+    assert len(persisted) == 1
+    assert persisted[0]["signal_setup_type"] == SetupType.TREND_EXPANSION_BREAKOUT.value
+    detector_scores = json.loads(persisted[0]["detector_scores"])
+    assert detector_scores[
+        SetupType.TREND_EXPANSION_BREAKOUT.value.lower()
+    ] == 1
+
+
 def test_trend_expansion_requires_verified_prior_close_but_can_start_after_open():
     settings.apply_profile(NON_EXPIRY_CONFIG)
     detector = TrendExpansionDetector()

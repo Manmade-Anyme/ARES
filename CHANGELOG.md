@@ -32,6 +32,7 @@ All notable changes to the ARES trading system will be documented in this file.
     - Made any finite negative ATM IV change a hard veto for a Failed Breakout confirmation; missing IV remains non-vetoing. Removed falling IV from its score and retired the old rapid-fall threshold.
     - Matched Failed Breakout's consecutive ATM IV comparison by strike and reset its baseline at each session boundary.
     - Made the legacy audit reject candidates without exact same-strike IV comparison samples, match option exits only to the entry strike, and handle an empty rejection report.
+    - Verified a morning Trend Expansion breakout passes same-strike IV confirmation, receives the live ML prediction, appears in the Discord embed, and is recorded with the correct setup score in the ML snapshot.
 
 - **PR #157 promoted Trend Expansion strategy to production and removed POC files (TASK-20261105):**
   - Removed deprecated prototype modules and audit runners (`poc/trend_expansion_poc.py`, `poc/regime_gated_expansion_strategy.py`, `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, `poc/run_trend_expansion_backtest.py`, `poc/position_management.py`, and `tests/unit/test_poc_trend_expansion.py`).
