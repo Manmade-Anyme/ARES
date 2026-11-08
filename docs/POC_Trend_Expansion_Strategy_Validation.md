@@ -56,6 +56,9 @@ Evaluated at or after **10:30 IST**. Requires at least **2 of 4** volatility fac
 - **Stop Loss:** The higher of the preceding 20-candle base low and entry minus 35 pts; signals are rejected if risk is below 12 pts.
 - **Target 1 (T1):** $\text{Entry} + 35.0$ pts.
 - **Target 2 (T2):** Nearest eligible structural level beyond T1, or the configured reference fallback.
+- **IV Gate:** When `trend_expansion_iv_filter_enabled` is on, missing/invalid ATM Call IV or a calibrated vol-crush/climax reading suppresses the breakout. IV observations are isolated by strike to avoid treating ATM rolls as IV changes.
+
+The IV gate applies to `AFTERNOON_BREAKOUT` only. `VWAP_RECLAIM` remains governed by its existing price, VWAP, and EMA rules.
 
 ---
 

@@ -40,7 +40,6 @@ class TestTuningConfig:
         assert EXPIRY_CONFIG.signal_cooldown_minutes == 10
         assert EXPIRY_CONFIG.breakout_confirmation_candles == 2
         assert EXPIRY_CONFIG.breakout_writers_active_min_pct == 5.0
-        assert EXPIRY_CONFIG.breakout_iv_falling_threshold == -3.0
         assert EXPIRY_CONFIG.breakout_weak_volume_ratio == 0.75
         assert EXPIRY_CONFIG.oi_wall_min_oi == 6_000_000
         assert EXPIRY_CONFIG.oi_wall_min_oi_change_pct == 5.0

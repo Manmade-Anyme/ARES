@@ -26,6 +26,8 @@ All notable changes to the ARES trading system will be documented in this file.
     - Added `trend_expansion_iv_filter_enabled: bool = True` to `TuningConfig` (`config_profiles.py`).
     - Added `IV-Gated Breakout` to `detector_names()` in `config.py` when enabled.
     - Aligned `poc/run_iv_breakout_audit.py` candidate reporting and updated `docs/POC_IV_Gated_Breakout_Strategy_Validation.md` with verified 62-session audit metrics (29 candidates screened, 12 rejected: 8 fakeouts blocked +248.40 pts, 4 false negatives -140.00 pts, net alpha +108.40 pts).
+    - Made the Trend Expansion afternoon breakout IV gate fail closed on missing/invalid IV; VWAP reclaim remains unchanged.
+    - Made any finite negative ATM IV change a hard veto for a Failed Breakout confirmation; missing IV remains non-vetoing. Removed falling IV from its score and retired the old rapid-fall threshold.
 
 - **PR #157 promote Trend Expansion strategy to production and remove POC files (TASK-20261105):**
   - Removed deprecated prototype modules and audit runners (`poc/trend_expansion_poc.py`, `poc/regime_gated_expansion_strategy.py`, `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, `poc/run_trend_expansion_backtest.py`, `poc/position_management.py`, and `tests/unit/test_poc_trend_expansion.py`).

@@ -72,7 +72,7 @@ class BreakoutHarness(unittest.TestCase):
 
     def _fire_bearish_signal(self):
         """Upward breakout over 24100 then deep close-back with weak volume,
-        IV crush and 12% OI growth → signal fires."""
+        stable IV and 12% OI growth → signal fires."""
         candle1 = OHLCVCandle(
             timestamp=datetime.now(), open=24090.0, high=24120.0,
             low=24080.0, close=24110.0, volume=50000
@@ -83,7 +83,7 @@ class BreakoutHarness(unittest.TestCase):
             low=24080.0, close=24090.0, volume=40000
         )
         return self.detector.update(
-            candle2, 100000.0, -15.0, 112, 100, 100, 100, self.levels
+            candle2, 100000.0, 0.0, 112, 100, 100, 100, self.levels
         )
 
 

@@ -87,7 +87,12 @@ class TrendExpansionDetector:
         self._candles.append(candle)
         self._update_indicators(candle)
 
-        if iv_current is not None and iv_current > 0:
+        if (
+            isinstance(iv_current, (int, float))
+            and not isinstance(iv_current, bool)
+            and isfinite(iv_current)
+            and iv_current > 0
+        ):
             if not self._iv_history or self._iv_history[-1][0] != candle.timestamp:
                 self._iv_history.append((candle.timestamp, iv_current, strike))
             elif len(self._iv_history[-1]) > 2 and self._iv_history[-1][2] is None and strike is not None:
@@ -313,61 +318,67 @@ class TrendExpansionDetector:
         # IV Microstructure Velocity Gate (Anti-Crush & Climax Exhaustion)
         iv_reason = None
         if getattr(settings, "trend_expansion_iv_filter_enabled", True):
-            if iv_current is not None and iv_current > 0:
-                active_strike = strike
-                if active_strike is None and self._iv_history:
-                    last_entry = self._iv_history[-1]
-                    if len(last_entry) > 2:
-                        active_strike = last_entry[2]
+            if not (
+                isinstance(iv_current, (int, float))
+                and not isinstance(iv_current, bool)
+                and isfinite(iv_current)
+                and iv_current > 0
+            ):
+                return None
+            active_strike = strike
+            if active_strike is None and self._iv_history:
+                last_entry = self._iv_history[-1]
+                if len(last_entry) > 2:
+                    active_strike = last_entry[2]
 
-                same_strike_samples = []
-                for entry in self._iv_history:
-                    entry_t = entry[0]
-                    if entry_t == candle.timestamp:
-                        continue
-                    entry_v = entry[1]
-                    entry_s = entry[2] if len(entry) > 2 else None
-                    if active_strike is not None and entry_s is not None and entry_s != active_strike:
-                        continue
-                    same_strike_samples.append((entry_t, entry_v))
+            same_strike_samples = []
+            for entry in self._iv_history:
+                entry_t = entry[0]
+                if entry_t == candle.timestamp:
+                    continue
+                entry_v = entry[1]
+                entry_s = entry[2] if len(entry) > 2 else None
+                if active_strike is not None and entry_s is not None and entry_s != active_strike:
+                    continue
+                same_strike_samples.append((entry_t, entry_v))
 
-                iv_prev_1m = None
-                iv_prev_3m = None
-                if same_strike_samples:
-                    prev_t, prev_v = same_strike_samples[-1]
-                    if isinstance(candle.timestamp, datetime) and isinstance(prev_t, datetime):
-                        if (candle.timestamp - prev_t).total_seconds() <= 180:
-                            iv_prev_1m = prev_v
-                    else:
+            iv_prev_1m = None
+            iv_prev_3m = None
+            if same_strike_samples:
+                prev_t, prev_v = same_strike_samples[-1]
+                if isinstance(candle.timestamp, datetime) and isinstance(prev_t, datetime):
+                    if (candle.timestamp - prev_t).total_seconds() <= 180:
                         iv_prev_1m = prev_v
+                else:
+                    iv_prev_1m = prev_v
 
-                    for prev_t_cand, prev_v_cand in reversed(same_strike_samples):
-                        if isinstance(candle.timestamp, datetime) and isinstance(prev_t_cand, datetime):
-                            dt_sec = (candle.timestamp - prev_t_cand).total_seconds()
-                            if 120 <= dt_sec <= 360:
-                                iv_prev_3m = prev_v_cand
-                                break
-                        elif len(same_strike_samples) >= 3 and (prev_t_cand, prev_v_cand) == same_strike_samples[-3]:
+                for prev_t_cand, prev_v_cand in reversed(same_strike_samples):
+                    if isinstance(candle.timestamp, datetime) and isinstance(prev_t_cand, datetime):
+                        dt_sec = (candle.timestamp - prev_t_cand).total_seconds()
+                        if 120 <= dt_sec <= 360:
                             iv_prev_3m = prev_v_cand
                             break
+                    elif len(same_strike_samples) >= 3 and (prev_t_cand, prev_v_cand) == same_strike_samples[-3]:
+                        iv_prev_3m = prev_v_cand
+                        break
 
-                    if iv_prev_3m is None and len(same_strike_samples) >= 3:
-                        prev_t3, prev_v3 = same_strike_samples[-3]
-                        if not (isinstance(candle.timestamp, datetime) and isinstance(prev_t3, datetime)) or (candle.timestamp - prev_t3).total_seconds() <= 360:
-                            iv_prev_3m = prev_v3
+                if iv_prev_3m is None and len(same_strike_samples) >= 3:
+                    prev_t3, prev_v3 = same_strike_samples[-3]
+                    if not (isinstance(candle.timestamp, datetime) and isinstance(prev_t3, datetime)) or (candle.timestamp - prev_t3).total_seconds() <= 360:
+                        iv_prev_3m = prev_v3
 
-                    if iv_prev_3m is None:
-                        iv_prev_3m = iv_prev_1m
+                if iv_prev_3m is None:
+                    iv_prev_3m = iv_prev_1m
 
-                iv_ok, iv_reason = evaluate_iv_velocity(
-                    iv_current=iv_current,
-                    iv_prev_1m=iv_prev_1m,
-                    iv_prev_3m=iv_prev_3m,
-                    vwap_zscore=vwap_zscore,
-                    require_iv=False,
-                )
-                if not iv_ok:
-                    return None
+            iv_ok, iv_reason = evaluate_iv_velocity(
+                iv_current=iv_current,
+                iv_prev_1m=iv_prev_1m,
+                iv_prev_3m=iv_prev_3m,
+                vwap_zscore=vwap_zscore,
+                require_iv=True,
+            )
+            if not iv_ok:
+                return None
 
         base = previous_candles[-20:]
         base_low = min(item.low for item in base)

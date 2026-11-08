@@ -2,6 +2,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
+import pytest
+
 from config import settings
 from config_profiles import NON_EXPIRY_CONFIG
 from detectors.trend_expansion import TrendExpansionDetector
@@ -46,7 +48,9 @@ def test_trend_expansion_emits_dynamic_breakout_signal_after_qualified_regime():
     result = None
 
     for candle in _session_candles():
-        result = detector.update(candle, pdc=24200.0, levels=[])
+        result = detector.update(
+            candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0
+        )
         if result is not None:
             break
 
@@ -241,7 +245,13 @@ def test_regime_evaluation_survives_1030_timestamp_jitter():
     ]
     result = None
     for candle in jittered_candles:
-        result = jittered_detector.update(candle, pdc=24200.0, levels=[])
+        result = jittered_detector.update(
+            candle,
+            pdc=24200.0,
+            levels=[],
+            iv_current=15.0,
+            strike=24450.0,
+        )
         if result is not None:
             break
 
@@ -302,9 +312,14 @@ def test_breakout_window_includes_1230_and_excludes_1415():
     breakout_detector = TrendExpansionDetector()
     for candle in candles:
         if candle.timestamp.time() < datetime(2026, 11, 5, 12, 30).time():
-            breakout_detector.update(candle, pdc=24200.0, allow_signal=False)
+            breakout_detector.update(
+                candle, pdc=24200.0, allow_signal=False,
+                iv_current=15.0, strike=24450.0,
+            )
         else:
-            signal = breakout_detector.update(candle, pdc=24200.0)
+            signal = breakout_detector.update(
+                candle, pdc=24200.0, iv_current=15.0, strike=24450.0
+            )
             break
     assert signal is not None
     assert signal.timestamp.time() == datetime(2026, 11, 5, 12, 30).time()
@@ -312,9 +327,14 @@ def test_breakout_window_includes_1230_and_excludes_1415():
     cutoff_detector = TrendExpansionDetector()
     for candle in candles:
         if candle.timestamp.time() < datetime(2026, 11, 5, 14, 15).time():
-            cutoff_detector.update(candle, pdc=24200.0, allow_signal=False)
+            cutoff_detector.update(
+                candle, pdc=24200.0, allow_signal=False,
+                iv_current=15.0, strike=24450.0,
+            )
         else:
-            signal = cutoff_detector.update(candle, pdc=24200.0)
+            signal = cutoff_detector.update(
+                candle, pdc=24200.0, iv_current=15.0, strike=24450.0
+            )
             break
     assert signal is None
 
@@ -334,7 +354,9 @@ def test_internal_vwap_used_when_candle_vwap_is_zero():
 
     result = None
     for candle in zero_vwap_candles:
-        result = detector.update(candle, pdc=24200.0, levels=[])
+        result = detector.update(
+            candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0
+        )
         if result is not None:
             break
 
@@ -358,7 +380,9 @@ def test_midday_gap_after_1030_does_not_block_afternoon_breakout():
 
     result = None
     for candle in candles_with_midday_drop:
-        result = detector.update(candle, pdc=24200.0, levels=[])
+        result = detector.update(
+            candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0
+        )
         if result is not None:
             break
 
@@ -436,3 +460,22 @@ def test_trend_expansion_afternoon_breakout_suppressed_by_vol_crush():
     assert result is None
 
 
+@pytest.mark.parametrize("iv_current", [None, 0.0, float("nan"), float("inf")])
+def test_trend_expansion_afternoon_breakout_fails_closed_without_valid_iv(iv_current):
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+        trend_expansion_iv_filter_enabled=True,
+    ))
+    detector = TrendExpansionDetector()
+    result = None
+
+    for candle in _session_candles():
+        if candle.timestamp.strftime("%H:%M") == "12:30":
+            result = detector.update(
+                candle, pdc=24200.0, levels=[], iv_current=iv_current
+            )
+            break
+        detector.update(candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0)
+
+    assert result is None

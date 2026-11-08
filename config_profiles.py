@@ -110,7 +110,6 @@ class TuningConfig:
     # tests/unit/test_task184_medium_breakout.py.
     breakout_failure_min_score: int = 2
     breakout_weak_volume_ratio: float = 0.75
-    breakout_iv_falling_threshold: float = -3.0
     # Minimum ATM OI growth (%) for the writers_active scored condition
     # (TASK-174). Was hardcoded 3.0 — intraminute OI drift of 3-5% is common
     # noise; a scored "active defense" needs a decisive build.
@@ -269,7 +268,6 @@ NON_EXPIRY_CONFIG = TuningConfig(
     signal_cooldown_minutes=10,
     breakout_confirmation_candles=3,
     breakout_weak_volume_ratio=0.75,
-    breakout_iv_falling_threshold=-3.0,
     breakout_writers_active_min_pct=10.0,
     oi_wall_min_oi=4000000,
     oi_wall_min_oi_change_pct=5.0,
@@ -296,7 +294,6 @@ EXPIRY_CONFIG = TuningConfig(
     # Breakout — faster confirmation and expiry-specific score sensitivity
     breakout_confirmation_candles=2,
     breakout_weak_volume_ratio=0.75,
-    breakout_iv_falling_threshold=-3.0,
     breakout_writers_active_min_pct=5.0,
 
     # OI Wall — lower OI gates with wider expiry interaction/retest geometry

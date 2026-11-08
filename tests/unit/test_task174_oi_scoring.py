@@ -10,8 +10,9 @@ Tests for TASK-174 breakout OI scoring fix:
   scored condition — any OI growth >= the active threshold already implies
   "holding", so scoring both double-counted a single OI reading. It remains
   a reason string for signal context only.
-- The score matrix shrinks from 5 to 4 conditions:
-  weak_volume, iv_falling, writers_active, deep_close.
+- Falling IV is now a hard veto, not a scored condition. The remaining score
+  conditions are weak_volume, writers_active, and deep_close; the confidence
+  scale remains four points to preserve existing MEDIUM/HIGH thresholds.
   (TASK-184 later lowered breakout_failure_min_score 3→2 to restore the
   MEDIUM tier; these tests therefore assert the *scoring* — which conditions
   earn a point — via confidence/reason strings rather than fire-vs-None.)
@@ -62,7 +63,7 @@ class BreakoutScoringHarness(unittest.TestCase):
                    avg_volume: float = 100000.0):
         """Close back deeply (10 pts) below the level. With avg_volume=100000
         the breakout candle (50000) is weak → weak_volume + deep_close = 2
-        baseline points; the OI args control the third."""
+        points; the OI args control the third."""
         candle2 = OHLCVCandle(
             timestamp=datetime.now(), open=24110.0, high=24115.0,
             low=24080.0, close=24090.0, volume=40000
@@ -88,8 +89,8 @@ class TestWritersHoldingNotScored(BreakoutScoringHarness):
 
     def test_five_percent_growth_below_threshold_earns_no_point(self):
         """5% OI growth < 10% threshold → writers_active False → score stays
-        2/4 (weak_volume + deep_close). Fires MEDIUM (TASK-184) with no
-        writers-active reason; pre-TASK-174 the 3% bar made this score 4/HIGH."""
+        2/4 (weak_volume + deep_close). Fires MEDIUM with no writers-active
+        reason; pre-TASK-174 the 3% bar made this score 4/HIGH."""
         self._breakout_up()
         signal = self._fail_back(ce_oi=105, ce_oi_prev=100)
         self.assertIsNotNone(signal)

@@ -114,15 +114,16 @@ Registered trades can carry across sessions without automatic end-of-day square-
 
 ## 🎯 Detection Strategies and Confidence
 
-The engine evaluates five strategies in short-circuit priority order. All signals remain subject to R:R and cooldown checks. The startup-loaded calibration policy can downgrade an unsupported HIGH tier to MEDIUM; raw detector scores alone do not guarantee the emitted tier.
+The engine evaluates six strategies in short-circuit priority order. IV-Gated Breakout is a separate setup, not an IV filter on Failed Breakout. All signals remain subject to R:R and cooldown checks. The startup-loaded calibration policy can downgrade an unsupported HIGH tier to MEDIUM; raw detector scores alone do not guarantee the emitted tier.
 
 | Priority | Detector | Entry logic and scoring |
 |---|---|---|
-| 1 | Failed Breakout | Requires a close back inside a crossed structural level. Scores weak breakout volume, falling IV, active OI growth and a deep close-back. Minimum score is 2 of 4: raw MEDIUM at 2, HIGH at 3 or more. |
+| 1 | Failed Breakout | Requires a close back inside a crossed structural level. Any finite negative ATM IV change on the confirmation candle vetoes the setup; missing IV is not treated as falling. Otherwise scores weak breakout volume, active OI growth and deep close-back. Minimum score is 2; the existing four-point confidence scale is retained. |
 | 2 | OI Wall Rejection | Separates wall bias/persistence from entry. Requires interaction, a later favourable excursion, then a secondary retest on a later candle. A qualifying defended-side retest enters immediately on its close when bullish for PE support or bearish for CE resistance. Scores wall magnitude, OI growth, penetration and wick rejection; wick rejection is not a hard gate. |
-| 3 | Gated Trend Expansion | Requires a two-of-four expansion regime (overnight gap, opening range, VWAP dispersion, directional displacement), then checks the VWAP reclaim and afternoon breakout setups. Enabled by default on both profiles; controlled by `trend_expansion_enabled`. Requires verified prior close and an uninterrupted current-session candle stream from 09:15 through the 10:30 regime check; otherwise remains dormant for that session. |
+| 3 | Gated Trend Expansion | Requires a two-of-four expansion regime (overnight gap, opening range, VWAP dispersion, directional displacement), then checks the VWAP reclaim and afternoon breakout setups. The afternoon breakout also requires valid ATM Call IV when its IV filter is enabled; missing/invalid IV suppresses it. Enabled by default on both profiles; controlled by `trend_expansion_enabled`. Requires verified prior close and an uninterrupted current-session candle stream from 09:15 through the 10:30 regime check; otherwise remains dormant for that session. |
 | 4 | Trend Continuation | Establishes a VWAP/previous-day-level regime, then looks for a pullback and confirmed momentum resumption. Controlled by `continuation_enabled`. |
-| 5 | Exhaustion Reversal | Requires volume climax and a doji-like small body after its history minimum. IV expansion, structural proximity and stronger volume/body conditions contribute to confidence. Raw HIGH requires at least two scored conditions. |
+| 5 | IV-Gated Breakout | Separate dynamic consolidation-base breakout setup. Requires price, volume, VWAP and valid ATM Call IV confirmation; missing/invalid IV suppresses it. Controlled by `iv_breakout_enabled`. |
+| 6 | Exhaustion Reversal | Requires volume climax and a doji-like small body after its history minimum. IV expansion, structural proximity and stronger volume/body conditions contribute to confidence. Raw HIGH requires at least two scored conditions. |
 
 Trend Expansion outputs manual spot-signal references through the existing signal, option-reference, persistence and alert path. The path does not submit broker entry orders. Its reclaim and breakout use their detector-computed structural stop/T1 geometry; T2 selects the nearest eligible structural level beyond T1 or uses a configured reference fallback.
 
