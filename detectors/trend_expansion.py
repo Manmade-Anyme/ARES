@@ -72,7 +72,11 @@ class TrendExpansionDetector:
             previous = self._local_timestamp(self._candles[-1].timestamp)
             if timestamp <= previous:
                 return None
-            if current_time <= REGIME_DISPERSION_TIME and (timestamp - previous).total_seconds() != 60:
+            step = (
+                timestamp.replace(second=0, microsecond=0)
+                - previous.replace(second=0, microsecond=0)
+            ).total_seconds()
+            if not self._regime_evaluated and step != 60:
                 self._session_complete = False
 
         self._candles.append(candle)
@@ -112,7 +116,7 @@ class TrendExpansionDetector:
     def _reset_session(self, session_date, first_time: time) -> None:
         self._session_date = session_date
         self._candles = []
-        self._session_complete = first_time == SESSION_START
+        self._session_complete = first_time.replace(second=0, microsecond=0) == SESSION_START
         self._regime_evaluated = False
         self._regime_score = 0
         self._regime_factors = {}

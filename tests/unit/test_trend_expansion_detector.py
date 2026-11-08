@@ -100,6 +100,26 @@ def test_missing_pdc_does_not_consume_regime_evaluation():
     assert detector._regime_score >= 2
 
 
+def test_missing_pdc_retry_failure_remains_fail_closed():
+    """Verify that if PDC retry continues to fail (pdc stays None), regime is not evaluated and signals fail closed."""
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+    ))
+    detector = TrendExpansionDetector()
+    candles = _session_candles()
+
+    result = None
+    for candle in candles:
+        signal = detector.update(candle, pdc=None, levels=[])
+        if signal is not None:
+            result = signal
+            break
+
+    assert detector._regime_evaluated is False
+    assert result is None
+
+
 def test_dynamic_trend_expansion_levels_are_not_overwritten_by_profile():
     settings.apply_profile(NON_EXPIRY_CONFIG)
     signal = AresSignal(
@@ -176,8 +196,8 @@ def test_engine_wires_trend_expansion_before_continuation():
     assert engine.last_signal_time is not None
 
 
-def test_regime_evaluation_survives_1030_timestamp_jitter():
-    """Verify regime is evaluated even if 10:30 candle arrives with sub-minute seconds or is skipped."""
+def test_missing_1030_candle_followed_by_1031_fails_closed():
+    """Verify that a missing 10:30 candle (gap from 10:29 to 10:31) marks session incomplete and fails closed."""
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
         trend_expansion_min_bbw_expansion=0.0,
@@ -185,20 +205,27 @@ def test_regime_evaluation_survives_1030_timestamp_jitter():
     detector = TrendExpansionDetector()
     candles = _session_candles()
 
-    # Skip exact 10:30 candle (index 75) to simulate API poll delay (74 -> 76 at 10:31)
+    # Drop exact 10:30 candle (10:29 -> 10:31 gap)
     candles_with_gap = [c for c in candles if c.timestamp.strftime("%H:%M") != "10:30"]
 
     result = None
     for candle in candles_with_gap:
-        result = detector.update(candle, pdc=24200.0, levels=[])
-        if result is not None:
+        signal = detector.update(candle, pdc=24200.0, levels=[])
+        if signal is not None:
+            result = signal
             break
 
-    assert detector._regime_evaluated is True
-    assert detector._regime_score >= 2
-    assert result is not None
-    assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
+    assert detector.session_complete is False
+    assert detector._regime_evaluated is False
+    assert result is None
 
+
+def test_regime_evaluation_survives_1030_timestamp_jitter():
+    """Verify regime is evaluated when 10:30 candle arrives with sub-minute seconds."""
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+    ))
     jittered_detector = TrendExpansionDetector()
     jittered_candles = [
         replace(c, timestamp=c.timestamp + timedelta(seconds=15))
@@ -212,6 +239,7 @@ def test_regime_evaluation_survives_1030_timestamp_jitter():
         if result is not None:
             break
 
+    assert jittered_detector.session_complete is True
     assert jittered_detector._regime_evaluated is True
     assert jittered_detector._regime_score >= 2
     assert result is not None
