@@ -330,22 +330,29 @@ class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
 
 @pytest.mark.asyncio
 async def test_selected_option_quote_uses_exact_security_id_when_expiry_differs(monkeypatch):
+    from datetime import datetime, timezone
+
     selected = {
         "expiry": "2026-11-12", "strike": 23400.0,
         "option_type": "PE", "security_id": "53941",
     }
+    stamp = datetime.now(timezone.utc).isoformat()
     position_manager = MagicMock()
     position_manager.get_selected_option_contract.return_value = selected
     price_fetcher = MagicMock()
     price_fetcher.fetch_option_observation = AsyncMock(return_value={
-        "price": 151.25, "observed_at": "2026-11-03T04:55:01+00:00", "source": "dhan_last_trade",
+        "price": 151.25, "bid": 151.1, "ask": 151.4,
+        "observed_at": stamp, "received_at": stamp, "source": "dhan_last_trade",
     })
     quote_service = MagicMock()
+    dispatcher = MagicMock()
+    dispatcher.on_option_observations = AsyncMock()
     matcher = MagicMock()
     monkeypatch.setattr("quote_service.match_option_quote_from_chain", matcher)
 
     await main._record_selected_option_quote(
-        position_manager, price_fetcher, quote_service, "2026-11-05", [{"nearest": True}]
+        position_manager, price_fetcher, quote_service, "2026-11-05", [{"nearest": True}],
+        dispatcher=dispatcher,
     )
 
     price_fetcher.fetch_option_observation.assert_awaited_once_with({
@@ -354,8 +361,13 @@ async def test_selected_option_quote_uses_exact_security_id_when_expiry_differs(
     matcher.assert_not_called()
     quote_service.reconcile_selected_contract.assert_called_once_with(selected)
     quote_service.record_option_quote.assert_called_once_with(
-        selected, 151.25, "2026-11-03T04:55:01+00:00", source="dhan_last_trade",
+        selected, 151.25, stamp, source="dhan_last_trade",
     )
+    dispatcher.on_option_observations.assert_awaited_once()
+    execution_observation = dispatcher.on_option_observations.await_args.args[0][0]
+    assert execution_observation["bid"] == 151.1
+    assert execution_observation["ask"] == 151.4
+    assert execution_observation["contract"] == {**selected, "exchange_segment": "NSE_FNO"}
 
 
 @pytest.mark.asyncio

@@ -164,14 +164,17 @@ async def test_spot_history_rejects_future_and_failure():
 async def test_pinned_quote_requires_fresh_provider_trade_timestamp():
     fetcher = PriceFetcher.__new__(PriceFetcher)
     now = datetime.now(timezone.utc)
-    payload = {"last_price": 150, "last_trade_time": now.isoformat()}
+    payload = {"last_price": 150, "last_trade_time": now.isoformat(),
+               "top_bid_price": 149.9, "top_ask_price": 150.1}
     provider = Mock(return_value={"status": "success", "data": {"NSE_FNO": {"53796": payload}}})
     fetcher.dhan = SimpleNamespace(quote_data=provider)
     contract = dict(security_id="53796", exchange_segment="NSE_FNO", expiry="2099-11-03", strike=22850, option_type="PE")
     result = await fetcher.fetch_option_observation(contract)
     provider.assert_called_once_with({"NSE_FNO": [53796]})
     assert result["price"] == 150 and result["source"] == "dhan_last_trade"
+    assert result["bid"] == 149.9 and result["ask"] == 150.1
     assert datetime.fromisoformat(result["observed_at"]) == now
+    assert abs((datetime.fromisoformat(result["received_at"]) - now).total_seconds()) <= 5
     # Avoid waiting for the rate limit in this test; production calls are gated.
     fetcher._reference_next_request = 0
     payload["last_trade_time"] = (now - timedelta(seconds=20)).isoformat()
@@ -181,7 +184,10 @@ async def test_pinned_quote_requires_fresh_provider_trade_timestamp():
     assert await fetcher.fetch_option_observation(contract) is None
     fetcher._reference_next_request = 0
     payload["last_trade_time"] = datetime.now(IST).strftime("%d/%m/%Y %H:%M:%S")
-    assert (await fetcher.fetch_option_observation(contract))["source"] == "dhan_last_trade"
+    payload.update(top_bid_price=151, top_ask_price=150)
+    crossed = await fetcher.fetch_option_observation(contract)
+    assert crossed["source"] == "dhan_last_trade"
+    assert crossed["ask"] == 150 and crossed["bid"] is None
 
 
 def test_quote_timezone_and_provider_epoch_match_same_event():
@@ -191,3 +197,14 @@ def test_quote_timezone_and_provider_epoch_match_same_event():
     assert evidence["price"] == 107
     observation["observed_at"] = (START + timedelta(seconds=6)).timestamp()
     assert option_target_evidence(event, observations=[observation], observed_at=event + timedelta(seconds=6)) is None
+
+
+def test_intraminute_premium_exit_prefers_quote_and_labels_completed_close_approximate():
+    event = START + timedelta(seconds=23)
+    later = START + timedelta(minutes=2)
+    evidence = spot_exit_evidence(event, observations=[quote(event, 102)], spot_minutes=[minute()],
+                                 observed_at=later, allow_intraminute=True)
+    assert evidence['price'] == 102 and evidence['approximate'] is False
+    evidence = spot_exit_evidence(event, spot_minutes=[minute()], observed_at=later, allow_intraminute=True)
+    assert evidence['price'] == 105 and evidence['approximate'] is True
+    assert spot_exit_evidence(event, spot_minutes=[minute()], observed_at=event, allow_intraminute=True) is None

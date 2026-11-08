@@ -86,10 +86,43 @@ def test_typed_round_trip_preserves_ambiguity_and_protective_observation():
                  "protective_option_exit": {"event_at": "2026-10-23T10:35:00+05:30",
                                             "option_close": 145.0, "option_stop": 146.0}}
     resolution = {"outcome": "T2_HIT", "evidence_source": "complete_ticks"}
+    deferred = {"event_at": "2026-10-23T10:40:00+05:30", "reason": "ATR_SL_HIT",
+                "stop_domain": "OPTION_PREMIUM", "option_close": 145.0}
     restored = OptionTrailingContext.from_dict({"ambiguous_index_touch": ambiguity,
-                                                 "ambiguity_resolution": resolution}).to_dict()
+                                                 "ambiguity_resolution": resolution,
+                                                 "deferred_option_exit": deferred,
+                                                 "execution_route_pending": True,
+                                                 "execution_route_reason": "ATR_SL_HIT"}).to_dict()
     assert restored["ambiguous_index_touch"] == ambiguity
     assert restored["ambiguity_resolution"] == resolution
+    assert restored["deferred_option_exit"] == deferred
+    assert restored["execution_route_pending"] is True
+    assert restored["execution_route_reason"] == "ATR_SL_HIT"
+
+
+def test_typed_round_trip_preserves_t1_tied_premium_quote_and_bar_triggers():
+    protective = {"reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
+                  "event_at": "2026-11-04T04:50:00+00:00", "option_close": 160.0,
+                  "effective_stop": 161.05, "stop_source": "INITIAL_OPTION_SL"}
+    later_index = [{"event_at": "2026-11-04T04:51:00+00:00", "price": 23909.9,
+                    "high": 23909.9, "low": 23909.9, "candle_timestamp": None}]
+    quote = {"status": "T1_ORDER_UNKNOWN", "protective_option_exit": protective,
+             "subsequent_index_observations": later_index}
+    bar = {"status": "T1_ORDER_UNKNOWN", "option_close": 160.0,
+           "protective_option_exit": protective,
+           "subsequent_index_observations": later_index}
+
+    restored = OptionTrailingContext.from_dict({
+        "ambiguous_premium_quote": quote,
+        "ambiguous_premium_bar": bar,
+        "execution_route_pending": True,
+        "execution_route_reason": "SL_HIT",
+    }).to_dict()
+
+    assert restored["ambiguous_premium_quote"] == quote
+    assert restored["ambiguous_premium_bar"] == bar
+    assert restored["execution_route_pending"] is True
+    assert restored["execution_route_reason"] == "SL_HIT"
 
 
 def test_conflict_state_read_does_not_require_new_column_on_legacy_database():

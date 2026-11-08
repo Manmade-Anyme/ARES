@@ -300,13 +300,25 @@ class TestChainOptionMatching:
         }
         chain = [
             {"strike": 23200, "expiry_date": "2026-11-03", "ce_security_id": "53938", "ce_ltp": 160.0},
-            {"strike": 23300, "expiry_date": "2026-11-03", "ce_security_id": "53940", "ce_ltp": 86.7, "pe_ltp": 72.3},
+            {"strike": 23300, "expiry_date": "2026-11-03", "ce_security_id": "53940", "ce_ltp": 86.7,
+             "ce_bid": 86.5, "ce_ask": 86.9, "pe_ltp": 72.3},
         ]
         match = match_option_quote_from_chain(contract, chain, timestamp="2026-11-02T04:52:00Z")
         assert match is not None
         assert match["price"] == 86.7
+        assert match["bid"] == 86.5 and match["ask"] == 86.9
+        assert match["exchange_segment"] == "NSE_FNO"
         assert match["security_id"] == "53940"
         assert match["source"] == "dhan_option_chain"
+
+    def test_match_chain_suppresses_crossed_depth_bid(self):
+        contract = {"expiry": "2026-11-03", "strike": 23300, "option_type": "CE", "security_id": "53940"}
+        chain = [{"strike": 23300, "expiry_date": "2026-11-03", "ce_security_id": "53940",
+                  "ce_ltp": 86.7, "ce_bid": 87.0, "ce_ask": 86.9}]
+        match = match_option_quote_from_chain(contract, chain)
+        assert match is not None
+        assert match["ask"] == 86.9
+        assert match["bid"] is None
 
     def test_match_pe_quote_from_chain(self):
         contract = {

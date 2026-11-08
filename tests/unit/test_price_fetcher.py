@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fetchers.price_fetcher import PriceFetcher
@@ -199,6 +199,70 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
             await self.fetcher.fetch_latest_candle()
         self.assertIn("Unknown API error (Empty Remarks)", str(ctx.exception))
 
+    async def test_fetch_option_observations_batches_distinct_pinned_contracts(self):
+        contracts = [
+            {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry_date": "2026-07-01",
+             "strike": 24000, "option_type": "CE"},
+            {"security_id": "456", "exchange_segment": "NSE_FNO", "expiry_date": "2026-07-01",
+             "strike": 24000, "option_type": "PE"},
+        ]
+        stamp = datetime(2026, 6, 29, 15, 29, tzinfo=ZoneInfo("Asia/Kolkata")).strftime("%d/%m/%Y %H:%M:%S")
+        self.mock_dhan.quote_data.return_value = {"status": "success", "data": {"NSE_FNO": {
+            "123": {"last_price": 101.5, "last_trade_time": stamp,
+                    "top_bid_price": 101.4, "top_ask_price": 101.6},
+            "456": {"last_price": 99.5, "last_trade_time": stamp,
+                    "top_bid_price": 99.3, "top_ask_price": 99.7},
+        }}}
+        with patch.object(self.fetcher, "_protective_request",
+                          new=AsyncMock(side_effect=lambda request: request())) as protective, \
+             patch.object(self.fetcher, "_reference_request",
+                          new=AsyncMock(side_effect=AssertionError(
+                              "stop quotes must not use the reference lane"))) as reference:
+            observations = await self.fetcher.fetch_option_observations(contracts)
+        self.assertEqual(len(observations), 2)
+        protective.assert_awaited_once()
+        reference.assert_not_awaited()
+        self.assertEqual(self.mock_dhan.quote_data.call_count, 1)
+        self.assertEqual(self.mock_dhan.quote_data.call_args.args[0], {"NSE_FNO": [123, 456]})
+        self.assertEqual({item["contract"]["option_type"] for item in observations}, {"CE", "PE"})
+        self.assertEqual({item["price"] for item in observations}, {101.5, 99.5})
+        self.assertEqual({item["bid"] for item in observations}, {101.4, 99.3})
+        self.assertEqual({item["ask"] for item in observations}, {101.6, 99.7})
+
+    async def test_pinned_quote_suppresses_crossed_or_invalid_depth(self):
+        contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry_date": "2026-07-01",
+                    "strike": 24000, "option_type": "CE"}
+        stamp = datetime(2026, 6, 29, 15, 29, tzinfo=ZoneInfo("Asia/Kolkata")).strftime("%d/%m/%Y %H:%M:%S")
+        self.mock_dhan.quote_data.return_value = {"status": "success", "data": {"NSE_FNO": {
+            "123": {"last_price": 101.5, "last_trade_time": stamp,
+                    "top_bid_price": 102, "top_ask_price": 101},
+        }}}
+        with patch.object(self.fetcher, "_protective_request",
+                          new=AsyncMock(side_effect=lambda request: request())):
+            observations = await self.fetcher.fetch_option_observations([contract])
+        self.assertEqual(observations[0]["ask"], 101.0)
+        self.assertIsNone(observations[0]["bid"])
+
+    async def test_expired_pin_does_not_block_quotes_for_other_contracts(self):
+        contracts = [
+            {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry_date": "2026-06-28",
+             "strike": 24000, "option_type": "CE"},
+            {"security_id": "456", "exchange_segment": "NSE_FNO", "expiry_date": "2026-07-01",
+             "strike": 24000, "option_type": "PE"},
+        ]
+        stamp = datetime(2026, 6, 29, 15, 29, tzinfo=ZoneInfo("Asia/Kolkata")).strftime("%d/%m/%Y %H:%M:%S")
+        self.mock_dhan.quote_data.return_value = {"status": "success", "data": {"NSE_FNO": {
+            "456": {"last_price": 99.5, "last_trade_time": stamp},
+        }}}
+        with patch.object(self.fetcher, "_protective_request",
+                          new=AsyncMock(side_effect=lambda request: request())) as protective:
+            observations = await self.fetcher.fetch_option_observations(contracts)
+
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0]["contract"]["security_id"], "456")
+        self.assertEqual(self.mock_dhan.quote_data.call_args.args[0], {"NSE_FNO": [456]})
+        protective.assert_awaited_once()
+
     @patch('fetchers.price_fetcher.settings')
     async def test_fetch_latest_candle_data_type_errors(self, mock_settings):
         # data is not a dict (line 138)
@@ -247,6 +311,44 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
         pdh, pdl = await self.fetcher.fetch_previous_day_ohlc()
         self.assertAlmostEqual(pdh, 24102.35, places=4)
         self.assertAlmostEqual(pdl, 23995.10, places=4)
+
+    @patch('fetchers.price_fetcher.settings')
+    async def test_fetch_previous_day_context_returns_close(self, mock_settings):
+        self.clock_patch.stop()
+        yesterday_ts = int((datetime.now() - timedelta(days=1)).timestamp())
+        self.mock_dhan.historical_daily_data.return_value = {
+            "status": "success",
+            "data": {
+                "timestamp": [yesterday_ts],
+                "high": [24102.35],
+                "low": [23995.10],
+                "close": [24050.25],
+            }
+        }
+
+        pdh, pdl, pdc = await self.fetcher.fetch_previous_day_context()
+
+        self.assertAlmostEqual(pdh, 24102.35, places=4)
+        self.assertAlmostEqual(pdl, 23995.10, places=4)
+        self.assertAlmostEqual(pdc, 24050.25, places=4)
+
+    @patch('fetchers.price_fetcher.settings')
+    async def test_fetch_previous_day_context_omits_misaligned_close(self, mock_settings):
+        self.clock_patch.stop()
+        yesterday_ts = int((datetime.now() - timedelta(days=1)).timestamp())
+        self.mock_dhan.historical_daily_data.return_value = {
+            "status": "success",
+            "data": {
+                "timestamp": [yesterday_ts],
+                "high": [24102.35],
+                "low": [23995.10],
+                "close": [24050.25, 24100.0],
+            }
+        }
+
+        _, _, pdc = await self.fetcher.fetch_previous_day_context()
+
+        self.assertIsNone(pdc)
 
     @patch('fetchers.price_fetcher.settings')
     async def test_fetch_previous_day_ohlc_success_today_fallback(self, mock_settings):

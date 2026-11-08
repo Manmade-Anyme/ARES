@@ -1,0 +1,272 @@
+# Architecture Decision Record — TASK-20261104 Option-Premium Stop Protection
+
+- **Date:** 2026-11-04
+- **Decision Status:** IMPLEMENTED AND VERIFIED LOCALLY; production rollout not authorized
+- **Scope:** Lifecycle architecture and local implementation plan. No production configuration, deployment, worker start, broker order, or historical production-record change is authorized by this ADR.
+- **Supersedes:** The post-T1 premium-stop rules in `directives/adr/TASK-20261023_option-atr-trailing-lifecycle.md` where they use the original option SL as the permanent floor or require a completed 5-minute close to detect a stop. Other previously approved lifecycle and accounting behavior remains unless explicitly changed below.
+- **Clarification:** The user's 2026-11-04 follow-up requires every hit of the moved entry-cost stop to report the break-even status and `0.00` runner stop-out points, including a quote gap through cost. Keep the observed/reference exit mark separate; do not claim a fill at cost. This clarifies and supersedes the earlier below-cost-gap runner-points calculation in this ADR.
+
+## 1. Problem Statement
+
+The current option ATR path is enrolled only when the ATR feature/configuration and backend gates pass (`position_manager.py::register_trade`). It processes pinned option premium history after T1, but `PositionManager.update_option_atr_trailing` detects exits from completed 5-minute closes using a strict `close < active_stop` check. The separate selected-option quote path in `main.py::_record_selected_option_quote` serves the dashboard and is not a per-trade protection feed. Trades without the option ATR policy can still reach legacy spot ATR monitoring through `main.py::_monitor_completed_atr` and `PositionManager.update_atr_trailing`.
+
+The required behavior is to protect the option premium before T1 with its initial premium SL; move the remaining premium reference/position to its entry premium at T1; and after T1 allow only a valid option-premium ATR stop above that protected level to tighten it. Premium stop enforcement must run on fresh pinned-contract price observations without waiting for an ATR bar. Existing independent spot/index SL and post-T1 index break-even guards remain in force in their own price domain. Spot ATR must not substitute for option ATR or control the premium stop.
+
+The 4 November records for #2455 and #4176 are zero-lot `SIGNAL_REFERENCE` records. The persisted terminal events are not evidence of broker fills or realized losses. The available screenshots and stored records do not establish the exact earlier intrabar premium breach time; replay must report the earliest evidence-supported trigger or a timing bound, not force a screenshot estimate.
+
+## 2. Decisions
+
+### 2.1 Keep the protection domains independent
+
+Keep the existing spot/index stop guard before T1 and index-entry break-even guard after T1. Add separate option-premium SL protection for any trade with a valid pinned contract and premium bracket. Evaluate each guard only against its own price series. Either may independently trigger the existing lifecycle close; never compare, project, or substitute a spot level and a premium level.
+
+Disable the legacy **spot ATR trailing** path for every trade enrolled in option-premium protection. Keep that path only for spot-only trades. Missing premium history or a disabled ATR gate must never route an option trade back to spot ATR.
+
+### 2.2 Premium protection lifecycle
+
+For a valid option contract and bracket, create versioned premium protection state independently of ATR eligibility:
+
+| Phase | Active premium stop | ATR role |
+|---|---|---|
+| Before T1 | Initial option-premium SL | No exit or stop authority; history may warm up |
+| At T1 | Move to entry premium basis, preserving any already tighter stop | No gap in protection; persist T1 and the premium stop atomically |
+| After T1 | `max(previous effective premium stop, entry premium basis, valid ATR stop candidate)` | May tighten only when a valid candidate is strictly above the current effective stop |
+
+For a long-premium CE or PE, a fresh valid option-price observation **at or below** the effective stop triggers the premium exit path, including equality and gaps. A higher ATR candidate never loosens a stop; a lower/equal/missing candidate has no effect. Do not apply a completed bar's new candidate to quotes before that bar's end time.
+
+The proposed canonical policy identifier is `option_premium_protection_v2`, separate from the indicator formula identifier `option_atr_v1`. Keep existing `option_atr_enabled`, exact approved-version, service-role, and backend capability requirements for ATR calculation/ratcheting. The ATR component remains off by default and is not activated by this implementation. The baseline premium SL and T1 cost protection are not disabled merely because the ATR parity gate is closed.
+
+The v2 capability RPC must verify that the calling `service_role` can `SELECT` and `UPDATE` `public.ml_collection`, as well as access the lifecycle tables and required functions. Every terminal lifecycle transition synchronizes the canonical outcome label inside the same transaction; without either table privilege, readiness must be false so the trade cannot enroll and later roll back its protective exit.
+
+### 2.3 ATR calculation contract
+
+Keep the configured indicator timeframe at five minutes; the supplied one-minute chart does not change it. Retain the current option-premium formula in `atr_trailing.py::calculate_option_atr_bars`:
+
+- True range from the premium OHLC series, including prior premium close.
+- Wilder ATR period 5, seeded by the first five ranges.
+- Candidate formula: `max(High[i-k] - 2.5 * ATR5[i-k])` for the rolling last 10 completed bars (`k = 0..9`).
+- Continuous history across sessions; no overnight reset unless the existing configured policy says otherwise.
+- Candidate updates only from validated, completed, contiguous, contract-pinned 5-minute option bars.
+
+Only the ATR-derived stop price is compared to the active premium stop. Raw ATR volatility is not itself a stop. A candidate must be strictly above the current premium stop to become effective and change its source to ATR.
+
+If a later batch brings a quote with the same source timestamp as an already applied ATR raise, its ordering relative to the raise is unknown. Reject the quote and mark quote monitoring unavailable instead of applying the raised stop retroactively; a later fresh quote uses the retained active stop. This also means the tied quote cannot establish an exit under the previous stop.
+
+### 2.4 Entry basis, trigger, and fill semantics
+
+Record the premium basis with its provenance:
+
+- **Confirmed execution:** the authoritative weighted-average fill for the pinned contract, with fill identity/time where available.
+- **Signal/reference tracking:** the recorded premium reference (`options_sizing.entry_limit` when that is the canonical stored entry). Label it as a reference; do not call it an executed fill.
+
+Do not silently make the basis fee-adjusted. A stop breach is a trigger event, not proof of a fill at the stop price. Persist trigger source, trigger quote price/time, active stop/source, and exit reason separately from an estimated reference exit and any confirmed broker fill. For actual execution, do not mark the broker position closed until the execution path confirms the fill; represent pending/failed execution explicitly. Reference-only lifecycle closure may use the first qualifying reference observation, clearly labeled as modeled.
+
+Terminal labeling is based on the active premium-stop source:
+
+- If the still-effective premium stop is the entry/cost stop, use `STOPPED_OUT_AT_BE` and report **0.00 runner stop-out points**, including when the observed quote gaps below cost. Persist the observed/reference exit mark separately; do not fabricate a fill at cost. Previously booked reference legs remain intact, and observed-price accounting remains distinct from this stop-out points field.
+- If an ATR-raised stop is active, use `ATR_SL_HIT`, while keeping trigger mark, effective stop, and fill/reference exit distinct.
+- A pre-T1 initial premium-SL event remains `SL_HIT` with an explicit `stop_domain=OPTION_PREMIUM` (distinguished from an independent spot-domain `SL_HIT`).
+
+### 2.5 T1/T2, accounting, and event order
+
+T1 and T2 remain spot/index milestones. Preserve existing suggested sizing, model bookkeeping/partial-booking fractions, trade scoring, and reference accounting unchanged. T2 remains a reference milestone: it does not add broker execution or allocation semantics and does not assert an actual partial fill. Do not introduce a new T2-driven premium-stop change. Preserve the existing approved lifecycle's T2 bookkeeping and guard behavior except where the explicit independent spot/premium guard rules above require separation.
+
+Merge source-timestamped spot observations, option-premium observations, and completed option bars in chronological order. At same-minute boundaries, do not assume T1 preceded a stop breach. Preserve unresolved event ordering as ambiguous until source timestamps or finer-grained data resolve it. Deduplicate events by durable event identity so retries/restarts cannot double-close or reopen a trade.
+
+When an option-premium stop triggers while an earlier index T2/entry-guard candle is unresolved, persist the first protective premium event on that ambiguity record and route its paper execution intent without closing the reference lifecycle. Keep the trade in its active post-T1 state until certified ordered index evidence resolves the earlier candle. Then book T2 first and apply the premium exit to the remaining reference fraction if T2 was first; if the entry guard was first, finalize the break-even index exit. If the premium trigger itself predates the first ordered index touch, finalize the premium exit first. Preserve the original quote/bar provenance and do not re-use later observations to rewrite the first protective trigger.
+
+Apply the same ordering protection when a meaningful index touch is queued because required option history is incomplete. A later premium-stop quote immediately creates the execution exit intent, but its reference exit is stored as `deferred_option_exit` and the trade remains in its active post-T1 lifecycle. On recovery, replay queued index observations and completed option bars in source-time order. Process only bars strictly before the retained premium-trigger timestamp; an earlier bar close through the then-active premium stop finalizes the reference exit at that bar and remaining fraction before later index milestones. Otherwise apply the retained premium trigger using the fraction still remaining at that event. Never use bars at or after the retained trigger as earlier evidence, and preserve the already-routed execution intent. Do not let a terminal premium event strand earlier queued index evidence.
+
+If an earlier recovered option stop wins, remove the superseded `deferred_option_exit` and later queued index observations before capturing the terminal payload. Commit that cleanup in the original terminal transition so the durable snapshot matches the chosen exit. Do not submit another lifecycle transition to clear those fields after the trade is terminal.
+
+Missing option history may delay reference ordering, but it must not delay an eligible index-entry guard exit for a confirmed paper execution that has booked T1 or has a T1 partial awaiting a bid. For ATR-enabled v2 trades, retain and route that protective execution intent before queuing the index observation for history reconciliation; keep reference closure and accounting deferred where chronology remains unknown. Preserve the first retained protective intent and its reason, require the matching protected paper fill and pinned contract, and retain activation-time, event-watermark, and reference-only safeguards. The intent covers the remaining paper execution units and remains pending until an observed executable premium bid confirms the exit.
+
+For a completed index candle spanning T1, a guard-touching wick may predate T1. Use its close for the immediate execution guard check even when timeline replay supplies the candle completion as `event_time`; retain the full candle for reference-order reconciliation.
+
+An unresolved T1 premium-ordering or index-ordering ambiguity also defers reference finalization, but does not disable a later proven index guard for an eligible confirmed paper runner. Route the guard through the same durable execution intent while retaining the earlier ambiguity and its subsequent observations; never replace an already retained protective route.
+
+After T2 is committed, reject premium quotes whose source time is before `t2_at` as out of order. A fresh quote received in a later batch with source time exactly equal to `t2_at` is retained as `T2_ORDER_UNKNOWN` when it breaches the stop protective under every ordering: the original option SL when T1 is tied/unknown, or the active break-even/ATR stop when T1 predates T2. Check this trigger even if another quote has already watermarked that source time. Route confirmed paper protection and record the possible pre-T1/full, post-T1/pre-T2/half, and post-T2/runner exit fractions without changing the already-committed T2 milestone. Other quotes at or before `t2_at` remain rejected and mark quote monitoring unavailable.
+
+For a same-source-time v2 premium stop/index T2 or entry-guard tie, whether detected from an accepted premium quote or a completed option bar, retain the reference ambiguity and persist and emit the premium protective trigger before milestone processing can commit T2. Equality with the active v2 premium stop is a breach, matching normal option-stop evaluation. If a fresh quote arrives after T2 is committed with source time exactly equal to `t2_at`, preserve it as `T2_ORDER_UNKNOWN` when it breaches the stop protective under every ordering: the original stop for a tied/unknown T1, or the active break-even/ATR stop for a T1 that predates T2. Preserve the trigger and full/half/runner allocation possibilities even when an equal-time watermark already exists; other quotes at or before committed `t2_at` remain rejected as delayed. For confirmed paper fills, persist an execution-route-pending marker with the trigger reason. Route each trade independently; a sync failure for one trade must not abort the batch. Retry pending routes on later monitor passes, including for already-terminal trades. After dispatcher sync succeeds, acknowledge through a dedicated metadata-only RPC that works for terminal trades, checks the pending reason, and does not advance lifecycle revision or modify the final result. Keep the marker pending unless both synchronization and acknowledgement persistence succeed.
+
+When certified ordered ticks resolve a v2 T1/T2-entry ambiguity to an index break-even exit after T1, store the exit as `SPOT_INDEX` and persist the same route-pending marker used by direct guard exits. The monitor must drain it through the existing paper execution dispatcher even though the resolver does not return an event list; reference resolution and execution confirmation stay separate.
+
+For v2 trades, keep premium-quote health and ATR-history health as separate monitoring causes. Healthy ATR history cannot clear a quote outage, and a fresh quote cannot clear an ATR-history outage. Emit a restored state only after all feeds required by the trade's ATR configuration have recovered; when ATR is disabled, quote health remains the only required monitoring feed.
+
+The v2 policy uses the same canonical milestone-aware outcome rules as `option_atr_v1` across training labels, dataset ingestion, cached analytics normalization, and terminal backfills. A completed v2 T2 trade remains a win when its final exit is `ATR_SL_HIT` or `STOPPED_OUT_AT_BE`, regardless of the T1-only labeling setting. The legacy target-based break-even repair excludes v2 records so a legitimate weighted zero-P&L result cannot be overwritten.
+
+## 3. Premium Quote Source and Failure Policy
+
+For Dhan last-trade quotes rounded to whole seconds, compare the full source-second interval with the fractional paper fill time. Reject a quote second only when it ends at or before activation. If a breached quote second overlaps the confirmed PRE_T1 fill and was received after the fill, persist `ENTRY_ORDER_UNKNOWN/FILL_SECOND_OVERLAP` without routing an exit; retain it through quote recovery and defer later milestones until ordering is known.
+
+A fresh quote tied to a T1 transition that seeds ATR above cost is retained as `T1_ORDER_UNKNOWN/ATR_STOP_ONLY_BREACH`, with the seeded stop and quote provenance. It creates no execution exit from uncertain ordering and blocks later T2 allocation until the source ordering is reconciled.
+
+On revision conflict, committed unresolved premium/index ordering and deferred protective exits take precedence over stale milestone or terminal snapshots. Rebase to the committed allocation, retain the first protective trigger and execution route, and store later local observations for reconciliation instead of emitting a stale T2/exit alert. Preserve stronger local stops and maximum watermarks; cost-only uncertainty still permits a later proven breach to route protection without finalizing reference accounting.
+
+Revision-conflict recovery preserves the maximum committed/local quote watermark in every queued milestone and terminal snapshot, in live state, and in nested alert snapshots. A newer live quote remains authoritative; observed quote and exit provenance are not rewritten to match the recovered watermark.
+
+When revision-conflict recovery adopts the committed higher `locked_option_sl`, copy the corresponding `protection_mode`, `premium_stop_source`, `stop_effective_at` and `previous_locked_option_sl` as one stop revision. Apply this to milestone-progress and terminal-observation rebases and their live/alert snapshots. A still-higher live stop keeps its own metadata. Observed exit-trigger/exit metadata remains immutable and distinct from the recovered canonical stop; the recovery must drain under the SQL v2 source/price invariant rather than pairing an ATR price with a stale break-even source.
+
+Extend the T1 option-bar ambiguity ceiling to the ATR stop only when that stop's source is ATR and its effective time equals both T1 and the completed bar end. A close above cost but at/below this seeded stop becomes `T1_ORDER_UNKNOWN/ATR_STOP_ONLY_BREACH`, storing `seeded_option_sl`; it proves no protective breach under every ordering. Include that ambiguity and seeded level in stable persistence identity and the shared reference-finalization gate. Later unequivocal premium protection may route independently without resolving this earlier uncertainty. Cost-only and original-SL breach handling remain distinct.
+
+Persist the first accepted PRE_T1 quote between initial SL and entry cost for each source second in `pending_t1_cost_quotes`, including its pinned contract and source/receipt times. Discard entries strictly behind the index watermark and clear the pending cache in the T1 transition. Before milestone processing, reconcile matching cached entries alongside current-batch evidence; validate the pin, receipt lag, activation boundary and effective stop, while bypassing only the duplicate check for evidence already accepted. This prevents reverse arrival order, a newer premium observation, or restart from erasing T1/T2 cost uncertainty. Legacy contexts may reuse a matching `last_option_quote`; reconciliation preserves a newer market quote and the maximum quote watermark.
+
+Whole-second quote timestamps do not identify a unique price. Share a replay check across ingestion and downstream quote processing: older observations retain the existing rejection/T2 exception policy; at the watermark timestamp, only a matching previously accepted timestamp and price proves a duplicate. Changed prices remain eligible for the normal contract, freshness, activation, and stop-effective-time checks. Include accepted quote source/receipt time and price in lifecycle identity so price revisions persist and identical retries remain stable. Preserve an earlier T1 protective/cost ambiguity through price recovery; stop the batch after terminal closure to avoid later writes against a terminal lifecycle.
+
+If T1 and T2 share a committed timestamp and a delayed quote at that time is above initial SL but at/below cost, reuse the T1 cost-only ambiguity path. Preserve `T1_ORDER_UNKNOWN/COST_STOP_ONLY_BREACH`, flag T2 as already committed, and record the no-pre-T1-exit/half-before-T2/runner-after-T2 allocation possibilities. Retain the maximum quote watermark and defer reference finalization; do not invent a stop valid under every ordering or roll back the committed milestone.
+
+The quote watermark remains the greatest accepted source timestamp even when the T2 exception retains an earlier protective quote. Keep the protective event's actual earlier timestamp in its ambiguity and trigger metadata. This preserves the SQL monotonic-watermark invariant and lets the protective state and route marker commit without blocking later writes.
+
+The T2-tied quote exception must validate the effective time of the stop it would use. If a later stop revision is already installed and the quote strictly predates that revision, reject the quote without creating a trigger or route; do not assume the current stop was effective at the earlier T2 source time. Apply this boundary inside the shared retention helper so the equal-time quote-watermark exception cannot bypass it. Keep exact ATR-raise timestamp ties on the existing previous-stop comparison.
+
+Current evidence establishes that the option candle path can fetch candles for a pinned security ID (`main._monitor_completed_atr`) and that `price_fetcher.fetch_option_observation(contract)` exists in the selected-option quote flow. The latter currently services a selected dashboard contract, not every active trade. `quote_service` persists `OPTION:SELECTED`, so that global selected quote must not be treated as per-trade protection.
+
+Extend monitoring to request/consume a timestamped premium observation for **each distinct active pinned contract**, keyed and validated by `security_id`, exchange segment, expiry, strike, and option type. Prefer the Dhan live quote/feed subscription if it supplies per-contract exchange-time updates; otherwise poll `fetch_option_observation` for each distinct active contract at the monitor cadence. Feed these observations into the central lifecycle event ordering path, not just the dashboard cache. Document the actual update cadence and source timestamp; do not claim tick-level latency if the implemented provider is a polling snapshot.
+
+Reject wrong-contract, malformed, stale, out-of-order, and future-dated data according to the verified feed contract. Missing/stale data leaves the last persisted effective stop unchanged, marks protection monitoring unavailable, and emits an operational warning. It must not lower/clear the stop or fall back to spot ATR. The system must not fabricate an option price. Quote outages are a real monitoring gap and must be visible.
+
+## 4. Canonical State and Atomic Persistence
+
+Persist a versioned protection object in canonical trade lifecycle context. The proposed shape is illustrative; implementation must preserve unrelated `market_context` fields:
+
+```json
+{
+  "policy_version": "option_premium_protection_v2",
+  "revision": 1,
+  "contract": {
+    "security_id": "39961",
+    "exchange_segment": "NSE_FNO",
+    "expiry": "2026-11-09",
+    "strike": 23950,
+    "option_type": "CE"
+  },
+  "phase": "PRE_T1",
+  "entry_premium_basis": {
+    "price": 167.20,
+    "source": "REFERENCE_ENTRY_LIMIT",
+    "event_at": "..."
+  },
+  "initial_premium_sl": 161.05,
+  "effective_premium_sl": 161.05,
+  "premium_stop_source": "INITIAL_OPTION_SL",
+  "spot_guard": {
+    "initial_stop": 23896.20,
+    "post_t1_entry_stop": 23908.20,
+    "enabled": true
+  },
+  "atr": {
+    "enabled": false,
+    "formula_version": "option_atr_v1",
+    "atr_period": 5,
+    "hhv_period": 10,
+    "multiplier": 2.5,
+    "last_processed_bar_end": null
+  },
+  "last_option_quote": null,
+  "monitoring_status": "ACTIVE",
+  "exit": null
+}
+```
+
+Use the existing `apply_option_lifecycle_transition` transactional persistence path as the atomic boundary. Extend its policy/version validation and payload contract for the new protection state and terminal labels as needed; retain row locking, expected-revision checks, event-id idempotency, atomic lifecycle/analytics updates, and the durable alert outbox. Do not replace a failed atomic write with independent REST updates. Persist/recover the current stop, entry-basis provenance, contract identity, T1 state, ATR watermark/seed, quote watermark, exit trigger, and pending execution status before resuming monitoring after restart. Terminal v2 records with an unacknowledged route marker must also restore into a separate retry queue with enough persisted paper execution state to route the matching contract after process restart; missing or mismatched bindings remain pending and are never treated as live orders. Keep a terminal paper execution in that queue while its exit is `EXIT_PENDING`, even after the lifecycle route marker clears, until an observed premium bid closes the remaining units.
+
+Recovery accepts lifecycle execution status `EXIT_TRIGGERED_PENDING_CONFIRMATION` as well as `CONFIRMED_PAPER_FILL`: a persisted premium trigger advances the lifecycle status without invalidating the protected paper fill. Both full snapshots and legacy contexts must still pass the existing PAPER mode, fill quantity, protection, and pinned-contract checks. Mark reconstructed bindings as exit-only and skip them in pending-entry deduplication; this avoids reading unavailable entry-signal fields and allows new signals to dispatch while the recovered exit waits for a bid. Ordinary pending-entry deduplication and the recovered exit intent retain their existing behavior.
+
+Any SQL changes belong in a new idempotent migration with a preview for open records and local SQL integration coverage. Do not auto-enroll or reinterpret existing/closed production rows, apply the migration to production, or change runtime settings under this task.
+
+## 5. Component Boundaries
+
+| File/path | Responsibility |
+|---|---|
+| `position_manager.py::register_trade` | Initialize versioned premium protection for valid pinned contracts/brackets independent of ATR eligibility; retain current spot guard and reference accounting. |
+| `position_manager.py::update_option_market_events` | Validate and chronologically merge per-contract premium observations with spot milestones/guards and completed premium bars; enforce active premium stop without waiting for a 5-minute close. |
+| `position_manager.py::update_option_atr_trailing` and `atr_trailing.py::calculate_option_atr_bars` | Calculate eligible completed 5-minute option-premium candidates and ratchet only upward after T1; never exit from spot ATR or from a newly raised candidate retroactively. |
+| `main.py::_monitor_completed_atr` | Fetch pinned option candles and fresh observations for each open protected contract, then invoke the canonical lifecycle path. |
+| `main.py::_record_selected_option_quote`, `quote_service.py` | Keep selected-option dashboard persistence separate from lifecycle protection. Reuse provider normalization only; do not use `OPTION:SELECTED` as the stop source. |
+| `storage.py::apply_option_lifecycle_transition`, `migrations/` | Atomically persist v2 state, terminal events, analytics, and alert outbox with revision/idempotency safeguards. |
+| `tests/` and `tests/integration/` | Verify public lifecycle behavior, quote/bar ordering, restart/persistence, SQL transition, reference versus confirmed fill semantics, and configuration gates. |
+
+## 6. API and Event Contracts
+
+Each protected quote observation must include a validated pinned contract identity, premium price, source/exchange timestamp, and local received timestamp. The lifecycle evaluator must reject an observation that does not match the trade's frozen contract or is not newer than its durable quote watermark.
+
+The lifecycle input path must accept these independent source types:
+
+1. Spot/index candles and ticks for existing spot SL/BE and T1/T2 milestone decisions.
+2. Per-contract premium quote observations for immediate premium-stop checks.
+3. Completed, validated 5-minute premium bars for ATR state/candidate updates.
+
+The output event must identify the trigger domain (`SPOT_INDEX` or `OPTION_PREMIUM`), event/source time, quote/bar price, active/effective stop and stop source, status/reason, reference/estimated exit where relevant, and confirmed fill only when execution evidence exists. Alerts must distinguish entry premium, initial premium SL, ATR candidate, effective premium SL, source quote timestamp, trigger, and fill/reference exit. A spot-entry stop must never be labeled premium break-even.
+
+A protective route that places a confirmed PAPER order in `EXIT_PENDING` remains pending until the execution path receives a fresh, positive, contract-matched option bid. Carry bid/ask depth from pinned Dhan quote batches and the selected-option chain/direct-quote fallback; reject malformed or crossed depth, stale receipt timestamps, and quotes for another contract. A last-trade price alone is not executable exit evidence. Restored terminal routes with a pending PAPER exit remain eligible for this quote flow after restart.
+
+An option-bar watermark suppresses only bar evidence already consumed by ATR/lifecycle processing. It must not suppress a fresh, contract-matched premium quote at the same event time: quote freshness, contract identity, stop activation time, and quote deduplication are enforced by their own checks. The same-close detector must retain and route a stop-breaching quote before a tied index T2 milestone can commit, while leaving reference ordering/allocation unresolved until certified evidence is available.
+
+When a completed POST_T1 index candle first creates a T2/entry-guard ordering ambiguity, the same transition may also retain the independent index-guard execution intent for an eligible confirmed PAPER runner. Validate against the prior event watermark because the current candle may already have advanced the working watermark. The execution route must not resolve the ambiguity, book T2, change reference allocation, or create execution state for reference-only/mismatched records.
+
+Lifecycle event identity must include any retained premium exit trigger's immutable domain, reason, source, event/receipt times, observed price, effective stop, and stop source. This separates a newly retained trigger from an already committed bar watermark at the same event time while keeping retries stable. Persistence must atomically retain the ambiguity, trigger, and execution-route-pending marker.
+
+A cost-stop-only T1 ambiguity (`T1_ORDER_UNKNOWN` between the original premium SL and entry cost) also needs a distinct event identity when a quote or bar arrives after a non-breaching bar has committed the same source-time watermark. Include its immutable ambiguity type, source/event/receipt times, observed premium, and bracket values so its ambiguity and watermark commit together; an unchanged retry must reuse the identity.
+
+Quote-batch matching is per trade even when several trades share a pinned contract. Preserve the IDs of trades that accepted each quote, then recheck the current trade's quote watermark, stop-effective time, contract, and activation boundary before same-close ambiguity detection can use it. A quote accepted for one trade must not be applied to another whose newer stop makes the source time stale.
+
+When a completed POST_T1 candle spans T1 and its close confirms a guard touch, preserve the `T1_ENTRY/ORDER_UNKNOWN` reference ambiguity and route a validated PAPER guard intent at the candle close in the same lifecycle snapshot. Validate against the prior index watermark because the candle may advance it before this branch. Reference-only, stale, or mismatched execution state remains unrouted.
+
+Apply the same independent execution protection when the reference is still PRE_T1 but its confirmed PAPER execution has already booked T1. If the completed candle reaches T1 and its close proves the entry guard, retain `T1_ENTRY/ORDER_UNKNOWN` and persist the guard route in the initial T1 transition. Permit the exact T1 boundary for this case only; validate the prior index watermark and retain paper-fill, contract, and reference-only checks.
+
+Restored terminal v2 execution routes live outside `active_trades`, so active-policy detection alone cannot decide whether the protection monitor is needed. Treat a non-empty terminal route queue as independent monitoring work in the protected candle-fetch, REST-without-candle, and tick-poll gates. Keep route eligibility and paper binding validation in the existing dispatcher; this change only ensures the monitor reaches that dispatcher without requiring an active trade or a new index candle.
+
+## 7. Definition of Done / Regression Evidence
+
+Implementation and QA must exercise the actual lifecycle entry points and persistence/restart path, with external order execution disabled:
+
+- Initial premium SL is active before T1; ATR cannot control a pre-T1 exit.
+- T1 atomically preserves existing spot guard transition and moves the premium stop to entry cost without an unprotected interval.
+- Premium BE is retained when ATR candidate is missing, below, or equal; a strictly higher valid candidate tightens the stop.
+- A falling candidate, data refresh, restart, or stale/missing history never lowers/clears a previously protected premium stop.
+- A valid fresh quote at, below, or gapping through the premium stop triggers between 5-minute ATR bars; trigger price/time are not presented as a fill.
+- A pending confirmed PAPER protective exit remains pending without a valid bid, and closes at the observed bid only after a fresh quote with the full matching contract identity is routed to execution. Crossed, stale, wrong-contract, or last-price-only observations cannot complete it; verify active and restart-restored terminal routes.
+- A premium quote at a wrong contract, with invalid/future/stale time, or out of order cannot mutate the lifecycle.
+- A premium quote tied exactly to T1 at or below the original premium SL preserves order/allocation ambiguity and immediately creates a protective execution intent; advancing the quote watermark cannot discard the breach.
+- Later quotes or ATR bars cannot finalize or rewrite that reference exit while the T1-tied protective trigger remains unresolved.
+- A same-time T1 premium quote above the original SL but at/below entry cost remains order-unknown when an index tick also reaches T2. Preserve the quote and tied index observation before milestone processing; do not commit T2 or its reference allocation.
+- If a T2 tick commits before its same-source-time premium quote arrives in a later batch, retain the quote as `T2_ORDER_UNKNOWN` when it breaches the stop protective under every ordering: the original SL for tied/unknown T1 or the active break-even/ATR stop for T1 preceding T2. Preserve the trigger and possible exit fractions, including when an equal-time quote watermark already exists, and route confirmed PAPER protection. A later recovery quote cannot overwrite it; unrelated delayed quotes remain rejected.
+- A completed post-T1 candle that first creates `T2_ENTRY/ORDER_UNKNOWN` while touching both T2 and the entry guard immediately creates a validated pending guard route for a confirmed PAPER runner. Keep T1/reference allocation unresolved and prove later above-entry/below-T2 observations cannot replace the first route. Verify CE/PE and no route for reference-only state.
+- After a non-breaching option bar records a bar watermark, a fresh same-time post-T1 premium quote at/below the active stop is still detected alongside a T2 index tick. Retain the protective trigger and order-unknown ambiguity before T2 processing, keep the reference at T1, and preserve existing quote freshness, contract, stop-effective-time, and duplicate validation. Verify CE/PE and split-batch replay.
+- Certified ordered spot/index ticks establish index-touch order only. If a T1-tied premium quote or bar remains unresolved, do not finalize a later index guard/T2 outcome or commit an assumed exit allocation from those ticks; retain the lifecycle ambiguity.
+- Expired or malformed restored pins are isolated while building the protective quote batch; valid contracts continue to receive quotes, and no request is made when every pin is invalid.
+- A contemporaneous spot mark recovered for a premium-triggered exit is persisted as `exit_price` in both lifecycle and accounting ledgers; absent evidence remains null.
+- Bought CE and bought PE use identical long-premium `price <= stop` behavior.
+- Existing spot initial SL and index break-even guards remain independent; pre-T1 premium breach uses `SL_HIT` with `stop_domain=OPTION_PREMIUM`; no spot ATR fallback runs for a protected option trade.
+- T1/stop same-minute chronology is resolved from source timestamps or explicitly remains ambiguous; no lookahead/replay of prior ticks.
+- Restart restores contract identity, premium basis/source, T1, effective premium stop/source, ATR warmup/watermark, quote watermark, and pending/terminal event state.
+- Duplicate/concurrent events cannot duplicate a closure or reopen a closed lifecycle.
+- Entry-cost stop trigger produces `STOPPED_OUT_AT_BE` and 0.00 runner stop-out points, including below-cost gaps; a gap records the observed/reference exit separately. An ATR-raised stop produces `ATR_SL_HIT`.
+- Reference runners remain reference/model accounting; no test or report describes a model mark as a broker fill or realized P&L.
+- Existing T2 reference accounting, strategy, sizing, and partial-booking behavior are unchanged.
+- ATR feature gates remain disabled/default-off; baseline premium protection still functions without ATR eligibility.
+- For #2455 and #4176, report durable IDs, contract, reference/fill mode, T1 time, stop history, quote/bar source times, earliest evidence-supported breach or timing bounds, old-path behavior, and corrected-path behavior. Do not infer an exact breach time from unavailable ticks or claim a broker fill.
+
+Run focused unit and integration/replay/restart verification after implementation and report any unavailable live-provider or runtime evidence explicitly. This ADR itself makes no test or runtime claim.
+
+## 8. Alternatives Considered
+
+1. **Keep 5-minute close as the only stop trigger.** Rejected because it leaves a known gap between active premium protection and the next ATR candle close.
+2. **Use the selected dashboard quote.** Rejected because it is a single mutable selection, not a feed keyed to every open trade's pinned contract.
+3. **Replace spot SL/BE with premium-only guards.** Rejected because the request mandates option-domain ATR/premium protection but does not authorize removal of independent existing index-domain guards; preserving them avoids an unrelated strategy change.
+4. **Use spot ATR when option data is unavailable.** Rejected because the price units/domain differ and would silently change the stop rule. Keep the last protected stop and report monitoring unavailable instead.
+
+## 9. Risks and Rollout Boundaries
+
+- A polled quote has bounded but nonzero latency; the implementation must expose the actual feed and polling cadence. If a timely per-contract quote source is unavailable, the monitoring gap must be surfaced and must not be described as immediate tick-level enforcement.
+- The ATR formula's exact chart/feed parity remains subject to the existing approval gate. This ADR does not authorize enabling `option_atr_enabled`, changing approved/parity versions, deploying, restarting workers, or activating the feature in production.
+- Reference accounting is not broker execution. Trigger, modeled/reference exit, and confirmed fill remain distinct data facts.
+- Historical production records remain unchanged. Any existing-trade correction or production migration requires its own reviewed dry run and separate authorization.
+
+### ATR raise and same-time quote ordering
+
+When a fresh pinned premium quote has the same source timestamp as an already applied ATR raise, the event order is unknown. Compare the quote with the previously effective stop: a breach of that stop proves protection was required under either ordering, so route at the prior stop and preserve the raised stop with `stop_ordering_status=ATR_RAISE_TIED`; a quote that breaches only the raised stop remains rejected as order-unknown. This applies across monitor batches and carries immutable prior/raised stop metadata into lifecycle persistence. Exit reason follows the prior source, including `STOPPED_OUT_AT_BE` with zero runner points for a cost stop.
+
+When ATR is seeded during the PRE_T1-to-T1 transition, the seed must first capture the moved entry-cost stop as its prior effective stop. A same-time quote received in a later batch is then checked against that cost stop and allowed through the T1 ambiguity handler. A cost-only breach remains `T1_ORDER_UNKNOWN` and blocks later reference milestone finalization until event ordering is resolved; it is not converted into an ATR exit.
+
+When a T2 observation commits before a same-source-time premium quote arrives in a later batch, retain the quote if it breaches the stop protective under every possible ordering: the original pre-T1 stop for tied/unknown T1, or the active break-even/ATR stop when T1 predates T2. This is a certain protective breach even though event ordering and the correct reference exit fraction are unknown. Persist the quote as `T2_ORDER_UNKNOWN`, preserve the stop trigger and the possible full, half, or post-T2 runner allocations, and route confirmed PAPER protection. Check protection before an equal-time quote watermark can discard it. Do not apply the POST_T2 allocation retroactively or let a later quote recovery erase the trigger. Quotes strictly before T2 or tied quotes that do not prove a breach under every ordering remain rejected as out of order.

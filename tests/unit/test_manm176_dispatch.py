@@ -1,7 +1,8 @@
 """Exercise signal-to-order-to-position flow through real paper execution."""
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -293,67 +294,351 @@ async def test_closed_trade_waiting_for_ml_snapshot_does_not_block_new_signal():
 
 
 @pytest.mark.asyncio
-async def test_completed_candles_publish_runner_stop_and_queue_exit_without_quotes():
-    from datetime import timedelta, timezone
-
+async def test_index_candles_never_drive_atr_for_option_execution_records(monkeypatch):
     positions = Positions()
-    synced = []
-    async def sync_execution(signal, execution):
-        synced.append(dict(execution))
-    positions.sync_execution = sync_execution
     orders = OrderManager()
     dispatcher = SignalDispatcher(orders, positions)
     signal = candidate()
     await dispatcher.dispatch(signal, 24000, chain())
-    await dispatcher.on_snapshot(chain(110, spot=24020), 24020)
     record = next(iter(orders.records.values()))
-    record.atr_last_bar = "2098-12-31T00:00:00+00:00"
-    start = datetime(2099, 1, 1, 9, 15, tzinfo=timezone(timedelta(hours=5, minutes=30)))
-    candles = [{"timestamp": (start + timedelta(minutes=i)).isoformat(), "complete": True,
-                "open":24030, "high":24040, "low":24030, "close":24035}
-               for i in range(50)]
+    record.t1_hit = True
+    spot_atr = Mock(wraps=orders.on_candles)
+    monkeypatch.setattr(orders, "on_candles", spot_atr)
+    candles = [{"timestamp": "2026-11-04T10:00:00+05:30", "complete": True,
+                "open":100, "high":110, "low":90, "close":91}]
     await dispatcher.on_candles(candles)
-    assert synced[-1]["t1_hit"] is True
-    assert synced[-1]["active_spot_sl"] == 24015
-    assert synced[-1]["atr_last_bar"] == "2099-01-01T10:05:00+05:30"
+    assert spot_atr.call_count == 0
     assert record.status == "FILLED"
-    candles.extend({"timestamp": (start + timedelta(minutes=i)).isoformat(), "complete": True,
-                    "open":24030, "high":24040, "low":24010, "close":24014}
-                   for i in range(50, 55))
-    await dispatcher.on_candles(candles)
-    assert synced[-1]["status"] == "EXIT_PENDING"
-    assert synced[-1]["exit_reason"] == "ATR_SL_HIT"
-    assert synced[-1]["exited_quantity"] == 65
-    await dispatcher.on_snapshot(chain(108, spot=24030), 24030)
-    assert record.status == "CLOSED"
-    assert record.exited_quantity == 130
-    assert record.correlation_id not in dispatcher._signals
+    assert record.exited_quantity == 0
 
 
 @pytest.mark.asyncio
-async def test_candle_sync_failure_retries_without_reprocessing_order_exit(monkeypatch):
+async def test_premium_exit_sync_failure_retries_without_confirming_a_fill():
     positions = Positions()
     orders = OrderManager()
     dispatcher = SignalDispatcher(orders, positions)
     signal = candidate()
     await dispatcher.dispatch(signal, 24000, chain())
     record = next(iter(orders.records.values()))
-    await dispatcher.on_snapshot(chain(110, spot=24020), 24020)
-    record.atr_last_bar = "2026-10-21T04:30:00+00:00"
-    monkeypatch.setattr("execution.order_manager.completed_atr_bars", lambda candles: [{
-        "timestamp":"2026-10-21T04:35:00+00:00", "close":23999,
-        "bullish_sl": None, "bearish_sl": None,
-    }])
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2",
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    }}
     async def failure(*args):
         raise RuntimeError("database unavailable")
     positions.sync_execution = failure
-    await dispatcher.on_candles([])
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await dispatcher.on_option_stop(trade, "ATR_SL_HIT")
+    record = next(iter(orders.records.values()))
     assert record.status == "EXIT_PENDING"
-    assert record.exited_quantity == 65
+    assert record.exited_quantity == 0
     assert record.correlation_id in dispatcher._signals
     async def success(*args):
         return True
     positions.sync_execution = success
-    await dispatcher.on_candles([])
+    no_bid = chain(101)
+    no_bid[0]["ce_bid"] = None
+    await dispatcher.on_snapshot(no_bid, 24000)
     assert signal.market_context["execution"]["exit_reason"] == "ATR_SL_HIT"
+    assert record.status == "EXIT_PENDING"
+    assert record.exited_quantity == 0
+
+
+@pytest.mark.asyncio
+async def test_v2_premium_stop_creates_pending_exit_until_an_observed_bid_confirms_it(monkeypatch):
+    positions = Positions()
+    persisted = []
+    async def sync_execution(signal, execution):
+        persisted.append(dict(execution))
+        return True
+    positions.sync_execution = sync_execution
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    trade = positions.active_trades[0]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                "strike": 24000, "option_type": "CE"}
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "contract": contract,
+        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    }}
+    record = next(iter(orders.records.values()))
+    spot_atr = Mock(wraps=orders.on_candles)
+    monkeypatch.setattr(orders, "on_candles", spot_atr)
+
+    await dispatcher.on_candles([{"timestamp": "2099-01-01T10:00:00+05:30", "complete": True,
+                                  "open": 100, "high": 110, "low": 90, "close": 91}])
+    assert spot_atr.call_count == 0
+    assert await dispatcher.on_option_stop(trade, "ATR_SL_HIT") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.exited_quantity == 0
+    assert record.pending_exit_quantity == record.filled_quantity
+    assert signal.market_context["execution"]["status"] == "EXIT_PENDING"
+    assert persisted[-1]["status"] == "EXIT_PENDING"
+
+    await dispatcher.on_snapshot(chain(99), 24000)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == record.filled_quantity
+    assert record.exit_reason == "ATR_SL_HIT"
+    assert record.realized_pnl == pytest.approx(-6.5)
+    assert signal.market_context["execution"]["status"] == "CLOSED"
+    assert persisted[-1]["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_fresh_pinned_bid_completes_pending_paper_exit_and_rejects_unsafe_observations():
+    positions = Positions()
+    persisted = []
+
+    async def sync_execution(signal, execution):
+        persisted.append(dict(execution))
+        return True
+
+    positions.sync_execution = sync_execution
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    trade = positions.active_trades[0]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                "strike": 24000, "option_type": "CE"}
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "contract": contract,
+        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    }}
+    record = next(iter(dispatcher.orders.records.values()))
+    assert await dispatcher.on_option_stop(trade, "ATR_SL_HIT")
+    assert record.status == "EXIT_PENDING"
+    now = datetime(2026, 11, 4, 10, 20, tzinfo=timezone.utc)
+    base = {"contract": contract, "price": 90, "bid": 90.5, "ask": 90.6,
+            "observed_at": now.isoformat(), "received_at": now.isoformat(), "source": "dhan_last_trade"}
+
+    stale = {**base, "received_at": (now - timedelta(seconds=6)).isoformat()}
+    await dispatcher.on_option_observations([stale], as_of=now)
+    stale_source = {**base, "observed_at": (now - timedelta(seconds=6)).isoformat()}
+    await dispatcher.on_option_observations([stale_source], as_of=now)
+    wrong_contract = {**base, "contract": {**contract, "security_id": "456"}}
+    await dispatcher.on_option_observations([wrong_contract], as_of=now)
+    crossed = {**base, "ask": 90.4}
+    await dispatcher.on_option_observations([crossed], as_of=now)
+    assert record.status == "EXIT_PENDING"
+
+    await dispatcher.on_option_observations([base], as_of=now)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == record.filled_quantity == 130
+    assert record.realized_pnl == pytest.approx((90.5 - 99) * 130)
+    assert signal.market_context["execution"]["status"] == "CLOSED"
+    assert persisted[-1]["status"] == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_option_observation_does_not_complete_non_v2_pending_order():
+    positions = Positions()
+    dispatcher = SignalDispatcher(OrderManager(), positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    trade = positions.active_trades[0]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                "strike": 24000, "option_type": "CE"}
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_atr_v1", "contract": contract,
+    }}
+    record = next(iter(dispatcher.orders.records.values()))
+    dispatcher.orders.request_option_exit(record.correlation_id, "ATR_SL_HIT")
+    now = datetime(2026, 11, 4, 10, 20, tzinfo=timezone.utc)
+    observation = {"contract": contract, "price": 90, "bid": 90.5, "ask": 90.6,
+                   "observed_at": now.isoformat(), "received_at": now.isoformat(),
+                   "source": "dhan_last_trade"}
+
+    await dispatcher.on_option_observations([observation], as_of=now)
+
+    assert record.status == "EXIT_PENDING"
+    assert record.exited_quantity == 0
+
+
+@pytest.mark.asyncio
+async def test_deferred_premium_stop_routes_from_unresolved_index_ambiguity():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    trade = positions.active_trades[0]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                "strike": 24000, "option_type": "CE"}
+    trade["state"] = "T1_HIT"
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "contract": contract,
+        "exit": None, "ambiguous_index_touch": {"kind": "T2_ENTRY", "status": "ORDER_UNKNOWN",
+            "protective_option_exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"}},
+    }}
+    record = next(iter(orders.records.values()))
+
+    assert await dispatcher.on_option_stop(trade, "ATR_SL_HIT") is True
+    assert trade["state"] == "T1_HIT"
+    assert trade["market_context"]["option_trailing"]["exit"] is None
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == record.filled_quantity
+
+
+@pytest.mark.asyncio
+async def test_deferred_premium_stop_routes_while_prior_index_history_is_queued():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    trade = positions.active_trades[0]
+    contract = {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                "strike": 24000, "option_type": "CE"}
+    trade["state"] = "T1_HIT"
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "contract": contract,
+        "exit": None,
+        "deferred_option_exit": {"reason": "STOPPED_OUT_AT_BE", "stop_domain": "OPTION_PREMIUM"},
+    }}
+    record = next(iter(orders.records.values()))
+
+    assert await dispatcher.on_option_stop(trade, "STOPPED_OUT_AT_BE") is True
+    assert trade["state"] == "T1_HIT"
+    assert trade["market_context"]["option_trailing"]["exit"] is None
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == record.filled_quantity
+
+
+@pytest.mark.asyncio
+async def test_premium_stop_expands_pending_t1_exit_to_all_remaining_units():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    record = next(iter(orders.records.values()))
+    assert record.filled_quantity == 130
+
+    orders.on_spot(record.correlation_id, 24020)
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "T1_HIT"
+
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2",
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        "exit": {"reason": "ATR_SL_HIT", "stop_domain": "OPTION_PREMIUM"},
+    }}
+    assert await dispatcher.on_option_stop(trade, "ATR_SL_HIT") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 130
+    assert record.exit_reason == "ATR_SL_HIT"
+    assert record.exited_quantity == 0
+
+    await dispatcher.on_snapshot(chain(99), 24000)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == 130
+    assert record.pending_exit_quantity == 0
+    assert record.exit_reason == "ATR_SL_HIT"
+
+
+@pytest.mark.asyncio
+async def test_post_t1_index_break_even_closure_exits_all_remaining_paper_units():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    record = next(iter(orders.records.values()))
+    assert record.filled_quantity == 130
+
+    orders.on_spot(record.correlation_id, 24020)
+    await dispatcher.on_snapshot(chain(99), 24020)
+    assert record.t1_hit is True
     assert record.exited_quantity == 65
+    assert record.status == "FILLED"
+
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "highest_milestone": 1,
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        "exit": {"reason": "STOPPED_OUT_AT_BE", "stop_domain": "SPOT_INDEX"},
+    }}
+    assert await dispatcher.on_option_stop(trade, "STOPPED_OUT_AT_BE") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "STOPPED_OUT_AT_BE"
+    assert record.exited_quantity == 65
+
+    await dispatcher.on_snapshot(chain(99), 24000)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == record.filled_quantity == 130
+    assert record.pending_exit_quantity == 0
+    assert record.exit_reason == "STOPPED_OUT_AT_BE"
+
+
+@pytest.mark.asyncio
+async def test_pre_t1_index_stop_closure_exits_runner_if_paper_already_booked_t1():
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    record = next(iter(orders.records.values()))
+    assert record.filled_quantity == 130
+
+    # The paper premium target can book T1 before spot reaches its own T1.
+    await dispatcher.on_snapshot(chain(110.05, spot=24000), 24000)
+    assert record.t1_hit is True
+    assert record.exited_quantity == 65
+    assert record.status == "FILLED"
+
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2", "phase": "CLOSED", "highest_milestone": 0,
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        "exit": {"reason": "SL_HIT", "stop_domain": "SPOT_INDEX"},
+    }}
+    assert await dispatcher.on_option_stop(trade, "SL_HIT") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == 65
+    assert record.exit_reason == "SL_HIT"
+
+    await dispatcher.on_snapshot(chain(99, spot=24000), 24000)
+    assert record.status == "CLOSED"
+    assert record.exited_quantity == record.filled_quantity == 130
+    assert record.pending_exit_quantity == 0
+    assert record.exit_reason == "SL_HIT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ambiguity_field", ["ambiguous_premium_quote", "ambiguous_premium_bar"])
+async def test_t1_tied_ambiguous_premium_stop_routes_to_paper_execution(ambiguity_field):
+    positions = Positions()
+    orders = OrderManager()
+    dispatcher = SignalDispatcher(orders, positions)
+    signal = candidate()
+    await dispatcher.dispatch(signal, 24000, chain(99))
+    record = next(iter(orders.records.values()))
+    assert record.filled_quantity == 130
+
+    trade = positions.active_trades[0]
+    trade["market_context"] = {"option_trailing": {
+        "policy_version": "option_premium_protection_v2",
+        "execution_route_pending": True, "execution_route_reason": "SL_HIT",
+        "contract": {"security_id": "123", "exchange_segment": "NSE_FNO", "expiry": "2099-01-01",
+                     "strike": 24000, "option_type": "CE"},
+        ambiguity_field: {"status": "T1_ORDER_UNKNOWN", "protective_option_exit": {
+            "reason": "SL_HIT", "stop_domain": "OPTION_PREMIUM",
+            "option_stop": 95, "effective_stop": 95,
+        }},
+    }}
+
+    assert await dispatcher.on_option_stop(trade, "SL_HIT") is True
+    assert record.status == "EXIT_PENDING"
+    assert record.pending_exit_quantity == record.filled_quantity == 130
+    assert record.exit_reason == "SL_HIT"

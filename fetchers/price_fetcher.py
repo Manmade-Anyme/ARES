@@ -12,6 +12,16 @@ from config import settings
 from oi_watch_context import IST, build_watch_candles
 
 
+def _positive_quote_price(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return price if isfinite(price) and price > 0 else None
+
+
 class ReferencePriceDeferred(RuntimeError):
     """Lower-priority evidence can be retried without delaying protection."""
 
@@ -444,7 +454,81 @@ class PriceFetcher:
             return None
         if not 0 <= (received - at).total_seconds() <= 5:
             return None
-        return {"price": price, "observed_at": at.isoformat(), "source": "dhan_last_trade"}
+        bid = _positive_quote_price(quote.get("top_bid_price"))
+        ask = _positive_quote_price(quote.get("top_ask_price"))
+        if bid is not None and ask is not None and bid > ask:
+            bid = None
+        return {"price": price, "bid": bid, "ask": ask, "observed_at": at.isoformat(),
+                "received_at": received.isoformat(), "source": "dhan_last_trade"}
+
+    async def fetch_option_observations(self, contracts):
+        """Fetch one timestamped quote per distinct pinned NSE_FNO security ID."""
+        from oi_watch_context import parse_candle_timestamp
+
+        requested = parse_candle_timestamp(datetime.now(timezone.utc))
+        pins = {}
+        for contract in contracts or []:
+            try:
+                security_id, exchange, _ = self._reference_contract(contract, requested)
+            except ValueError:
+                # One expired or malformed restored pin must not suppress fresh
+                # protective quotes for every other active option trade.
+                continue
+            pins[security_id] = (exchange, dict(contract))
+        if not pins:
+            return []
+        exchanges = {}
+        for security_id, (exchange, _) in pins.items():
+            exchanges.setdefault(exchange, []).append(int(security_id))
+        # This snapshot drives the active premium stop, so it shares the
+        # non-deferrable protection lane with option history and index polling.
+        # Reference-accounting reads remain on _reference_request.
+        response = await self._protective_request(lambda: self.dhan.quote_data(exchanges))
+        received = parse_candle_timestamp(datetime.now(timezone.utc))
+        if not isinstance(response, dict) or response.get("status") != "success":
+            raise ValueError("Pinned option quote request failed")
+        data = response.get("data")
+        if isinstance(data, dict) and "data" in data:
+            if data.get("status", "success") != "success":
+                raise ValueError("Pinned option quote payload failed")
+            data = data["data"]
+        observations = []
+        for security_id, (exchange, contract) in pins.items():
+            try:
+                quote = data[exchange][security_id]
+                value = quote["last_price"]
+                if isinstance(value, bool):
+                    continue
+                price = float(value)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if not isfinite(price) or price <= 0:
+                continue
+            trade_time = quote.get("last_trade_time")
+            try:
+                if isinstance(trade_time, str) and "/" in trade_time:
+                    at = datetime.strptime(trade_time, "%d/%m/%Y %H:%M:%S").replace(tzinfo=IST)
+                else:
+                    at = parse_candle_timestamp(trade_time)
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
+            if not 0 <= (received - at).total_seconds() <= 5:
+                continue
+            bid = _positive_quote_price(quote.get("top_bid_price"))
+            ask = _positive_quote_price(quote.get("top_ask_price"))
+            if bid is not None and ask is not None and bid > ask:
+                bid = None
+            observations.append({
+                "contract": {
+                    "security_id": security_id, "exchange_segment": exchange,
+                    "expiry": contract.get("expiry") or contract.get("expiry_date"),
+                    "strike": int(contract["strike"]),
+                    "option_type": str(contract["option_type"]).upper(),
+                },
+                "price": price, "bid": bid, "ask": ask, "observed_at": at.isoformat(),
+                "received_at": received.isoformat(), "source": "dhan_last_trade",
+            })
+        return observations
 
     async def fetch_previous_day_ohlc(self) -> Tuple[float, float]:
         """
@@ -453,6 +537,15 @@ class PriceFetcher:
         
         @returns {Tuple[float, float]} (previous_day_high, previous_day_low)
         @throws {ValueError} If the API response is malformed or historical data is insufficient.
+        """
+        pdh, pdl, _ = await self.fetch_previous_day_context()
+        return pdh, pdl
+
+    async def fetch_previous_day_context(self) -> Tuple[float, float, Optional[float]]:
+        """Return previous-day high, low, and close from one daily-history request.
+
+        The close is optional because some provider responses omit it. Callers
+        that need a close-based regime gate must remain dormant without it.
         """
         loop = asyncio.get_running_loop()
         
@@ -517,5 +610,14 @@ class PriceFetcher:
             
         pdh = round_to_tick(float(highs[idx]))
         pdl = round_to_tick(float(lows[idx]))
-        
-        return pdh, pdl
+        pdc = None
+        closes = data.get("close", [])
+        if len(closes) == len(timestamps):
+            try:
+                close_value = float(closes[idx])
+                if isfinite(close_value) and close_value > 0:
+                    pdc = round_to_tick(close_value)
+            except (TypeError, ValueError, OverflowError, IndexError):
+                pdc = None
+
+        return pdh, pdl, pdc

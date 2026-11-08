@@ -7,6 +7,7 @@ import json
 import logging
 
 from fetchers.price_fetcher import ReferencePriceDeferred
+from execution.reference_prices import is_premium_trigger_exit
 from oi_watch_context import parse_candle_timestamp
 
 log = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ def _option(trade):
         return None
     context = trade.get("market_context") or {}
     option = context.get("option_trailing") or {}
-    if (option.get("policy_version") != "option_atr_v1"
+    if (option.get("policy_version") not in {"option_atr_v1", "option_premium_protection_v2"}
             or option.get("accounting_formula_version") != "one_lot_reference_v1"):
         return None
     return option
@@ -166,9 +167,13 @@ async def run_reference_recovery(manager, fetcher, analytics, *, limit=100, offs
                 exact = _stamp(leg.get("event_at")) if not leg.get("source_minute") else None
                 if exact is not None and 0 <= (now - exact).total_seconds() <= 5:
                     quote_requests[key[:-1]] = contract
-            if name == "EXIT" and leg.get("spot_price") is None and leg.get("option_source") == "completed_5m_close":
+            if (name == "EXIT" and leg.get("spot_price") is None
+                    and (leg.get("option_source") == "completed_5m_close" or is_premium_trigger_exit(opt, leg))):
                 spot_requests[event.date()] = event
-                required_spot_minutes.add((event - timedelta(minutes=1)).replace(second=0, microsecond=0))
+                minute = (event.replace(second=0, microsecond=0)
+                          if is_premium_trigger_exit(opt, leg) and (event.second or event.microsecond)
+                          else event - timedelta(minutes=1))
+                required_spot_minutes.add(minute.replace(second=0, microsecond=0))
     option_minutes, option_quotes, spot_minutes = {}, {}, []
     for key, contract in quote_requests.items():
         try:
