@@ -1604,14 +1604,18 @@ async def run():
                     await position_manager.flush_pending_trade_updates()
                     await _drain_selected_option_quote(position_manager)
                     await _drain_quote_flush(position_manager)
-                    if session_activity_date == now.date():
-                        weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
-                            storage.supabase, now, weekly_report_sent, monthly_report_sent
-                        )
                 except Exception as drain_err:
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)
                 finally:
-                    tick_feed.stop()
+                    try:
+                        if session_activity_date == now.date():
+                            weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
+                                storage.supabase, now, weekly_report_sent, monthly_report_sent
+                            )
+                    except Exception as report_err:
+                        logger.warning("Performance report shutdown fallback failed: %s", report_err)
+                    finally:
+                        tick_feed.stop()
 
 if __name__ == "__main__":
     try:

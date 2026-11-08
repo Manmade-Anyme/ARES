@@ -246,6 +246,26 @@ async def test_close_fallback_sends_reports_after_observing_todays_session(loop,
 
 
 @pytest.mark.asyncio
+async def test_report_fallback_runs_even_when_shutdown_drain_fails(loop, monkeypatch):
+    final_candle = OHLCVCandle(datetime(2026, 11, 6, 15, 29), 24000, 24020, 23980, 24000, 100, 24000)
+    ctx = loop(
+        [final_candle],
+        [datetime(2026, 11, 6, 15, 27), datetime(2026, 11, 6, 15, 30)],
+    )
+    ctx.positions.flush_pending_trade_updates.side_effect = RuntimeError("trade drain failed")
+    ensure_reports = AsyncMock(return_value=(False, False))
+    monkeypatch.setattr(main, "_ensure_performance_reports_sent", ensure_reports)
+
+    await main.run()
+
+    assert ensure_reports.await_count == 2
+    ensure_reports.assert_awaited_with(
+        ctx.storage.supabase, datetime(2026, 11, 6, 15, 30), False, False
+    )
+    ctx.feed.stop.assert_called()
+
+
+@pytest.mark.asyncio
 async def test_no_new_bar_gets_fresh_rest_exit_and_option_quote_without_detector(loop):
     ctx = loop([None], [datetime(2026, 10, 19, 10), datetime(2026, 10, 19, 15, 30)])
     await main.run()
