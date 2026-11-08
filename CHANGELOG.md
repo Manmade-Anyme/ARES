@@ -4,6 +4,12 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Enable Option ATR Trailing by Default (TASK-20261108):**
+  - Enabled `option_atr_enabled: bool = True` in `config.py` Secrets model.
+  - Set `option_atr_approved_version = "option_atr_v1"` and `option_atr_parity_version = "option_atr_v1"` in `config.py`.
+  - Set `option_reference_accounting_enabled: bool = True` as default in `config.py`.
+  - Updated `fly.toml` environment configuration with `OPTION_ATR_ENABLED = 'true'` and `OPTION_ATR_APPROVED_VERSION = 'option_atr_v1'`.
+
 - **IV-Gated Breakout Expansion Strategy & Signal Cooldown Reduction (TASK-20261106):**
   - Integrated 5th setup type `SetupType.IV_GATED_BREAKOUT` into core ARES detection engine (`detectors/iv_breakout.py`, `models.py`, `engine.py`).
   - Replaced static time barriers (12:30 anchor cutoff and 14:15 entry cutoff) with dynamic, time-agnostic consolidation base detection (`iv_breakout_lookback_candles=25`, `iv_breakout_max_base_range_pts=55.0`, `iv_breakout_volume_ratio=1.15`, `iv_breakout_buffer_pts=2.0`, `iv_breakout_min_zscore=0.8`). Allows immediate breakout entries across morning, midday, and afternoon regimes whenever tight consolidation base breaks out with volume and VWAP confirmation.
