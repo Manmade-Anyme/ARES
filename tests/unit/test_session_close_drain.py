@@ -208,14 +208,41 @@ async def test_final_attempt_is_bounded_and_ignores_unavailable_or_stale_bar(loo
     ctx.feed.stop.assert_called()
 
 
-@pytest.mark.parametrize("at", [datetime(2026, 10, 19, 15, 30), datetime(2026, 10, 19, 16)])
+@pytest.mark.parametrize("at", [
+    datetime(2026, 10, 19, 15, 30),
+    datetime(2026, 10, 19, 16),
+    datetime(2026, 11, 6, 15, 30),  # Friday weekly-report day
+    datetime(2026, 11, 30, 15, 30),  # Last trading day of the month
+])
 @pytest.mark.asyncio
-async def test_after_hours_cold_start_never_replays_session(loop, at):
+async def test_after_hours_cold_start_never_replays_session_or_sends_reports(loop, at, monkeypatch):
     ctx = loop([], [at])
+    ensure_reports = AsyncMock(return_value=(False, False))
+    monkeypatch.setattr(main, "_ensure_performance_reports_sent", ensure_reports)
     await main.run()
     ctx.price.fetch_latest_candle.assert_not_awaited()
     ctx.engine.tick.assert_not_called()
+    ensure_reports.assert_not_awaited()
     ctx.outbox.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_fallback_sends_reports_after_observing_todays_session(loop, monkeypatch):
+    final_candle = OHLCVCandle(datetime(2026, 11, 6, 15, 29), 24000, 24020, 23980, 24000, 100, 24000)
+    ctx = loop(
+        [final_candle],
+        [datetime(2026, 11, 6, 15, 29), datetime(2026, 11, 6, 15, 30)],
+    )
+    ensure_reports = AsyncMock(return_value=(True, False))
+    monkeypatch.setattr(main, "_ensure_performance_reports_sent", ensure_reports)
+
+    await main.run()
+
+    assert [call.args[1] for call in ensure_reports.await_args_list] == [
+        datetime(2026, 11, 6, 15, 29),
+        datetime(2026, 11, 6, 15, 30),
+        datetime(2026, 11, 6, 15, 30),
+    ]
 
 
 @pytest.mark.asyncio

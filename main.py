@@ -1170,10 +1170,10 @@ async def run():
             
             # Session gate: only run between 09:15 and 15:30
             # Post the digest once during the final two live minutes (15:28 inclusive, 15:30 exclusive).
-            # The upper bound keeps an after-hours restart from re-posting: the *_sent
-            # flags are in-memory and reset on reboot, but a boot at any other time
-            # can't satisfy the window. Each flag flips only on successful delivery so
-            # a failed webhook stays eligible for retry on the next poll in the window.
+            # The upper bound keeps an after-hours cold start out of this window. The
+            # close fallback also requires evidence that this process observed today's
+            # session. The *_sent flags are in-memory and reset on reboot; failed
+            # deliveries remain eligible for retry on the next poll in the window.
             # ponytail: trades closing after delivery are excluded; the extra minute
             # gives the 60s poll another chance, though a longer delayed cycle can still miss.
             # Persist a per-period marker if missed deliveries or in-window restarts matter.
@@ -1194,9 +1194,10 @@ async def run():
                 )
                 if not finalizing:
                     print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
-                    weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
-                        storage.supabase, now, weekly_report_sent, monthly_report_sent
-                    )
+                    if session_activity_date == now.date():
+                        weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
+                            storage.supabase, now, weekly_report_sent, monthly_report_sent
+                        )
                     break
             
             if current_time < time(9, 15):
