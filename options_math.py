@@ -4,7 +4,7 @@ import math
 from dataclasses import asdict, replace
 from datetime import date, datetime, time, timezone, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_FLOOR
-from typing import Any, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
 from config import settings
 from config_profiles import TuningConfig
@@ -337,3 +337,91 @@ async def process_options_calculation(signal: AresSignal, full_chain: list, dhan
     active_config = config if config is not None else settings
     capital = await fetch_dhan_capital(dhan_client)
     attach_options_sizing(signal, build_option_bracket(signal, full_chain, capital, active_config), active_config)
+
+
+def evaluate_iv_velocity(
+    iv_current: Optional[float],
+    iv_prev_1m: Optional[float] = None,
+    iv_prev_3m: Optional[float] = None,
+    vwap_zscore: float = 0.0,
+    crush_1m_threshold: float = -0.30,
+    crush_3m_threshold: float = -0.40,
+    require_iv: bool = True,
+) -> Tuple[bool, str]:
+    """
+    Evaluates Call/Put IV velocity to confirm gamma squeeze or reject institutional vol-crush.
+    IV differences are measured in IV points. When require_iv is True (default),
+    missing current IV or either comparison sample fails closed as NO_IV_DATA.
+    """
+    if iv_current is None or not _finite(iv_current) or iv_current <= 0:
+        return (False, "NO_IV_DATA") if require_iv else (True, "NO_IV_DATA")
+
+    if require_iv and (
+        not _finite(iv_prev_1m) or iv_prev_1m <= 0
+        or not _finite(iv_prev_3m) or iv_prev_3m <= 0
+    ):
+        return False, "NO_IV_DATA"
+
+    d1 = (iv_current - iv_prev_1m) if (iv_prev_1m is not None and _finite(iv_prev_1m)) else 0.0
+    d3 = (iv_current - iv_prev_3m) if (iv_prev_3m is not None and _finite(iv_prev_3m)) else d1
+
+    # 1. Vol-Crush Bull Trap Rejection
+    if d1 <= crush_1m_threshold or d3 <= crush_3m_threshold or (d1 < 0.0 and d3 <= -0.30):
+        return False, "VOL_CRUSH_BULL_TRAP"
+
+    # 2. Late-Stage Climax Chase Rejection
+    if vwap_zscore > 2.2 and d1 <= 0.0:
+        return False, "LATE_STAGE_EXHAUSTION"
+
+    return True, "IV_EXPANSION_CONFIRMED"
+
+
+def select_iv_velocity_samples(
+    history: Iterable[tuple],
+    timestamp: datetime,
+    strike: Optional[float],
+    tolerance_seconds: int = 30,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Return fresh same-strike IV samples near one and three minutes before a candle."""
+    if (
+        not isinstance(timestamp, datetime)
+        or not _finite(strike)
+        or strike <= 0
+        or not isinstance(tolerance_seconds, int)
+        or tolerance_seconds < 0
+    ):
+        return None, None
+
+    selected: dict[int, tuple[float, float]] = {}
+    for entry in history:
+        if not isinstance(entry, tuple) or len(entry) < 3:
+            continue
+        sample_time, sample_iv, sample_strike = entry[:3]
+        if (
+            not isinstance(sample_time, datetime)
+            or not _finite(sample_iv)
+            or sample_iv <= 0
+            or not _finite(sample_strike)
+            or sample_strike != strike
+        ):
+            continue
+        try:
+            age_seconds = (timestamp - sample_time).total_seconds()
+        except TypeError:
+            continue
+        if age_seconds <= 0:
+            continue
+
+        for target_seconds in (60, 180):
+            distance = abs(age_seconds - target_seconds)
+            if distance <= tolerance_seconds:
+                previous = selected.get(target_seconds)
+                if previous is None or distance < previous[0]:
+                    selected[target_seconds] = (distance, float(sample_iv))
+
+    one_minute = selected.get(60)
+    three_minute = selected.get(180)
+    return (
+        one_minute[1] if one_minute is not None else None,
+        three_minute[1] if three_minute is not None else None,
+    )

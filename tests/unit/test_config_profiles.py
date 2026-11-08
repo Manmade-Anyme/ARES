@@ -37,10 +37,9 @@ class TestTuningConfig:
 
     def test_expiry_profile_values(self):
         """Expiry sensitivity values stay explicit and scoped to this profile."""
-        assert EXPIRY_CONFIG.signal_cooldown_minutes == 15
+        assert EXPIRY_CONFIG.signal_cooldown_minutes == 10
         assert EXPIRY_CONFIG.breakout_confirmation_candles == 2
         assert EXPIRY_CONFIG.breakout_writers_active_min_pct == 5.0
-        assert EXPIRY_CONFIG.breakout_iv_falling_threshold == -3.0
         assert EXPIRY_CONFIG.breakout_weak_volume_ratio == 0.75
         assert EXPIRY_CONFIG.oi_wall_min_oi == 6_000_000
         assert EXPIRY_CONFIG.oi_wall_min_oi_change_pct == 5.0
@@ -52,6 +51,9 @@ class TestTuningConfig:
         assert EXPIRY_CONFIG.exhaustion_body_ratio == 0.30
         assert EXPIRY_CONFIG.exhaustion_iv_spike_threshold == 3.5
         assert EXPIRY_CONFIG.continuation_enabled is True
+        assert EXPIRY_CONFIG.trend_expansion_enabled is True
+        assert EXPIRY_CONFIG.trend_expansion_min_regime_score == 2
+        assert EXPIRY_CONFIG.trend_expansion_pdc_extension_pts == 70.0
         assert EXPIRY_CONFIG.continuation_min_score == 2
         assert EXPIRY_CONFIG.continuation_resume_volume_ratio == 1.2
         assert EXPIRY_CONFIG.continuation_pullback_max_candles == 8
@@ -60,13 +62,16 @@ class TestTuningConfig:
 
     def test_non_expiry_profile_values(self):
         """Spot-check specific non-expiry profile values."""
-        assert NON_EXPIRY_CONFIG.signal_cooldown_minutes == 15
+        assert NON_EXPIRY_CONFIG.signal_cooldown_minutes == 10
         assert NON_EXPIRY_CONFIG.breakout_confirmation_candles == 3
         assert NON_EXPIRY_CONFIG.oi_wall_min_oi == 4_000_000
         assert NON_EXPIRY_CONFIG.oi_wall_min_oi_change_pct == 5.0
         assert NON_EXPIRY_CONFIG.breakout_writers_active_min_pct == 10.0
         assert NON_EXPIRY_CONFIG.exhaustion_volume_multiplier == 2.5
         assert NON_EXPIRY_CONFIG.continuation_min_score == 2
+        assert NON_EXPIRY_CONFIG.trend_expansion_enabled is True
+        assert NON_EXPIRY_CONFIG.trend_expansion_min_regime_score == 2
+        assert NON_EXPIRY_CONFIG.trend_expansion_pdc_extension_pts == 70.0
         assert NON_EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 10.0
         assert NON_EXPIRY_CONFIG.level_scan_range == 500.0
 
@@ -100,14 +105,14 @@ class TestSettings:
         s = Settings()
 
         s.apply_profile(EXPIRY_CONFIG)
-        assert s.signal_cooldown_minutes == 15
+        assert s.signal_cooldown_minutes == 10
         assert s.level_scan_range == 400.0
         assert s.oi_wall_min_oi == 6_000_000
         assert s.oi_wall_min_oi_change_pct == 5.0
         assert s.continuation_min_score == 2
 
         s.apply_profile(NON_EXPIRY_CONFIG)
-        assert s.signal_cooldown_minutes == 15
+        assert s.signal_cooldown_minutes == 10
         assert s.level_scan_range == 500.0
         assert s.oi_wall_min_oi == 4_000_000
 

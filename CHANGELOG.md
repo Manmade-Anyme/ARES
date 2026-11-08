@@ -9,6 +9,62 @@ All notable changes to the ARES trading system will be documented in this file.
   - Added session cleanup drain invocation in `main.py`'s `finally:` block to ensure digests are never silently skipped during process scale-down.
   - Added `alerts.send_error_alert` notification on report posting exceptions in `reports.py` to prevent silent delivery failure.
   - Applied Ponytail engineering ladder: zero unnecessary abstraction, zero new dependencies, reusing existing report and alert primitives.
+- **IV-Gated Breakout Expansion Strategy & Signal Cooldown Reduction (TASK-20261106):**
+  - Integrated 5th setup type `SetupType.IV_GATED_BREAKOUT` into core ARES detection engine (`detectors/iv_breakout.py`, `models.py`, `engine.py`).
+  - Replaced static time barriers (12:30 anchor cutoff and 14:15 entry cutoff) with dynamic, time-agnostic consolidation base detection (`iv_breakout_lookback_candles=25`, `iv_breakout_max_base_range_pts=55.0`, `iv_breakout_volume_ratio=1.15`, `iv_breakout_buffer_pts=2.0`, `iv_breakout_min_zscore=0.8`). Allows immediate breakout entries across morning, midday, and afternoon regimes whenever tight consolidation base breaks out with volume and VWAP confirmation.
+  - Replaced Trend Expansion's 10:30 regime check, morning-only reclaim, and 12:30–14:15 breakout window with per-candle evaluation of a rolling 25-candle regime and rolling setups. It now evaluates through regular market hours (09:15–15:30 IST), subject only to indicator warm-up and its existing risk/setup rules.
+  - Added `select_iv_velocity_samples()` and made both live IV-gated detectors require fresh, same-strike samples near both one and three minutes before a candidate. Missing, stale, or rolled-strike baselines fail closed as `NO_IV_DATA`.
+  - Added pure mathematical helper `evaluate_iv_velocity()` in `options_math.py` implementing the Asymmetric Anti-Crush Gate (dIV 1m <= -0.30 IV points or dIV 3m <= -0.40 IV points) and Late-Stage Climax Gate ($Z_{VWAP} > 2.2$ with non-positive IV change).
+  - The cached 62-session audit remains a legacy fixed-window prototype replay, not a result for the live rolling detector. Its historical metrics are documented separately and are not presented as live-strategy performance.
+  - Reduced `signal_cooldown_minutes` from 15 to 10 across `TuningConfig`, `NON_EXPIRY_CONFIG`, and `EXPIRY_CONFIG` to allow faster resumption after completed trades.
+  - Setup levels configured centrally in `config_profiles.py`: SL 30.0 pts, T1 35.0 pts, T2 fallback 70.0 pts, fully integrated with ARES Option ATR lifecycle trailing.
+  - Added unit test suite `tests/unit/test_iv_breakout_detector.py` and POC audit tests `tests/unit/test_iv_breakout_expansion.py`.
+  - QA & PR Review hardening:
+    - Decoupled `IVBreakoutDetector.observe()` from `update()` in `engine.py` Step 1, ensuring base candle history is never skipped during signal cooldowns or higher-priority detector execution.
+    - Added defensive timestamp parsing (`_parse_time`) in `IVBreakoutDetector` to prevent `TypeError` when processing mock candles or string timestamps.
+    - Added freshness time window checks (<=180s for 1m, <=360s for 3m) in IV microstructure velocity evaluation.
+    - Registered `IV_GATED_BREAKOUT` in `reports.py` (`SETUP_TYPES` and `SETUP_LABELS`) for Discord daily/monthly performance reporting.
+    - Added `IV_GATED_BREAKOUT` to `tests/unit/test_per_type_levels.py` approved tables and full regression suite.
+    - Retained option contract strike alongside timestamp and IV in `IVBreakoutDetector` (`detectors/iv_breakout.py`) and isolated rolling history by strike to eliminate cross-strike IV skew false vol-crush rejections when ATM rolls.
+    - Gated option exit pricing on `active_trade.option_strike` in `IVGatedBreakoutEngine` (`poc/iv_breakout_expansion_poc.py`), ensuring exit premium and PnL are always calculated on the recorded entry contract.
+    - Set `evaluate_iv_velocity()` in `options_math.py` to fail closed (`require_iv=True`), returning `(False, "NO_IV_DATA")` on missing, non-finite, or non-positive IV.
+    - Added `latest_rejection_reason` property to `IVBreakoutDetector` and explicit fail-closed suppression for missing/invalid IV (`NO_IV_DATA`).
+    - Gated `TrendExpansionDetector._check_afternoon_breakout` with `evaluate_iv_velocity()`, ensuring trend expansion breakouts do not bypass IV confirmation.
+    - Added `trend_expansion_iv_filter_enabled: bool = True` to `TuningConfig` (`config_profiles.py`).
+    - Added `IV-Gated Breakout` to `detector_names()` in `config.py` when enabled.
+    - Aligned `poc/run_iv_breakout_audit.py` candidate reporting and updated `docs/POC_IV_Gated_Breakout_Strategy_Validation.md` with verified 62-session audit metrics (29 candidates screened, 12 rejected: 8 fakeouts blocked +248.40 pts, 4 false negatives -140.00 pts, net alpha +108.40 pts).
+    - Made the Trend Expansion afternoon breakout IV gate fail closed on missing/invalid IV; VWAP reclaim remains unchanged.
+    - Made any finite negative ATM IV change a hard veto for a Failed Breakout confirmation; missing IV remains non-vetoing. Removed falling IV from its score and retired the old rapid-fall threshold.
+    - Matched Failed Breakout's consecutive ATM IV comparison by strike and reset its baseline at each session boundary.
+    - Made the legacy audit reject candidates without exact same-strike IV comparison samples, match option exits only to the entry strike, and handle an empty rejection report.
+    - Verified a morning Trend Expansion breakout passes same-strike IV confirmation, receives the live ML prediction, appears in the Discord embed, and is recorded with the correct setup score in the ML snapshot.
+
+- **PR #157 promoted Trend Expansion strategy to production and removed POC files (TASK-20261105):**
+  - Removed deprecated prototype modules and audit runners (`poc/trend_expansion_poc.py`, `poc/regime_gated_expansion_strategy.py`, `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, `poc/run_trend_expansion_backtest.py`, `poc/position_management.py`, and `tests/unit/test_poc_trend_expansion.py`).
+  - Promoted `TrendExpansionDetector` in `detectors/trend_expansion.py` as canonical production implementation wired into `AresEngine`.
+  - Replaced external candle VWAP dependency with internal volume-weighted session VWAP calculation (`_current_vwap`), eliminating silent failures when candles lack pre-calculated VWAP.
+  - Added state reset for `_sweep_low` and `_dipped_below_vwap` when reclaim criteria are met under dormant regime conditions.
+  - Simplified price fetcher index lookup in `fetchers/price_fetcher.py`.
+  - Streamlined and condensed strategy documentation across repo (`docs/POC_Trend_Expansion_Strategy_Validation.md`) and Obsidian vault (`~/Documents/Obsidian/Projects/Ares/ARES 5th Strategy Gated Expansion Architecture.md`).
+  - Expanded production unit tests in `tests/unit/test_trend_expansion_detector.py` covering timestamp jitter, missing VWAP fallback, midday gaps, and dormant state resets.
+
+- **PR #157 live gated Trend Expansion signals:** Wire the regime-gated POC strategy into `AresEngine` as the fifth enabled-by-default detector. Emit manual signal references through the existing persistence/alert path only; no broker entry orders or Supabase migration. Require verified prior-day close and an uninterrupted completed-candle stream from 09:15 IST, fail closed when inputs are missing, preserve dynamic reclaim/breakout stop and T1 geometry, and expose regime/setup thresholds through both tuning profiles. Add setup reporting and focused detector, engine, configuration, and previous-day-context tests.
+
+- **PR #157 Review Hardening & Edge-Case Audit: Trend Expansion & 5th Strategy POC (TASK-20261105):**
+  - Resolved automated PR review findings on PR #157 (`feature/TASK-20261105-trend-expansion-poc`).
+  - Added typing imports (`Dict`, `List`, `Optional`) in `poc/run_90day_audit.py` to prevent `NameError` during annotation evaluation.
+  - Enforced volume participation confirmation (`volume >= min_volume_ratio * vol_sma20`) on raw afternoon breakouts in `poc/trend_expansion_poc.py`.
+  - Refactored session VWAP dispersion (`vwap_std`) in `poc/regime_gated_expansion_strategy.py` to compute running volume-weighted standard deviation around the current session VWAP mean ($E[TP^2] - (E[TP])^2$), correcting historical running mean distortion.
+  - Added Bollinger Bandwidth expansion verification (`bbw_expansion_ratio >= min_bbw_expansion`, default 1.0) before triggering gated afternoon breakout entries in `poc/regime_gated_expansion_strategy.py`.
+  - Bounded ARES Supabase benchmark queries to the audit window (`gte start_date` and `lte end_date` with in-memory exact date filtering) across `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, and `poc/run_trend_expansion_backtest.py`.
+  - Enforced 35%–68% Fibonacci retracement boundary (`min_retrace_ratio <= retrace_depth / impulse_len <= max_retrace_ratio`) across raw and gated VWAP reclaims to eliminate rogue trade triggers.
+  - Added state isolation resetting `sweep_low` and `dipped_below_vwap` on trade entries, SL hits, trailing exits, and morning low violations.
+  - Isolated prior-day context files from `sessions` and benchmark data in `load_cached_sessions_and_pdl`, ensuring exact 1-to-1 session alignment with the evaluated strategy window.
+  - Added division-by-zero guards for empty benchmark or zero-loss analytics outputs.
+  - Applied a conservative OHLC convention: the pre-candle stop is evaluated first and a T1 stop ratchet takes effect on the next candle. Both raw and gated engines now share the same position lifecycle and reclaim-state reset helper, including EMA20 trailing exits.
+  - Made gated regime factor thresholds configurable through `RegimeThresholds`, preserving defaults of 70/85/25/45 points; clarified in the POC validation document that option price changes are hypothetical reference-mark changes, not fills or realized P&L.
+  - Expanded `tests/unit/test_poc_trend_expansion.py` coverage for configurable regime thresholds and ambiguous same-candle T1/stop ordering; mocked parquet I/O so tests run in CI without optional binary engines (`pyarrow`/`fastparquet`).
+
 - **PR #156 pending paper exits use pinned quote depth:** Protective and selected-option quote observations retain validated bid/ask depth. Fresh, contract-matched positive bids now flow to paper execution and confirm `EXIT_PENDING` exits; crossed, stale, or mismatched observations are rejected. Restored terminal routes continue receiving pinned quotes.
 
 - **PR #156 v2 readiness requires ML-label access:** The option-premium protection capability check now requires `service_role` to have both `SELECT` and `UPDATE` on `public.ml_collection`. Terminal lifecycle transitions update outcome labels transactionally, so readiness fails closed if either privilege is absent. The isolated PostgreSQL regression revokes each privilege independently and checks that v2 is not ready.

@@ -477,6 +477,27 @@ class TestComputeIVChangePct(unittest.TestCase):
         self.assertAlmostEqual(iv_change_down, -10.0)
         self.assertEqual(next_prev_down, 13.5)
 
+    def test_strike_roll_reseeds_iv_without_comparing_different_contracts(self):
+        iv_change, next_prev = main.compute_iv_change_pct(
+            13.8, 14.5, current_strike=24400, prev_strike=24350
+        )
+        self.assertEqual(iv_change, 0.0)
+        self.assertEqual(next_prev, 13.8)
+
+    def test_same_strike_iv_drop_is_preserved(self):
+        iv_change, next_prev = main.compute_iv_change_pct(
+            14.4, 14.5, current_strike=24400, prev_strike=24400
+        )
+        self.assertLess(iv_change, 0.0)
+        self.assertEqual(next_prev, 14.4)
+
+    def test_missing_strike_identity_reseeds_live_iv_comparison(self):
+        iv_change, next_prev = main.compute_iv_change_pct(
+            14.4, 14.5, require_strike_match=True
+        )
+        self.assertEqual(iv_change, 0.0)
+        self.assertEqual(next_prev, 14.4)
+
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from typing import Optional, List
 
 from models import OHLCVCandle, ResistanceLevel, AresSignal, SetupType, Direction, confidence_from_score
@@ -116,11 +117,22 @@ class FailedBreakoutDetector:
             )
             deep_close = (candle.close - self.active.level) >= settings.breakout_deep_close_pts
 
+        iv_falling = (
+            isinstance(iv_change_pct, (int, float))
+            and not isinstance(iv_change_pct, bool)
+            and isfinite(iv_change_pct)
+            and iv_change_pct < 0
+        )
+        if closed_back and iv_falling:
+            self.active = None
+            return None
+
         weak_volume = self.active.breakout_candle.volume < (avg_volume * settings.breakout_weak_volume_ratio)
-        iv_falling = (iv_change_pct < settings.breakout_iv_falling_threshold) if iv_change_pct is not None else False
         writers_active = oi_change >= settings.breakout_writers_active_min_pct
 
-        # Score is the sum of True conditions (scale of 0 to 4).
+        # IV is a hard veto, not a score; retain the four-point confidence scale
+        # so the existing MEDIUM/HIGH thresholds do not shift.
+        # Score is the sum of the remaining True conditions (scale of 0 to 3).
         # closed_back is deliberately NOT scored (TASK-172, audit item 8): it is
         # the mandatory gate below, so counting it inflated every failure by a
         # free point and let "closed back + one coin-flip" fire a signal.
@@ -128,7 +140,7 @@ class FailedBreakoutDetector:
         # (including zero change) is satisfied by noise, and growth past the
         # writers_active threshold implies holding anyway — scoring both awarded
         # two points for a single OI reading. It survives as a reason string.
-        score = sum([weak_volume, iv_falling, writers_active, deep_close])
+        score = sum([weak_volume, writers_active, deep_close])
 
         # If it closed back and meets the minimum failure score, trigger the signal
         if closed_back and score >= settings.breakout_failure_min_score:
@@ -138,7 +150,6 @@ class FailedBreakoutDetector:
                 direction=direction,
                 score=score,
                 weak_vol=weak_volume,
-                iv_falling=iv_falling,
                 writers_held=writers_holding,
                 writers_active=writers_active,
                 deep_close=deep_close,
@@ -156,7 +167,6 @@ class FailedBreakoutDetector:
         direction: Direction,
         score: int,
         weak_vol: bool,
-        iv_falling: bool,
         writers_held: bool,
         writers_active: bool,
         deep_close: bool,
@@ -178,8 +188,6 @@ class FailedBreakoutDetector:
         reasons = [f"Price closed back past level {level}"]
         if weak_vol:
             reasons.append("Breakout candle volume was weak")
-        if iv_falling:
-            reasons.append("IV is dropping rapidly (IV Crush)")
         if writers_held:
             reasons.append("Option writers did not cover their positions")
         if writers_active:

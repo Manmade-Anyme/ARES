@@ -31,7 +31,7 @@ def test_bearish_failed_breakout_dynamic_targets(breakout_detector, sample_level
         timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24090.0, volume=40000
     )
     # IV crush, options writers hold
-    signal = breakout_detector.update(candle2, 100000.0, -15.0, 150, 100, 100, 100, sample_levels)
+    signal = breakout_detector.update(candle2, 100000.0, 0.0, 150, 100, 100, 100, sample_levels)
     
     assert signal is not None
     assert signal.setup_type == SetupType.FAILED_BREAKOUT
@@ -52,7 +52,7 @@ def test_bullish_failed_breakout_dynamic_targets(breakout_detector, sample_level
         timestamp=datetime.now(), open=24080.0, high=24120.0, low=24075.0, close=24115.0, volume=40000
     )
     # IV crush, options writers hold
-    signal = breakout_detector.update(candle2, 100000.0, -15.0, 100, 100, 150, 100, sample_levels)
+    signal = breakout_detector.update(candle2, 100000.0, 0.0, 100, 100, 150, 100, sample_levels)
     
     assert signal is not None
     assert signal.setup_type == SetupType.FAILED_BREAKOUT
@@ -69,13 +69,13 @@ def test_failed_breakout_confidence_high(breakout_detector, sample_levels):
     # Reversal candle: volume average is 100000 (breakout weak volume ratio is 0.75 -> 50000 volume is weak) -> 1 point
     # Close back below 24100 by >= 5 points (close = 24090.0, level = 24100.0 -> diff 10.0 >= 5.0) -> 1 point
     # Options writers CE OI increased from 100 to 110 (growth = 10% >= 10% threshold) -> 1 point
-    # IV change is -15.0 < -3.0 (IV crush) -> 1 point
+    # IV must not be falling for a failed-breakout signal.
     # (closed_back is the gate and writers_holding is unscored per TASK-174)
     # -> total score = 4 of 4
     candle2 = OHLCVCandle(
         timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24090.0, volume=40000
     )
-    signal = breakout_detector.update(candle2, 100000.0, -15.0, 110, 100, 100, 100, sample_levels)
+    signal = breakout_detector.update(candle2, 100000.0, 0.0, 110, 100, 100, 100, sample_levels)
     assert signal is not None
     assert signal.confidence == "MEDIUM"
     assert signal.market_context["uncalibrated_high_suppressed"] is True
@@ -92,7 +92,7 @@ def test_direct_detector_without_policy_retains_tentative_high(sample_levels):
     signal = detector.update(
         OHLCVCandle(timestamp=datetime.now(), open=24110.0, high=24115.0,
                     low=24080.0, close=24090.0, volume=40000),
-        100000.0, -15.0, 110, 100, 100, 100, sample_levels,
+        100000.0, 0.0, 110, 100, 100, 100, sample_levels,
     )
 
     assert signal is not None
@@ -166,7 +166,7 @@ def test_failed_breakout_with_missing_iv_change_pct(breakout_detector, sample_le
     assert breakout_detector.active is not None
 
     # Reversal candle with iv_change_pct=None (e.g. missing IV from Dhan payload)
-    # Must not raise TypeError, and iv_falling should evaluate to False.
+    # Missing IV is not a falling-IV veto.
     candle2 = OHLCVCandle(
         timestamp=datetime.now(), open=24110.0, high=24115.0, low=24080.0, close=24090.0, volume=40000
     )
@@ -177,3 +177,45 @@ def test_failed_breakout_with_missing_iv_change_pct(breakout_detector, sample_le
     assert signal.setup_type == SetupType.FAILED_BREAKOUT
     assert signal.direction == Direction.BEARISH
     assert not any("IV crush" in r for r in signal.reasons)
+
+
+def test_failed_breakout_is_suppressed_for_any_iv_drop(breakout_detector, sample_levels):
+    breakout_detector.update(
+        OHLCVCandle(
+            timestamp=datetime.now(),
+            open=24090.0,
+            high=24120.0,
+            low=24080.0,
+            close=24110.0,
+            volume=50000,
+        ),
+        10000.0,
+        5.0,
+        100,
+        100,
+        100,
+        100,
+        sample_levels,
+    )
+    assert breakout_detector.active is not None
+
+    signal = breakout_detector.update(
+        OHLCVCandle(
+            timestamp=datetime.now(),
+            open=24110.0,
+            high=24115.0,
+            low=24080.0,
+            close=24090.0,
+            volume=40000,
+        ),
+        10000.0,
+        -0.01,
+        150,
+        100,
+        100,
+        100,
+        sample_levels,
+    )
+
+    assert signal is None
+    assert breakout_detector.active is None

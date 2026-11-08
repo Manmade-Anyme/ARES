@@ -313,6 +313,44 @@ class TestPriceFetcher(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(pdl, 23995.10, places=4)
 
     @patch('fetchers.price_fetcher.settings')
+    async def test_fetch_previous_day_context_returns_close(self, mock_settings):
+        self.clock_patch.stop()
+        yesterday_ts = int((datetime.now() - timedelta(days=1)).timestamp())
+        self.mock_dhan.historical_daily_data.return_value = {
+            "status": "success",
+            "data": {
+                "timestamp": [yesterday_ts],
+                "high": [24102.35],
+                "low": [23995.10],
+                "close": [24050.25],
+            }
+        }
+
+        pdh, pdl, pdc = await self.fetcher.fetch_previous_day_context()
+
+        self.assertAlmostEqual(pdh, 24102.35, places=4)
+        self.assertAlmostEqual(pdl, 23995.10, places=4)
+        self.assertAlmostEqual(pdc, 24050.25, places=4)
+
+    @patch('fetchers.price_fetcher.settings')
+    async def test_fetch_previous_day_context_omits_misaligned_close(self, mock_settings):
+        self.clock_patch.stop()
+        yesterday_ts = int((datetime.now() - timedelta(days=1)).timestamp())
+        self.mock_dhan.historical_daily_data.return_value = {
+            "status": "success",
+            "data": {
+                "timestamp": [yesterday_ts],
+                "high": [24102.35],
+                "low": [23995.10],
+                "close": [24050.25, 24100.0],
+            }
+        }
+
+        _, _, pdc = await self.fetcher.fetch_previous_day_context()
+
+        self.assertIsNone(pdc)
+
+    @patch('fetchers.price_fetcher.settings')
     async def test_fetch_previous_day_ohlc_success_today_fallback(self, mock_settings):
         self.clock_patch.stop()
         today_ts = int(datetime.now().timestamp())

@@ -2,7 +2,7 @@
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -24,6 +24,7 @@ def loop(monkeypatch):
         price.fetch_latest_candle = AsyncMock(side_effect=candles)
         price.fetch_latest_spot = AsyncMock(return_value=24000.0)
         price.fetch_previous_day_ohlc = AsyncMock(return_value=(24100.0, 23900.0))
+        price.fetch_previous_day_context = AsyncMock(return_value=(24100.0, 23900.0, 24000.0))
         oi = MagicMock()
         oi.get_nearest_expiry = AsyncMock(return_value="2099-01-01")
         oi.fetch_chain = AsyncMock(return_value=(None, []))
@@ -40,6 +41,7 @@ def loop(monkeypatch):
         collector.stats = {"total_snapshots": 0, "signals_recorded": 0}
         feed = MagicMock(is_active=False)
         settings = MagicMock(poll_interval_seconds=1, tick_exit_check_interval_seconds=1, candle_buffer_size=10)
+        level_fetcher = MagicMock()
         clock = MagicMock()
         clock.now.side_effect = times
         storage = MagicMock()
@@ -51,7 +53,7 @@ def loop(monkeypatch):
         outbox.close = AsyncMock()
         for name, instance in {
             "AresEngine": engine, "PriceFetcher": price, "OIFetcher": oi,
-            "LevelFetcher": MagicMock(), "Storage": storage,
+            "LevelFetcher": level_fetcher, "Storage": storage,
             "PositionManager": positions, "SignalDispatcher": dispatcher,
             "OrderManager": MagicMock(), "MLCollector": collector,
             "TickFeed": feed, "SignalPredictor": predictor, "PredictionLogger": MagicMock(),
@@ -87,6 +89,51 @@ async def test_final_bar_reaches_detector_snapshot_and_intrabar_exits(loop):
     ctx.outbox.close.assert_awaited_once()
     ctx.positions.flush_pending_trade_updates.assert_awaited_once()
     ctx.feed.stop.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_missing_startup_pdc_is_retried_before_regime_and_levels(loop):
+    final_candle = candle(hour=10, minute=30)
+    ctx = loop(
+        [final_candle],
+        [datetime(2026, 10, 19, 10, 31), datetime(2026, 10, 19, 15, 30)],
+    )
+    ctx.price.fetch_previous_day_context.side_effect = [
+        (24100.0, 23900.0, None),
+        (24200.0, 24000.0, 24150.0),
+    ]
+
+    await main.run()
+
+    assert ctx.price.fetch_previous_day_context.await_count == 2
+    ctx.level_fetcher.set_previous_day_levels.assert_has_calls([
+        call(high=24100.0, low=23900.0),
+        call(high=24200.0, low=24000.0),
+    ])
+    ctx.level_fetcher.build_levels.assert_called_once()
+    level_calls = [entry[0] for entry in ctx.level_fetcher.mock_calls]
+    assert level_calls.index("set_previous_day_levels") < level_calls.index("build_levels")
+    ctx.engine.tick.assert_called_once()
+    assert ctx.engine.tick.call_args.args[-3:] == (24200.0, 24000.0, 24150.0)
+
+
+@pytest.mark.asyncio
+async def test_failed_previous_day_context_retry_keeps_pdc_missing(loop):
+    final_candle = candle(hour=10, minute=30)
+    ctx = loop(
+        [final_candle],
+        [datetime(2026, 10, 19, 10, 31), datetime(2026, 10, 19, 15, 30)],
+    )
+    ctx.price.fetch_previous_day_context.side_effect = [
+        (24100.0, 23900.0, None),
+        RuntimeError("previous-day context unavailable"),
+    ]
+
+    await main.run()
+
+    assert ctx.price.fetch_previous_day_context.await_count == 2
+    ctx.engine.tick.assert_called_once()
+    assert ctx.engine.tick.call_args.args[-1] is None
 
 
 @pytest.mark.asyncio

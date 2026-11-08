@@ -101,18 +101,41 @@ def _attach_ml_prediction_to_signal(signal, prediction):
 def compute_iv_change_pct(
     current_iv: Optional[float],
     prev_iv: Optional[float],
+    current_strike: Optional[float] = None,
+    prev_strike: Optional[float] = None,
+    require_strike_match: bool = False,
 ) -> Tuple[Optional[float], Optional[float]]:
     """Compute percentage change in ATM IV without corrupting state on missing readings.
 
     Returns:
         tuple[iv_change_pct, next_prev_iv]:
-        - If current_iv is None: returns (None, prev_iv), keeping previous valid IV intact.
-        - If prev_iv is None or non-positive: returns (0.0, current_iv).
+        - If current IV is missing or invalid: returns (None, prev_iv), keeping prior state intact.
+        - If strike identity changes or prior IV is invalid: returns (0.0, current_iv).
         - Otherwise: returns (((current_iv - prev_iv) / prev_iv) * 100.0, current_iv).
     """
-    if current_iv is None:
+    if (
+        not isinstance(current_iv, (int, float))
+        or isinstance(current_iv, bool)
+        or not isfinite(current_iv)
+        or current_iv <= 0
+    ):
         return None, prev_iv
-    if prev_iv is None or prev_iv <= 0:
+    if require_strike_match or current_strike is not None or prev_strike is not None:
+        valid_strikes = all(
+            isinstance(strike, (int, float))
+            and not isinstance(strike, bool)
+            and isfinite(strike)
+            and strike > 0
+            for strike in (current_strike, prev_strike)
+        )
+        if not valid_strikes or current_strike != prev_strike:
+            return 0.0, current_iv
+    if (
+        not isinstance(prev_iv, (int, float))
+        or isinstance(prev_iv, bool)
+        or not isfinite(prev_iv)
+        or prev_iv <= 0
+    ):
         return 0.0, current_iv
     return ((current_iv - prev_iv) / prev_iv) * 100.0, current_iv
 
@@ -1070,11 +1093,15 @@ async def run():
     # Make this dynamic via Yahoo Finance Oracle
     previous_day_verified = True
     try:
-        pdh, pdl = await price_fetcher.fetch_previous_day_ohlc()
+        pdh, pdl, pdc = await price_fetcher.fetch_previous_day_context()
+        if pdc is None:
+            print(f"{Y}[!] Previous-day close unavailable; Gated Trend Expansion will retry on the first live candle.{RESET}")
     except Exception as e:
         print(f"{Y}[-] WARNING: Dynamic PDH/PDL fetch failed ({e}). Using last known safe defaults.{RESET}")
         pdh, pdl = 24100.0, 23900.0
+        pdc = None
         previous_day_verified = False
+    pdc_retry_attempted = pdc is not None
         
     level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
     
@@ -1114,6 +1141,8 @@ async def run():
     last_watch_candle = None
     session_activity_date = None
     prev_iv = None
+    prev_iv_strike = None
+    prev_iv_session_date = None
     last_vwap_reset_date = None
     waiting_printed = False
     buffers_full_printed = False
@@ -1255,21 +1284,58 @@ async def run():
                 except Exception as quote_err:
                     logger.warning("Quote persistence sync failed: %s", quote_err)
             
-                # Build and update dynamic levels
+                if (
+                    settings.trend_expansion_enabled
+                    and pdc is None
+                    and not pdc_retry_attempted
+                ):
+                    pdc_retry_attempted = True
+                    try:
+                        pdh, pdl, pdc = await price_fetcher.fetch_previous_day_context()
+                        previous_day_verified = pdc is not None
+                        level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
+                        if pdc is None:
+                            logger.warning(
+                                "Previous-day close still unavailable on the first live-candle retry"
+                            )
+                    except Exception as exc:
+                        logger.warning("Trend Expansion previous-day context retry failed: %s", exc)
+
+                # Build levels after the optional context retry so refreshed PDH/PDL apply immediately.
                 levels = level_fetcher.build_levels(
                     spot_price=spot,
                     full_chain=full_chain,
                     oi_wall_threshold=settings.oi_wall_min_oi
                 )
-            
-                # Compute IV change percentage safely (TASK-154 missing data resilience)
+
+                current_session_date = _session_now().date()
+                if current_session_date != prev_iv_session_date:
+                    prev_iv = None
+                    prev_iv_strike = None
+                    prev_iv_session_date = current_session_date
+
+                # Compare ATM IV only when the contract strike is unchanged.
                 current_iv = atm.ce.iv if (atm and atm.ce) else None
-                iv_change_pct, prev_iv = compute_iv_change_pct(current_iv, prev_iv)
+                current_iv_strike = atm.ce.strike if (atm and atm.ce) else None
+                iv_change_pct, prev_iv = compute_iv_change_pct(
+                    current_iv,
+                    prev_iv,
+                    current_strike=current_iv_strike,
+                    prev_strike=prev_iv_strike,
+                    require_strike_match=True,
+                )
+                if (
+                    isinstance(current_iv, (int, float))
+                    and not isinstance(current_iv, bool)
+                    and isfinite(current_iv)
+                    and current_iv > 0
+                ):
+                    prev_iv_strike = current_iv_strike
             
                 # Once prerequisites succeed, consume before the stateful engine:
                 # a detector exception can occur after its rolling buffers mutate.
                 price_fetcher.acknowledge_candle(candle)
-                signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
+                signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl, pdc)
 
                 # Close expired watches before publishing fresh watches, retrying failures.
                 last_watch_candle = candle

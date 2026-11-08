@@ -70,6 +70,7 @@ _PER_TYPE_LEVELS_DEFAULT = {
     "TREND_CONTINUATION":  SetupLevels(25.0, 25.0, 80.0),
     "OI_WALL_REJECTION":   SetupLevels(16.0, 25.0, 40.0),
     "FAILED_BREAKOUT":     SetupLevels(12.0, 20.0, 55.0),
+    "IV_GATED_BREAKOUT":   SetupLevels(30.0, 35.0, 70.0),
 }
 
 
@@ -86,7 +87,7 @@ class TuningConfig:
 
     # Engine
     poll_interval_seconds: int = 60
-    signal_cooldown_minutes: int = 15
+    signal_cooldown_minutes: int = 10
     candle_buffer_size: int = 30
     iv_buffer_size: int = 10
 
@@ -109,7 +110,6 @@ class TuningConfig:
     # tests/unit/test_task184_medium_breakout.py.
     breakout_failure_min_score: int = 2
     breakout_weak_volume_ratio: float = 0.75
-    breakout_iv_falling_threshold: float = -3.0
     # Minimum ATM OI growth (%) for the writers_active scored condition
     # (TASK-174). Was hardcoded 3.0 — intraminute OI drift of 3-5% is common
     # noise; a scored "active defense" needs a decisive build.
@@ -195,6 +195,41 @@ class TuningConfig:
     continuation_resume_volume_ratio: float = 1.2
     continuation_min_score: int = 2
 
+    # IV-Gated Dynamic Breakout Detector (Zero static time boundaries)
+    iv_breakout_enabled: bool = True
+    iv_breakout_lookback_candles: int = 25
+    iv_breakout_max_base_range_pts: float = 55.0
+    iv_breakout_volume_ratio: float = 1.15
+    iv_breakout_buffer_pts: float = 2.0
+    iv_breakout_min_zscore: float = 0.8
+    iv_breakout_min_warmup_candles: int = 15
+
+    # Gated Trend Expansion strategy (PR #157). Signals are manual spot
+    # references only; no broker entry order is submitted by this detector.
+    trend_expansion_enabled: bool = True
+    trend_expansion_pdc_extension_pts: float = 70.0
+    trend_expansion_range_expansion_pts: float = 85.0
+    trend_expansion_vwap_dispersion_pts: float = 25.0
+    trend_expansion_directional_displacement_pts: float = 45.0
+    trend_expansion_min_regime_score: int = 2
+    trend_expansion_min_impulse_pts: float = 70.0
+    trend_expansion_min_retrace_ratio: float = 0.35
+    trend_expansion_max_retrace_ratio: float = 0.68
+    trend_expansion_reclaim_min_stop_pts: float = 15.0
+    trend_expansion_reclaim_stop_buffer_pts: float = 3.0
+    trend_expansion_sweep_vwap_buffer_pts: float = 2.0
+    trend_expansion_breakout_min_stop_pts: float = 12.0
+    trend_expansion_max_stop_pts: float = 35.0
+    trend_expansion_pdl_safety_buffer_pts: float = 30.0
+    trend_expansion_t1_reward_pts: float = 35.0
+    trend_expansion_min_volume_ratio: float = 0.95
+    trend_expansion_min_bbw_expansion: float = 1.0
+    trend_expansion_min_breakout_vwap_zscore: float = 0.8
+    trend_expansion_breakout_buffer_pts: float = 2.0
+    trend_expansion_max_trades_per_day: int = 2
+    trend_expansion_target_2_fallback_pts: float = 70.0
+    trend_expansion_iv_filter_enabled: bool = True
+
     # Per-setup-type SL / T1 / T2 (TASK-185). Applied centrally in the engine,
     # keyed by SetupType.value. See SetupLevels above. Same table in both
     # profiles for now; expiry may diverge after a month of live re-tuning.
@@ -228,10 +263,9 @@ class TuningConfig:
 # ─── The two profiles ────────────────────────────────────────────────────────
 
 NON_EXPIRY_CONFIG = TuningConfig(
-    signal_cooldown_minutes=15,
+    signal_cooldown_minutes=10,
     breakout_confirmation_candles=3,
     breakout_weak_volume_ratio=0.75,
-    breakout_iv_falling_threshold=-3.0,
     breakout_writers_active_min_pct=10.0,
     oi_wall_min_oi=4000000,
     oi_wall_min_oi_change_pct=5.0,
@@ -250,7 +284,7 @@ NON_EXPIRY_CONFIG = TuningConfig(
 )
 
 EXPIRY_CONFIG = TuningConfig(
-    signal_cooldown_minutes=15,
+    signal_cooldown_minutes=10,
 
     # Trade quality gates
     min_rr_ratio=1.0,
@@ -258,7 +292,6 @@ EXPIRY_CONFIG = TuningConfig(
     # Breakout — faster confirmation and expiry-specific score sensitivity
     breakout_confirmation_candles=2,
     breakout_weak_volume_ratio=0.75,
-    breakout_iv_falling_threshold=-3.0,
     breakout_writers_active_min_pct=5.0,
 
     # OI Wall — lower OI gates with wider expiry interaction/retest geometry

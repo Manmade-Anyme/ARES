@@ -12,6 +12,8 @@ from detectors.oi_wall import OIWallDetector
 from detectors.oi_wall_entry import OIWallEntryFilter
 from detectors.exhaustion import ExhaustionDetector
 from detectors.continuation import TrendContinuationDetector
+from detectors.iv_breakout import IVBreakoutDetector
+from detectors.trend_expansion import TrendExpansionDetector
 from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
 
@@ -25,8 +27,11 @@ def apply_per_type_levels(signal: AresSignal, settings, levels=None) -> None:
       * T2 is the nearest structural support/resistance (from ``levels``) that
         lies beyond T1 in the trade's favourable direction; when no such level
         exists it falls back to the per-type distance.
-    Unknown/unconfigured setup types are left untouched (no per-type entry).
+    Signals with detector-owned dynamic levels, plus unknown/unconfigured setup
+    types, are left untouched.
     """
+    if signal.use_detector_levels:
+        return
     lv = settings.per_type_levels.get(signal.setup_type.value)
     if lv is None:
         return
@@ -70,6 +75,8 @@ class AresEngine:
         self.oi_wall_detector = OIWallDetector(calibration_policy=calibration_policy)
         self.oi_wall_filter = OIWallEntryFilter()
         self.continuation_detector = TrendContinuationDetector(calibration_policy=calibration_policy)
+        self.trend_expansion_detector = TrendExpansionDetector(calibration_policy=calibration_policy)
+        self.iv_breakout_detector = IVBreakoutDetector(calibration_policy=calibration_policy)
         self.exhaustion_detector = ExhaustionDetector(calibration_policy=calibration_policy)
         
         self.candle_buffer: deque = deque(maxlen=settings.candle_buffer_size)
@@ -121,6 +128,7 @@ class AresEngine:
         levels: List[ResistanceLevel] = None,
         pdh: Optional[float] = None,
         pdl: Optional[float] = None,
+        pdc: Optional[float] = None,
     ) -> Optional[AresSignal]:
         """
         Process a single tick of data through the detection pipeline.
@@ -128,8 +136,9 @@ class AresEngine:
         Priority Order Rationale:
         1. Failed Breakout (Highest Precision, stateful tracking)
         2. OI Wall Rejection (High Precision, structural support/resistance)
-        3. Trend Continuation (trend-aligned, TASK-177)
-        4. Exhaustion Reversal (Medium Precision, volume/price extreme)
+        3. Gated Trend Expansion (trend-aligned regime breakout and reclaim)
+        4. Trend Continuation (trend-aligned, TASK-177)
+        5. Exhaustion Reversal (Medium Precision, volume/price extreme)
 
         Higher confidence setups are checked first. If a signal is found, the
         evaluation short-circuits and returns.
@@ -144,6 +153,8 @@ class AresEngine:
                 regime rule. Optional — the detector no-ops without it.
             pdl: Previous day low, used by the trend-continuation detector's
                 regime rule. Optional — the detector no-ops without it.
+            pdc: Previous day close, required by the trend-expansion regime gate.
+                Optional — the detector remains dormant when it is unavailable.
 
         Returns:
             An AresSignal if a detector triggers and cooldown is clear, otherwise None.
@@ -162,6 +173,12 @@ class AresEngine:
         self.candle_buffer.append(candle)
         if atm and atm.ce and atm.ce.iv is not None:
             self.iv_buffer.append(atm.ce.iv)
+        if getattr(settings, "iv_breakout_enabled", True):
+            self.iv_breakout_detector.observe(
+                candle,
+                iv_current=atm.ce.iv if (atm and atm.ce) else None,
+                strike=atm.ce.strike if (atm and atm.ce) else None,
+            )
 
         # 2. Cooldown state. Evaluated here but applied *after* the stateful
         # detectors have advanced (TASK-188) — see step 5a.
@@ -238,6 +255,16 @@ class AresEngine:
         self._release_terminal_oi_wall(oi_wall_decision)
 
         if in_cooldown:
+            if settings.trend_expansion_enabled and isinstance(candle, OHLCVCandle):
+                self.trend_expansion_detector.update(
+                    candle=candle,
+                    pdc=pdc,
+                    pdl=pdl,
+                    levels=levels,
+                    allow_signal=False,
+                    iv_current=atm.ce.iv if (atm and atm.ce) else None,
+                    strike=atm.ce.strike if (atm and atm.ce) else None,
+                )
             if oi_wall_decision.status == "QUALIFIED":
                 ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "SUPPRESSED_BY_COOLDOWN")
                 self._release_terminal_oi_wall(ack)
@@ -256,6 +283,16 @@ class AresEngine:
             levels=levels,
         )
 
+        trend_expansion_signal = self.trend_expansion_detector.update(
+            candle=candle,
+            pdc=pdc,
+            pdl=pdl,
+            levels=levels,
+            allow_signal=not breakout_signal and not oi_wall_candidate,
+            iv_current=atm.ce.iv if (atm and atm.ce) else None,
+            strike=atm.ce.strike if (atm and atm.ce) else None,
+        ) if settings.trend_expansion_enabled and isinstance(candle, OHLCVCandle) else None
+
         if breakout_signal:
             if oi_wall_decision.status == "QUALIFIED":
                 ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "SUPPRESSED_BY_PRIORITY")
@@ -266,7 +303,8 @@ class AresEngine:
             signal = oi_wall_candidate
         else:
             signal = (
-                (
+                trend_expansion_signal
+                or (
                     self.continuation_detector.update(
                         candle=candle,
                         avg_volume=avg_volume,
@@ -275,6 +313,17 @@ class AresEngine:
                         pdl=pdl,
                     )
                     if settings.continuation_enabled
+                    else None
+                )
+                or (
+                    self.iv_breakout_detector.update(
+                        candle=candle,
+                        avg_volume=avg_volume,
+                        iv_current=atm.ce.iv if (atm and atm.ce) else None,
+                        levels=levels,
+                        strike=atm.ce.strike if (atm and atm.ce) else None,
+                    )
+                    if getattr(settings, "iv_breakout_enabled", True)
                     else None
                 )
                 or self.exhaustion_detector.update(

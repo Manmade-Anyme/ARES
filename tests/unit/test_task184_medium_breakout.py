@@ -58,7 +58,7 @@ class TestMediumBreakoutFires(unittest.TestCase):
         self._arm_upside_breakout(volume=50000)
         # avg_volume 100000 -> breakout candle (50000) IS weak (< 0.75*avg)      -> +1
         # close 24090 is 10pt back below level 24100 (>= deep_close 5pt)          -> +1
-        # iv flat (0 > -3)                                                        -> 0
+        # IV flat: no hard-veto, no score point.
         # ATM CE OI unchanged (0% < 10% writers_active)                           -> 0
         candle2 = OHLCVCandle(
             timestamp=datetime.now(), open=24110.0, high=24115.0,
