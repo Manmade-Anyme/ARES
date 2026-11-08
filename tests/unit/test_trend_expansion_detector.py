@@ -190,7 +190,13 @@ def test_engine_wires_trend_expansion_before_continuation():
 
     assert result is signal
     engine.trend_expansion_detector.update.assert_called_once_with(
-        candle=candle, pdc=95.0, pdl=90.0, levels=[], allow_signal=True
+        candle=candle,
+        pdc=95.0,
+        pdl=90.0,
+        levels=[],
+        allow_signal=True,
+        iv_current=12.0,
+        strike=atm.ce.strike,
     )
     engine.continuation_detector.update.assert_not_called()
     assert engine.last_signal_time is not None
@@ -402,3 +408,31 @@ def test_suppressed_reclaim_resets_state_without_candle_vwap():
     # State MUST be reset so it cannot leak and trigger late
     assert detector._dipped_below_vwap is False
     assert detector._sweep_low == float("inf")
+
+
+def test_trend_expansion_afternoon_breakout_suppressed_by_vol_crush():
+    """Verify that afternoon breakout is suppressed when IV velocity detects institutional vol crush."""
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+        trend_expansion_iv_filter_enabled=True,
+    ))
+    detector = TrendExpansionDetector()
+    candles = _session_candles()
+
+    # Pass candles up to breakout with crushing IV on the breakout candle at 12:30
+    result = None
+    for candle in candles:
+        time_str = candle.timestamp.strftime("%H:%M")
+        if time_str < "12:30":
+            # Normal stable IV
+            detector.update(candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0)
+        elif time_str == "12:30":
+            # Breakout candle fires at 12:30, but IV dumps from 15.0 to 14.0
+            result = detector.update(candle, pdc=24200.0, levels=[], iv_current=14.0, strike=24450.0)
+            break
+
+    # Because IV dumped from 15.0 to 14.0 (d1 = -1.0 <= -0.30), VOL_CRUSH_BULL_TRAP suppresses the signal
+    assert result is None
+
+

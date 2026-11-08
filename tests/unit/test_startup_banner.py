@@ -84,3 +84,13 @@ def test_both_ml_lines_are_reported():
     off = _render(ml_active=False, predictor_active=False)
     assert "ML Collection: inactive" in off
     assert "ML Predictor : inactive" in off
+
+
+def test_detector_names_includes_iv_gated_breakout():
+    """Verify IV-Gated Breakout is reported in detector_names when enabled, and omitted when disabled."""
+    with patch.object(alerts.settings, "iv_breakout_enabled", True):
+        assert "IV-Gated Breakout" in detector_names()
+
+    with patch.object(alerts.settings, "iv_breakout_enabled", False):
+        assert "IV-Gated Breakout" not in detector_names()
+

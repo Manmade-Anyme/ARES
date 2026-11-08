@@ -20,6 +20,12 @@ All notable changes to the ARES trading system will be documented in this file.
     - Added `IV_GATED_BREAKOUT` to `tests/unit/test_per_type_levels.py` approved tables and full regression suite.
     - Retained option contract strike alongside timestamp and IV in `IVBreakoutDetector` (`detectors/iv_breakout.py`) and isolated rolling history by strike to eliminate cross-strike IV skew false vol-crush rejections when ATM rolls.
     - Gated option exit pricing on `active_trade.option_strike` in `IVGatedBreakoutEngine` (`poc/iv_breakout_expansion_poc.py`), ensuring exit premium and PnL are always calculated on the recorded entry contract.
+    - Set `evaluate_iv_velocity()` in `options_math.py` to fail closed (`require_iv=True`), returning `(False, "NO_IV_DATA")` on missing, non-finite, or non-positive IV.
+    - Added `latest_rejection_reason` property to `IVBreakoutDetector` and explicit fail-closed suppression for missing/invalid IV (`NO_IV_DATA`).
+    - Gated `TrendExpansionDetector._check_afternoon_breakout` with `evaluate_iv_velocity()`, ensuring trend expansion breakouts do not bypass IV confirmation.
+    - Added `trend_expansion_iv_filter_enabled: bool = True` to `TuningConfig` (`config_profiles.py`).
+    - Added `IV-Gated Breakout` to `detector_names()` in `config.py` when enabled.
+    - Aligned `poc/run_iv_breakout_audit.py` candidate reporting and updated `docs/POC_IV_Gated_Breakout_Strategy_Validation.md` with verified 62-session audit metrics (29 candidates screened, 12 rejected: 8 fakeouts blocked +248.40 pts, 4 false negatives -140.00 pts, net alpha +108.40 pts).
 
 - **PR #157 promote Trend Expansion strategy to production and remove POC files (TASK-20261105):**
   - Removed deprecated prototype modules and audit runners (`poc/trend_expansion_poc.py`, `poc/regime_gated_expansion_strategy.py`, `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, `poc/run_trend_expansion_backtest.py`, `poc/position_management.py`, and `tests/unit/test_poc_trend_expansion.py`).

@@ -363,5 +363,53 @@ def test_iv_breakout_strike_roll_does_not_trigger_false_vol_crush():
     assert sig.trigger_price == 24368.0
 
 
+def test_iv_breakout_missing_iv_fails_closed():
+    """Validates that missing, non-finite, or non-positive IV suppresses breakout signal with NO_IV_DATA reason."""
+    detector = IVBreakoutDetector()
+    date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+
+    # Establish base
+    for m in range(25):
+        t = date_now + timedelta(minutes=m)
+        c = OHLCVCandle(
+            timestamp=t,
+            open=24350.0 + (m % 5) - 2,
+            high=24365.0,
+            low=24340.0,
+            close=24350.0 + (m % 7) - 3,
+            volume=1000000,
+            vwap=24352.0,
+        )
+        detector.update(c, avg_volume=1000000, iv_current=14.5, strike=24350.0)
+
+    # Breakout candle at minute 26
+    t_bo = date_now + timedelta(minutes=26)
+    c_bo = OHLCVCandle(
+        timestamp=t_bo,
+        open=24360.0,
+        high=24375.0,
+        low=24358.0,
+        close=24368.0,
+        volume=1300000,
+        vwap=24360.0,
+    )
+
+    # 1. Test None IV
+    sig = detector.update(c_bo, avg_volume=1000000, iv_current=None, strike=24350.0)
+    assert sig is None
+    assert detector.latest_rejection_reason == "NO_IV_DATA"
+
+    # 2. Test 0.0 IV
+    sig_zero = detector.update(c_bo, avg_volume=1000000, iv_current=0.0, strike=24350.0)
+    assert sig_zero is None
+    assert detector.latest_rejection_reason == "NO_IV_DATA"
+
+    # 3. Test NaN / inf IV
+    sig_nan = detector.update(c_bo, avg_volume=1000000, iv_current=float("nan"), strike=24350.0)
+    assert sig_nan is None
+    assert detector.latest_rejection_reason == "NO_IV_DATA"
+
+
+
 
 

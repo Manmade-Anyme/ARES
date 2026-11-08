@@ -35,6 +35,7 @@ class IVBreakoutDetector:
         self.iv_history: deque = deque(maxlen=60)
         self.candle_history: deque = deque(maxlen=60)
         self.fired_today: bool = False
+        self.latest_rejection_reason: Optional[str] = None
 
     def reset_session(self, candle_date) -> None:
         self.session_high = 0.0
@@ -42,6 +43,7 @@ class IVBreakoutDetector:
         self.iv_history.clear()
         self.candle_history.clear()
         self.fired_today = False
+        self.latest_rejection_reason = None
 
     def _parse_time(self, candle: OHLCVCandle) -> Tuple[Optional[Any], str]:
         """Defensively extract session date and HH:MM time string."""
@@ -167,6 +169,11 @@ class IVBreakoutDetector:
             return None
 
         # 2. IV Microstructure Velocity Gate
+        # Fail-closed: require valid IV data confirmation before emitting signal
+        if iv_current is None or not math.isfinite(iv_current) or iv_current <= 0:
+            self.latest_rejection_reason = "NO_IV_DATA"
+            return None
+
         # Isolate history by strike to prevent cross-strike IV skew being mistaken for a rapid crush
         active_strike = strike
         if active_strike is None and self.iv_history:
@@ -220,9 +227,11 @@ class IVBreakoutDetector:
             iv_prev_1m=iv_prev_1m,
             iv_prev_3m=iv_prev_3m,
             vwap_zscore=vwap_zscore,
+            require_iv=True,
         )
 
         if not iv_ok:
+            self.latest_rejection_reason = iv_reason
             return None
 
         # 3. Construct Signal

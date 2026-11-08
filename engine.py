@@ -257,7 +257,13 @@ class AresEngine:
         if in_cooldown:
             if settings.trend_expansion_enabled and isinstance(candle, OHLCVCandle):
                 self.trend_expansion_detector.update(
-                    candle=candle, pdc=pdc, pdl=pdl, levels=levels, allow_signal=False
+                    candle=candle,
+                    pdc=pdc,
+                    pdl=pdl,
+                    levels=levels,
+                    allow_signal=False,
+                    iv_current=atm.ce.iv if (atm and atm.ce) else None,
+                    strike=atm.ce.strike if (atm and atm.ce) else None,
                 )
             if oi_wall_decision.status == "QUALIFIED":
                 ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "SUPPRESSED_BY_COOLDOWN")
@@ -283,6 +289,8 @@ class AresEngine:
             pdl=pdl,
             levels=levels,
             allow_signal=not breakout_signal and not oi_wall_candidate,
+            iv_current=atm.ce.iv if (atm and atm.ce) else None,
+            strike=atm.ce.strike if (atm and atm.ce) else None,
         ) if settings.trend_expansion_enabled and isinstance(candle, OHLCVCandle) else None
 
         if breakout_signal:

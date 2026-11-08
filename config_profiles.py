@@ -231,6 +231,7 @@ class TuningConfig:
     trend_expansion_breakout_buffer_pts: float = 2.0
     trend_expansion_max_trades_per_day: int = 2
     trend_expansion_target_2_fallback_pts: float = 70.0
+    trend_expansion_iv_filter_enabled: bool = True
 
     # Per-setup-type SL / T1 / T2 (TASK-185). Applied centrally in the engine,
     # keyed by SetupType.value. See SetupLevels above. Same table in both

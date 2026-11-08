@@ -134,8 +134,10 @@ def main():
     print("\n" + "=" * 85)
     print("IV-GATED FILTER AUDIT: REJECTED FAKEOUTS & PREVENTED LOSSES")
     print("=" * 85)
-    print(f"Total Breakouts Screened: {len(base_trades)}")
+    total_screened = len(iv_trades) + len(all_rejected)
+    print(f"Total Price Breakout Candidates Screened: {total_screened}")
     print(f"Total Breakouts Rejected by IV Filter: {len(all_rejected)}")
+    print(f"Total Breakouts Approved by IV Filter: {len(iv_trades)}")
     
     prevented_losses = [r for r in all_rejected if r.potential_pnl_if_taken <= 0]
     missed_wins = [r for r in all_rejected if r.potential_pnl_if_taken > 0]

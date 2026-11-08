@@ -346,13 +346,15 @@ def evaluate_iv_velocity(
     vwap_zscore: float = 0.0,
     crush_1m_threshold: float = -0.30,
     crush_3m_threshold: float = -0.40,
+    require_iv: bool = True,
 ) -> Tuple[bool, str]:
     """
     Evaluates Call/Put IV velocity to confirm gamma squeeze or reject institutional vol-crush.
-    Calibrated against 90-day empirical audit (100% loss-reduction precision).
+    Calibrated against 90-day empirical audit.
+    When require_iv is True (default), missing or invalid IV fails closed with (False, "NO_IV_DATA").
     """
     if iv_current is None or not _finite(iv_current) or iv_current <= 0:
-        return True, "NO_IV_DATA"
+        return (False, "NO_IV_DATA") if require_iv else (True, "NO_IV_DATA")
 
     d1 = (iv_current - iv_prev_1m) if (iv_prev_1m is not None and _finite(iv_prev_1m)) else 0.0
     d3 = (iv_current - iv_prev_3m) if (iv_prev_3m is not None and _finite(iv_prev_3m)) else d1
