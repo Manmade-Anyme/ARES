@@ -76,6 +76,9 @@ class IVBreakoutDetector:
         Record candle and IV state across every tick regardless of cooldown or priority.
         Maintains rolling buffers for dynamic base evaluation.
         """
+        if not isinstance(getattr(candle, "timestamp", None), datetime):
+            return
+
         candle_date, _ = self._parse_time(candle)
         if candle_date is not None and self.current_date != candle_date:
             self.reset_session(candle_date)
@@ -86,7 +89,10 @@ class IVBreakoutDetector:
             pass
 
         # Avoid duplicating candle history if observe and update are called on the same tick
-        if not self.candle_history or self.candle_history[-1] is not candle:
+        if not self.candle_history or (
+            self.candle_history[-1] is not candle
+            and getattr(self.candle_history[-1], "timestamp", None) != candle.timestamp
+        ):
             self.candle_history.append(candle)
 
         if iv_current is not None and iv_current > 0:

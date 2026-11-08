@@ -4,6 +4,12 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Fix IVBreakoutDetector State Buffer Continuity Under Engine Cooldown & Priority Short-Circuiting (TASK-20261108):**
+  - Enforced unconditional observation in `AresEngine` Step 1 with `isinstance(candle, OHLCVCandle)` type guard, preventing skipped observations or mock object corruption.
+  - Hardened `IVBreakoutDetector.observe()` against duplicate candle registration by verifying both object identity and candle timestamp equality.
+  - Guarded `observe()` against non-datetime candle timestamps to prevent buffer corruption from malformed ticks.
+  - Added regression test suite verifying multi-candle cooldown buffer accumulation, dynamic base accuracy upon cooldown recovery, priority short-circuit continuity, timestamp deduplication, and non-`OHLCVCandle` safety.
+
 - **IV-Gated Breakout Expansion Strategy & Signal Cooldown Reduction (TASK-20261106):**
   - Integrated 5th setup type `SetupType.IV_GATED_BREAKOUT` into core ARES detection engine (`detectors/iv_breakout.py`, `models.py`, `engine.py`).
   - Replaced static time barriers (12:30 anchor cutoff and 14:15 entry cutoff) with dynamic, time-agnostic consolidation base detection (`iv_breakout_lookback_candles=25`, `iv_breakout_max_base_range_pts=55.0`, `iv_breakout_volume_ratio=1.15`, `iv_breakout_buffer_pts=2.0`, `iv_breakout_min_zscore=0.8`). Allows immediate breakout entries across morning, midday, and afternoon regimes whenever tight consolidation base breaks out with volume and VWAP confirmation.

@@ -220,6 +220,210 @@ def test_iv_breakout_buffer_observed_during_cooldown():
     assert engine.iv_breakout_detector.session_high == 24460.0
 
 
+def test_iv_breakout_buffer_continuity_under_multi_candle_cooldown_and_recovery():
+    """Validates IVBreakoutDetector buffer continuity across multi-candle cooldown and post-cooldown breakout."""
+    from models import OptionRow, ATMStrikes
+    from config import settings
+    engine = AresEngine()
+    engine.last_signal_time = datetime.now()  # Active cooldown
+
+    date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+    candles = []
+    # 25 base candles fed during engine cooldown
+    for m in range(25):
+        t = date_now + timedelta(minutes=m)
+        c = OHLCVCandle(
+            timestamp=t, open=24350.0, high=24365.0, low=24340.0, close=24355.0,
+            volume=1000000, vwap=24355.0
+        )
+        candles.append(c)
+        atm = ATMStrikes(
+            spot_price=24355.0,
+            ce=OptionRow(strike=24350, option_type="CE", iv=13.0),
+            pe=OptionRow(strike=24350, option_type="PE", iv=13.0)
+        )
+        sig = engine.tick(c, full_chain=[], atm=atm)
+        assert sig is None  # Gated by cooldown
+
+    # Buffer must have continuously accumulated all 25 candles and IV data points
+    assert len(engine.iv_breakout_detector.candle_history) == 25
+    assert len(engine.iv_breakout_detector.iv_history) == 25
+    assert engine.iv_breakout_detector.candle_history[-1].timestamp == candles[-1].timestamp
+    assert engine.iv_breakout_detector.iv_history[-1][0] == candles[-1].timestamp
+
+    # Advance cooldown clock to expire cooldown
+    engine.last_signal_time = datetime.now() - timedelta(minutes=settings.signal_cooldown_minutes + 1)
+
+    # Minute 25 consolidation candle
+    t_25 = date_now + timedelta(minutes=25)
+    c_25 = OHLCVCandle(t_25, 24350.0, 24365.0, 24340.0, 24355.0, 1000000, 24355.0)
+    atm_25 = ATMStrikes(
+        spot_price=24355.0,
+        ce=OptionRow(strike=24350, option_type="CE", iv=13.0),
+        pe=OptionRow(strike=24350, option_type="PE", iv=13.0),
+    )
+    sig_25 = engine.tick(c_25, full_chain=[], atm=atm_25)
+    assert sig_25 is None
+    assert len(engine.iv_breakout_detector.candle_history) == 26
+
+    # Minute 26 breakout candle: base_candles must accurately evaluate recent consolidation
+    t_bo = date_now + timedelta(minutes=26)
+    c_bo = OHLCVCandle(t_bo, 24360.0, 24375.0, 24358.0, 24370.0, 1300000, 24356.0)
+    atm_bo = ATMStrikes(
+        spot_price=24370.0,
+        ce=OptionRow(strike=24350, option_type="CE", iv=13.2),
+        pe=OptionRow(strike=24350, option_type="PE", iv=13.2),
+    )
+    signal = engine.tick(c_bo, full_chain=[], atm=atm_bo)
+    assert signal is not None
+    assert signal.setup_type == SetupType.IV_GATED_BREAKOUT
+    assert signal.trigger_price == 24370.0
+    # Exactly 27 candles now, without duplicate appends for the breakout candle
+    assert len(engine.iv_breakout_detector.candle_history) == 27
+
+
+def test_iv_breakout_buffer_continuity_under_priority_short_circuiting():
+    """Validates that IVBreakoutDetector maintains continuous buffer even when higher-priority detectors fire."""
+    from models import OptionRow, ATMStrikes
+    from unittest.mock import MagicMock
+    engine = AresEngine()
+    engine.last_signal_time = None
+
+    t = datetime(2026, 11, 5, 10, 0, tzinfo=IST)
+    c = OHLCVCandle(timestamp=t, open=24350.0, high=24380.0, low=24340.0, close=24375.0, volume=1500000, vwap=24360.0)
+    atm = ATMStrikes(
+        spot_price=24375.0,
+        ce=OptionRow(strike=24350, option_type="CE", iv=13.5),
+        pe=OptionRow(strike=24350, option_type="PE", iv=13.5),
+    )
+
+    # Force breakout_detector to trigger a higher-priority signal
+    fake_breakout_signal = AresSignal(
+        setup_type=SetupType.FAILED_BREAKOUT,
+        direction=Direction.BULLISH,
+        trigger_price=24375.0,
+        entry_zone=(24370.0, 24380.0),
+        stop_loss=24345.0,
+        target_1=24410.0,
+        target_2=24445.0,
+        confidence="HIGH",
+        reasons=["Breakout triggered"],
+        timestamp=t,
+        strike_to_trade=24350,
+        option_type="CE",
+    )
+    engine.breakout_detector.update = MagicMock(return_value=fake_breakout_signal)
+
+    sig = engine.tick(c, full_chain=[], atm=atm)
+    # The higher priority breakout signal was returned
+    assert sig == fake_breakout_signal
+
+    # But IVBreakoutDetector still observed the tick and updated its state
+    assert len(engine.iv_breakout_detector.candle_history) == 1
+    assert engine.iv_breakout_detector.candle_history[-1] == c
+    assert len(engine.iv_breakout_detector.iv_history) == 1
+    assert engine.iv_breakout_detector.iv_history[-1] == (t, 13.5, 24350)
+
+
+def test_iv_breakout_observe_idempotency_and_timestamp_deduplication():
+    """Ensures observe() does not duplicate entries on identical timestamps or repeated calls."""
+    detector = IVBreakoutDetector()
+    t = datetime(2026, 11, 5, 10, 0, tzinfo=IST)
+    c1 = OHLCVCandle(timestamp=t, open=24350.0, high=24360.0, low=24340.0, close=24355.0, volume=1000, vwap=24355.0)
+    c2 = OHLCVCandle(timestamp=t, open=24350.0, high=24360.0, low=24340.0, close=24355.0, volume=1000, vwap=24355.0)
+
+    detector.observe(c1, iv_current=14.0, strike=24350.0)
+    # Re-call observe with same candle instance
+    detector.observe(c1, iv_current=14.0, strike=24350.0)
+    # Re-call observe with different candle instance but identical timestamp
+    detector.observe(c2, iv_current=14.0, strike=24350.0)
+
+    assert len(detector.candle_history) == 1
+    assert len(detector.iv_history) == 1
+
+
+def test_engine_tick_non_ohlcv_candle_safely_ignored_by_iv_breakout():
+    """Validates that engine.tick with a non-OHLCVCandle does not invoke IVBreakoutDetector.observe."""
+    from unittest.mock import MagicMock
+    from models import ATMStrikes
+    engine = AresEngine()
+    engine.iv_breakout_detector.observe = MagicMock()
+    mock_candle = MagicMock()  # not an instance of OHLCVCandle
+    mock_candle.timestamp.date.return_value = datetime(2026, 11, 5).date()
+    mock_candle.volume = 1000
+    atm = ATMStrikes(spot_price=24350.0, ce=None, pe=None)
+
+    engine.tick(mock_candle, full_chain=[], atm=atm)
+    assert not engine.iv_breakout_detector.observe.called
+
+
+def test_iv_breakout_session_reset_across_dates():
+    """Ensures detector resets session state when a new trading date arrives."""
+    detector = IVBreakoutDetector()
+    t_day1 = datetime(2026, 11, 5, 15, 29, tzinfo=IST)
+    c_day1 = OHLCVCandle(t_day1, 24350, 24400, 24340, 24390, 1000, 24370)
+    detector.observe(c_day1, iv_current=14.0, strike=24350)
+    assert detector.session_high == 24400.0
+    assert detector.current_date == t_day1.date()
+
+    t_day2 = datetime(2026, 11, 6, 9, 15, tzinfo=IST)
+    c_day2 = OHLCVCandle(t_day2, 24500, 24520, 24490, 24510, 1000, 24505)
+    detector.observe(c_day2, iv_current=14.5, strike=24500)
+    assert detector.current_date == t_day2.date()
+    assert detector.session_high == 24520.0
+    assert len(detector.candle_history) == 1
+    assert len(detector.iv_history) == 1
+
+
+def test_iv_breakout_vwap_fallback_and_strike_inference():
+    """Covers manual VWAP fallback when candle.vwap is None/zero and strike inference from iv_history."""
+    detector = IVBreakoutDetector()
+    date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+
+    # 25 base candles with vwap=0.0
+    for m in range(25):
+        t = date_now + timedelta(minutes=m)
+        c = OHLCVCandle(t, 24350, 24365, 24340, 24355, 1000000, vwap=0.0)
+        detector.update(c, avg_volume=1000000, iv_current=13.0, strike=24350.0)
+
+    # 26th candle with vwap=0.0
+    prior_time = date_now + timedelta(minutes=25)
+    detector.update(
+        OHLCVCandle(prior_time, 24350, 24365, 24340, 24355, 1000000, vwap=0.0),
+        avg_volume=1000000,
+        iv_current=13.0,
+        strike=24350.0,
+    )
+
+    # Breakout candle: Step 1 observe records strike, then update is called without strike (inferred)
+    t_bo = date_now + timedelta(minutes=26)
+    c_bo = OHLCVCandle(t_bo, 24360, 24375, 24358, 24370, 1300000, vwap=0.0)
+    detector.observe(c_bo, iv_current=13.2, strike=24350.0)
+    sig = detector.update(c_bo, avg_volume=1000000, iv_current=13.2, strike=None)
+    assert sig is not None
+    assert sig.setup_type == SetupType.IV_GATED_BREAKOUT
+
+
+def test_iv_breakout_fired_today_and_base_range_guard():
+    """Validates fired_today gating and max_base_range_pts rejection."""
+    detector = IVBreakoutDetector()
+    detector.fired_today = True
+    t = datetime(2026, 11, 5, 10, 0, tzinfo=IST)
+    c = OHLCVCandle(t, 24350, 24370, 24340, 24360, 1000, 24355)
+    assert detector.update(c, 1000, 14.0) is None
+
+    # Test base_range > max_base_range (range > 55 pts)
+    detector2 = IVBreakoutDetector()
+    date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+    for m in range(25):
+        t_m = date_now + timedelta(minutes=m)
+        # range = 24420 - 24340 = 80 pts > 55 pts
+        c_m = OHLCVCandle(t_m, 24350, 24420, 24340, 24360, 1000, 24360)
+        detector2.update(c_m, 1000, 14.0, strike=24350)
+    c_bo = OHLCVCandle(date_now + timedelta(minutes=26), 24360, 24430, 24350, 24425, 2000, 24365)
+    assert detector2.update(c_bo, 1000, 14.5, strike=24350) is None
+
+
 def test_reports_includes_iv_gated_breakout():
     """QA Test: Verifies reports module tracks IV_GATED_BREAKOUT metrics."""
     from reports import SETUP_TYPES, SETUP_LABELS, compute_metrics

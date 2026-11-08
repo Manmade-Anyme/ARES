@@ -173,9 +173,9 @@ class AresEngine:
         self.candle_buffer.append(candle)
         if atm and atm.ce and atm.ce.iv is not None:
             self.iv_buffer.append(atm.ce.iv)
-        if getattr(settings, "iv_breakout_enabled", True):
+        if getattr(settings, "iv_breakout_enabled", True) and isinstance(candle, OHLCVCandle):
             self.iv_breakout_detector.observe(
-                candle,
+                candle=candle,
                 iv_current=atm.ce.iv if (atm and atm.ce) else None,
                 strike=atm.ce.strike if (atm and atm.ce) else None,
             )
