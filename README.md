@@ -46,7 +46,7 @@ This README describes the source in this checkout through **30 October 2026**, w
 | Uniform, compact Discord alerts | Shows available option entry, premium SL, T1/T2 and suggested lots without execution-status banners. Extra diagnostics default off. | [PR #142](https://github.com/Manmade-Anyme/ARES/pull/142), [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
 | Capital-independent option prices | Calculates prices even with unavailable, zero, or insufficient capital; capital controls lots. The option R:R rejection has been removed. | [PR #141](https://github.com/Manmade-Anyme/ARES/pull/141), [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
 | Completed-candle inputs | Evaluates each selected completed bar once, rebuilds full-session VWAP, and preserves risk monitoring on polls with no new candle. | [PR #140](https://github.com/Manmade-Anyme/ARES/pull/140), [input contract](docs/completed-candle-inputs.md) |
-| Gated Trend Expansion | PR #157 adds the fifth strategy to the live detector path as manual bullish signal references. It requires a verified PDC, an uninterrupted candle stream from 09:15 through the 10:30 regime check, and a qualifying expansion regime; it sends no broker entry orders. | [PR #157](https://github.com/Manmade-Anyme/ARES/pull/157), [POC validation](docs/POC_Trend_Expansion_Strategy_Validation.md) |
+| Gated Trend Expansion | Evaluates a rolling regime and rolling reclaim/breakout setups on every completed candle through regular market hours (09:15–15:30 IST), with no 10:30 or afternoon-only gate. It requires verified PDC and sends manual signal references only. | [PR #157](https://github.com/Manmade-Anyme/ARES/pull/157), [production spec](docs/POC_Trend_Expansion_Strategy_Validation.md) |
 | Greeks-based option references | Uses current-expiry ATM-biased contract selection, Delta/Gamma projections, tick rounding, and nonnegative capped sizing. | [MANM-176](docs/MANM-176-options-entry-exit-sl-greeks-limit-orders.md) |
 | Jev and ML reliability | Includes first-ready OI-wall assessments, shared-process supervision, confidence calibration, missing-data preservation, and audited training/promotion. TypeSafe SDK is constrained to `>=0.7.5,<0.8.0`; the default model remains `jev-1.13.0`. | [OI watch](docs/OI%20Wall%20Watch%20Jev.md), [SDK decision](directives/adr/TASK-258_update-jev-to-latest-version.md), [ML module](ml_signal/README.md) |
 
@@ -114,15 +114,16 @@ Registered trades can carry across sessions without automatic end-of-day square-
 
 ## 🎯 Detection Strategies and Confidence
 
-The engine evaluates five strategies in short-circuit priority order. All signals remain subject to R:R and cooldown checks. The startup-loaded calibration policy can downgrade an unsupported HIGH tier to MEDIUM; raw detector scores alone do not guarantee the emitted tier.
+The engine evaluates six strategies in short-circuit priority order. IV-Gated Breakout is a separate setup, not an IV filter on Failed Breakout. All signals remain subject to R:R and cooldown checks. The startup-loaded calibration policy can downgrade an unsupported HIGH tier to MEDIUM; raw detector scores alone do not guarantee the emitted tier.
 
 | Priority | Detector | Entry logic and scoring |
 |---|---|---|
-| 1 | Failed Breakout | Requires a close back inside a crossed structural level. Scores weak breakout volume, falling IV, active OI growth and a deep close-back. Minimum score is 2 of 4: raw MEDIUM at 2, HIGH at 3 or more. |
+| 1 | Failed Breakout | Requires a close back inside a crossed structural level. Any finite negative ATM IV change on the confirmation candle vetoes the setup; missing IV is not treated as falling. Otherwise scores weak breakout volume, active OI growth and deep close-back. Minimum score is 2; the existing four-point confidence scale is retained. |
 | 2 | OI Wall Rejection | Separates wall bias/persistence from entry. Requires interaction, a later favourable excursion, then a secondary retest on a later candle. A qualifying defended-side retest enters immediately on its close when bullish for PE support or bearish for CE resistance. Scores wall magnitude, OI growth, penetration and wick rejection; wick rejection is not a hard gate. |
-| 3 | Gated Trend Expansion | Requires a two-of-four expansion regime (overnight gap, opening range, VWAP dispersion, directional displacement), then checks the VWAP reclaim and afternoon breakout setups. Enabled by default on both profiles; controlled by `trend_expansion_enabled`. Requires verified prior close and an uninterrupted current-session candle stream from 09:15 through the 10:30 regime check; otherwise remains dormant for that session. |
+| 3 | Gated Trend Expansion | Recalculates a two-of-four rolling expansion regime (prior-close extension, rolling range, VWAP dispersion, directional displacement) and checks rolling VWAP-reclaim and breakout setups on every candle during 09:15–15:30 IST. The rolling breakout requires valid, fresh, same-strike ATM Call IV when its IV filter is enabled. Enabled by default on both profiles; controlled by `trend_expansion_enabled`. |
 | 4 | Trend Continuation | Establishes a VWAP/previous-day-level regime, then looks for a pullback and confirmed momentum resumption. Controlled by `continuation_enabled`. |
-| 5 | Exhaustion Reversal | Requires volume climax and a doji-like small body after its history minimum. IV expansion, structural proximity and stronger volume/body conditions contribute to confidence. Raw HIGH requires at least two scored conditions. |
+| 5 | IV-Gated Breakout | Separate dynamic consolidation-base breakout setup. Requires price, volume, VWAP and valid ATM Call IV confirmation; missing/invalid IV suppresses it. Controlled by `iv_breakout_enabled`. |
+| 6 | Exhaustion Reversal | Requires volume climax and a doji-like small body after its history minimum. IV expansion, structural proximity and stronger volume/body conditions contribute to confidence. Raw HIGH requires at least two scored conditions. |
 
 Trend Expansion outputs manual spot-signal references through the existing signal, option-reference, persistence and alert path. The path does not submit broker entry orders. Its reclaim and breakout use their detector-computed structural stop/T1 geometry; T2 selects the nearest eligible structural level beyond T1 or uses a configured reference fallback.
 
@@ -144,10 +145,11 @@ The TASK-073 historical 18-trade replay gate was explicitly **skipped**, not pas
 | `TREND_CONTINUATION` | 25 | 25 | 80 |
 | `OI_WALL_REJECTION` | 16 | 25 | 40 |
 | `FAILED_BREAKOUT` | 12 | 20 | 55 |
+| `IV_GATED_BREAKOUT` | 30 | 35 | 70 |
 
 T1 is a fixed per-setup distance. T2 selects the nearest eligible structural level beyond T1, or uses its fallback. T2 is displayed for reference; current post-T1 runners exit through ATR trailing.
 
-Trend Expansion is the exception to fixed per-type levels: reclaim SL is beneath the observed sweep and T1 is the morning high; breakout SL is based on the recent base and T1 is a configured reward distance. Both are bounded by configured stop limits. Their T2 remains a structural/reference target.
+Trend Expansion is the exception to fixed per-type levels: reclaim SL is beneath the observed sweep and T1 is the high of the preceding rolling impulse; breakout SL is based on the recent base and T1 is a configured reward distance. Both are bounded by configured stop limits. Their T2 remains a structural/reference target.
 
 <a name="option-pricing-and-lot-suggestions"></a>
 
@@ -379,7 +381,7 @@ The [weekly ML workflow](.github/workflows/ml_training.yml) performs audited tra
 | Active market session | **09:15–15:30 IST**, with the bounded final-bar analysis described above. |
 | REST cadence | **60 seconds**; tick monitoring continues between polls. |
 | Candle history | Rolling buffer capacity is **30 fresh completed candles**. Readiness is detector-specific; there is no universal 30-bar entry gate. Startup history rebuilds VWAP but is not replayed into this buffer. |
-| Signal cooldown | **15 minutes** non-expiry / **20 minutes** expiry, across emitted signals; an initial SL exit clears the cooldown. |
+| Signal cooldown | **10 minutes** on both expiry and non-expiry profiles, across emitted signals; an initial SL exit clears the cooldown. |
 | ATR runner | Completed **5m** spot bars, Wilder **ATR(5)**, **HHV/LLV(10)**, multiplier **2.5**. |
 | Session carry | Registered trades persist across sessions; ATR inputs reset for a new session while the locked stop remains. |
 | Configuration | Trading thresholds in `config_profiles.py`; credentials in `.env` or backend environment secrets. |

@@ -38,6 +38,7 @@ SETUP_TYPES = [
     "TREND_CONTINUATION",
     "TREND_EXPANSION_RECLAIM",
     "TREND_EXPANSION_BREAKOUT",
+    "IV_GATED_BREAKOUT",
 ]
 SETUP_LABELS = {
     "FAILED_BREAKOUT": "Failed Breakout",
@@ -46,6 +47,7 @@ SETUP_LABELS = {
     "TREND_CONTINUATION": "Trend Continuation",
     "TREND_EXPANSION_RECLAIM": "Trend Expansion Reclaim",
     "TREND_EXPANSION_BREAKOUT": "Trend Expansion Breakout",
+    "IV_GATED_BREAKOUT": "IV-Gated Breakout",
 }
 
 

@@ -12,6 +12,7 @@ from detectors.oi_wall import OIWallDetector
 from detectors.oi_wall_entry import OIWallEntryFilter
 from detectors.exhaustion import ExhaustionDetector
 from detectors.continuation import TrendContinuationDetector
+from detectors.iv_breakout import IVBreakoutDetector
 from detectors.trend_expansion import TrendExpansionDetector
 from ml_signal.calibration_policy import DEFAULT_DETECTOR_CALIBRATION_POLICY
 
@@ -75,6 +76,7 @@ class AresEngine:
         self.oi_wall_filter = OIWallEntryFilter()
         self.continuation_detector = TrendContinuationDetector(calibration_policy=calibration_policy)
         self.trend_expansion_detector = TrendExpansionDetector(calibration_policy=calibration_policy)
+        self.iv_breakout_detector = IVBreakoutDetector(calibration_policy=calibration_policy)
         self.exhaustion_detector = ExhaustionDetector(calibration_policy=calibration_policy)
         
         self.candle_buffer: deque = deque(maxlen=settings.candle_buffer_size)
@@ -171,6 +173,12 @@ class AresEngine:
         self.candle_buffer.append(candle)
         if atm and atm.ce and atm.ce.iv is not None:
             self.iv_buffer.append(atm.ce.iv)
+        if getattr(settings, "iv_breakout_enabled", True):
+            self.iv_breakout_detector.observe(
+                candle,
+                iv_current=atm.ce.iv if (atm and atm.ce) else None,
+                strike=atm.ce.strike if (atm and atm.ce) else None,
+            )
 
         # 2. Cooldown state. Evaluated here but applied *after* the stateful
         # detectors have advanced (TASK-188) — see step 5a.
@@ -249,7 +257,13 @@ class AresEngine:
         if in_cooldown:
             if settings.trend_expansion_enabled and isinstance(candle, OHLCVCandle):
                 self.trend_expansion_detector.update(
-                    candle=candle, pdc=pdc, pdl=pdl, levels=levels, allow_signal=False
+                    candle=candle,
+                    pdc=pdc,
+                    pdl=pdl,
+                    levels=levels,
+                    allow_signal=False,
+                    iv_current=atm.ce.iv if (atm and atm.ce) else None,
+                    strike=atm.ce.strike if (atm and atm.ce) else None,
                 )
             if oi_wall_decision.status == "QUALIFIED":
                 ack = self.oi_wall_filter.acknowledge(oi_wall_decision, "SUPPRESSED_BY_COOLDOWN")
@@ -275,6 +289,8 @@ class AresEngine:
             pdl=pdl,
             levels=levels,
             allow_signal=not breakout_signal and not oi_wall_candidate,
+            iv_current=atm.ce.iv if (atm and atm.ce) else None,
+            strike=atm.ce.strike if (atm and atm.ce) else None,
         ) if settings.trend_expansion_enabled and isinstance(candle, OHLCVCandle) else None
 
         if breakout_signal:
@@ -297,6 +313,17 @@ class AresEngine:
                         pdl=pdl,
                     )
                     if settings.continuation_enabled
+                    else None
+                )
+                or (
+                    self.iv_breakout_detector.update(
+                        candle=candle,
+                        avg_volume=avg_volume,
+                        iv_current=atm.ce.iv if (atm and atm.ce) else None,
+                        levels=levels,
+                        strike=atm.ce.strike if (atm and atm.ce) else None,
+                    )
+                    if getattr(settings, "iv_breakout_enabled", True)
                     else None
                 )
                 or self.exhaustion_detector.update(

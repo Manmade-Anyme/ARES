@@ -89,5 +89,7 @@ def detector_names() -> list:
         names.append("Gated Trend Expansion")
     if settings.continuation_enabled:
         names.append("Trend Continuation")
+    if getattr(settings, "iv_breakout_enabled", True):
+        names.append("IV-Gated Breakout")
     names.append("Exhaustion")
     return names

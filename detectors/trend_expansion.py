@@ -1,5 +1,6 @@
-"""Incremental live detector for the gated Trend Expansion POC."""
+"""Rolling live detector for the Trend Expansion strategy."""
 
+from collections import deque
 from datetime import datetime, time
 from math import isfinite, sqrt
 from statistics import mean, stdev
@@ -15,15 +16,13 @@ from models import (
     confidence_from_score,
 )
 from config import settings
+from options_math import evaluate_iv_velocity, select_iv_velocity_samples
 
 
 IST = ZoneInfo("Asia/Kolkata")
 SESSION_START = time(9, 15)
-REGIME_RANGE_END = time(9, 45)
-REGIME_DISPERSION_TIME = time(10, 30)
-MORNING_RANGE_END = time(10, 15)
-RECLAIM_START = time(10, 30)
 SESSION_END = time(15, 30)
+TREND_EXPANSION_LOOKBACK_CANDLES = 25
 
 
 class TrendExpansionDetector:
@@ -33,7 +32,6 @@ class TrendExpansionDetector:
         self.calibration_policy = calibration_policy
         self._session_date = None
         self._candles: list[OHLCVCandle] = []
-        self._session_complete = False
         self._regime_evaluated = False
         self._regime_score = 0
         self._regime_factors: dict[str, bool] = {}
@@ -43,14 +41,10 @@ class TrendExpansionDetector:
         self._ema9: Optional[float] = None
         self._ema20: Optional[float] = None
         self._bbw_history: list[float] = []
+        self._iv_history: deque = deque(maxlen=60)
         self._dipped_below_vwap = False
         self._sweep_low = float("inf")
         self._trades_today = 0
-
-    @property
-    def session_complete(self) -> bool:
-        """Whether the detector has observed an unbroken session from 09:15."""
-        return self._session_complete
 
     def update(
         self,
@@ -59,35 +53,39 @@ class TrendExpansionDetector:
         pdl: Optional[float] = None,
         levels: Optional[List[ResistanceLevel]] = None,
         allow_signal: bool = True,
+        iv_current: Optional[float] = None,
+        strike: Optional[float] = None,
     ) -> Optional[AresSignal]:
         """Advance session state and return a qualified manual signal, if any."""
         timestamp = self._local_timestamp(candle.timestamp)
         if not SESSION_START <= timestamp.time() < SESSION_END:
             return None
 
-        current_time = timestamp.time()
         if timestamp.date() != self._session_date:
-            self._reset_session(timestamp.date(), current_time)
+            self._reset_session(timestamp.date())
         elif self._candles:
             previous = self._local_timestamp(self._candles[-1].timestamp)
             if timestamp <= previous:
                 return None
-            step = (
-                timestamp.replace(second=0, microsecond=0)
-                - previous.replace(second=0, microsecond=0)
-            ).total_seconds()
-            if not self._regime_evaluated and step != 60:
-                self._session_complete = False
 
         self._candles.append(candle)
         self._update_indicators(candle)
 
-        if not self._regime_evaluated and current_time >= REGIME_DISPERSION_TIME:
-            self._evaluate_regime(pdc)
+        if (
+            isinstance(iv_current, (int, float))
+            and not isinstance(iv_current, bool)
+            and isfinite(iv_current)
+            and iv_current > 0
+        ):
+            if not self._iv_history or self._iv_history[-1][0] != candle.timestamp:
+                self._iv_history.append((candle.timestamp, iv_current, strike))
+            elif len(self._iv_history[-1]) > 2 and self._iv_history[-1][2] is None and strike is not None:
+                self._iv_history[-1] = (candle.timestamp, iv_current, strike)
+
+        self._evaluate_regime(pdc)
 
         if (
-            not self._session_complete
-            or not self._regime_evaluated
+            not self._regime_evaluated
             or self._regime_score < settings.trend_expansion_min_regime_score
             or self._trades_today >= settings.trend_expansion_max_trades_per_day
         ):
@@ -108,15 +106,16 @@ class TrendExpansionDetector:
 
         if not allow_signal:
             return None
-        breakout = self._check_afternoon_breakout(candle, levels or [])
+        breakout = self._check_breakout(
+            candle, levels or [], iv_current=iv_current, strike=strike
+        )
         if breakout is not None:
             self._trades_today += 1
         return breakout
 
-    def _reset_session(self, session_date, first_time: time) -> None:
+    def _reset_session(self, session_date) -> None:
         self._session_date = session_date
         self._candles = []
-        self._session_complete = first_time.replace(second=0, microsecond=0) == SESSION_START
         self._regime_evaluated = False
         self._regime_score = 0
         self._regime_factors = {}
@@ -126,6 +125,7 @@ class TrendExpansionDetector:
         self._ema9 = None
         self._ema20 = None
         self._bbw_history = []
+        self._iv_history.clear()
         self._dipped_below_vwap = False
         self._sweep_low = float("inf")
         self._trades_today = 0
@@ -155,15 +155,16 @@ class TrendExpansionDetector:
         return alpha * value + (1.0 - alpha) * previous
 
     def _evaluate_regime(self, pdc: Optional[float]) -> None:
-        if not self._session_complete or pdc is None or not isfinite(float(pdc)):
+        if pdc is None or not isinstance(pdc, (int, float)) or not isfinite(pdc):
+            self._regime_evaluated = False
+            self._regime_score = 0
+            self._regime_factors = {}
             return
         self._regime_evaluated = True
 
-        opening = [c for c in self._candles if self._time(c) < REGIME_RANGE_END]
-        if not opening:
-            return
-        opening_range = max(c.high for c in opening) - min(c.low for c in opening)
-        displacement = abs(opening[-1].close - self._candles[0].open)
+        regime_candles = self._candles[-TREND_EXPANSION_LOOKBACK_CANDLES:]
+        range_width = max(c.high for c in regime_candles) - min(c.low for c in regime_candles)
+        displacement = abs(regime_candles[-1].close - regime_candles[0].open)
         vwap = self._cumulative_tp_volume / self._cumulative_volume if self._cumulative_volume else 0.0
         variance = (
             self._cumulative_tp2_volume / self._cumulative_volume - vwap * vwap
@@ -173,9 +174,9 @@ class TrendExpansionDetector:
         dispersion = sqrt(max(variance, 0.0))
 
         self._regime_factors = {
-            "gap_extension": abs(self._candles[0].open - float(pdc))
-            >= settings.trend_expansion_gap_extension_pts,
-            "range_expansion": opening_range >= settings.trend_expansion_opening_range_pts,
+            "prior_close_extension": abs(regime_candles[-1].close - float(pdc))
+            >= settings.trend_expansion_pdc_extension_pts,
+            "range_expansion": range_width >= settings.trend_expansion_range_expansion_pts,
             "vwap_dispersion": dispersion >= settings.trend_expansion_vwap_dispersion_pts,
             "directional_displacement": (
                 displacement >= settings.trend_expansion_directional_displacement_pts
@@ -186,20 +187,19 @@ class TrendExpansionDetector:
     def _check_reclaim(
         self, candle: OHLCVCandle, levels: List[ResistanceLevel], allow_signal: bool
     ) -> Optional[AresSignal]:
-        current_time = self._time(candle)
-        if not RECLAIM_START <= current_time < self._parse_time(settings.trend_expansion_range_anchor_end):
+        previous_candles = self._candles
+        if previous_candles and previous_candles[-1].timestamp == candle.timestamp:
+            previous_candles = previous_candles[:-1]
+        impulse_candles = previous_candles[-TREND_EXPANSION_LOOKBACK_CANDLES:]
+        if len(impulse_candles) < TREND_EXPANSION_LOOKBACK_CANDLES:
             return None
-
-        morning = [c for c in self._candles if self._time(c) < MORNING_RANGE_END]
-        if not morning:
-            return None
-        morning_high = max(c.high for c in morning)
-        morning_low = min(c.low for c in morning)
-        morning_open = morning[0].open
-        impulse = morning_high - morning_low
+        impulse_high = max(c.high for c in impulse_candles)
+        impulse_low = min(c.low for c in impulse_candles)
+        impulse_open = impulse_candles[0].open
+        impulse = impulse_high - impulse_low
         if (
             impulse < settings.trend_expansion_min_impulse_pts
-            or morning_high <= morning_open
+            or impulse_high <= impulse_open
         ):
             return None
 
@@ -209,12 +209,12 @@ class TrendExpansionDetector:
             self._sweep_low = min(self._sweep_low, candle.low)
         if not self._dipped_below_vwap:
             return None
-        if self._sweep_low <= morning_low:
+        if self._sweep_low <= impulse_low:
             self._dipped_below_vwap = False
             self._sweep_low = float("inf")
             return None
 
-        retrace = morning_high - self._sweep_low
+        retrace = impulse_high - self._sweep_low
         if not (
             settings.trend_expansion_min_retrace_ratio * impulse
             <= retrace
@@ -230,7 +230,7 @@ class TrendExpansionDetector:
 
         stop_loss = self._sweep_low - settings.trend_expansion_reclaim_stop_buffer_pts
         risk = candle.close - stop_loss
-        reward = morning_high - candle.close
+        reward = impulse_high - candle.close
         if (
             risk < settings.trend_expansion_reclaim_min_stop_pts
             or risk > settings.trend_expansion_max_stop_pts
@@ -245,28 +245,28 @@ class TrendExpansionDetector:
             setup_type=SetupType.TREND_EXPANSION_RECLAIM,
             setup_name="VWAP_RECLAIM",
             stop_loss=stop_loss,
-            target_1=morning_high,
+            target_1=impulse_high,
             reasons=[
-                f"VWAP reclaim after a {impulse:.1f}-point morning impulse",
+                f"VWAP reclaim after a {impulse:.1f}-point rolling impulse",
                 f"Pullback depth {retrace:.1f} pts ({retrace / impulse:.0%}) stayed within the configured retracement band",
                 "VWAP reclaimed with EMA9 at or above EMA20",
             ],
         )
 
-    def _check_afternoon_breakout(
-        self, candle: OHLCVCandle, levels: List[ResistanceLevel]
+    def _check_breakout(
+        self,
+        candle: OHLCVCandle,
+        levels: List[ResistanceLevel],
+        iv_current: Optional[float] = None,
+        strike: Optional[float] = None,
     ) -> Optional[AresSignal]:
-        current_time = self._time(candle)
-        anchor_end = self._parse_time(settings.trend_expansion_range_anchor_end)
-        cutoff = self._parse_time(settings.trend_expansion_entry_cutoff_time)
-        if not anchor_end <= current_time < cutoff:
+        previous_candles = self._candles
+        if previous_candles and previous_candles[-1].timestamp == candle.timestamp:
+            previous_candles = previous_candles[:-1]
+        if len(previous_candles) < TREND_EXPANSION_LOOKBACK_CANDLES:
             return None
-
-        extended_range = [c for c in self._candles if self._time(c) < anchor_end]
-        previous_candles = self._candles[:-1]
-        if not extended_range or not previous_candles:
-            return None
-        range_high = max(c.high for c in extended_range)
+        base_candles = previous_candles[-TREND_EXPANSION_LOOKBACK_CANDLES:]
+        range_high = max(c.high for c in base_candles)
         if self._cumulative_volume <= 0:
             return None
         vwap = self._cumulative_tp_volume / self._cumulative_volume
@@ -286,11 +286,41 @@ class TrendExpansionDetector:
             candle.close > range_high + settings.trend_expansion_breakout_buffer_pts
             and candle.close > vwap
             and candle.close > self._ema20
-            and vwap_zscore >= settings.trend_expansion_min_afternoon_vwap_zscore
+            and vwap_zscore >= settings.trend_expansion_min_breakout_vwap_zscore
             and candle.volume >= settings.trend_expansion_min_volume_ratio * volume_sma
             and bbw_expansion >= settings.trend_expansion_min_bbw_expansion
         ):
             return None
+
+        # IV Microstructure Velocity Gate (Anti-Crush & Climax Exhaustion)
+        iv_reason = None
+        if getattr(settings, "trend_expansion_iv_filter_enabled", True):
+            if not (
+                isinstance(iv_current, (int, float))
+                and not isinstance(iv_current, bool)
+                and isfinite(iv_current)
+                and iv_current > 0
+            ):
+                return None
+            active_strike = strike
+            if active_strike is None and self._iv_history:
+                last_entry = self._iv_history[-1]
+                if len(last_entry) > 2:
+                    active_strike = last_entry[2]
+
+            iv_prev_1m, iv_prev_3m = select_iv_velocity_samples(
+                self._iv_history, candle.timestamp, active_strike
+            )
+
+            iv_ok, iv_reason = evaluate_iv_velocity(
+                iv_current=iv_current,
+                iv_prev_1m=iv_prev_1m,
+                iv_prev_3m=iv_prev_3m,
+                vwap_zscore=vwap_zscore,
+                require_iv=True,
+            )
+            if not iv_ok:
+                return None
 
         base = previous_candles[-20:]
         base_low = min(item.low for item in base)
@@ -308,17 +338,20 @@ class TrendExpansionDetector:
         target_1 = candle.close + settings.trend_expansion_t1_reward_pts
         if settings.trend_expansion_t1_reward_pts / risk < settings.min_rr_ratio:
             return None
+        reasons = [
+            f"Close broke {range_high:.2f} range high with volume confirmation",
+            f"VWAP z-score {vwap_zscore:.2f} and BBW expansion {bbw_expansion:.2f} confirmed momentum",
+        ]
+        if iv_reason:
+            reasons.append(f"IV velocity confirmed ({iv_reason})")
         return self._build_signal(
             candle=candle,
             levels=levels,
             setup_type=SetupType.TREND_EXPANSION_BREAKOUT,
-            setup_name="AFTERNOON_BREAKOUT",
+            setup_name="ROLLING_BREAKOUT",
             stop_loss=stop_loss,
             target_1=target_1,
-            reasons=[
-                f"Close broke {range_high:.2f} range high with volume confirmation",
-                f"VWAP z-score {vwap_zscore:.2f} and BBW expansion {bbw_expansion:.2f} confirmed momentum",
-            ],
+            reasons=reasons,
         )
 
     def _build_signal(
@@ -386,16 +419,7 @@ class TrendExpansionDetector:
         return bbw / baseline if baseline > 0 else 0.0
 
     @staticmethod
-    def _time(candle: OHLCVCandle) -> time:
-        return TrendExpansionDetector._local_timestamp(candle.timestamp).time()
-
-    @staticmethod
     def _local_timestamp(timestamp: datetime) -> datetime:
         if timestamp.tzinfo is None:
             return timestamp
         return timestamp.astimezone(IST).replace(tzinfo=None)
-
-    @staticmethod
-    def _parse_time(value: str) -> time:
-        hour, minute = (int(part) for part in value.split(":"))
-        return time(hour, minute)

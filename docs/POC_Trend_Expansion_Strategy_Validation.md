@@ -1,74 +1,53 @@
-# Trend Expansion Strategy — Production Specification & Validation
+# Trend Expansion Strategy — Production Specification
 
-**Author:** ARES Engineering  
-**Implementation:** [`detectors/trend_expansion.py`](file:///Users/manmadeanyme/Documents/Work/ARES/detectors/trend_expansion.py) | [`engine.py`](file:///Users/manmadeanyme/Documents/Work/ARES/engine.py)  
-**Tests:** [`tests/unit/test_trend_expansion_detector.py`](file:///Users/manmadeanyme/Documents/Work/ARES/tests/unit/test_trend_expansion_detector.py)  
-**Status:** Production signal path (`SIGNAL_REFERENCE` mode; manual references only)
+**Implementation:** [detectors/trend_expansion.py](../detectors/trend_expansion.py), [engine.py](../engine.py)
+**Tests:** [tests/unit/test_trend_expansion_detector.py](../tests/unit/test_trend_expansion_detector.py)
+**Execution:** Manual signal references only; this detector does not submit broker orders.
 
----
+## 1. Evaluation schedule
 
-## 1. Overview
+The detector evaluates each completed candle throughout the regular market session, **09:15–15:30 IST**. There is no 10:30 regime check, morning-only reclaim window, afternoon breakout window, or 14:15 entry cutoff. The session boundary is the only time-of-day gate.
 
-The **Trend Expansion Strategy** targets vertical trend days and short-squeeze regimes where mean-reversion and shallow continuation pullbacks underperform. It operates as the 5th strategy in `AresEngine`, evaluating after failed-breakout and OI-wall checks, and before standard continuation/exhaustion detectors.
+The regime is recalculated on every live candle. Its rolling price factors use up to the latest 25 candles. A fresh detector needs 25 observed candles for a complete setup range; this is indicator warm-up, not a clock-time entry window. If the process starts mid-session, it builds that range from candles it observes after startup.
 
-Two complementary setups are evaluated:
-1. **`VWAP_RECLAIM` (10:30 – 12:30 IST):** Higher-low value reversal following a 35%–68% Fibonacci liquidity sweep below VWAP.
-2. **`AFTERNOON_BREAKOUT` (12:30 – 14:15 IST):** Range expansion breakout above morning consolidation (09:15–12:30 IST) with volume and Bollinger Bandwidth participation.
+## 2. Rolling regime gate
 
-All windows use candle-start timestamps and exclude their end boundary. The 12:30 candle is eligible as a breakout candle but is not part of the range anchor; the last eligible breakout candle starts at 14:14 and completes by 14:15.
+At least **2 of 4** current factors must qualify:
 
----
+| Factor | Metric | Default threshold |
+|---|---|---:|
+| Prior-close extension | Absolute distance between latest close and verified prior-day close | 70 pts |
+| Rolling range expansion | High minus low across up to the latest 25 candles | 85 pts |
+| VWAP dispersion | Session volume-weighted typical-price standard deviation | 25 pts |
+| Directional displacement | Absolute distance from first open to last close in the rolling 25-candle window | 45 pts |
 
-## 2. Multi-Factor Regime Gate
+Missing or invalid prior-day close keeps the regime gate closed. The live loop retries the prior-day context fetch on its first live candle if startup fetch did not provide a close. Price data must be monotonic; a missing minute does not disable the rest of the session.
 
-Evaluated at or after **10:30 IST**. Requires at least **2 of 4** volatility factors to qualify the session:
+## 3. Setups
 
-| Factor | Metric | Default Threshold (`TuningConfig`) |
-|---|---|---|
-| **1. Overnight Gap** | $\|\text{Open}_{09:15} - \text{PDC}\|$ | $\ge 70.0$ pts |
-| **2. Opening Range Width** | $\text{High}_{09:15\text{-}09:45} - \text{Low}_{09:15\text{-}09:45}$ | $\ge 85.0$ pts |
-| **3. VWAP Dispersion** | $\sigma_{VWAP} = \sqrt{E[TP^2] - (E[TP])^2}$ | $\ge 25.0$ pts |
-| **4. Directional Displacement** | $\|\text{Close}_{09:45} - \text{Open}_{09:15}\|$ | $\ge 45.0$ pts |
+### `VWAP_RECLAIM`
 
-*Fail-Closed Invariant:* Missing PDC or a broken 1-minute candle stream from 09:15 through the 10:30 regime check disqualifies the session (`allow_signal = False`). If the startup PDC fetch fails, the live loop retries once at the regime check before failing closed.
+- Uses the preceding 25 candles to form a rolling impulse range.
+- Requires impulse width of at least 70 pts and a high above the first candle's open.
+- Tracks a pullback through the configured VWAP buffer, while keeping the sweep above the rolling range low.
+- Requires retracement between 35% and 68%, a close back above session VWAP, and EMA9 at or above EMA20.
+- Stop is the sweep low minus the configured buffer; risk must remain within the configured reclaim limits.
+- Target 1 is the rolling impulse high.
+- This setup has no IV gate; its existing price, VWAP, EMA, and risk conditions remain in force.
 
----
+### `ROLLING_BREAKOUT`
 
-## 3. Setup Rules & Geometry
+- Compares the current close with the high of the preceding 25 candles; it does not use a fixed opening-range anchor.
+- Requires a close above that range plus the configured buffer, above VWAP and EMA20, and a qualifying VWAP z-score, volume ratio, and Bollinger Bandwidth expansion.
+- When enabled, the IV gate requires valid ATM Call IV and fresh same-strike samples near both one and three minutes earlier. Missing or stale comparison data suppresses the signal (`NO_IV_DATA`); a different strike is never used as a fallback.
+- Stop and target geometry remain configured by the detector and shared signal lifecycle.
 
-### Setup A: `VWAP_RECLAIM`
-- **Window:** 10:30 – 12:30 IST.
-- **Impulse Filter:** Morning leg ($\text{High}_{morning} - \text{Low}_{morning}$) $\ge 70$ pts.
-- **Sweep Boundary:** Pullback reaches the configured VWAP buffer, bounded by $0.35 \le \frac{\text{High}_{morning} - \text{Low}_{sweep}}{\text{Impulse}} \le 0.68$, holding above the session low.
-- **Trigger:** 1-minute close crosses back above computed session VWAP with $\text{EMA}_9 \ge \text{EMA}_{20}$.
-- **Stop Loss:** $\text{Low}_{sweep} - 3.0$ pts; signals are rejected unless entry risk is between 15 and 35 pts.
-- **Target 1 (T1):** Retest of morning high ($\text{High}_{morning}$).
-- **Target 2 (T2):** Nearest eligible structural level beyond T1, or the configured reference fallback.
+Both setups are evaluated during the regular market session whenever their rolling data and regime conditions qualify. Signal count remains capped by `trend_expansion_max_trades_per_day`.
 
-### Setup B: `AFTERNOON_BREAKOUT`
-- **Window:** 12:30 – 14:15 IST.
-- **Anchor:** Range high/low formed between 09:15 and 12:30 IST.
-- **Trigger:** 1-minute close $> \text{Range High} + 2.0$ pts with:
-  - $\text{Close} > \text{VWAP}$ and $\text{Close} > \text{EMA}_{20}$
-  - $Z_{VWAP} = \frac{\text{Close} - \text{VWAP}}{\sigma_{VWAP}} \ge 0.8$
-  - $\text{Volume} \ge 0.95 \times \text{SMA}_{20}(\text{Volume})$
-  - $\text{BBW Expansion} = \frac{\text{BBW}}{\text{SMA}_{20}(\text{BBW})} \ge 1.0$
-- **Stop Loss:** The higher of the preceding 20-candle base low and entry minus 35 pts; signals are rejected if risk is below 12 pts.
-- **Target 1 (T1):** $\text{Entry} + 35.0$ pts.
-- **Target 2 (T2):** Nearest eligible structural level beyond T1, or the configured reference fallback.
+## 4. Lifecycle and boundaries
 
----
-
-## 4. Lifecycle & Risk Invariants
-
-1. **Signal-only boundary:** This detector emits manual spot-signal references and submits no broker orders. It does not own position exits, EOD square-off, or a strategy-specific trailing stop.
-2. **Session state:** Missing prior-day close or an incomplete 09:15-starting candle stream fails the regime gate closed for that session.
-3. **Sweep state:** Transient sweep state (`_sweep_low`, `_dipped_below_vwap`) is reset when a reclaim is emitted or suppressed, or when the sweep is invalidated. Registered-trade lifecycle follows the system's shared position-management policy.
-
----
-
-## 5. Telemetry & Live Signal Integration
-
-- **Execution Mode:** Emits manual `SIGNAL_REFERENCE` alerts. Does not submit paper or live broker orders.
-- **Persistence:** Stored in Supabase `ares_signals` with `setup_type = "TREND_EXPANSION_RECLAIM"` or `"TREND_EXPANSION_BREAKOUT"`; `market_context.trend_expansion_setup` records `"VWAP_RECLAIM"` or `"AFTERNOON_BREAKOUT"`.
-- **Config Toggle:** Configured in `TuningConfig` under `trend_expansion_enabled` (default `True` in both profiles); strategy thresholds and setup parameters are the `trend_expansion_*` profile fields.
+1. The detector resets state on a new local market date and rejects duplicate or out-of-order candles.
+2. No signal is evaluated before 09:15 or at/after 15:30 IST.
+3. Missing prior-day close suppresses signals; missing/invalid IV suppresses only `ROLLING_BREAKOUT` when its IV filter is enabled.
+4. Signals are persisted as `TREND_EXPANSION_RECLAIM` or `TREND_EXPANSION_BREAKOUT`. The breakout context is now `ROLLING_BREAKOUT`; older stored signals may still contain the former `AFTERNOON_BREAKOUT` label.
+5. This detector emits manual references only. It does not own order submission, position exits, or end-of-day square-off.

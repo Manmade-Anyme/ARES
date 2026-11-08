@@ -12,7 +12,8 @@ from options_math import (
     calculate_greek_premium_translation, calculate_lots, calculate_points,
     calculate_risk_amount, fetch_dhan_capital, find_optimal_strike,
     option_sizing_context, option_sizing_summary, process_options_calculation,
-    project_option_premium, round_to_tick, translate_to_premium, validate_capital,
+    project_option_premium, round_to_tick, select_iv_velocity_samples,
+    translate_to_premium, validate_capital,
 )
 
 
@@ -149,6 +150,32 @@ def test_theta_rr_does_not_reject_prices_or_lot_suggestion(direction, capital):
 def test_low_premium_cannot_create_inverted_stop():
     bracket = build_option_bracket(make_signal(), [make_row(ce_ltp=1,ce_ask=1.05,ce_bid=.95)],100000,TuningConfig())
     assert bracket.rejection_reason == 'INVALID_BRACKET_ORDERING'
+
+
+def test_iv_velocity_samples_require_fresh_one_and_three_minute_same_strike_history():
+    current = datetime(2026, 11, 5, 9, 20)
+    history = [
+        (current - timedelta(minutes=3), 14.8, 24400.0),
+        (current - timedelta(minutes=1), 15.0, 24400.0),
+        (current - timedelta(minutes=1), 15.4, 24500.0),
+    ]
+
+    assert select_iv_velocity_samples(history, current, 24400.0) == (15.0, 14.8)
+    assert select_iv_velocity_samples(history, current, 24500.0) == (15.4, None)
+
+
+@pytest.mark.parametrize(("history", "expected"), [
+    ([], (None, None)),
+    ([(datetime(2026, 11, 5, 9, 10), 15.0, 24400.0)], (None, None)),
+    ([
+        (datetime(2026, 11, 5, 9, 19), 15.0, 24400.0),
+        (datetime(2026, 11, 5, 9, 15), 14.8, 24400.0),
+    ], (15.0, None)),
+])
+def test_iv_velocity_samples_reject_missing_or_stale_comparison_points(history, expected):
+    assert select_iv_velocity_samples(
+        history, datetime(2026, 11, 5, 9, 20), 24400.0
+    ) == expected
 
 
 @pytest.mark.parametrize('field,value', [('options_max_lots_cap',-1),('options_max_lots_cap',float('inf')),
