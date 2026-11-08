@@ -72,7 +72,7 @@ sequenceDiagram
   * Dhan tick stream: `160.25` → `159.10` → `156.05` → `151.10`.
   * At 14:31:39 IST (25 seconds after entry), option printed `151.10 <= 151.70`.
   * Synthetic option stop triggered (`stop_domain: OPTION_PREMIUM`, `stop_source: INITIAL_OPTION_SL`).
-  * Option Realized PnL: **`-9.40` option points** (`option_reference_pnl_points`: `-2.65`).
+  * Modeled Option Premium Change: **`-9.40` option points** (modeled reference-limit basis; `option_reference_pnl_points`: `-2.65`).
   * Spot at Exit: **`25063.45`** (`pnl_points`: **`+4.75` spot points**). Spot never came close to spot SL (`25046.70`).
 
 ### Trade 2: Signal #624 (`TREND_EXPANSION_RECLAIM`)
@@ -86,7 +86,7 @@ sequenceDiagram
   * Option traded down: `154.90` → `154.85` → `146.55`.
   * At 14:56:26 IST (5 minutes after entry), option printed `146.55 <= 147.50`.
   * Synthetic option stop triggered (`stop_domain: OPTION_PREMIUM`, `stop_source: INITIAL_OPTION_SL`).
-  * Option Realized PnL: **`-11.0` option points**.
+  * Modeled Option Premium Loss: **`-11.0` option points** (modeled reference-limit basis).
   * Spot at Exit: **`25077.75`** (`pnl_points`: **`-5.2` spot points**). Spot held **+16.8 points above Spot SL** (`25060.95`).
 
 ---
@@ -97,7 +97,7 @@ sequenceDiagram
 * **Observation:** In Supabase `active_trades` and `trade_analytics`, Trade #623 showed `exit_type = 'SL_HIT'` while `pnl_points = +4.75`.
 * **Root Cause:** ARES maintains dual-domain tracking:
   * `pnl_points`: Difference in underlying index spot points ($\text{Spot Exit} - \text{Spot Entry} = 25063.45 - 25058.70 = +4.75$).
-  * `option_pnl_points`: Financial PnL of the option contract ($-9.40$ pts).
+  * `option_pnl_points`: Modeled option premium change ($-9.40$ pts; reflects reference-limit execution model, distinct from broker-confirmed realized cash PnL).
 * **Conclusion:** The accounting logic functioned as designed, but the terminology can cause visual confusion if an analyst assumes `pnl_points` refers to the option premium.
 
 ### Finding 2: High Sensitivity of `INITIAL_OPTION_SL` to Spread & IV Fluctuations
@@ -105,18 +105,16 @@ sequenceDiagram
 * **Root Cause:** Option premiums on 1-DTE contracts fluctuate heavily due to bid-ask widening, theta decay, and IV micro-crushes. A single printed last-trade tick at the bid can trigger `INITIAL_OPTION_SL` even when spot has not moved against the trade.
 * **Recommendation:** Consider introducing a tick confirmation filter (e.g., require 2 consecutive ticks below stop, or an option bar close) before firing the emergency stop, to prevent bid-ask wick stop-outs.
 
-### Finding 3: `IVBreakoutDetector` Buffer Continuity Gap in `engine.py`
-* **Observation:** In [`engine.py`](file:///Users/manmadeanyme/.gemini/antigravity/worktrees/ARES/audit_code_fly_deployment/engine.py#L257-L272), `self.iv_breakout_detector.observe(...)` is not called during cooldown or when earlier detectors evaluate.
-* **Root Cause:** `IVBreakoutDetector.observe()` was implemented in `detectors/iv_breakout.py` to maintain rolling 25-candle base buffers, but `engine.py` only invokes `iv_breakout_detector.update()` inside the short-circuited `else:` branch after cooldown has expired.
-* **Impact:** Once a trade closes and cooldown expires, `candle_history` in `iv_breakout_detector` has a 10–15 minute blind spot, distorting the base calculation.
+### Finding 3: `IVBreakoutDetector` Buffer Continuity Verified in `engine.py`
+* **Observation:** Audit verified whether `IVBreakoutDetector` maintains continuous rolling 25-candle base buffers during active trades and cooldown periods.
+* **Verification:** Confirmed that in [`engine.py#L176-L181`](file:///Users/manmadeanyme/.gemini/antigravity/worktrees/ARES/audit_code_fly_deployment/engine.py#L176-L181), `self.iv_breakout_detector.observe(candle, ...)` executes unconditionally in Step 1 on every completed candle *before* the cooldown evaluation (line 185) and detector priority routing.
+* **Conclusion:** Buffer continuity is already fully preserved; no blind spot exists during cooldown or earlier detector branches.
 
 ---
 
 ## 5. Post-Market Action Plan
 
-1. **Fix `IVBreakoutDetector` Observation Wiring (`engine.py`):**
-   * Call `self.iv_breakout_detector.observe(candle, iv_current=..., strike=...)` unconditionally on every candle tick before the cooldown gate, alongside `oi_wall_detector.update()`.
-2. **Review Option Premium Stop Sensitivity:**
+1. **Review Option Premium Stop Sensitivity:**
    * Evaluate whether `INITIAL_OPTION_SL` should require a multi-tick confirmation or a tiny margin buffer against wide bid-ask spreads.
-3. **Persist Documentation Sync:**
+2. **Persist Documentation Sync:**
    * Maintain sync across repo `docs/` and Obsidian vault (`~/Documents/Obsidian/Projects/Ares/`).
