@@ -207,13 +207,11 @@ class TuningConfig:
     # Gated Trend Expansion strategy (PR #157). Signals are manual spot
     # references only; no broker entry order is submitted by this detector.
     trend_expansion_enabled: bool = True
-    trend_expansion_gap_extension_pts: float = 70.0
-    trend_expansion_opening_range_pts: float = 85.0
+    trend_expansion_pdc_extension_pts: float = 70.0
+    trend_expansion_range_expansion_pts: float = 85.0
     trend_expansion_vwap_dispersion_pts: float = 25.0
     trend_expansion_directional_displacement_pts: float = 45.0
     trend_expansion_min_regime_score: int = 2
-    trend_expansion_range_anchor_end: str = "12:30"
-    trend_expansion_entry_cutoff_time: str = "14:15"
     trend_expansion_min_impulse_pts: float = 70.0
     trend_expansion_min_retrace_ratio: float = 0.35
     trend_expansion_max_retrace_ratio: float = 0.68
@@ -226,7 +224,7 @@ class TuningConfig:
     trend_expansion_t1_reward_pts: float = 35.0
     trend_expansion_min_volume_ratio: float = 0.95
     trend_expansion_min_bbw_expansion: float = 1.0
-    trend_expansion_min_afternoon_vwap_zscore: float = 0.8
+    trend_expansion_min_breakout_vwap_zscore: float = 0.8
     trend_expansion_breakout_buffer_pts: float = 2.0
     trend_expansion_max_trades_per_day: int = 2
     trend_expansion_target_2_fallback_pts: float = 70.0

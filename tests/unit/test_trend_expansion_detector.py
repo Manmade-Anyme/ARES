@@ -39,7 +39,7 @@ def _session_candles(start_time=datetime(2026, 11, 5, 9, 15)):
     return candles
 
 
-def test_trend_expansion_emits_dynamic_breakout_signal_after_qualified_regime():
+def test_trend_expansion_detects_rolling_breakout_before_1030():
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
         trend_expansion_min_bbw_expansion=0.0,
@@ -60,10 +60,11 @@ def test_trend_expansion_emits_dynamic_breakout_signal_after_qualified_regime():
     assert result.use_detector_levels is True
     assert result.stop_loss < result.trigger_price < result.target_1 < result.target_2
     assert result.market_context["regime_score"] >= 2
-    assert result.market_context["trend_expansion_setup"] == "AFTERNOON_BREAKOUT"
+    assert result.market_context["trend_expansion_setup"] == "ROLLING_BREAKOUT"
+    assert result.timestamp.time() < datetime(2026, 11, 5, 10, 30).time()
 
 
-def test_trend_expansion_requires_verified_prior_close_and_complete_session():
+def test_trend_expansion_requires_verified_prior_close_but_can_start_after_open():
     settings.apply_profile(NON_EXPIRY_CONFIG)
     detector = TrendExpansionDetector()
 
@@ -74,14 +75,13 @@ def test_trend_expansion_requires_verified_prior_close_and_complete_session():
 
     late_start = datetime(2026, 11, 5, 9, 16)
     detector = TrendExpansionDetector()
-    for candle in _session_candles(late_start):
-        result = detector.update(candle, pdc=24200.0, levels=[])
+    for candle in _session_candles(late_start)[:25]:
+        detector.update(candle, pdc=24200.0, levels=[])
 
-    assert result is None
-    assert detector.session_complete is False
+    assert detector._regime_evaluated is True
 
 
-def test_missing_pdc_does_not_consume_regime_evaluation():
+def test_regime_is_evaluated_on_each_live_candle_without_waiting_until_1030():
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
         trend_expansion_min_bbw_expansion=0.0,
@@ -89,19 +89,30 @@ def test_missing_pdc_does_not_consume_regime_evaluation():
     detector = TrendExpansionDetector()
     candles = _session_candles()
 
-    for candle in candles:
-        detector.update(candle, pdc=None)
-        if candle.timestamp.time() >= datetime(2026, 11, 5, 10, 30).time():
-            break
+    detector.update(candles[0], pdc=24200.0)
+
+    assert detector._regime_evaluated is True
+    assert detector._regime_score >= 1
+
+
+def test_missing_pdc_can_be_retried_on_a_later_candle():
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+    ))
+    detector = TrendExpansionDetector()
+    candles = _session_candles()
+
+    detector.update(candles[0], pdc=None)
     assert detector._regime_evaluated is False
 
     detector.update(
-        OHLCVCandle(datetime(2026, 11, 5, 10, 31), 24400, 24401, 24399, 24400, 1000),
+        candles[1],
         pdc=24200.0,
     )
 
     assert detector._regime_evaluated is True
-    assert detector._regime_score >= 2
+    assert detector._regime_score >= 1
 
 
 def test_missing_pdc_retry_failure_remains_fail_closed():
@@ -206,8 +217,7 @@ def test_engine_wires_trend_expansion_before_continuation():
     assert engine.last_signal_time is not None
 
 
-def test_missing_1030_candle_followed_by_1031_fails_closed():
-    """Verify that a missing 10:30 candle (gap from 10:29 to 10:31) marks session incomplete and fails closed."""
+def test_opening_candle_gap_does_not_disable_the_rest_of_the_session():
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
         trend_expansion_min_bbw_expansion=0.0,
@@ -215,23 +225,23 @@ def test_missing_1030_candle_followed_by_1031_fails_closed():
     detector = TrendExpansionDetector()
     candles = _session_candles()
 
-    # Drop exact 10:30 candle (10:29 -> 10:31 gap)
-    candles_with_gap = [c for c in candles if c.timestamp.strftime("%H:%M") != "10:30"]
+    # Drop one early candle to model a temporary feed gap.
+    candles_with_gap = [c for c in candles if c.timestamp.strftime("%H:%M") != "09:16"]
 
     result = None
     for candle in candles_with_gap:
-        signal = detector.update(candle, pdc=24200.0, levels=[])
+        signal = detector.update(
+            candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0
+        )
         if signal is not None:
             result = signal
             break
 
-    assert detector.session_complete is False
-    assert detector._regime_evaluated is False
-    assert result is None
+    assert detector._regime_evaluated is True
+    assert result is not None
 
 
-def test_regime_evaluation_survives_1030_timestamp_jitter():
-    """Verify regime is evaluated when 10:30 candle arrives with sub-minute seconds."""
+def test_regime_evaluation_does_not_depend_on_1030_timestamp():
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
         trend_expansion_min_bbw_expansion=0.0,
@@ -239,44 +249,36 @@ def test_regime_evaluation_survives_1030_timestamp_jitter():
     jittered_detector = TrendExpansionDetector()
     jittered_candles = [
         replace(c, timestamp=c.timestamp + timedelta(seconds=15))
-        if c.timestamp.strftime("%H:%M") == "10:30"
+        if c.timestamp.strftime("%H:%M") == "09:15"
         else c
-        for c in _session_candles()
+        for c in _session_candles()[:1]
     ]
-    result = None
-    for candle in jittered_candles:
-        result = jittered_detector.update(
-            candle,
-            pdc=24200.0,
-            levels=[],
-            iv_current=15.0,
-            strike=24450.0,
-        )
-        if result is not None:
-            break
+    jittered_detector.update(
+        jittered_candles[0],
+        pdc=24200.0,
+        levels=[],
+        iv_current=15.0,
+        strike=24450.0,
+    )
 
-    assert jittered_detector.session_complete is True
     assert jittered_detector._regime_evaluated is True
-    assert jittered_detector._regime_score >= 2
-    assert result is not None
-    assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
+    assert jittered_detector._regime_score >= 1
 
 
-def test_regime_opening_range_excludes_0945_candle():
+def test_regime_range_expansion_uses_the_rolling_window_including_current_candle():
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
-        trend_expansion_gap_extension_pts=10000.0,
-        trend_expansion_opening_range_pts=100.0,
+        trend_expansion_pdc_extension_pts=10000.0,
+        trend_expansion_range_expansion_pts=100.0,
         trend_expansion_vwap_dispersion_pts=10000.0,
         trend_expansion_directional_displacement_pts=10000.0,
     ))
     detector = TrendExpansionDetector()
-    detector._session_complete = True
     detector._candles = [
-        OHLCVCandle(datetime(2026, 11, 5, 9, 15), 24300, 24301, 24299, 24300, 1000),
-        OHLCVCandle(datetime(2026, 11, 5, 9, 44), 24300, 24301, 24299, 24300, 1000),
-        OHLCVCandle(datetime(2026, 11, 5, 9, 45), 24300, 24450, 24299, 24300, 1000),
-        OHLCVCandle(datetime(2026, 11, 5, 10, 30), 24300, 24301, 24299, 24300, 1000),
+        OHLCVCandle(datetime(2026, 11, 5, 14, 45), 24300, 24301, 24299, 24300, 1000),
+        OHLCVCandle(datetime(2026, 11, 5, 14, 46), 24300, 24301, 24299, 24300, 1000),
+        OHLCVCandle(datetime(2026, 11, 5, 14, 47), 24300, 24450, 24299, 24300, 1000),
+        OHLCVCandle(datetime(2026, 11, 5, 14, 48), 24300, 24301, 24299, 24300, 1000),
     ]
     detector._cumulative_volume = 4000.0
     detector._cumulative_tp_volume = 24300.0 * 4000.0
@@ -284,25 +286,27 @@ def test_regime_opening_range_excludes_0945_candle():
 
     detector._evaluate_regime(pdc=24300.0)
 
-    assert detector._regime_factors["range_expansion"] is False
+    assert detector._regime_factors["range_expansion"] is True
 
 
-def test_reclaim_morning_range_excludes_1015_candle():
+def test_reclaim_uses_recent_impulse_at_any_time_of_day():
     settings.apply_profile(NON_EXPIRY_CONFIG)
     detector = TrendExpansionDetector()
     detector._candles = [
-        OHLCVCandle(datetime(2026, 11, 5, 9, 15), 100, 131, 90, 100, 1000),
-        OHLCVCandle(datetime(2026, 11, 5, 10, 14), 100, 130, 90, 100, 1000),
-        OHLCVCandle(datetime(2026, 11, 5, 10, 15), 100, 200, 90, 100, 1000),
+        OHLCVCandle(
+            datetime(2026, 11, 5, 14, 0) + timedelta(minutes=i),
+            100, 180, 90, 170, 1000,
+        )
+        for i in range(25)
     ]
-    current = OHLCVCandle(datetime(2026, 11, 5, 10, 30), 100, 101, 97, 100, 1000, vwap=100)
+    current = OHLCVCandle(datetime(2026, 11, 5, 14, 30), 100, 101, 97, 100, 1000, vwap=100)
 
     detector._check_reclaim(current, levels=[], allow_signal=False)
 
-    assert detector._dipped_below_vwap is False
+    assert detector._dipped_below_vwap is True
 
 
-def test_breakout_window_includes_1230_and_excludes_1415():
+def test_rolling_breakout_is_eligible_during_morning():
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
         trend_expansion_min_bbw_expansion=0.0,
@@ -310,33 +314,43 @@ def test_breakout_window_includes_1230_and_excludes_1415():
     candles = _session_candles()
 
     breakout_detector = TrendExpansionDetector()
+    signal = None
     for candle in candles:
-        if candle.timestamp.time() < datetime(2026, 11, 5, 12, 30).time():
-            breakout_detector.update(
-                candle, pdc=24200.0, allow_signal=False,
-                iv_current=15.0, strike=24450.0,
-            )
-        else:
-            signal = breakout_detector.update(
-                candle, pdc=24200.0, iv_current=15.0, strike=24450.0
-            )
+        signal = breakout_detector.update(
+            candle, pdc=24200.0, iv_current=15.0, strike=24450.0
+        )
+        if signal is not None:
             break
     assert signal is not None
-    assert signal.timestamp.time() == datetime(2026, 11, 5, 12, 30).time()
+    assert signal.timestamp.time() < datetime(2026, 11, 5, 10, 30).time()
 
-    cutoff_detector = TrendExpansionDetector()
-    for candle in candles:
-        if candle.timestamp.time() < datetime(2026, 11, 5, 14, 15).time():
-            cutoff_detector.update(
-                candle, pdc=24200.0, allow_signal=False,
-                iv_current=15.0, strike=24450.0,
-            )
-        else:
-            signal = cutoff_detector.update(
-                candle, pdc=24200.0, iv_current=15.0, strike=24450.0
-            )
-            break
-    assert signal is None
+
+def test_rolling_breakout_is_eligible_late_in_the_session():
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_regime_score=1,
+        trend_expansion_min_bbw_expansion=0.0,
+        trend_expansion_iv_filter_enabled=False,
+    ))
+    detector = TrendExpansionDetector()
+    date = datetime(2026, 11, 5)
+    for minute in range(25):
+        close = 24400.0 + (10.0 if minute % 2 else 0.0)
+        detector.update(
+            OHLCVCandle(
+                date.replace(hour=14, minute=30) + timedelta(minutes=minute),
+                close - 1, close + 5, close - 5, close, 1000,
+            ),
+            pdc=24200.0,
+        )
+
+    signal = detector.update(
+        OHLCVCandle(date.replace(hour=14, minute=55), 24409, 24440, 24408, 24430, 1500),
+        pdc=24200.0,
+    )
+
+    assert signal is not None
+    assert signal.timestamp.time() == datetime(2026, 11, 5, 14, 55).time()
 
 
 def test_internal_vwap_used_when_candle_vwap_is_zero():
@@ -364,8 +378,8 @@ def test_internal_vwap_used_when_candle_vwap_is_zero():
     assert result.setup_type == SetupType.TREND_EXPANSION_BREAKOUT
 
 
-def test_midday_gap_after_1030_does_not_block_afternoon_breakout():
-    """Verify an isolated 1-minute data drop during midday chop does not kill afternoon breakout."""
+def test_midday_gap_does_not_block_rolling_breakout():
+    """Verify an isolated 1-minute data drop does not disable later detection."""
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
         trend_expansion_min_bbw_expansion=0.0,
@@ -380,8 +394,10 @@ def test_midday_gap_after_1030_does_not_block_afternoon_breakout():
 
     result = None
     for candle in candles_with_midday_drop:
+        allow_signal = candle.timestamp.strftime("%H:%M") >= "12:30"
         result = detector.update(
-            candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0
+            candle, pdc=24200.0, levels=[], allow_signal=allow_signal,
+            iv_current=15.0, strike=24450.0,
         )
         if result is not None:
             break
@@ -397,7 +413,6 @@ def test_suppressed_reclaim_resets_state_without_candle_vwap():
     detector._session_date = start_time.date()
     detector._regime_evaluated = True
     detector._regime_score = 3
-    detector._session_complete = True
     detector._trades_today = 0
     detector._ema9 = 24400.0
     detector._ema20 = 24390.0
@@ -434,8 +449,8 @@ def test_suppressed_reclaim_resets_state_without_candle_vwap():
     assert detector._sweep_low == float("inf")
 
 
-def test_trend_expansion_afternoon_breakout_suppressed_by_vol_crush():
-    """Verify that afternoon breakout is suppressed when IV velocity detects institutional vol crush."""
+def test_trend_expansion_breakout_suppressed_by_vol_crush():
+    """Verify breakout is suppressed when IV velocity detects institutional vol crush."""
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
         trend_expansion_min_bbw_expansion=0.0,
@@ -444,15 +459,17 @@ def test_trend_expansion_afternoon_breakout_suppressed_by_vol_crush():
     detector = TrendExpansionDetector()
     candles = _session_candles()
 
-    # Pass candles up to breakout with crushing IV on the breakout candle at 12:30
+    # Build valid history without consuming the daily signal allowance.
     result = None
     for candle in candles:
         time_str = candle.timestamp.strftime("%H:%M")
         if time_str < "12:30":
-            # Normal stable IV
-            detector.update(candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0)
+            detector.update(
+                candle, pdc=24200.0, levels=[], allow_signal=False,
+                iv_current=15.0, strike=24450.0,
+            )
         elif time_str == "12:30":
-            # Breakout candle fires at 12:30, but IV dumps from 15.0 to 14.0
+            # IV dumps from 15.0 to 14.0 on the candidate candle.
             result = detector.update(candle, pdc=24200.0, levels=[], iv_current=14.0, strike=24450.0)
             break
 
@@ -460,8 +477,28 @@ def test_trend_expansion_afternoon_breakout_suppressed_by_vol_crush():
     assert result is None
 
 
+def test_trend_expansion_breakout_fails_closed_without_fresh_iv_history():
+    settings.apply_profile(replace(
+        NON_EXPIRY_CONFIG,
+        trend_expansion_min_bbw_expansion=0.0,
+        trend_expansion_iv_filter_enabled=True,
+    ))
+    detector = TrendExpansionDetector()
+    result = None
+
+    for candle in _session_candles():
+        if candle.timestamp.strftime("%H:%M") == "12:30":
+            result = detector.update(
+                candle, pdc=24200.0, iv_current=15.0, strike=24450.0
+            )
+            break
+        detector.update(candle, pdc=24200.0, allow_signal=False)
+
+    assert result is None
+
+
 @pytest.mark.parametrize("iv_current", [None, 0.0, float("nan"), float("inf")])
-def test_trend_expansion_afternoon_breakout_fails_closed_without_valid_iv(iv_current):
+def test_trend_expansion_breakout_fails_closed_without_valid_iv(iv_current):
     settings.apply_profile(replace(
         NON_EXPIRY_CONFIG,
         trend_expansion_min_bbw_expansion=0.0,
@@ -476,6 +513,9 @@ def test_trend_expansion_afternoon_breakout_fails_closed_without_valid_iv(iv_cur
                 candle, pdc=24200.0, levels=[], iv_current=iv_current
             )
             break
-        detector.update(candle, pdc=24200.0, levels=[], iv_current=15.0, strike=24450.0)
+        detector.update(
+            candle, pdc=24200.0, levels=[], allow_signal=False,
+            iv_current=15.0, strike=24450.0,
+        )
 
     assert result is None

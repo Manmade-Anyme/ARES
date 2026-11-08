@@ -13,17 +13,21 @@ IST = pytz.timezone("Asia/Kolkata")
 
 def test_evaluate_iv_velocity_approvals_and_rejections():
     """Validates the calibrated Asymmetric Anti-Crush Gate rules."""
+    ok, reason = evaluate_iv_velocity(iv_current=15.0, iv_prev_1m=14.9)
+    assert ok is False
+    assert reason == "NO_IV_DATA"
+
     # 1. Normal IV expansion -> Approved
     ok, reason = evaluate_iv_velocity(iv_current=15.0, iv_prev_1m=14.8, iv_prev_3m=14.5, vwap_zscore=1.2)
     assert ok is True
     assert reason == "IV_EXPANSION_CONFIRMED"
 
-    # 2. Severe Vol-Crush (1m dump <= -0.30%) -> Rejected
+    # 2. Severe Vol-Crush (1m dump <= -0.30 IV points) -> Rejected
     ok, reason = evaluate_iv_velocity(iv_current=14.5, iv_prev_1m=14.9, iv_prev_3m=15.0, vwap_zscore=1.0)
     assert ok is False
     assert reason == "VOL_CRUSH_BULL_TRAP"
 
-    # 3. Severe Vol-Crush (3m dump <= -0.40%) -> Rejected
+    # 3. Severe Vol-Crush (3m dump <= -0.40 IV points) -> Rejected
     ok, reason = evaluate_iv_velocity(iv_current=14.5, iv_prev_1m=14.6, iv_prev_3m=15.1, vwap_zscore=1.0)
     assert ok is False
     assert reason == "VOL_CRUSH_BULL_TRAP"
@@ -51,8 +55,16 @@ def test_iv_breakout_detector_lifecycle():
             volume=1000000,
             vwap=24355.0
         )
-        sig = detector.update(c, avg_volume=1000000, iv_current=13.0)
+        sig = detector.update(c, avg_volume=1000000, iv_current=13.0, strike=24350.0)
         assert sig is None  # Establishing 25-bar consolidation base
+
+    prior_time = date_now + timedelta(minutes=25)
+    detector.update(
+        OHLCVCandle(prior_time, 24350, 24365, 24340, 24355, 1000000, 24355),
+        avg_volume=1000000,
+        iv_current=13.0,
+        strike=24350.0,
+    )
 
     # 2. Breakout candle at 09:41 AM (minute 26) breaking above 24365.0 + 2.0 with volume surge
     t_bo = date_now + timedelta(minutes=26)
@@ -65,11 +77,9 @@ def test_iv_breakout_detector_lifecycle():
         volume=1300000,
         vwap=24356.0
     )
-    # Provide expanding IV
-    detector.iv_history.append((t_bo - timedelta(minutes=3), 12.8))
-    detector.iv_history.append((t_bo - timedelta(minutes=1), 13.0))
-
-    sig = detector.update(c_bo, avg_volume=1000000, iv_current=13.2)
+    sig = detector.update(
+        c_bo, avg_volume=1000000, iv_current=13.2, strike=24350.0
+    )
 
     assert sig is not None
     assert sig.setup_type == SetupType.IV_GATED_BREAKOUT
@@ -109,15 +119,24 @@ def test_ares_engine_emits_iv_breakout_signal():
         )
         engine.tick(c, full_chain=[], atm=atm)
 
+    prior_time = date_now + timedelta(minutes=25)
+    prior_candle = OHLCVCandle(
+        timestamp=prior_time, open=24350.0, high=24365.0, low=24340.0,
+        close=24355.0, volume=1000000, vwap=24355.0,
+    )
+    prior_atm = ATMStrikes(
+        spot_price=24355.0,
+        ce=OptionRow(strike=24350, option_type="CE", iv=13.0),
+        pe=OptionRow(strike=24350, option_type="PE", iv=13.0),
+    )
+    engine.tick(prior_candle, full_chain=[], atm=prior_atm)
+
     # Breakout candle at minute 26 (09:41 AM)
     t_bo = date_now + timedelta(minutes=26)
     c_bo = OHLCVCandle(
         timestamp=t_bo, open=24360.0, high=24375.0, low=24358.0, close=24370.0,
         volume=1300000, vwap=24356.0
     )
-    # Give expanding IV
-    engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=3), 12.8))
-    engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=1), 13.0))
     atm_bo = ATMStrikes(
         spot_price=24370.0,
         ce=OptionRow(strike=24350, option_type="CE", iv=13.2),
@@ -132,6 +151,41 @@ def test_ares_engine_emits_iv_breakout_signal():
     # Engine levels assigned via apply_per_type_levels
     assert signal.stop_loss == 24370.0 - 30.0  # 24340.0
     assert signal.target_1 == 24370.0 + 35.0   # 24405.0
+
+
+def test_iv_breakout_fails_closed_when_same_strike_three_minute_sample_is_missing():
+    detector = IVBreakoutDetector()
+    date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+
+    for minute in range(25):
+        candle = OHLCVCandle(
+            timestamp=date_now + timedelta(minutes=minute),
+            open=24350.0,
+            high=24365.0,
+            low=24340.0,
+            close=24355.0,
+            volume=1000000,
+            vwap=24355.0,
+        )
+        detector.update(candle, 1000000, iv_current=None, strike=24350.0)
+
+    one_minute_before = date_now + timedelta(minutes=25)
+    detector.update(
+        OHLCVCandle(one_minute_before, 24350, 24360, 24340, 24355, 1000000, 24355),
+        1000000,
+        iv_current=13.0,
+        strike=24350.0,
+    )
+    breakout_time = date_now + timedelta(minutes=26)
+    signal = detector.update(
+        OHLCVCandle(breakout_time, 24360, 24375, 24358, 24370, 1300000, 24356),
+        1000000,
+        iv_current=13.2,
+        strike=24350.0,
+    )
+
+    assert signal is None
+    assert detector.latest_rejection_reason == "NO_IV_DATA"
 
 
 def test_iv_breakout_defensive_mock_and_string_safety():
@@ -220,14 +274,27 @@ async def test_iv_breakout_end_to_end_ml_prediction_and_collection():
         )
         engine.tick(c, full_chain=[], atm=atm)
 
+    prior_time = date_now + timedelta(minutes=25)
+    prior_candle = OHLCVCandle(
+        timestamp=prior_time, open=24350.0, high=24365.0, low=24340.0,
+        close=24355.0, volume=1000000, vwap=24352.0,
+    )
+    prior_atm = ATMStrikes(
+        spot_price=24355.0,
+        ce=OptionRow(strike=24400, option_type="CE", iv=13.1, oi=5000000, delta=0.52),
+        pe=OptionRow(strike=24400, option_type="PE", iv=13.1, oi=4000000, delta=-0.48),
+    )
+    engine.tick(prior_candle, full_chain=[], atm=prior_atm)
+
     # Breakout candle at minute 26 (09:41 AM) breaking 24365.0 base high
     t_bo = date_now + timedelta(minutes=26)
     c_bo = OHLCVCandle(
         timestamp=t_bo, open=24365.0, high=24410.0, low=24360.0, close=24405.0,
         volume=1500000, vwap=24370.0
     )
-    engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=3), 12.8))
-    engine.iv_breakout_detector.iv_history.append((t_bo - timedelta(minutes=1), 13.0))
+    engine.iv_breakout_detector.iv_history.append(
+        (t_bo - timedelta(minutes=3), 13.0, 24400.0)
+    )
 
     levels = [ResistanceLevel(price=24500.0, source="OI_WALL", strength=3), ResistanceLevel(price=24350.0, source="SWING_LOW", strength=2)]
     atm_bo = ATMStrikes(
@@ -321,8 +388,8 @@ async def test_iv_breakout_end_to_end_ml_prediction_and_collection():
     assert scores["oi_wall_rejection"] == 0
 
 
-def test_iv_breakout_strike_roll_does_not_trigger_false_vol_crush():
-    """Validates that ATM strike rolls do not trigger false vol-crush rejections from cross-strike skew."""
+def test_iv_breakout_strike_roll_without_baseline_fails_closed():
+    """A new ATM strike cannot use the old strike as its IV comparison baseline."""
     detector = IVBreakoutDetector()
     date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
 
@@ -340,8 +407,7 @@ def test_iv_breakout_strike_roll_does_not_trigger_false_vol_crush():
         )
         detector.update(c, avg_volume=1000000, iv_current=14.5, strike=24350.0)
 
-    # 2. Breakout candle at minute 26 (09:41 AM) breaking 24365.0 base high.
-    # ATM strike rolls to 24400 CE where cross-strike IV is 13.8 (skew drop of -0.70 from 14.5).
+    # 2. Breakout candle at minute 26 (09:41 AM) with a new ATM strike.
     t_bo = date_now + timedelta(minutes=26)
     c_bo = OHLCVCandle(
         timestamp=t_bo,
@@ -353,14 +419,17 @@ def test_iv_breakout_strike_roll_does_not_trigger_false_vol_crush():
         vwap=24360.0
     )
 
-    # Update with new strike 24400 and iv 13.8
     sig = detector.update(c_bo, avg_volume=1000000, iv_current=13.8, strike=24400.0)
 
-    # Without strike isolation, d1 = 13.8 - 14.5 = -0.70 <= -0.30 would falsely trigger VOL_CRUSH_BULL_TRAP.
-    # With strike isolation, cross-strike skew is ignored and signal is emitted.
+    assert sig is None
+    assert detector.latest_rejection_reason == "NO_IV_DATA"
+
+    detector.iv_history.append((t_bo - timedelta(minutes=3), 13.7, 24400.0))
+    detector.iv_history.append((t_bo - timedelta(minutes=1), 13.8, 24400.0))
+    sig = detector.update(c_bo, avg_volume=1000000, iv_current=13.8, strike=24400.0)
+
     assert sig is not None
     assert sig.setup_type == SetupType.IV_GATED_BREAKOUT
-    assert sig.trigger_price == 24368.0
 
 
 def test_iv_breakout_missing_iv_fails_closed():
@@ -408,8 +477,3 @@ def test_iv_breakout_missing_iv_fails_closed():
     sig_nan = detector.update(c_bo, avg_volume=1000000, iv_current=float("nan"), strike=24350.0)
     assert sig_nan is None
     assert detector.latest_rejection_reason == "NO_IV_DATA"
-
-
-
-
-

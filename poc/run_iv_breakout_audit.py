@@ -1,13 +1,11 @@
 """
-ARES POC #2: 90-Day IV-Gated Breakout Backtest & Audit
-======================================================
-Backtests the IV-Gated Breakout Strategy across all 62 trading sessions
-(2026-08-07 to 2026-11-05).
+Legacy offline audit of the IV-Gated Breakout afternoon prototype.
+==================================================================
+Replays a fixed-window prototype across its cached historical sessions.
+Its results are not directly comparable to the rolling live detector.
 Compares:
 1. Baseline Breakout (No IV Filter)
 2. IV-Gated Breakout (Native Dhan IV Filter)
-
-Evaluates fakeout rejection accuracy and net edge enhancement.
 """
 
 import os
@@ -82,7 +80,7 @@ def calc_stats(trades: List[IVBreakoutTradeRecord]) -> Dict[str, Any]:
 
 def main():
     print("=" * 85)
-    print("ARES POC #2: 90-DAY IV-GATED BREAKOUT BACKTEST & AUDIT")
+    print("LEGACY IV-GATED BREAKOUT PROTOTYPE AUDIT (FIXED-WINDOW REPLAY)")
     print("Data Source: Dhan API 1-Min Intraday Spot & Native ATM Call IV Feed")
     print("Period: 2026-08-07 to 2026-11-05 (62 Trading Sessions)")
     print("=" * 85)
@@ -139,22 +137,21 @@ def main():
     print(f"Total Breakouts Rejected by IV Filter: {len(all_rejected)}")
     print(f"Total Breakouts Approved by IV Filter: {len(iv_trades)}")
     
-    prevented_losses = [r for r in all_rejected if r.potential_pnl_if_taken <= 0]
-    missed_wins = [r for r in all_rejected if r.potential_pnl_if_taken > 0]
-    prevented_pnl_loss = abs(sum(r.potential_pnl_if_taken for r in prevented_losses))
-    missed_pnl_gain = sum(r.potential_pnl_if_taken for r in missed_wins)
+    nonpositive_outcomes = [r for r in all_rejected if r.potential_pnl_if_taken <= 0]
+    positive_outcomes = [r for r in all_rejected if r.potential_pnl_if_taken > 0]
+    nonpositive_pnl = abs(sum(r.potential_pnl_if_taken for r in nonpositive_outcomes))
+    positive_pnl = sum(r.potential_pnl_if_taken for r in positive_outcomes)
 
-    print(f"  -> Fakeouts Correctly Blocked: {len(prevented_losses)} (Accuracy: {len(prevented_losses)/len(all_rejected)*100:.1f}%)")
-    print(f"  -> Capital Protected from Stopped Traps: +{prevented_pnl_loss:.2f} pts")
-    print(f"  -> False Negatives (Missed Wins): {len(missed_wins)} (-{missed_pnl_gain:.2f} pts)")
-    print(f"  -> NET FILTER ALPHA: +{prevented_pnl_loss - missed_pnl_gain:.2f} pts")
+    print(f"  -> Rejected candidates with non-positive hypothetical PnL: {len(nonpositive_outcomes)} ({nonpositive_pnl:.2f} pts)")
+    print(f"  -> Rejected candidates with positive hypothetical PnL: {len(positive_outcomes)} ({positive_pnl:.2f} pts)")
+    print(f"  -> NET REJECTED-CANDIDATE HYPOTHETICAL PNL IMPACT: {nonpositive_pnl - positive_pnl:+.2f} pts")
 
     print("\n" + "-" * 85)
     print("REJECTED TRADES DETAIL LOG:")
     print("-" * 85)
     for r in all_rejected:
-        print(f"{r.date} {r.time} | Spot: {r.spot_price:8.2f} | IV: {r.iv:5.2f}% (d1: {r.d_iv_1m:+5.2f}%, d3: {r.d_iv_3m:+5.2f}%) | "
-              f"Reason: {r.rejection_reason:<22s} | Prevented PnL: {r.potential_pnl_if_taken:+.2f}")
+        print(f"{r.date} {r.time} | Spot: {r.spot_price:8.2f} | IV: {r.iv:5.2f} (d1: {r.d_iv_1m:+5.2f} IV pts, d3: {r.d_iv_3m:+5.2f} IV pts) | "
+              f"Reason: {r.rejection_reason:<22s} | Hypothetical spot PnL: {r.potential_pnl_if_taken:+.2f}")
 
     print("\n" + "=" * 85)
     print("IV-GATED APPROVED TRADES DETAIL LOG:")
@@ -162,9 +159,8 @@ def main():
     for t in iv_trades:
         print(f"{t.date} {t.entry_time} | Entry: {t.entry_price:8.2f} | SL: {t.stop_loss:8.2f} | "
               f"Exit: {t.exit_time} ({t.exit_reason:11s}) @ {t.exit_price:8.2f} | PnL: {t.pnl_points:+6.2f} pts | "
-              f"IV: {t.iv_at_entry:5.2f}% (d3: {t.iv_delta_3m:+5.2f}%)")
+              f"IV: {t.iv_at_entry:5.2f} (d3: {t.iv_delta_3m:+5.2f} IV pts)")
 
 
 if __name__ == "__main__":
     main()
-

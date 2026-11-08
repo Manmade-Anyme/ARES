@@ -7,8 +7,10 @@ All notable changes to the ARES trading system will be documented in this file.
 - **IV-Gated Breakout Expansion Strategy & Signal Cooldown Reduction (TASK-20261106):**
   - Integrated 5th setup type `SetupType.IV_GATED_BREAKOUT` into core ARES detection engine (`detectors/iv_breakout.py`, `models.py`, `engine.py`).
   - Replaced static time barriers (12:30 anchor cutoff and 14:15 entry cutoff) with dynamic, time-agnostic consolidation base detection (`iv_breakout_lookback_candles=25`, `iv_breakout_max_base_range_pts=55.0`, `iv_breakout_volume_ratio=1.15`, `iv_breakout_buffer_pts=2.0`, `iv_breakout_min_zscore=0.8`). Allows immediate breakout entries across morning, midday, and afternoon regimes whenever tight consolidation base breaks out with volume and VWAP confirmation.
-  - Added pure mathematical helper `evaluate_iv_velocity()` in `options_math.py` implementing the calibrated Asymmetric Anti-Crush Gate ($d\text{IV}_{1\text{m}} \le -0.30\%$ or $d\text{IV}_{3\text{m}} \le -0.40\%$) and Late-Stage Climax Gate ($Z_{VWAP} > 2.2$ with non-positive IV delta).
-  - Evaluated against 90 days / 62 sessions of 1-minute Dhan native ATM Call IV feeds (`dhan.expired_options_data` + intraday feeds): empirical grid search yields +401.1 net spot pts across 38 trades (52.6% win/BE rate) under ARES Position Manager lifecycle.
+  - Replaced Trend Expansion's 10:30 regime check, morning-only reclaim, and 12:30–14:15 breakout window with per-candle evaluation of a rolling 25-candle regime and rolling setups. It now evaluates through regular market hours (09:15–15:30 IST), subject only to indicator warm-up and its existing risk/setup rules.
+  - Added `select_iv_velocity_samples()` and made both live IV-gated detectors require fresh, same-strike samples near both one and three minutes before a candidate. Missing, stale, or rolled-strike baselines fail closed as `NO_IV_DATA`.
+  - Added pure mathematical helper `evaluate_iv_velocity()` in `options_math.py` implementing the Asymmetric Anti-Crush Gate (dIV 1m <= -0.30 IV points or dIV 3m <= -0.40 IV points) and Late-Stage Climax Gate ($Z_{VWAP} > 2.2$ with non-positive IV change).
+  - The cached 62-session audit remains a legacy fixed-window prototype replay, not a result for the live rolling detector. Its historical metrics are documented separately and are not presented as live-strategy performance.
   - Reduced `signal_cooldown_minutes` from 15 to 10 across `TuningConfig`, `NON_EXPIRY_CONFIG`, and `EXPIRY_CONFIG` to allow faster resumption after completed trades.
   - Setup levels configured centrally in `config_profiles.py`: SL 30.0 pts, T1 35.0 pts, T2 fallback 70.0 pts, fully integrated with ARES Option ATR lifecycle trailing.
   - Added unit test suite `tests/unit/test_iv_breakout_detector.py` and POC audit tests `tests/unit/test_iv_breakout_expansion.py`.
@@ -28,13 +30,13 @@ All notable changes to the ARES trading system will be documented in this file.
     - Aligned `poc/run_iv_breakout_audit.py` candidate reporting and updated `docs/POC_IV_Gated_Breakout_Strategy_Validation.md` with verified 62-session audit metrics (29 candidates screened, 12 rejected: 8 fakeouts blocked +248.40 pts, 4 false negatives -140.00 pts, net alpha +108.40 pts).
     - Made the Trend Expansion afternoon breakout IV gate fail closed on missing/invalid IV; VWAP reclaim remains unchanged.
     - Made any finite negative ATM IV change a hard veto for a Failed Breakout confirmation; missing IV remains non-vetoing. Removed falling IV from its score and retired the old rapid-fall threshold.
+    - Matched Failed Breakout's consecutive ATM IV comparison by strike and reset its baseline at each session boundary.
+    - Made the legacy audit reject candidates without exact same-strike IV comparison samples, match option exits only to the entry strike, and handle an empty rejection report.
 
-- **PR #157 promote Trend Expansion strategy to production and remove POC files (TASK-20261105):**
+- **PR #157 promoted Trend Expansion strategy to production and removed POC files (TASK-20261105):**
   - Removed deprecated prototype modules and audit runners (`poc/trend_expansion_poc.py`, `poc/regime_gated_expansion_strategy.py`, `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, `poc/run_trend_expansion_backtest.py`, `poc/position_management.py`, and `tests/unit/test_poc_trend_expansion.py`).
   - Promoted `TrendExpansionDetector` in `detectors/trend_expansion.py` as canonical production implementation wired into `AresEngine`.
-  - Hardened regime evaluation against sub-second timestamp jitter by checking `current_time >= REGIME_DISPERSION_TIME`.
   - Replaced external candle VWAP dependency with internal volume-weighted session VWAP calculation (`_current_vwap`), eliminating silent failures when candles lack pre-calculated VWAP.
-  - Scoped 1-minute stream continuity requirement from 09:15 through regime evaluation (`not self._regime_evaluated`), ensuring gaps across 10:30 (e.g. 10:29 -> 10:31) disqualify the session while preserving sub-minute timestamp jitter tolerance and tolerating midday data drops after regime qualification.
   - Added state reset for `_sweep_low` and `_dipped_below_vwap` when reclaim criteria are met under dormant regime conditions.
   - Simplified price fetcher index lookup in `fetchers/price_fetcher.py`.
   - Streamlined and condensed strategy documentation across repo (`docs/POC_Trend_Expansion_Strategy_Validation.md`) and Obsidian vault (`~/Documents/Obsidian/Projects/Ares/ARES 5th Strategy Gated Expansion Architecture.md`).

@@ -4,7 +4,7 @@ import math
 from dataclasses import asdict, replace
 from datetime import date, datetime, time, timezone, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_FLOOR
-from typing import Any, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
 from config import settings
 from config_profiles import TuningConfig
@@ -350,11 +350,17 @@ def evaluate_iv_velocity(
 ) -> Tuple[bool, str]:
     """
     Evaluates Call/Put IV velocity to confirm gamma squeeze or reject institutional vol-crush.
-    Calibrated against 90-day empirical audit.
-    When require_iv is True (default), missing or invalid IV fails closed with (False, "NO_IV_DATA").
+    IV differences are measured in IV points. When require_iv is True (default),
+    missing current IV or either comparison sample fails closed as NO_IV_DATA.
     """
     if iv_current is None or not _finite(iv_current) or iv_current <= 0:
         return (False, "NO_IV_DATA") if require_iv else (True, "NO_IV_DATA")
+
+    if require_iv and (
+        not _finite(iv_prev_1m) or iv_prev_1m <= 0
+        or not _finite(iv_prev_3m) or iv_prev_3m <= 0
+    ):
+        return False, "NO_IV_DATA"
 
     d1 = (iv_current - iv_prev_1m) if (iv_prev_1m is not None and _finite(iv_prev_1m)) else 0.0
     d3 = (iv_current - iv_prev_3m) if (iv_prev_3m is not None and _finite(iv_prev_3m)) else d1
@@ -369,3 +375,53 @@ def evaluate_iv_velocity(
 
     return True, "IV_EXPANSION_CONFIRMED"
 
+
+def select_iv_velocity_samples(
+    history: Iterable[tuple],
+    timestamp: datetime,
+    strike: Optional[float],
+    tolerance_seconds: int = 30,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Return fresh same-strike IV samples near one and three minutes before a candle."""
+    if (
+        not isinstance(timestamp, datetime)
+        or not _finite(strike)
+        or strike <= 0
+        or not isinstance(tolerance_seconds, int)
+        or tolerance_seconds < 0
+    ):
+        return None, None
+
+    selected: dict[int, tuple[float, float]] = {}
+    for entry in history:
+        if not isinstance(entry, tuple) or len(entry) < 3:
+            continue
+        sample_time, sample_iv, sample_strike = entry[:3]
+        if (
+            not isinstance(sample_time, datetime)
+            or not _finite(sample_iv)
+            or sample_iv <= 0
+            or not _finite(sample_strike)
+            or sample_strike != strike
+        ):
+            continue
+        try:
+            age_seconds = (timestamp - sample_time).total_seconds()
+        except TypeError:
+            continue
+        if age_seconds <= 0:
+            continue
+
+        for target_seconds in (60, 180):
+            distance = abs(age_seconds - target_seconds)
+            if distance <= tolerance_seconds:
+                previous = selected.get(target_seconds)
+                if previous is None or distance < previous[0]:
+                    selected[target_seconds] = (distance, float(sample_iv))
+
+    one_minute = selected.get(60)
+    three_minute = selected.get(180)
+    return (
+        one_minute[1] if one_minute is not None else None,
+        three_minute[1] if three_minute is not None else None,
+    )

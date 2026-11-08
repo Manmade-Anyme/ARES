@@ -53,7 +53,7 @@ class TestTuningConfig:
         assert EXPIRY_CONFIG.continuation_enabled is True
         assert EXPIRY_CONFIG.trend_expansion_enabled is True
         assert EXPIRY_CONFIG.trend_expansion_min_regime_score == 2
-        assert EXPIRY_CONFIG.trend_expansion_gap_extension_pts == 70.0
+        assert EXPIRY_CONFIG.trend_expansion_pdc_extension_pts == 70.0
         assert EXPIRY_CONFIG.continuation_min_score == 2
         assert EXPIRY_CONFIG.continuation_resume_volume_ratio == 1.2
         assert EXPIRY_CONFIG.continuation_pullback_max_candles == 8
@@ -71,7 +71,7 @@ class TestTuningConfig:
         assert NON_EXPIRY_CONFIG.continuation_min_score == 2
         assert NON_EXPIRY_CONFIG.trend_expansion_enabled is True
         assert NON_EXPIRY_CONFIG.trend_expansion_min_regime_score == 2
-        assert NON_EXPIRY_CONFIG.trend_expansion_gap_extension_pts == 70.0
+        assert NON_EXPIRY_CONFIG.trend_expansion_pdc_extension_pts == 70.0
         assert NON_EXPIRY_CONFIG.per_type_levels["EXHAUSTION_REVERSAL"].stop_pts == 10.0
         assert NON_EXPIRY_CONFIG.level_scan_range == 500.0
 

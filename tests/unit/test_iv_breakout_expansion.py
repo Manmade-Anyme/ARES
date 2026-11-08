@@ -9,6 +9,7 @@ from poc.iv_breakout_expansion_poc import (
     IVBreakoutTradeRecord,
     RejectedBreakoutRecord
 )
+from poc import run_iv_breakout_audit
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -120,6 +121,19 @@ def test_iv_filter_expansion_approval():
     assert metrics["d_iv_3m"] >= 0.0
 
 
+def test_iv_filter_fails_closed_when_comparison_data_is_missing():
+    engine = IVGatedBreakoutEngine()
+    _, df_iv = generate_mock_session_spot_and_iv()
+    current_time = "13:00"
+    df_iv = df_iv[~df_iv["time_str"].isin(["12:59", "12:57"])]
+
+    passed, reason, metrics = engine.evaluate_iv_filter(current_time, 1.2, df_iv)
+
+    assert passed is False
+    assert reason == "NO_IV_DATA"
+    assert metrics == {}
+
+
 def test_end_to_end_session():
     engine = IVGatedBreakoutEngine(enable_iv_filter=True)
     df_s, df_iv = generate_mock_session_spot_and_iv()
@@ -156,6 +170,11 @@ def test_option_exit_priced_on_entry_strike():
     exit_price = engine._get_option_quote_for_strike(df_multi_strike, "15:20", strike=24400.0)
     assert exit_price == 145.0  # Must match 24400 CE, not the later 24500 CE quote
 
+    missing_entry_strike = engine._get_option_quote_for_strike(
+        df_multi_strike[df_multi_strike["strike"] == 24500.0], "15:20", strike=24400.0
+    )
+    assert missing_entry_strike is None
+
     # Also test trade record accounting in run_session
     trade = IVBreakoutTradeRecord(
         strategy="IV_GATED_BREAKOUT",
@@ -175,3 +194,12 @@ def test_option_exit_priced_on_entry_strike():
     assert trade.option_exit_price == 145.0
     assert trade.option_pnl_pts == 35.0
 
+
+def test_audit_reports_zero_accuracy_without_rejected_candidates(monkeypatch, capsys):
+    monkeypatch.setattr(run_iv_breakout_audit, "load_cached_data", lambda: ({}, {}))
+
+    run_iv_breakout_audit.main()
+
+    output = capsys.readouterr().out
+    assert "Total Breakouts Rejected by IV Filter: 0" in output
+    assert "Rejected candidates with non-positive hypothetical PnL: 0" in output

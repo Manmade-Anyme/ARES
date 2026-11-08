@@ -1,12 +1,12 @@
 """
-ARES POC #2: IV-Gated Breakout Expansion Strategy
+Legacy offline audit for the IV-Gated Breakout strategy.
 =================================================
 A specialized breakout strategy integrating native Dhan Implied Volatility (IV)
 microstructure filters to eliminate false breakouts (bull traps) and capture
 explosive gamma squeezes.
 
 Core Mechanics:
-1. Detects Afternoon Range Breakouts (12:30 - 14:15).
+1. Replays the historical afternoon-range prototype (12:30 - 14:15).
 2. Cross-references minute-by-minute ATM/OTM Call IV from Dhan.
 3. IV Expansion Filter:
    - Evaluates IV velocity (dIV/dt over 1m, 3m, 5m).
@@ -17,6 +17,8 @@ Core Mechanics:
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+import math
 from typing import Dict, List, Optional, Tuple, Any
 import pandas as pd
 import numpy as np
@@ -130,47 +132,49 @@ class IVGatedBreakoutEngine:
         Evaluates Call IV microstructure at the breakout candle.
         Returns: (passed: bool, status_reason: str, metrics: dict)
         """
-        if df_iv is None or df_iv.empty:
-            return True, "NO_IV_DATA_PERMISSIVE", {}
+        if df_iv is None or df_iv.empty or "strike" not in df_iv.columns:
+            return False, "NO_IV_DATA", {}
 
-        sub = df_iv[df_iv["time_str"] <= time_str]
-        if sub.empty:
-            return True, "NO_IV_DATA_TIME", {}
+        current_rows = df_iv[df_iv["time_str"] == time_str]
+        if current_rows.empty:
+            return False, "NO_IV_DATA", {}
 
-        idx = sub.index[-1]
-        row = df_iv.iloc[idx]
-        curr_strike = row.get("strike", 0.0)
-        iv_curr = float(row.get("iv", 0.0))
+        row = current_rows.iloc[-1]
+        curr_strike = row.get("strike")
+        try:
+            iv_curr = float(row.get("iv"))
+            curr_strike = float(curr_strike)
+            current_time = datetime.strptime(time_str, "%H:%M")
+        except (TypeError, ValueError):
+            return False, "NO_IV_DATA", {}
+        if not math.isfinite(iv_curr) or iv_curr <= 0 or not math.isfinite(curr_strike) or curr_strike <= 0:
+            return False, "NO_IV_DATA", {}
 
-        # Strike-isolated history to prevent ATM strike-jump artifacts
-        same_strike_sub = df_iv.iloc[:idx + 1]
-        has_strike = "strike" in df_iv.columns and curr_strike > 0
-        if has_strike:
-            same_strike_sub = same_strike_sub[same_strike_sub["strike"] == curr_strike]
+        same_strike_sub = df_iv[
+            (df_iv["strike"] == curr_strike)
+            & (df_iv["time_str"] <= time_str)
+        ]
 
-        if len(same_strike_sub) >= 2:
-            d_iv_1m = iv_curr - float(same_strike_sub.iloc[-2]["iv"])
-        elif not has_strike:
-            prev_row = df_iv.iloc[max(0, idx - 1)]
-            d_iv_1m = iv_curr - float(prev_row.get("iv", iv_curr))
-        else:
-            d_iv_1m = 0.0
+        def iv_at_offset(minutes: int) -> Optional[float]:
+            target_time = (current_time - timedelta(minutes=minutes)).strftime("%H:%M")
+            rows = same_strike_sub[same_strike_sub["time_str"] == target_time]
+            if rows.empty:
+                return None
+            try:
+                value = float(rows.iloc[-1]["iv"])
+            except (TypeError, ValueError):
+                return None
+            return value if math.isfinite(value) and value > 0 else None
 
-        if len(same_strike_sub) >= 4:
-            d_iv_3m = iv_curr - float(same_strike_sub.iloc[-4]["iv"])
-        elif not has_strike:
-            prev3 = df_iv.iloc[max(0, idx - 3)]
-            d_iv_3m = iv_curr - float(prev3.get("iv", iv_curr))
-        else:
-            d_iv_3m = d_iv_1m
+        iv_prev_1m = iv_at_offset(1)
+        iv_prev_3m = iv_at_offset(3)
+        if iv_prev_1m is None or iv_prev_3m is None:
+            return False, "NO_IV_DATA", {}
 
-        if len(same_strike_sub) >= 6:
-            d_iv_5m = iv_curr - float(same_strike_sub.iloc[-6]["iv"])
-        elif not has_strike:
-            prev5 = df_iv.iloc[max(0, idx - 5)]
-            d_iv_5m = iv_curr - float(prev5.get("iv", iv_curr))
-        else:
-            d_iv_5m = d_iv_3m
+        d_iv_1m = iv_curr - iv_prev_1m
+        d_iv_3m = iv_curr - iv_prev_3m
+        iv_prev_5m = iv_at_offset(5)
+        d_iv_5m = iv_curr - iv_prev_5m if iv_prev_5m is not None else d_iv_3m
 
         # Rolling 5m SMA isolated to the active strike
         window_5m = same_strike_sub.iloc[max(0, len(same_strike_sub) - 5):]["iv"]
@@ -213,14 +217,19 @@ class IVGatedBreakoutEngine:
         """
         if df_iv is None or df_iv.empty:
             return None
-        opt_sub = df_iv[df_iv["time_str"] <= time_str]
+        if "strike" not in df_iv.columns or strike <= 0:
+            return None
+        opt_sub = df_iv[
+            (df_iv["time_str"] <= time_str)
+            & (df_iv["strike"] == strike)
+        ]
         if opt_sub.empty:
             return None
-        if "strike" in opt_sub.columns and strike > 0:
-            opt_strike_sub = opt_sub[opt_sub["strike"] == strike]
-            if not opt_strike_sub.empty:
-                return float(opt_strike_sub.iloc[-1]["close"])
-        return float(opt_sub.iloc[-1]["close"])
+        try:
+            price = float(opt_sub.iloc[-1]["close"])
+        except (TypeError, ValueError):
+            return None
+        return price if math.isfinite(price) and price > 0 else None
 
     def run_session(
         self,
