@@ -5,10 +5,10 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 - **Fix IVBreakoutDetector State Buffer Continuity Under Engine Cooldown & Priority Short-Circuiting (TASK-20261108):**
-  - Enforced unconditional observation in `AresEngine` Step 1 with `isinstance(candle, OHLCVCandle)` type guard, preventing skipped observations or mock object corruption.
+  - Enforced unconditional observation in `AresEngine` Step 1 and update dispatch in Step 5 with `isinstance(candle, OHLCVCandle)` type guards, preventing skipped observations or mock object corruption across all execution branches.
   - Hardened `IVBreakoutDetector.observe()` against duplicate candle registration by verifying both object identity and candle timestamp equality.
   - Guarded `observe()` against non-datetime candle timestamps to prevent buffer corruption from malformed ticks.
-  - Added regression test suite verifying multi-candle cooldown buffer accumulation, dynamic base accuracy upon cooldown recovery, priority short-circuit continuity, timestamp deduplication, and non-`OHLCVCandle` safety.
+  - Added regression test suite verifying multi-candle cooldown buffer accumulation, dynamic base accuracy upon cooldown recovery, priority short-circuit continuity, timestamp deduplication, daily firing suppression, oversized base range rejection, and non-`OHLCVCandle` safety.
 
 - **IV-Gated Breakout Expansion Strategy & Signal Cooldown Reduction (TASK-20261106):**
   - Integrated 5th setup type `SetupType.IV_GATED_BREAKOUT` into core ARES detection engine (`detectors/iv_breakout.py`, `models.py`, `engine.py`).

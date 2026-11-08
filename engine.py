@@ -323,7 +323,7 @@ class AresEngine:
                         levels=levels,
                         strike=atm.ce.strike if (atm and atm.ce) else None,
                     )
-                    if getattr(settings, "iv_breakout_enabled", True)
+                    if getattr(settings, "iv_breakout_enabled", True) and isinstance(candle, OHLCVCandle)
                     else None
                 )
                 or self.exhaustion_detector.update(

@@ -343,18 +343,28 @@ def test_iv_breakout_observe_idempotency_and_timestamp_deduplication():
 
 
 def test_engine_tick_non_ohlcv_candle_safely_ignored_by_iv_breakout():
-    """Validates that engine.tick with a non-OHLCVCandle does not invoke IVBreakoutDetector.observe."""
+    """Validates that engine.tick with a non-OHLCVCandle does not invoke IVBreakoutDetector observe or update."""
     from unittest.mock import MagicMock
     from models import ATMStrikes
     engine = AresEngine()
     engine.iv_breakout_detector.observe = MagicMock()
+    engine.iv_breakout_detector.update = MagicMock()
     mock_candle = MagicMock()  # not an instance of OHLCVCandle
-    mock_candle.timestamp.date.return_value = datetime(2026, 11, 5).date()
+    mock_candle.timestamp = datetime(2026, 11, 5, 10, 0, tzinfo=IST)
     mock_candle.volume = 1000
     atm = ATMStrikes(spot_price=24350.0, ce=None, pe=None)
 
+    # Cooldown clear, no higher-priority detector signals
+    engine.last_signal_time = None
+    engine.breakout_detector.update = MagicMock(return_value=None)
+    engine.oi_wall_detector.update = MagicMock(return_value=None)
+    engine.trend_expansion_detector.update = MagicMock(return_value=None)
+    engine.continuation_detector.update = MagicMock(return_value=None)
+
     engine.tick(mock_candle, full_chain=[], atm=atm)
     assert not engine.iv_breakout_detector.observe.called
+    assert not engine.iv_breakout_detector.update.called
+    assert len(engine.iv_breakout_detector.candle_history) == 0
 
 
 def test_iv_breakout_session_reset_across_dates():
@@ -404,24 +414,85 @@ def test_iv_breakout_vwap_fallback_and_strike_inference():
     assert sig.setup_type == SetupType.IV_GATED_BREAKOUT
 
 
-def test_iv_breakout_fired_today_and_base_range_guard():
-    """Validates fired_today gating and max_base_range_pts rejection."""
+def test_iv_breakout_fired_today_suppression():
+    """Validates that once a signal fires for the day, subsequent breakout candidates are suppressed."""
     detector = IVBreakoutDetector()
-    detector.fired_today = True
-    t = datetime(2026, 11, 5, 10, 0, tzinfo=IST)
-    c = OHLCVCandle(t, 24350, 24370, 24340, 24360, 1000, 24355)
-    assert detector.update(c, 1000, 14.0) is None
-
-    # Test base_range > max_base_range (range > 55 pts)
-    detector2 = IVBreakoutDetector()
     date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+
+    # 1. Feed 25 base candles
+    for m in range(25):
+        t = date_now + timedelta(minutes=m)
+        c = OHLCVCandle(t, 24350.0, 24365.0, 24340.0, 24355.0, 1000000, 24355.0)
+        detector.update(c, avg_volume=1000000, iv_current=13.0, strike=24350.0)
+
+    # 2. Minute 25 consolidation candle
+    t_25 = date_now + timedelta(minutes=25)
+    c_25 = OHLCVCandle(t_25, 24350.0, 24365.0, 24340.0, 24355.0, 1000000, 24355.0)
+    detector.update(c_25, avg_volume=1000000, iv_current=13.0, strike=24350.0)
+
+    # 3. Minute 26 breakout candle emits signal
+    t_bo = date_now + timedelta(minutes=26)
+    c_bo = OHLCVCandle(t_bo, 24360.0, 24375.0, 24358.0, 24370.0, 1300000, 24356.0)
+    sig1 = detector.update(c_bo, avg_volume=1000000, iv_current=13.2, strike=24350.0)
+    assert sig1 is not None
+    assert sig1.setup_type == SetupType.IV_GATED_BREAKOUT
+    assert detector.fired_today is True
+
+    # 4. Minute 27 another breakout candle on same day: must be suppressed by fired_today
+    t_27 = date_now + timedelta(minutes=27)
+    c_27 = OHLCVCandle(t_27, 24370.0, 24390.0, 24368.0, 24385.0, 1400000, 24357.0)
+    sig2 = detector.update(c_27, avg_volume=1000000, iv_current=13.4, strike=24350.0)
+    assert sig2 is None
+
+    # Prove suppression was specifically due to fired_today:
+    # If fired_today were False, the exact same candle would qualify as a breakout
+    detector.fired_today = False
+    sig_retry = detector.update(c_27, avg_volume=1000000, iv_current=13.4, strike=24350.0)
+    assert sig_retry is not None
+    assert sig_retry.setup_type == SetupType.IV_GATED_BREAKOUT
+
+
+def test_iv_breakout_max_base_range_guard():
+    """Validates that a breakout from an oversized base (> 55 pts) is rejected even when IV and volume qualify."""
+    detector = IVBreakoutDetector()
+    date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+
+    # 25 base candles with high=24420, low=24340 -> range = 80 pts (> 55 max_base_range_pts)
     for m in range(25):
         t_m = date_now + timedelta(minutes=m)
-        # range = 24420 - 24340 = 80 pts > 55 pts
-        c_m = OHLCVCandle(t_m, 24350, 24420, 24340, 24360, 1000, 24360)
-        detector2.update(c_m, 1000, 14.0, strike=24350)
-    c_bo = OHLCVCandle(date_now + timedelta(minutes=26), 24360, 24430, 24350, 24425, 2000, 24365)
-    assert detector2.update(c_bo, 1000, 14.5, strike=24350) is None
+        c_m = OHLCVCandle(t_m, 24350.0, 24420.0, 24340.0, 24360.0, 1000000, 24360.0)
+        detector.update(c_m, avg_volume=1000000, iv_current=13.0, strike=24350.0)
+
+    # Minute 25 consolidation candle providing fresh 1-minute IV sample
+    t_25 = date_now + timedelta(minutes=25)
+    c_25 = OHLCVCandle(t_25, 24350.0, 24420.0, 24340.0, 24360.0, 1000000, 24360.0)
+    detector.update(c_25, avg_volume=1000000, iv_current=13.0, strike=24350.0)
+
+    # Minute 26 breakout candle breaking above base_high (24420) + 2.0 with surge volume and expanding IV
+    t_bo = date_now + timedelta(minutes=26)
+    c_bo = OHLCVCandle(t_bo, 24410.0, 24430.0, 24405.0, 24425.0, 1300000, 24361.0)
+    sig = detector.update(c_bo, avg_volume=1000000, iv_current=13.2, strike=24350.0)
+
+    # Must be rejected strictly because base_range (80 pts) > 55 pts
+    assert sig is None
+
+    # Prove that with normal base range (<= 55 pts) but otherwise identical setup, it fires
+    normal_detector = IVBreakoutDetector()
+    for m in range(25):
+        t_m = date_now + timedelta(minutes=m)
+        # range = 24365 - 24340 = 25 pts (<= 55 pts)
+        c_norm = OHLCVCandle(t_m, 24350.0, 24365.0, 24340.0, 24355.0, 1000000, 24355.0)
+        normal_detector.update(c_norm, avg_volume=1000000, iv_current=13.0, strike=24350.0)
+
+    t_norm_25 = date_now + timedelta(minutes=25)
+    c_norm_25 = OHLCVCandle(t_norm_25, 24350.0, 24365.0, 24340.0, 24355.0, 1000000, 24355.0)
+    normal_detector.update(c_norm_25, avg_volume=1000000, iv_current=13.0, strike=24350.0)
+
+    t_norm_bo = date_now + timedelta(minutes=26)
+    c_norm_bo = OHLCVCandle(t_norm_bo, 24360.0, 24375.0, 24358.0, 24370.0, 1300000, 24356.0)
+    sig_norm = normal_detector.update(c_norm_bo, avg_volume=1000000, iv_current=13.2, strike=24350.0)
+    assert sig_norm is not None
+    assert sig_norm.setup_type == SetupType.IV_GATED_BREAKOUT
 
 
 def test_reports_includes_iv_gated_breakout():
