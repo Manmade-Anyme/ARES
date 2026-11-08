@@ -145,10 +145,11 @@ The TASK-073 historical 18-trade replay gate was explicitly **skipped**, not pas
 | `TREND_CONTINUATION` | 25 | 25 | 80 |
 | `OI_WALL_REJECTION` | 16 | 25 | 40 |
 | `FAILED_BREAKOUT` | 12 | 20 | 55 |
+| `IV_GATED_BREAKOUT` | 30 | 35 | 70 |
 
 T1 is a fixed per-setup distance. T2 selects the nearest eligible structural level beyond T1, or uses its fallback. T2 is displayed for reference; current post-T1 runners exit through ATR trailing.
 
-Trend Expansion is the exception to fixed per-type levels: reclaim SL is beneath the observed sweep and T1 is the morning high; breakout SL is based on the recent base and T1 is a configured reward distance. Both are bounded by configured stop limits. Their T2 remains a structural/reference target.
+Trend Expansion is the exception to fixed per-type levels: reclaim SL is beneath the observed sweep and T1 is the high of the preceding rolling impulse; breakout SL is based on the recent base and T1 is a configured reward distance. Both are bounded by configured stop limits. Their T2 remains a structural/reference target.
 
 <a name="option-pricing-and-lot-suggestions"></a>
 
@@ -380,7 +381,7 @@ The [weekly ML workflow](.github/workflows/ml_training.yml) performs audited tra
 | Active market session | **09:15–15:30 IST**, with the bounded final-bar analysis described above. |
 | REST cadence | **60 seconds**; tick monitoring continues between polls. |
 | Candle history | Rolling buffer capacity is **30 fresh completed candles**. Readiness is detector-specific; there is no universal 30-bar entry gate. Startup history rebuilds VWAP but is not replayed into this buffer. |
-| Signal cooldown | **15 minutes** non-expiry / **20 minutes** expiry, across emitted signals; an initial SL exit clears the cooldown. |
+| Signal cooldown | **10 minutes** on both expiry and non-expiry profiles, across emitted signals; an initial SL exit clears the cooldown. |
 | ATR runner | Completed **5m** spot bars, Wilder **ATR(5)**, **HHV/LLV(10)**, multiplier **2.5**. |
 | Session carry | Registered trades persist across sessions; ATR inputs reset for a new session while the locked stop remains. |
 | Configuration | Trading thresholds in `config_profiles.py`; credentials in `.env` or backend environment secrets. |
