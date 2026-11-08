@@ -3,6 +3,7 @@ from asyncio import sleep as _quote_retry_sleep
 import datetime as datetime_module
 from datetime import datetime, time, timedelta, timezone
 import logging
+import signal
 from math import isfinite
 from inspect import iscoroutinefunction
 from typing import Optional, Tuple
@@ -516,6 +517,14 @@ def _close_bounded_delay(requested_seconds):
     return max(0.0, min(requested_seconds, (close - now).total_seconds()))
 
 
+async def _ensure_performance_reports_sent(supabase, now, report_sent: dict[str, bool]) -> None:
+    """Ensure weekly and monthly digests are delivered once per period."""
+    if now.weekday() == 4 and not report_sent["weekly"]:
+        report_sent["weekly"] = await send_performance_report(supabase, now, "weekly")
+    if is_last_trading_day_of_month(now.date()) and not report_sent["monthly"]:
+        report_sent["monthly"] = await send_performance_report(supabase, now, "monthly")
+
+
 def _mark_signal_session_closed(signal):
     signal.bracket = None
     signal.suggested_lots = 0
@@ -1027,7 +1036,7 @@ async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle, *
                     logger.warning("OI watch final lifecycle persistence failed; restart recovery may lack the signal delivery outcome")
 
 
-async def run():
+async def run(shutdown_started=None):
     """
     Main entry point for the ARES Trading System.
     """
@@ -1139,8 +1148,7 @@ async def run():
     buffers_full_printed = False
     last_error_msg = None
     last_heartbeat_time = None
-    weekly_report_sent = False
-    monthly_report_sent = False
+    report_sent = {"weekly": False, "monthly": False}
 
     try:
         while True:
@@ -1161,18 +1169,15 @@ async def run():
             
             # Session gate: only run between 09:15 and 15:30
             # Post the digest once during the final two live minutes (15:28 inclusive, 15:30 exclusive).
-            # The upper bound keeps an after-hours restart from re-posting: the *_sent
-            # flags are in-memory and reset on reboot, but a boot at any other time
-            # can't satisfy the window. Each flag flips only on successful delivery so
-            # a failed webhook stays eligible for retry on the next poll in the window.
+            # The upper bound keeps an after-hours cold start out of this window. The
+            # close fallback also requires evidence that this process observed today's
+            # session. The *_sent flags are in-memory and reset on reboot; failed
+            # deliveries remain eligible for retry on the next poll in the window.
             # ponytail: trades closing after delivery are excluded; the extra minute
             # gives the 60s poll another chance, though a longer delayed cycle can still miss.
             # Persist a per-period marker if missed deliveries or in-window restarts matter.
             if is_performance_report_window(now):
-                if now.weekday() == 4 and not weekly_report_sent:  # Friday
-                    weekly_report_sent = await send_performance_report(storage.supabase, now, "weekly")
-                if is_last_trading_day_of_month(now.date()) and not monthly_report_sent:
-                    monthly_report_sent = await send_performance_report(storage.supabase, now, "monthly")
+                await _ensure_performance_reports_sent(storage.supabase, now, report_sent)
 
             if current_time >= time(15, 30):
                 # One bounded drain belongs only to an already-running session.
@@ -1560,6 +1565,8 @@ async def run():
                 engine, order_dispatcher, respect_close=True, price_fetcher=price_fetcher,
             )
     finally:
+        if shutdown_started is not None:
+            shutdown_started.set()
         try:
             if last_watch_candle is not None:
                 engine.oi_wall_filter.reset_session(last_watch_candle)
@@ -1595,11 +1602,42 @@ async def run():
                 except Exception as drain_err:
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)
                 finally:
-                    tick_feed.stop()
+                    try:
+                        report_time = _session_now()
+                        if session_activity_date == report_time.date():
+                            await _ensure_performance_reports_sent(storage.supabase, report_time, report_sent)
+                    except Exception as report_err:
+                        logger.warning("Performance report shutdown fallback failed: %s", report_err)
+                    finally:
+                        tick_feed.stop()
+
+
+async def _run_with_sigterm():
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    shutdown_started = asyncio.Event()
+    terminated = False
+
+    def terminate():
+        nonlocal terminated
+        if not terminated and not shutdown_started.is_set():
+            terminated = True
+            task.cancel()
+
+    loop.add_signal_handler(signal.SIGTERM, terminate)
+    try:
+        await run(shutdown_started)
+    except asyncio.CancelledError:
+        if not terminated:
+            raise
+        print("\n⏹️ ARES monitoring stopped by SIGTERM.", flush=True)
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
 
 if __name__ == "__main__":
     try:
-        asyncio.run(run())
+        asyncio.run(_run_with_sigterm())
     except KeyboardInterrupt:
         print("\n⏹️ ARES monitoring stopped by user.", flush=True)
     except Exception as fatal_error:

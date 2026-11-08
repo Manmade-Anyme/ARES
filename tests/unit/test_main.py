@@ -11,10 +11,83 @@ to a single plain sleep when the feed isn't active — zero behavior change
 from the pre-TASK-173 loop in that case.
 """
 import asyncio
+import signal
+import subprocess
+import sys
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import main
+
+
+@pytest.mark.asyncio
+async def test_sigterm_cancels_run_once_and_allows_cleanup(monkeypatch):
+    loop = asyncio.get_running_loop()
+    handlers = {}
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, callback: handlers.update({sig: callback}))
+    remove = MagicMock()
+    monkeypatch.setattr(loop, "remove_signal_handler", remove)
+    cleanup = []
+
+    async def run(shutdown_started):
+        try:
+            loop.call_soon(handlers[signal.SIGTERM])
+            await asyncio.Event().wait()
+        finally:
+            shutdown_started.set()
+            handlers[signal.SIGTERM]()
+            await asyncio.sleep(0)
+            cleanup.append("complete")
+
+    monkeypatch.setattr(main, "run", run)
+    await main._run_with_sigterm()
+    assert cleanup == ["complete"]
+    remove.assert_called_once_with(signal.SIGTERM)
+
+
+@pytest.mark.asyncio
+async def test_sigterm_does_not_interrupt_natural_shutdown(monkeypatch):
+    loop = asyncio.get_running_loop()
+    handlers = {}
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, callback: handlers.update({sig: callback}))
+    monkeypatch.setattr(loop, "remove_signal_handler", MagicMock())
+    cleanup = []
+
+    async def run(shutdown_started):
+        shutdown_started.set()
+        loop.call_soon(handlers[signal.SIGTERM])
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        cleanup.append("complete")
+
+    monkeypatch.setattr(main, "run", run)
+    await main._run_with_sigterm()
+    assert cleanup == ["complete"]
+
+
+def test_real_sigterm_runs_async_cleanup():
+    program = """
+import asyncio
+import os
+import signal
+import main
+
+async def fake_run(shutdown_started):
+    try:
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.Event().wait()
+    finally:
+        shutdown_started.set()
+        await asyncio.sleep(0.01)
+        print("cleanup complete", flush=True)
+
+main.run = fake_run
+asyncio.run(main._run_with_sigterm())
+"""
+    result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert "cleanup complete" in result.stdout
 
 
 class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
@@ -511,3 +584,44 @@ async def test_completed_atr_monitors_both_run_independently(failed):
     await main._monitor_completed_atr(candles, positions, dispatcher)
     positions.update_atr_trailing.assert_awaited_once_with(candles)
     dispatcher.on_candles.assert_awaited_once_with(candles)
+
+
+@pytest.mark.asyncio
+async def test_ensure_performance_reports_sent_delivers_on_friday_when_unsent():
+    from datetime import datetime
+    now_friday = datetime(2026, 11, 6, 15, 30, 0)
+    mock_supabase = MagicMock()
+    
+    with patch("main.send_performance_report", new_callable=AsyncMock) as mock_send, \
+         patch("main.is_last_trading_day_of_month", return_value=False):
+        mock_send.return_value = True
+        report_sent = {"weekly": False, "monthly": False}
+        await main._ensure_performance_reports_sent(mock_supabase, now_friday, report_sent)
+        mock_send.assert_awaited_once_with(mock_supabase, now_friday, "weekly")
+        assert report_sent == {"weekly": True, "monthly": False}
+
+
+@pytest.mark.asyncio
+async def test_ensure_performance_reports_sent_skips_when_already_sent():
+    from datetime import datetime
+    now_friday = datetime(2026, 11, 6, 15, 30, 0)
+    mock_supabase = MagicMock()
+    
+    with patch("main.send_performance_report", new_callable=AsyncMock) as mock_send:
+        report_sent = {"weekly": True, "monthly": True}
+        await main._ensure_performance_reports_sent(mock_supabase, now_friday, report_sent)
+        mock_send.assert_not_called()
+        assert report_sent == {"weekly": True, "monthly": True}
+
+
+@pytest.mark.asyncio
+async def test_ensure_performance_reports_sent_preserves_weekly_success_on_cancellation():
+    now_month_end_friday = datetime(2026, 10, 30, 15, 29)
+    report_sent = {"weekly": False, "monthly": False}
+
+    with patch("main.send_performance_report", new_callable=AsyncMock) as mock_send:
+        mock_send.side_effect = [True, asyncio.CancelledError()]
+        with pytest.raises(asyncio.CancelledError):
+            await main._ensure_performance_reports_sent(None, now_month_end_friday, report_sent)
+
+    assert report_sent == {"weekly": True, "monthly": False}

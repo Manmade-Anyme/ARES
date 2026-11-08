@@ -482,8 +482,8 @@ async def send_error_alert(error_msg: str) -> None:
         try:
             response = await client.post(webhook_url, json=payload)
             response.raise_for_status()
-        except Exception as e:
-            print(f"[-] Discord error alert failed: {type(e).__name__} - {e}")
+        except Exception as exc:
+            print(f"[-] Discord error alert failed: {type(exc).__name__}")
 
 def trade_update_action_text(update_type: str, trade: dict) -> str:
     """The human sentence describing one trade state change.

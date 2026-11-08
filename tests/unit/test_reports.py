@@ -2,7 +2,56 @@ from datetime import datetime, timezone
 
 import pytest
 
+import reports
 from reports import build_report_embed, compute_metrics, is_performance_report_window
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["build", "post"])
+async def test_report_failure_notifies_health(monkeypatch, failure_stage):
+    from unittest.mock import AsyncMock, MagicMock
+    import alerts
+
+    monkeypatch.setattr(reports.settings, "discord_webhook_url", "https://example.test/secret")
+    alert = AsyncMock()
+    monkeypatch.setattr(alerts, "send_error_alert", alert)
+    if failure_stage == "build":
+        monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(side_effect=ValueError("secret")))
+    else:
+        monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(return_value=[]))
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.post = AsyncMock(side_effect=ValueError("secret"))
+        monkeypatch.setattr(reports.httpx, "AsyncClient", MagicMock(return_value=client))
+
+    assert not await reports.send_performance_report(None, datetime(2026, 11, 6), "weekly")
+    alert.assert_awaited_once_with("WEEKLY performance report failed: ValueError")
+
+
+@pytest.mark.asyncio
+async def test_health_alert_failure_logs_type_without_secrets(monkeypatch, capsys):
+    from unittest.mock import AsyncMock, MagicMock
+    import httpx
+    import alerts
+
+    report_url = "https://example.test/report-token"
+    health_url = "https://example.test/health-token"
+    monkeypatch.setattr(reports.settings, "discord_webhook_url", report_url)
+    monkeypatch.setattr(reports.settings, "discord_health_webhook_url", health_url)
+    monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(side_effect=ValueError("secret")))
+    response = httpx.Response(500, request=httpx.Request("POST", health_url))
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    client.post = AsyncMock(return_value=response)
+    monkeypatch.setattr(alerts.httpx, "AsyncClient", MagicMock(return_value=client))
+
+    assert not await reports.send_performance_report(None, datetime(2026, 11, 6), "weekly")
+    output = capsys.readouterr().out
+    assert "Discord error alert failed: HTTPStatusError" in output
+    assert "report-token" not in output
+    assert "health-token" not in output
 
 
 @pytest.mark.parametrize(
@@ -213,3 +262,22 @@ def test_report_embed_shows_spot_and_option_points_without_old_or_setup_rupee_es
     setup_value = next(field["value"] for field in embed["fields"] if field["name"] == "Failed Breakout")
     assert "Net +12.0 spot pts" in setup_value
     assert "₹" not in setup_value
+
+
+@pytest.mark.asyncio
+async def test_send_performance_report_alerts_health_webhook_on_failure(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, patch
+    import reports
+    from config import settings
+
+    monkeypatch.setattr(settings, "discord_webhook_url", "http://example.com/webhook")
+    
+    mock_supabase = MagicMock()
+    mock_supabase.table.return_value.select.return_value.gte.return_value.lte.return_value.eq.return_value.order.return_value.order.return_value.range.return_value.execute.side_effect = RuntimeError("DB connection dropped")
+
+    with patch("alerts.send_error_alert", new_callable=AsyncMock) as mock_alert:
+        ok = await reports.send_performance_report(mock_supabase, datetime(2026, 11, 6, 15, 29), "weekly")
+        assert ok is False
+        mock_alert.assert_awaited_once()
+        assert "WEEKLY performance report failed" in mock_alert.await_args[0][0]
+
