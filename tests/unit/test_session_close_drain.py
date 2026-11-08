@@ -221,7 +221,7 @@ async def test_final_attempt_is_bounded_and_ignores_unavailable_or_stale_bar(loo
 @pytest.mark.asyncio
 async def test_after_hours_cold_start_never_replays_session_or_sends_reports(loop, at, monkeypatch):
     ctx = loop([], [at])
-    ensure_reports = AsyncMock(return_value=(False, False))
+    ensure_reports = AsyncMock()
     monkeypatch.setattr(main, "_ensure_performance_reports_sent", ensure_reports)
     await main.run()
     ctx.price.fetch_latest_candle.assert_not_awaited()
@@ -237,7 +237,7 @@ async def test_close_fallback_sends_reports_after_observing_todays_session(loop,
         [final_candle],
         [datetime(2026, 11, 6, 15, 29), datetime(2026, 11, 6, 15, 30)],
     )
-    ensure_reports = AsyncMock(return_value=(True, False))
+    ensure_reports = AsyncMock()
     monkeypatch.setattr(main, "_ensure_performance_reports_sent", ensure_reports)
     monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 6, 15, 30))
 
@@ -257,7 +257,7 @@ async def test_report_fallback_runs_even_when_shutdown_drain_fails(loop, monkeyp
         [datetime(2026, 11, 6, 15, 27), datetime(2026, 11, 6, 15, 30)],
     )
     ctx.positions.flush_pending_trade_updates.side_effect = RuntimeError("trade drain failed")
-    ensure_reports = AsyncMock(return_value=(False, False))
+    ensure_reports = AsyncMock()
     monkeypatch.setattr(main, "_ensure_performance_reports_sent", ensure_reports)
     monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 6, 15, 30))
 
@@ -265,7 +265,8 @@ async def test_report_fallback_runs_even_when_shutdown_drain_fails(loop, monkeyp
 
     assert ensure_reports.await_count == 1
     ensure_reports.assert_awaited_with(
-        ctx.storage.supabase, datetime(2026, 11, 6, 15, 30), False, False
+        ctx.storage.supabase, datetime(2026, 11, 6, 15, 30),
+        {"weekly": False, "monthly": False},
     )
     ctx.feed.stop.assert_called()
 
@@ -278,16 +279,18 @@ async def test_close_report_waits_for_drain_and_uses_fresh_cutoff(loop, monkeypa
     ctx = loop([None], [start, closed])
     monkeypatch.setattr(main, "_session_now", lambda: drained_at)
 
-    async def send(supabase, now, weekly, monthly):
+    async def send(supabase, now, report_sent):
         ctx.positions.flush_pending_trade_updates.assert_awaited_once()
         ctx.feed.stop.assert_not_called()
         assert now == drained_at
-        return True, monthly
+        assert report_sent == {"weekly": False, "monthly": False}
 
     reports = AsyncMock(side_effect=send)
     monkeypatch.setattr(main, "_ensure_performance_reports_sent", reports)
     await main.run()
-    reports.assert_awaited_once_with(ctx.storage.supabase, drained_at, False, False)
+    reports.assert_awaited_once_with(
+        ctx.storage.supabase, drained_at, {"weekly": False, "monthly": False},
+    )
     ctx.feed.stop.assert_called_once()
 
 
@@ -308,16 +311,32 @@ async def test_cancelled_session_drains_before_early_report(loop, monkeypatch):
     ctx = loop([None], [now])
     monkeypatch.setattr(main, "_sleep_with_tick_exits", AsyncMock(side_effect=asyncio.CancelledError))
 
-    async def report(supabase, report_time, weekly, monthly):
+    async def report(supabase, report_time, report_sent):
         ctx.positions.flush_pending_trade_updates.assert_awaited_once()
         ctx.feed.stop.assert_not_called()
-        return True, monthly
+        assert report_sent == {"weekly": False, "monthly": False}
 
     reports = AsyncMock(side_effect=report)
     monkeypatch.setattr(main, "_ensure_performance_reports_sent", reports)
     with pytest.raises(asyncio.CancelledError):
         await main.run()
-    reports.assert_awaited_once_with(ctx.storage.supabase, now, False, False)
+    reports.assert_awaited_once_with(ctx.storage.supabase, now, {"weekly": False, "monthly": False})
+    ctx.feed.stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_monthly_report_keeps_weekly_success_for_shutdown_fallback(loop, monkeypatch):
+    now = datetime(2026, 10, 30, 15, 29)
+    ctx = loop([None], [now])
+    monkeypatch.setattr(main, "is_last_trading_day_of_month", lambda _: True)
+    monkeypatch.setattr(main, "_session_now", lambda: now)
+    send = AsyncMock(side_effect=[True, asyncio.CancelledError(), False])
+    monkeypatch.setattr(main, "send_performance_report", send)
+
+    with pytest.raises(asyncio.CancelledError):
+        await main.run()
+
+    assert [entry.args[2] for entry in send.await_args_list] == ["weekly", "monthly", "monthly"]
     ctx.feed.stop.assert_called_once()
 
 

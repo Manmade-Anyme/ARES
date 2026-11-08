@@ -517,13 +517,12 @@ def _close_bounded_delay(requested_seconds):
     return max(0.0, min(requested_seconds, (close - now).total_seconds()))
 
 
-async def _ensure_performance_reports_sent(supabase, now, weekly_sent: bool, monthly_sent: bool) -> tuple[bool, bool]:
+async def _ensure_performance_reports_sent(supabase, now, report_sent: dict[str, bool]) -> None:
     """Ensure weekly and monthly digests are delivered once per period."""
-    if now.weekday() == 4 and not weekly_sent:
-        weekly_sent = await send_performance_report(supabase, now, "weekly")
-    if is_last_trading_day_of_month(now.date()) and not monthly_sent:
-        monthly_sent = await send_performance_report(supabase, now, "monthly")
-    return weekly_sent, monthly_sent
+    if now.weekday() == 4 and not report_sent["weekly"]:
+        report_sent["weekly"] = await send_performance_report(supabase, now, "weekly")
+    if is_last_trading_day_of_month(now.date()) and not report_sent["monthly"]:
+        report_sent["monthly"] = await send_performance_report(supabase, now, "monthly")
 
 
 def _mark_signal_session_closed(signal):
@@ -1149,8 +1148,7 @@ async def run(shutdown_started=None):
     buffers_full_printed = False
     last_error_msg = None
     last_heartbeat_time = None
-    weekly_report_sent = False
-    monthly_report_sent = False
+    report_sent = {"weekly": False, "monthly": False}
 
     try:
         while True:
@@ -1179,9 +1177,7 @@ async def run(shutdown_started=None):
             # gives the 60s poll another chance, though a longer delayed cycle can still miss.
             # Persist a per-period marker if missed deliveries or in-window restarts matter.
             if is_performance_report_window(now):
-                weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
-                    storage.supabase, now, weekly_report_sent, monthly_report_sent
-                )
+                await _ensure_performance_reports_sent(storage.supabase, now, report_sent)
 
             if current_time >= time(15, 30):
                 # One bounded drain belongs only to an already-running session.
@@ -1609,9 +1605,7 @@ async def run(shutdown_started=None):
                     try:
                         report_time = _session_now()
                         if session_activity_date == report_time.date():
-                            weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
-                                storage.supabase, report_time, weekly_report_sent, monthly_report_sent
-                            )
+                            await _ensure_performance_reports_sent(storage.supabase, report_time, report_sent)
                     except Exception as report_err:
                         logger.warning("Performance report shutdown fallback failed: %s", report_err)
                     finally:

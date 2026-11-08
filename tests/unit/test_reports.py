@@ -32,15 +32,26 @@ async def test_report_failure_notifies_health(monkeypatch, failure_stage):
 @pytest.mark.asyncio
 async def test_health_alert_failure_logs_type_without_secrets(monkeypatch, capsys):
     from unittest.mock import AsyncMock, MagicMock
+    import httpx
     import alerts
 
-    monkeypatch.setattr(reports.settings, "discord_webhook_url", "https://example.test/secret")
+    report_url = "https://example.test/report-token"
+    health_url = "https://example.test/health-token"
+    monkeypatch.setattr(reports.settings, "discord_webhook_url", report_url)
+    monkeypatch.setattr(reports.settings, "discord_health_webhook_url", health_url)
     monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(side_effect=ValueError("secret")))
-    monkeypatch.setattr(alerts, "send_error_alert", AsyncMock(side_effect=RuntimeError("secret")))
+    response = httpx.Response(500, request=httpx.Request("POST", health_url))
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    client.post = AsyncMock(return_value=response)
+    monkeypatch.setattr(alerts.httpx, "AsyncClient", MagicMock(return_value=client))
+
     assert not await reports.send_performance_report(None, datetime(2026, 11, 6), "weekly")
     output = capsys.readouterr().out
-    assert "Performance report error alert failed: RuntimeError" in output
-    assert "secret" not in output
+    assert "Discord error alert failed: HTTPStatusError" in output
+    assert "report-token" not in output
+    assert "health-token" not in output
 
 
 @pytest.mark.parametrize(
@@ -269,5 +280,4 @@ async def test_send_performance_report_alerts_health_webhook_on_failure(monkeypa
         assert ok is False
         mock_alert.assert_awaited_once()
         assert "WEEKLY performance report failed" in mock_alert.await_args[0][0]
-
 

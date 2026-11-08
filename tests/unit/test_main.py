@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import main
@@ -594,12 +595,10 @@ async def test_ensure_performance_reports_sent_delivers_on_friday_when_unsent():
     with patch("main.send_performance_report", new_callable=AsyncMock) as mock_send, \
          patch("main.is_last_trading_day_of_month", return_value=False):
         mock_send.return_value = True
-        weekly_sent, monthly_sent = await main._ensure_performance_reports_sent(
-            mock_supabase, now_friday, weekly_sent=False, monthly_sent=False
-        )
+        report_sent = {"weekly": False, "monthly": False}
+        await main._ensure_performance_reports_sent(mock_supabase, now_friday, report_sent)
         mock_send.assert_awaited_once_with(mock_supabase, now_friday, "weekly")
-        assert weekly_sent is True
-        assert monthly_sent is False
+        assert report_sent == {"weekly": True, "monthly": False}
 
 
 @pytest.mark.asyncio
@@ -609,9 +608,20 @@ async def test_ensure_performance_reports_sent_skips_when_already_sent():
     mock_supabase = MagicMock()
     
     with patch("main.send_performance_report", new_callable=AsyncMock) as mock_send:
-        weekly_sent, monthly_sent = await main._ensure_performance_reports_sent(
-            mock_supabase, now_friday, weekly_sent=True, monthly_sent=True
-        )
+        report_sent = {"weekly": True, "monthly": True}
+        await main._ensure_performance_reports_sent(mock_supabase, now_friday, report_sent)
         mock_send.assert_not_called()
-        assert weekly_sent is True
-        assert monthly_sent is True
+        assert report_sent == {"weekly": True, "monthly": True}
+
+
+@pytest.mark.asyncio
+async def test_ensure_performance_reports_sent_preserves_weekly_success_on_cancellation():
+    now_month_end_friday = datetime(2026, 10, 30, 15, 29)
+    report_sent = {"weekly": False, "monthly": False}
+
+    with patch("main.send_performance_report", new_callable=AsyncMock) as mock_send:
+        mock_send.side_effect = [True, asyncio.CancelledError()]
+        with pytest.raises(asyncio.CancelledError):
+            await main._ensure_performance_reports_sent(None, now_month_end_friday, report_sent)
+
+    assert report_sent == {"weekly": True, "monthly": False}
