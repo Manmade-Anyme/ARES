@@ -3,6 +3,7 @@ from asyncio import sleep as _quote_retry_sleep
 import datetime as datetime_module
 from datetime import datetime, time, timedelta, timezone
 import logging
+import signal
 from math import isfinite
 from inspect import iscoroutinefunction
 from typing import Optional, Tuple
@@ -1036,7 +1037,7 @@ async def _deliver_signal_alert(signal, spot, persisted, entry_filter, candle, *
                     logger.warning("OI watch final lifecycle persistence failed; restart recovery may lack the signal delivery outcome")
 
 
-async def run():
+async def run(shutdown_started=None):
     """
     Main entry point for the ARES Trading System.
     """
@@ -1194,10 +1195,6 @@ async def run():
                 )
                 if not finalizing:
                     print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
-                    if session_activity_date == now.date():
-                        weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
-                            storage.supabase, now, weekly_report_sent, monthly_report_sent
-                        )
                     break
             
             if current_time < time(9, 15):
@@ -1572,6 +1569,8 @@ async def run():
                 engine, order_dispatcher, respect_close=True, price_fetcher=price_fetcher,
             )
     finally:
+        if shutdown_started is not None:
+            shutdown_started.set()
         try:
             if last_watch_candle is not None:
                 engine.oi_wall_filter.reset_session(last_watch_candle)
@@ -1608,18 +1607,43 @@ async def run():
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)
                 finally:
                     try:
-                        if session_activity_date == now.date():
+                        report_time = _session_now()
+                        if session_activity_date == report_time.date():
                             weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
-                                storage.supabase, now, weekly_report_sent, monthly_report_sent
+                                storage.supabase, report_time, weekly_report_sent, monthly_report_sent
                             )
                     except Exception as report_err:
                         logger.warning("Performance report shutdown fallback failed: %s", report_err)
                     finally:
                         tick_feed.stop()
 
+
+async def _run_with_sigterm():
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    shutdown_started = asyncio.Event()
+    terminated = False
+
+    def terminate():
+        nonlocal terminated
+        if not terminated and not shutdown_started.is_set():
+            terminated = True
+            task.cancel()
+
+    loop.add_signal_handler(signal.SIGTERM, terminate)
+    try:
+        await run(shutdown_started)
+    except asyncio.CancelledError:
+        if not terminated:
+            raise
+        print("\n⏹️ ARES monitoring stopped by SIGTERM.", flush=True)
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(run())
+        asyncio.run(_run_with_sigterm())
     except KeyboardInterrupt:
         print("\n⏹️ ARES monitoring stopped by user.", flush=True)
     except Exception as fatal_error:

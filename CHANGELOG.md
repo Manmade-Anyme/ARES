@@ -5,8 +5,9 @@ All notable changes to the ARES trading system will be documented in this file.
 ## [Unreleased]
 
 - **Weekly & Monthly Performance Report Delivery Recovery (TASK-20261107):**
-  - Restored guaranteed session-end delivery fallback for weekly (Friday) and monthly (month-end) performance digests in `main.py` when the live `[15:28, 15:30)` window is missed or the session terminates early.
-  - Added session cleanup drain invocation in `main.py`'s `finally:` block to ensure digests are never silently skipped during process scale-down.
+  - Handle SIGTERM gracefully and retry unsent reports after shutdown drains using a fresh cutoff, while preserving the after-hours cold-start guard. Log health-alert failures without exposing webhook secrets.
+  - Restored a best-effort session-end delivery fallback for weekly (Friday) and monthly (month-end) performance digests in `main.py` when the live `[15:28, 15:30)` window is missed or the session terminates early.
+  - Added session cleanup drain invocation in `main.py`'s `finally:` block before attempting unsent digests during process scale-down.
   - Added `alerts.send_error_alert` notification on report posting exceptions in `reports.py` to prevent silent delivery failure.
   - Applied Ponytail engineering ladder: zero unnecessary abstraction, zero new dependencies, reusing existing report and alert primitives.
 - **IV-Gated Breakout Expansion Strategy & Signal Cooldown Reduction (TASK-20261106):**

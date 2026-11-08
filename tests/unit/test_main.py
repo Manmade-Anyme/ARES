@@ -11,10 +11,82 @@ to a single plain sleep when the feed isn't active — zero behavior change
 from the pre-TASK-173 loop in that case.
 """
 import asyncio
+import signal
+import subprocess
+import sys
 import unittest
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import main
+
+
+@pytest.mark.asyncio
+async def test_sigterm_cancels_run_once_and_allows_cleanup(monkeypatch):
+    loop = asyncio.get_running_loop()
+    handlers = {}
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, callback: handlers.update({sig: callback}))
+    remove = MagicMock()
+    monkeypatch.setattr(loop, "remove_signal_handler", remove)
+    cleanup = []
+
+    async def run(shutdown_started):
+        try:
+            loop.call_soon(handlers[signal.SIGTERM])
+            await asyncio.Event().wait()
+        finally:
+            shutdown_started.set()
+            handlers[signal.SIGTERM]()
+            await asyncio.sleep(0)
+            cleanup.append("complete")
+
+    monkeypatch.setattr(main, "run", run)
+    await main._run_with_sigterm()
+    assert cleanup == ["complete"]
+    remove.assert_called_once_with(signal.SIGTERM)
+
+
+@pytest.mark.asyncio
+async def test_sigterm_does_not_interrupt_natural_shutdown(monkeypatch):
+    loop = asyncio.get_running_loop()
+    handlers = {}
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, callback: handlers.update({sig: callback}))
+    monkeypatch.setattr(loop, "remove_signal_handler", MagicMock())
+    cleanup = []
+
+    async def run(shutdown_started):
+        shutdown_started.set()
+        loop.call_soon(handlers[signal.SIGTERM])
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        cleanup.append("complete")
+
+    monkeypatch.setattr(main, "run", run)
+    await main._run_with_sigterm()
+    assert cleanup == ["complete"]
+
+
+def test_real_sigterm_runs_async_cleanup():
+    program = """
+import asyncio
+import os
+import signal
+import main
+
+async def fake_run(shutdown_started):
+    try:
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.Event().wait()
+    finally:
+        shutdown_started.set()
+        await asyncio.sleep(0.01)
+        print("cleanup complete", flush=True)
+
+main.run = fake_run
+asyncio.run(main._run_with_sigterm())
+"""
+    result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert "cleanup complete" in result.stdout
 
 
 class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
@@ -543,4 +615,3 @@ async def test_ensure_performance_reports_sent_skips_when_already_sent():
         mock_send.assert_not_called()
         assert weekly_sent is True
         assert monthly_sent is True
-

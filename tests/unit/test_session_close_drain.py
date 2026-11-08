@@ -51,6 +51,10 @@ def loop(monkeypatch):
         errors, sizing, alerts, watches = AsyncMock(), AsyncMock(), AsyncMock(), AsyncMock()
         outbox = MagicMock()
         outbox.close = AsyncMock()
+        quote_service = MagicMock()
+        quote_service.reconcile_selected_contract.return_value = False
+        quote_service.flush = AsyncMock()
+        monkeypatch.setattr("quote_service.get_quote_service", lambda: quote_service)
         for name, instance in {
             "AresEngine": engine, "PriceFetcher": price, "OIFetcher": oi,
             "LevelFetcher": level_fetcher, "Storage": storage,
@@ -235,12 +239,12 @@ async def test_close_fallback_sends_reports_after_observing_todays_session(loop,
     )
     ensure_reports = AsyncMock(return_value=(True, False))
     monkeypatch.setattr(main, "_ensure_performance_reports_sent", ensure_reports)
+    monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 6, 15, 30))
 
     await main.run()
 
     assert [call.args[1] for call in ensure_reports.await_args_list] == [
         datetime(2026, 11, 6, 15, 29),
-        datetime(2026, 11, 6, 15, 30),
         datetime(2026, 11, 6, 15, 30),
     ]
 
@@ -255,14 +259,66 @@ async def test_report_fallback_runs_even_when_shutdown_drain_fails(loop, monkeyp
     ctx.positions.flush_pending_trade_updates.side_effect = RuntimeError("trade drain failed")
     ensure_reports = AsyncMock(return_value=(False, False))
     monkeypatch.setattr(main, "_ensure_performance_reports_sent", ensure_reports)
+    monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 6, 15, 30))
 
     await main.run()
 
-    assert ensure_reports.await_count == 2
+    assert ensure_reports.await_count == 1
     ensure_reports.assert_awaited_with(
         ctx.storage.supabase, datetime(2026, 11, 6, 15, 30), False, False
     )
     ctx.feed.stop.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_close_report_waits_for_drain_and_uses_fresh_cutoff(loop, monkeypatch):
+    start = datetime(2026, 11, 6, 15, 27)
+    closed = datetime(2026, 11, 6, 15, 31)
+    drained_at = datetime(2026, 11, 6, 15, 32)
+    ctx = loop([None], [start, closed])
+    monkeypatch.setattr(main, "_session_now", lambda: drained_at)
+
+    async def send(supabase, now, weekly, monthly):
+        ctx.positions.flush_pending_trade_updates.assert_awaited_once()
+        ctx.feed.stop.assert_not_called()
+        assert now == drained_at
+        return True, monthly
+
+    reports = AsyncMock(side_effect=send)
+    monkeypatch.setattr(main, "_ensure_performance_reports_sent", reports)
+    await main.run()
+    reports.assert_awaited_once_with(ctx.storage.supabase, drained_at, False, False)
+    ctx.feed.stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_fallback_uses_fresh_date_for_session_guard(loop, monkeypatch):
+    start = datetime(2026, 11, 6, 15, 27)
+    ctx = loop([None], [start, datetime(2026, 11, 6, 15, 31)])
+    monkeypatch.setattr(main, "_session_now", lambda: datetime(2026, 11, 7, 0, 1))
+    reports = AsyncMock()
+    monkeypatch.setattr(main, "_ensure_performance_reports_sent", reports)
+    await main.run()
+    reports.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_session_drains_before_early_report(loop, monkeypatch):
+    now = datetime(2026, 11, 6, 14, 58)
+    ctx = loop([None], [now])
+    monkeypatch.setattr(main, "_sleep_with_tick_exits", AsyncMock(side_effect=asyncio.CancelledError))
+
+    async def report(supabase, report_time, weekly, monthly):
+        ctx.positions.flush_pending_trade_updates.assert_awaited_once()
+        ctx.feed.stop.assert_not_called()
+        return True, monthly
+
+    reports = AsyncMock(side_effect=report)
+    monkeypatch.setattr(main, "_ensure_performance_reports_sent", reports)
+    with pytest.raises(asyncio.CancelledError):
+        await main.run()
+    reports.assert_awaited_once_with(ctx.storage.supabase, now, False, False)
+    ctx.feed.stop.assert_called_once()
 
 
 @pytest.mark.asyncio

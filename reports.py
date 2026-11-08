@@ -6,9 +6,9 @@ win rate, net spot points, and one-lot option-reference P&L when the pinned
 contract has valid observed entry and final-exit prices. Spot `pnl_points` remain
 the independent spot outcome. Missing option-price evidence stays unavailable.
 
-Triggered in-process from main.py's session-end branch:
-  - "weekly"  every Friday, eligible from 15:28 until 15:30 IST (exclusive)
-  - "monthly" on the last trading day of the month, in the same window
+Triggered in-process during the final live window, with a shutdown fallback:
+  - "weekly" every Friday
+  - "monthly" on the last trading day of the month
 """
 
 import httpx
@@ -433,6 +433,6 @@ async def send_performance_report(supabase: Any, now_ist: datetime, period: str)
         try:
             from alerts import send_error_alert
             await send_error_alert(f"{period_label} performance report failed: {type(e).__name__}")
-        except Exception:
-            pass
+        except Exception as alert_error:
+            print(f"[-] Performance report error alert failed: {type(alert_error).__name__}")
         return False

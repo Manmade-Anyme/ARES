@@ -2,7 +2,45 @@ from datetime import datetime, timezone
 
 import pytest
 
+import reports
 from reports import build_report_embed, compute_metrics, is_performance_report_window
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["build", "post"])
+async def test_report_failure_notifies_health(monkeypatch, failure_stage):
+    from unittest.mock import AsyncMock, MagicMock
+    import alerts
+
+    monkeypatch.setattr(reports.settings, "discord_webhook_url", "https://example.test/secret")
+    alert = AsyncMock()
+    monkeypatch.setattr(alerts, "send_error_alert", alert)
+    if failure_stage == "build":
+        monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(side_effect=ValueError("secret")))
+    else:
+        monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(return_value=[]))
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.post = AsyncMock(side_effect=ValueError("secret"))
+        monkeypatch.setattr(reports.httpx, "AsyncClient", MagicMock(return_value=client))
+
+    assert not await reports.send_performance_report(None, datetime(2026, 11, 6), "weekly")
+    alert.assert_awaited_once_with("WEEKLY performance report failed: ValueError")
+
+
+@pytest.mark.asyncio
+async def test_health_alert_failure_logs_type_without_secrets(monkeypatch, capsys):
+    from unittest.mock import AsyncMock, MagicMock
+    import alerts
+
+    monkeypatch.setattr(reports.settings, "discord_webhook_url", "https://example.test/secret")
+    monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(side_effect=ValueError("secret")))
+    monkeypatch.setattr(alerts, "send_error_alert", AsyncMock(side_effect=RuntimeError("secret")))
+    assert not await reports.send_performance_report(None, datetime(2026, 11, 6), "weekly")
+    output = capsys.readouterr().out
+    assert "Performance report error alert failed: RuntimeError" in output
+    assert "secret" not in output
 
 
 @pytest.mark.parametrize(
@@ -231,6 +269,5 @@ async def test_send_performance_report_alerts_health_webhook_on_failure(monkeypa
         assert ok is False
         mock_alert.assert_awaited_once()
         assert "WEEKLY performance report failed" in mock_alert.await_args[0][0]
-
 
 
