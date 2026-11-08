@@ -136,3 +136,42 @@ def test_end_to_end_session():
         assert initial_sl < t.entry_price
         assert t.exit_price is not None
         assert t.pnl_points != 0.0
+
+
+def test_option_exit_priced_on_entry_strike():
+    """Validates that option exit price is strictly matched against the recorded entry strike."""
+    engine = IVGatedBreakoutEngine(enable_iv_filter=True)
+    
+    # Synthetic IV dataframe containing multiple strikes at exit time (15:20)
+    df_multi_strike = pd.DataFrame([
+        # Entry quote for 24400 CE at 13:00
+        {"time_str": "13:00", "strike": 24400.0, "close": 110.0, "iv": 13.5},
+        # Later quotes at 15:20 (EOD) for multiple strikes:
+        # Strike 24400 CE (the entry contract) closes at 145.0 (+35 pts gain)
+        {"time_str": "15:20", "strike": 24400.0, "close": 145.0, "iv": 14.0},
+        # Strike 24500 CE (a rolled OTM contract) closes at 80.0
+        {"time_str": "15:20", "strike": 24500.0, "close": 80.0, "iv": 13.2},
+    ])
+
+    exit_price = engine._get_option_quote_for_strike(df_multi_strike, "15:20", strike=24400.0)
+    assert exit_price == 145.0  # Must match 24400 CE, not the later 24500 CE quote
+
+    # Also test trade record accounting in run_session
+    trade = IVBreakoutTradeRecord(
+        strategy="IV_GATED_BREAKOUT",
+        date="2026-11-05",
+        direction="BULLISH",
+        entry_time="13:00",
+        entry_price=24400.0,
+        stop_loss=24370.0,
+        risk_pts=30.0,
+        target_1=24435.0,
+        option_strike=24400.0,
+        option_entry_price=110.0,
+    )
+    quote = engine._get_option_quote_for_strike(df_multi_strike, "15:20", strike=trade.option_strike)
+    trade.option_exit_price = quote
+    trade.option_pnl_pts = trade.option_exit_price - trade.option_entry_price
+    assert trade.option_exit_price == 145.0
+    assert trade.option_pnl_pts == 35.0
+

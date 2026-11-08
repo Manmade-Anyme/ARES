@@ -64,7 +64,12 @@ class IVBreakoutDetector:
                 pass
         return None, "12:00"
 
-    def observe(self, candle: OHLCVCandle, iv_current: Optional[float] = None) -> None:
+    def observe(
+        self,
+        candle: OHLCVCandle,
+        iv_current: Optional[float] = None,
+        strike: Optional[float] = None,
+    ) -> None:
         """
         Record candle and IV state across every tick regardless of cooldown or priority.
         Maintains rolling buffers for dynamic base evaluation.
@@ -84,7 +89,9 @@ class IVBreakoutDetector:
 
         if iv_current is not None and iv_current > 0:
             if not self.iv_history or self.iv_history[-1][0] != candle.timestamp:
-                self.iv_history.append((candle.timestamp, iv_current))
+                self.iv_history.append((candle.timestamp, iv_current, strike))
+            elif len(self.iv_history[-1]) > 2 and self.iv_history[-1][2] is None and strike is not None:
+                self.iv_history[-1] = (candle.timestamp, iv_current, strike)
 
     def update(
         self,
@@ -92,11 +99,12 @@ class IVBreakoutDetector:
         avg_volume: float,
         iv_current: Optional[float] = None,
         levels: Optional[List[ResistanceLevel]] = None,
+        strike: Optional[float] = None,
     ) -> Optional[AresSignal]:
         if not isinstance(getattr(candle, "timestamp", None), datetime):
             return None
 
-        self.observe(candle, iv_current=iv_current)
+        self.observe(candle, iv_current=iv_current, strike=strike)
 
         if self.fired_today:
             return None
@@ -159,25 +167,53 @@ class IVBreakoutDetector:
             return None
 
         # 2. IV Microstructure Velocity Gate
+        # Isolate history by strike to prevent cross-strike IV skew being mistaken for a rapid crush
+        active_strike = strike
+        if active_strike is None and self.iv_history:
+            last_entry = self.iv_history[-1]
+            if len(last_entry) > 2:
+                active_strike = last_entry[2]
+
+        same_strike_samples = []
+        for entry in self.iv_history:
+            entry_t = entry[0]
+            if entry_t == candle.timestamp:
+                continue
+            entry_v = entry[1]
+            entry_s = entry[2] if len(entry) > 2 else None
+            if active_strike is not None:
+                if entry_s is not None and entry_s != active_strike:
+                    continue
+            same_strike_samples.append((entry_t, entry_v))
+
         iv_prev_1m = None
         iv_prev_3m = None
-        if len(self.iv_history) >= 2:
-            prev_t, prev_v = self.iv_history[-2]
+        if same_strike_samples:
+            prev_t, prev_v = same_strike_samples[-1]
             if isinstance(candle.timestamp, datetime) and isinstance(prev_t, datetime):
                 if (candle.timestamp - prev_t).total_seconds() <= 180:
                     iv_prev_1m = prev_v
             else:
                 iv_prev_1m = prev_v
 
-        if len(self.iv_history) >= 4:
-            prev_t3, prev_v3 = self.iv_history[-4]
-            if isinstance(candle.timestamp, datetime) and isinstance(prev_t3, datetime):
-                if (candle.timestamp - prev_t3).total_seconds() <= 360:
+            # Look for sample ~3 minutes prior (between 120s and 360s) or 3 bars back
+            for prev_t_cand, prev_v_cand in reversed(same_strike_samples):
+                if isinstance(candle.timestamp, datetime) and isinstance(prev_t_cand, datetime):
+                    dt_sec = (candle.timestamp - prev_t_cand).total_seconds()
+                    if 120 <= dt_sec <= 360:
+                        iv_prev_3m = prev_v_cand
+                        break
+                elif len(same_strike_samples) >= 3 and (prev_t_cand, prev_v_cand) == same_strike_samples[-3]:
+                    iv_prev_3m = prev_v_cand
+                    break
+
+            if iv_prev_3m is None and len(same_strike_samples) >= 3:
+                prev_t3, prev_v3 = same_strike_samples[-3]
+                if not (isinstance(candle.timestamp, datetime) and isinstance(prev_t3, datetime)) or (candle.timestamp - prev_t3).total_seconds() <= 360:
                     iv_prev_3m = prev_v3
-            else:
-                iv_prev_3m = prev_v3
-        else:
-            iv_prev_3m = iv_prev_1m
+
+            if iv_prev_3m is None:
+                iv_prev_3m = iv_prev_1m
 
         iv_ok, iv_reason = evaluate_iv_velocity(
             iv_current=iv_current,

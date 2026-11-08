@@ -87,9 +87,11 @@ Every trade rejected by the IV-Gated filter was an audited stopout:
 
 1. **POC Engine:** `poc/iv_breakout_expansion_poc.py` (`IVGatedBreakoutEngine`, `IVBreakoutTradeRecord`).
 2. **Audit Runner:** `poc/run_iv_breakout_audit.py`.
-3. **Unit Tests:** `tests/unit/test_iv_breakout_expansion.py` (5/5 tests passing).
+3. **Unit Tests:** `tests/unit/test_iv_breakout_expansion.py` and `tests/unit/test_iv_breakout_detector.py`.
 4. **Integration into Core ARES:**
-   - Add `call_iv_velocity` and `put_iv_velocity` calculation to `options_math.py`.
-   - Register `SetupType.IV_GATED_BREAKOUT` in `models.py`.
-   - Ingest live tick-by-tick option quotes from Dhan WebSocket in `engine.py` to maintain rolling 1m/3m IV delta.
+   - Pure mathematical velocity helper in `options_math.py` (`evaluate_iv_velocity()`).
+   - Setup type `SetupType.IV_GATED_BREAKOUT` registered in `models.py`.
+   - Production detector `detectors/iv_breakout.py` wired into `AresEngine`.
+   - Strike-isolated rolling IV history in `IVBreakoutDetector` and `engine.py` to prevent ATM strike-roll skew artifacts from triggering false vol-crush rejections.
+   - Entry-strike matched option exit quotes in `IVGatedBreakoutEngine._get_option_quote_for_strike()` to ensure accurate contract accounting across multi-strike caches and ATM rolls.
 

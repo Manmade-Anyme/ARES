@@ -321,4 +321,47 @@ async def test_iv_breakout_end_to_end_ml_prediction_and_collection():
     assert scores["oi_wall_rejection"] == 0
 
 
+def test_iv_breakout_strike_roll_does_not_trigger_false_vol_crush():
+    """Validates that ATM strike rolls do not trigger false vol-crush rejections from cross-strike skew."""
+    detector = IVBreakoutDetector()
+    date_now = datetime(2026, 11, 5, 9, 15, tzinfo=IST)
+
+    # 1. 25 base candles around 24350 with ATM CE strike 24350 (IV 14.5)
+    for m in range(25):
+        t = date_now + timedelta(minutes=m)
+        c = OHLCVCandle(
+            timestamp=t,
+            open=24350.0 + (m % 5) - 2,
+            high=24365.0,
+            low=24340.0,
+            close=24350.0 + (m % 7) - 3,
+            volume=1000000,
+            vwap=24352.0
+        )
+        detector.update(c, avg_volume=1000000, iv_current=14.5, strike=24350.0)
+
+    # 2. Breakout candle at minute 26 (09:41 AM) breaking 24365.0 base high.
+    # ATM strike rolls to 24400 CE where cross-strike IV is 13.8 (skew drop of -0.70 from 14.5).
+    t_bo = date_now + timedelta(minutes=26)
+    c_bo = OHLCVCandle(
+        timestamp=t_bo,
+        open=24360.0,
+        high=24375.0,
+        low=24358.0,
+        close=24368.0,
+        volume=1300000,
+        vwap=24360.0
+    )
+
+    # Update with new strike 24400 and iv 13.8
+    sig = detector.update(c_bo, avg_volume=1000000, iv_current=13.8, strike=24400.0)
+
+    # Without strike isolation, d1 = 13.8 - 14.5 = -0.70 <= -0.30 would falsely trigger VOL_CRUSH_BULL_TRAP.
+    # With strike isolation, cross-strike skew is ignored and signal is emitted.
+    assert sig is not None
+    assert sig.setup_type == SetupType.IV_GATED_BREAKOUT
+    assert sig.trigger_price == 24368.0
+
+
+
 

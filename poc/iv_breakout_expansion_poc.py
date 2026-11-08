@@ -144,29 +144,36 @@ class IVGatedBreakoutEngine:
 
         # Strike-isolated history to prevent ATM strike-jump artifacts
         same_strike_sub = df_iv.iloc[:idx + 1]
-        if "strike" in df_iv.columns:
+        has_strike = "strike" in df_iv.columns and curr_strike > 0
+        if has_strike:
             same_strike_sub = same_strike_sub[same_strike_sub["strike"] == curr_strike]
 
         if len(same_strike_sub) >= 2:
             d_iv_1m = iv_curr - float(same_strike_sub.iloc[-2]["iv"])
-        else:
+        elif not has_strike:
             prev_row = df_iv.iloc[max(0, idx - 1)]
             d_iv_1m = iv_curr - float(prev_row.get("iv", iv_curr))
+        else:
+            d_iv_1m = 0.0
 
         if len(same_strike_sub) >= 4:
             d_iv_3m = iv_curr - float(same_strike_sub.iloc[-4]["iv"])
-        else:
+        elif not has_strike:
             prev3 = df_iv.iloc[max(0, idx - 3)]
             d_iv_3m = iv_curr - float(prev3.get("iv", iv_curr))
+        else:
+            d_iv_3m = d_iv_1m
 
         if len(same_strike_sub) >= 6:
             d_iv_5m = iv_curr - float(same_strike_sub.iloc[-6]["iv"])
-        else:
+        elif not has_strike:
             prev5 = df_iv.iloc[max(0, idx - 5)]
             d_iv_5m = iv_curr - float(prev5.get("iv", iv_curr))
+        else:
+            d_iv_5m = d_iv_3m
 
-        # Rolling 5m SMA
-        window_5m = df_iv.iloc[max(0, idx - 5):idx + 1]["iv"]
+        # Rolling 5m SMA isolated to the active strike
+        window_5m = same_strike_sub.iloc[max(0, len(same_strike_sub) - 5):]["iv"]
         iv_sma5 = float(window_5m.mean()) if not window_5m.empty else iv_curr
         iv_above_sma5 = bool(iv_curr >= iv_sma5)
 
@@ -193,6 +200,27 @@ class IVGatedBreakoutEngine:
 
         # APPROVAL: IV is expanding or stable, confirming genuine buying pressure
         return True, "IV_EXPANSION_CONFIRMED", metrics
+
+    def _get_option_quote_for_strike(
+        self,
+        df_iv: Optional[pd.DataFrame],
+        time_str: str,
+        strike: float
+    ) -> Optional[float]:
+        """
+        Selects the exit quote matching the recorded entry strike at or before time_str.
+        Prevents cross-strike comparison when multiple strikes exist or ATM rolls.
+        """
+        if df_iv is None or df_iv.empty:
+            return None
+        opt_sub = df_iv[df_iv["time_str"] <= time_str]
+        if opt_sub.empty:
+            return None
+        if "strike" in opt_sub.columns and strike > 0:
+            opt_strike_sub = opt_sub[opt_sub["strike"] == strike]
+            if not opt_strike_sub.empty:
+                return float(opt_strike_sub.iloc[-1]["close"])
+        return float(opt_sub.iloc[-1]["close"])
 
     def run_session(
         self,
@@ -226,12 +254,11 @@ class IVGatedBreakoutEngine:
                     active_trade.exit_price = float(candle["close"])
                     active_trade.exit_reason = "EOD_CLOSE"
                     active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
-                    # Option price at exit
-                    if df_iv is not None and not df_iv.empty:
-                        opt_sub = df_iv[df_iv["time_str"] <= t]
-                        if not opt_sub.empty:
-                            active_trade.option_exit_price = float(opt_sub.iloc[-1]["close"])
-                            active_trade.option_pnl_pts = active_trade.option_exit_price - active_trade.option_entry_price
+                    # Option price at exit matching entry strike
+                    opt_exit = self._get_option_quote_for_strike(df_iv, t, active_trade.option_strike)
+                    if opt_exit is not None:
+                        active_trade.option_exit_price = opt_exit
+                        active_trade.option_pnl_pts = active_trade.option_exit_price - active_trade.option_entry_price
                     completed_trades.append(active_trade)
                     active_trade = None
                 continue
@@ -244,11 +271,10 @@ class IVGatedBreakoutEngine:
                     active_trade.exit_price = active_trade.stop_loss
                     active_trade.exit_reason = "SL_HIT"
                     active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
-                    if df_iv is not None and not df_iv.empty:
-                        opt_sub = df_iv[df_iv["time_str"] <= t]
-                        if not opt_sub.empty:
-                            active_trade.option_exit_price = float(opt_sub.iloc[-1]["close"])
-                            active_trade.option_pnl_pts = active_trade.option_exit_price - active_trade.option_entry_price
+                    opt_exit = self._get_option_quote_for_strike(df_iv, t, active_trade.option_strike)
+                    if opt_exit is not None:
+                        active_trade.option_exit_price = opt_exit
+                        active_trade.option_pnl_pts = active_trade.option_exit_price - active_trade.option_entry_price
                     completed_trades.append(active_trade)
                     active_trade = None
                     cooldown_until_idx = i + 15
@@ -267,11 +293,10 @@ class IVGatedBreakoutEngine:
                     active_trade.exit_price = float(candle["close"])
                     active_trade.exit_reason = "EMA20_TRAIL"
                     active_trade.pnl_points = active_trade.exit_price - active_trade.entry_price
-                    if df_iv is not None and not df_iv.empty:
-                        opt_sub = df_iv[df_iv["time_str"] <= t]
-                        if not opt_sub.empty:
-                            active_trade.option_exit_price = float(opt_sub.iloc[-1]["close"])
-                            active_trade.option_pnl_pts = active_trade.option_exit_price - active_trade.option_entry_price
+                    opt_exit = self._get_option_quote_for_strike(df_iv, t, active_trade.option_strike)
+                    if opt_exit is not None:
+                        active_trade.option_exit_price = opt_exit
+                        active_trade.option_pnl_pts = active_trade.option_exit_price - active_trade.option_entry_price
                     completed_trades.append(active_trade)
                     active_trade = None
                     cooldown_until_idx = i + 10

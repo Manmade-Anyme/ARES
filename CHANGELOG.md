@@ -18,6 +18,8 @@ All notable changes to the ARES trading system will be documented in this file.
     - Added freshness time window checks (<=180s for 1m, <=360s for 3m) in IV microstructure velocity evaluation.
     - Registered `IV_GATED_BREAKOUT` in `reports.py` (`SETUP_TYPES` and `SETUP_LABELS`) for Discord daily/monthly performance reporting.
     - Added `IV_GATED_BREAKOUT` to `tests/unit/test_per_type_levels.py` approved tables and full regression suite.
+    - Retained option contract strike alongside timestamp and IV in `IVBreakoutDetector` (`detectors/iv_breakout.py`) and isolated rolling history by strike to eliminate cross-strike IV skew false vol-crush rejections when ATM rolls.
+    - Gated option exit pricing on `active_trade.option_strike` in `IVGatedBreakoutEngine` (`poc/iv_breakout_expansion_poc.py`), ensuring exit premium and PnL are always calculated on the recorded entry contract.
 
 - **PR #157 promote Trend Expansion strategy to production and remove POC files (TASK-20261105):**
   - Removed deprecated prototype modules and audit runners (`poc/trend_expansion_poc.py`, `poc/regime_gated_expansion_strategy.py`, `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, `poc/run_trend_expansion_backtest.py`, `poc/position_management.py`, and `tests/unit/test_poc_trend_expansion.py`).

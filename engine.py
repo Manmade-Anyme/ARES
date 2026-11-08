@@ -174,7 +174,11 @@ class AresEngine:
         if atm and atm.ce and atm.ce.iv is not None:
             self.iv_buffer.append(atm.ce.iv)
         if getattr(settings, "iv_breakout_enabled", True):
-            self.iv_breakout_detector.observe(candle, atm.ce.iv if (atm and atm.ce) else None)
+            self.iv_breakout_detector.observe(
+                candle,
+                iv_current=atm.ce.iv if (atm and atm.ce) else None,
+                strike=atm.ce.strike if (atm and atm.ce) else None,
+            )
 
         # 2. Cooldown state. Evaluated here but applied *after* the stateful
         # detectors have advanced (TASK-188) — see step 5a.
@@ -309,6 +313,7 @@ class AresEngine:
                         avg_volume=avg_volume,
                         iv_current=atm.ce.iv if (atm and atm.ce) else None,
                         levels=levels,
+                        strike=atm.ce.strike if (atm and atm.ce) else None,
                     )
                     if getattr(settings, "iv_breakout_enabled", True)
                     else None
