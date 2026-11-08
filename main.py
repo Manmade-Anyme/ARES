@@ -510,6 +510,14 @@ def _session_now():
     return datetime.now()
 
 
+async def _ensure_performance_reports_sent(supabase, now, weekly_sent, monthly_sent):
+    if now.weekday() == 4 and not weekly_sent:
+        weekly_sent = await send_performance_report(supabase, now, "weekly")
+    if is_last_trading_day_of_month(now.date()) and not monthly_sent:
+        monthly_sent = await send_performance_report(supabase, now, "monthly")
+    return weekly_sent, monthly_sent
+
+
 def _close_bounded_delay(requested_seconds):
     now = _session_now()
     close = now.replace(hour=15, minute=30, second=0, microsecond=0)
@@ -1159,20 +1167,12 @@ async def run():
                 last_vwap_reset_date = now.date()
                 print(f"{C}[{now.strftime('%H:%M:%S')}] 🔄 VWAP reset for the new session.{RESET}")
             
-            # Session gate: only run between 09:15 and 15:30
             # Post the digest once during the final two live minutes (15:28 inclusive, 15:30 exclusive).
-            # The upper bound keeps an after-hours restart from re-posting: the *_sent
-            # flags are in-memory and reset on reboot, but a boot at any other time
-            # can't satisfy the window. Each flag flips only on successful delivery so
-            # a failed webhook stays eligible for retry on the next poll in the window.
-            # ponytail: trades closing after delivery are excluded; the extra minute
-            # gives the 60s poll another chance, though a longer delayed cycle can still miss.
-            # Persist a per-period marker if missed deliveries or in-window restarts matter.
+            # Flags flip only on successful delivery, allowing retries during this process.
             if is_performance_report_window(now):
-                if now.weekday() == 4 and not weekly_report_sent:  # Friday
-                    weekly_report_sent = await send_performance_report(storage.supabase, now, "weekly")
-                if is_last_trading_day_of_month(now.date()) and not monthly_report_sent:
-                    monthly_report_sent = await send_performance_report(storage.supabase, now, "monthly")
+                weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
+                    storage.supabase, now, weekly_report_sent, monthly_report_sent,
+                )
 
             if current_time >= time(15, 30):
                 # One bounded drain belongs only to an already-running session.
@@ -1185,6 +1185,9 @@ async def run():
                          or last_watch_candle.timestamp.time() < time(15, 29))
                 )
                 if not finalizing:
+                    weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
+                        storage.supabase, now, weekly_report_sent, monthly_report_sent,
+                    )
                     print(f"{G}[{now.strftime('%H:%M:%S')}] 🛑 Session ended. Shutting down to scale to zero...{RESET}")
                     break
             
@@ -1595,7 +1598,12 @@ async def run():
                 except Exception as drain_err:
                     logger.warning("Trade update shutdown drain failed: %s", drain_err)
                 finally:
-                    tick_feed.stop()
+                    try:
+                        weekly_report_sent, monthly_report_sent = await _ensure_performance_reports_sent(
+                            storage.supabase, _session_now(), weekly_report_sent, monthly_report_sent,
+                        )
+                    finally:
+                        tick_feed.stop()
 
 if __name__ == "__main__":
     try:

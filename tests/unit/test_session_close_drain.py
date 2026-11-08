@@ -546,6 +546,71 @@ async def test_outbox_close_failure_still_stops_tick_feed(loop):
 
 
 @pytest.mark.asyncio
+async def test_friday_session_close_sends_once_and_cleanup_does_not_duplicate(loop, monkeypatch):
+    closed = datetime(2026, 11, 6, 15, 30)
+    ctx = loop([], [closed])
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "send_performance_report", send)
+    await main.run()
+    send.assert_awaited_once_with(ctx.storage.supabase, closed, "weekly")
+    ctx.feed.stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_friday_close_retries_failed_window_report_before_stopping_feed(loop, monkeypatch):
+    now = datetime(2026, 11, 6, 15, 29)
+    closed = datetime(2026, 11, 6, 15, 30)
+    ctx = loop([None], [now, closed])
+    monkeypatch.setattr(main, "_session_now", lambda: closed)
+    send = AsyncMock(side_effect=[False, True])
+    monkeypatch.setattr(main, "send_performance_report", send)
+    await main.run()
+    assert [entry.args[2] for entry in send.await_args_list] == ["weekly", "weekly"]
+    ctx.feed.stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_friday_final_bar_shutdown_sends_after_trade_updates_are_flushed(loop, monkeypatch):
+    start = datetime(2026, 11, 6, 15, 27)
+    closed = datetime(2026, 11, 6, 15, 30)
+    final = OHLCVCandle(datetime(2026, 11, 6, 15, 29), 24000, 24020, 23980, 24000, 100, 24000)
+    ctx = loop([None, final], [start, closed])
+    monkeypatch.setattr(main, "_session_now", lambda: closed)
+
+    async def send(*args):
+        ctx.positions.flush_pending_trade_updates.assert_awaited_once()
+        ctx.feed.stop.assert_not_called()
+        return True
+
+    report = AsyncMock(side_effect=send)
+    monkeypatch.setattr(main, "send_performance_report", report)
+    await main.run()
+    ctx.engine.tick.assert_called_once()
+    assert ctx.engine.tick.call_args.args[0] == final
+    report.assert_awaited_once_with(ctx.storage.supabase, closed, "weekly")
+    ctx.feed.stop.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_early_friday_shutdown_delivers_report_before_stopping_feed(loop, monkeypatch):
+    now = datetime(2026, 11, 6, 14, 58)
+    ctx = loop([], [now])
+    monkeypatch.setattr(main, "_session_now", lambda: now)
+    monkeypatch.setattr(main, "_retry_option_lifecycle_outbox", AsyncMock(side_effect=[None, RuntimeError("stop")]))
+
+    async def send(*args):
+        ctx.feed.stop.assert_not_called()
+        return True
+
+    report = AsyncMock(side_effect=send)
+    monkeypatch.setattr(main, "send_performance_report", report)
+    with pytest.raises(RuntimeError, match="stop"):
+        await main.run()
+    report.assert_awaited_once_with(ctx.storage.supabase, now, "weekly")
+    ctx.feed.stop.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_terminal_watch_failure_still_closes_outbox_and_stops_feed(loop):
     ctx = loop([candle(), candle(minute=29)],
                [datetime(2026, 10, 19, 15, 29), datetime(2026, 10, 19, 15, 30)])

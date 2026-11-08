@@ -201,6 +201,8 @@ Retained paper APIs require an observed executable ask for entry and bid for exi
 
 ### Weekly and monthly performance reports
 
+Reports are attempted on Friday or the last weekday of the month during 15:28–15:30 IST, with retries at session close and shutdown if not yet sent. Shutdown can send a partial report if the engine exits early. Delivery flags are in memory only, so restarts can produce duplicates; failures are reported to the health webhook.
+
 Reports retain spot P&L points and show one-lot option premium points as captured final-exit premium minus captured entry premium, multiplied by the pinned contract's stored lot size for the rupee equivalent. T1/T2 are spot milestones and do not book partial option exits. Exact LTP pairs and approximate completed-minute-close pairs are shown separately; totals remain unavailable unless all closed trades in the period have both valid marks. These references are market marks, not broker fills or realized after-cost account P&L. Setup rows remain spot-only. Capture uses `OPTION_REFERENCE_ACCOUNTING_ENABLED`, default `false`; production migration application and future-capture activation require separate approval. The user approved recovery only for the 16 report-eligible trades from 26–30 Oct 2026. Current Dhan verification has 11/16 matching pinned-contract pairs (approximate minute bars); the five expired contracts cannot be identified safely from a next-expiry rolling series, so no historical write is eligible and the period remains unavailable. All other historical rows remain unavailable and cannot be inferred from planned limits or spot/delta estimates.
 
 <a name="machine-learning-and-jev-predictions"></a>

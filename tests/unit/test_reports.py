@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import reports
 from reports import build_report_embed, compute_metrics, is_performance_report_window
 
 
@@ -17,6 +19,34 @@ from reports import build_report_embed, compute_metrics, is_performance_report_w
 )
 def test_performance_report_window_starts_at_1528_ist_and_ends_before_1530(now_ist, expected):
     assert is_performance_report_window(now_ist) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["build", "post"])
+async def test_send_performance_report_alerts_health_on_failure(monkeypatch, failure_stage):
+    monkeypatch.setattr(reports.settings, "discord_webhook_url", "https://example.test/secret")
+    alert = AsyncMock()
+    monkeypatch.setattr(reports, "send_error_alert", alert)
+    if failure_stage == "build":
+        monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(side_effect=ValueError("secret")))
+    else:
+        monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(return_value=[]))
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.post = AsyncMock(side_effect=ValueError("secret"))
+        monkeypatch.setattr(reports.httpx, "AsyncClient", MagicMock(return_value=client))
+
+    assert not await reports.send_performance_report(None, datetime(2026, 11, 6), "weekly")
+    alert.assert_awaited_once_with("WEEKLY performance report failed: ValueError")
+
+
+@pytest.mark.asyncio
+async def test_send_performance_report_handles_health_alert_failure(monkeypatch):
+    monkeypatch.setattr(reports.settings, "discord_webhook_url", "https://example.test/secret")
+    monkeypatch.setattr(reports, "fetch_closed_trades", MagicMock(side_effect=ValueError("secret")))
+    monkeypatch.setattr(reports, "send_error_alert", AsyncMock(side_effect=RuntimeError("secret")))
+    assert not await reports.send_performance_report(None, datetime(2026, 11, 6), "weekly")
 
 
 def _closed_trade(

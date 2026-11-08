@@ -12,9 +12,42 @@ from the pre-TASK-173 loop in that case.
 """
 import asyncio
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import main
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("now", "weekly_sent", "monthly_sent", "expected_calls", "expected_flags"),
+    [
+        (datetime(2026, 11, 6, 15, 30), False, False, ["weekly"], (True, False)),
+        (datetime(2026, 10, 30, 15, 30), True, True, [], (True, True)),
+        (datetime(2026, 10, 30, 15, 30), False, False, ["weekly", "monthly"], (True, True)),
+        (datetime(2026, 11, 30, 15, 30), False, False, ["monthly"], (False, True)),
+        (datetime(2026, 11, 5, 15, 30), False, False, [], (False, False)),
+    ],
+)
+async def test_ensure_performance_reports_sent(monkeypatch, now, weekly_sent, monthly_sent,
+                                               expected_calls, expected_flags):
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "send_performance_report", send)
+    supabase = object()
+    assert await main._ensure_performance_reports_sent(
+        supabase, now, weekly_sent, monthly_sent,
+    ) == expected_flags
+    assert [entry.args[2] for entry in send.await_args_list] == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_ensure_performance_reports_sent_keeps_failed_report_eligible(monkeypatch):
+    send = AsyncMock(side_effect=[False, True])
+    monkeypatch.setattr(main, "send_performance_report", send)
+    now = datetime(2026, 11, 6, 15, 30)
+    flags = await main._ensure_performance_reports_sent(None, now, False, False)
+    assert flags == (False, False)
+    assert await main._ensure_performance_reports_sent(None, now, *flags) == (True, False)
 
 
 class TestSleepWithTickExits(unittest.IsolatedAsyncioTestCase):
