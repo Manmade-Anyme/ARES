@@ -1061,11 +1061,15 @@ async def run():
     # Make this dynamic via Yahoo Finance Oracle
     previous_day_verified = True
     try:
-        pdh, pdl = await price_fetcher.fetch_previous_day_ohlc()
+        pdh, pdl, pdc = await price_fetcher.fetch_previous_day_context()
+        if pdc is None:
+            print(f"{Y}[!] Previous-day close unavailable; Gated Trend Expansion will retry at its 10:30 regime check.{RESET}")
     except Exception as e:
         print(f"{Y}[-] WARNING: Dynamic PDH/PDL fetch failed ({e}). Using last known safe defaults.{RESET}")
         pdh, pdl = 24100.0, 23900.0
+        pdc = None
         previous_day_verified = False
+    pdc_retry_attempted = pdc is not None
         
     level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
     
@@ -1244,13 +1248,31 @@ async def run():
                 except Exception as quote_err:
                     logger.warning("Quote persistence sync failed: %s", quote_err)
             
-                # Build and update dynamic levels
+                if (
+                    settings.trend_expansion_enabled
+                    and pdc is None
+                    and not pdc_retry_attempted
+                    and candle.timestamp.time() >= time(10, 30)
+                ):
+                    pdc_retry_attempted = True
+                    try:
+                        pdh, pdl, pdc = await price_fetcher.fetch_previous_day_context()
+                        previous_day_verified = True
+                        level_fetcher.set_previous_day_levels(high=pdh, low=pdl)
+                        if pdc is None:
+                            logger.warning(
+                                "Previous-day close still unavailable at the Trend Expansion regime check"
+                            )
+                    except Exception as exc:
+                        logger.warning("Trend Expansion previous-day context retry failed: %s", exc)
+
+                # Build levels after the optional context retry so refreshed PDH/PDL apply immediately.
                 levels = level_fetcher.build_levels(
                     spot_price=spot,
                     full_chain=full_chain,
                     oi_wall_threshold=settings.oi_wall_min_oi
                 )
-            
+
                 # Compute IV change percentage safely (TASK-154 missing data resilience)
                 current_iv = atm.ce.iv if (atm and atm.ce) else None
                 iv_change_pct, prev_iv = compute_iv_change_pct(current_iv, prev_iv)
@@ -1258,7 +1280,7 @@ async def run():
                 # Once prerequisites succeed, consume before the stateful engine:
                 # a detector exception can occur after its rolling buffers mutate.
                 price_fetcher.acknowledge_candle(candle)
-                signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl)
+                signal = engine.tick(candle, full_chain, atm, iv_change_pct, levels, pdh, pdl, pdc)
 
                 # Close expired watches before publishing fresh watches, retrying failures.
                 last_watch_candle = candle

@@ -36,12 +36,16 @@ SETUP_TYPES = [
     "OI_WALL_REJECTION",
     "EXHAUSTION_REVERSAL",
     "TREND_CONTINUATION",
+    "TREND_EXPANSION_RECLAIM",
+    "TREND_EXPANSION_BREAKOUT",
 ]
 SETUP_LABELS = {
     "FAILED_BREAKOUT": "Failed Breakout",
     "OI_WALL_REJECTION": "OI Wall Rejection",
     "EXHAUSTION_REVERSAL": "Exhaustion Reversal",
     "TREND_CONTINUATION": "Trend Continuation",
+    "TREND_EXPANSION_RECLAIM": "Trend Expansion Reclaim",
+    "TREND_EXPANSION_BREAKOUT": "Trend Expansion Breakout",
 }
 
 

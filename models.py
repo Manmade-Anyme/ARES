@@ -26,11 +26,15 @@ class SetupType(Enum):
         OI_WALL_REJECTION: Triggered by rejection at strikes with massive fresh Open Interest.
         EXHAUSTION_REVERSAL: Triggered by volume climaxes and indecision at price extremes.
         TREND_CONTINUATION: Triggered by a shallow pullback and resumption within a persistent regime.
+        TREND_EXPANSION_RECLAIM: Triggered by a gated structural VWAP reclaim.
+        TREND_EXPANSION_BREAKOUT: Triggered by a gated afternoon range breakout.
     """
     FAILED_BREAKOUT = "FAILED_BREAKOUT"
     OI_WALL_REJECTION = "OI_WALL_REJECTION"
     EXHAUSTION_REVERSAL = "EXHAUSTION_REVERSAL"
     TREND_CONTINUATION = "TREND_CONTINUATION"
+    TREND_EXPANSION_RECLAIM = "TREND_EXPANSION_RECLAIM"
+    TREND_EXPANSION_BREAKOUT = "TREND_EXPANSION_BREAKOUT"
 
 
 class Direction(Enum):
@@ -191,6 +195,7 @@ class AresSignal:
     market_context: Dict[str, Any] = field(default_factory=dict)
     bracket: Optional[OptionOrderBracket] = None
     options_sizing_status: str = "PENDING"
+    use_detector_levels: bool = False
 
 
 @dataclass(frozen=True)

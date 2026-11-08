@@ -33,7 +33,7 @@ ARES evaluates completed one-minute NIFTY spot candles alongside open interest (
 
 ## 🆕 Recent Updates
 
-This README describes the source in this checkout through **30 October 2026**. Earlier [changelog](CHANGELOG.md) entries preserve their implementation-time status; runtime rollout evidence must be checked separately.
+This README describes the source in this checkout through **30 October 2026**, with the PR #157 behavior noted below. Earlier [changelog](CHANGELOG.md) entries preserve their implementation-time status; runtime rollout evidence must be checked separately.
 
 <details>
 <summary><strong>View recent changes and linked PRs</strong></summary>
@@ -46,6 +46,7 @@ This README describes the source in this checkout through **30 October 2026**. E
 | Uniform, compact Discord alerts | Shows available option entry, premium SL, T1/T2 and suggested lots without execution-status banners. Extra diagnostics default off. | [PR #142](https://github.com/Manmade-Anyme/ARES/pull/142), [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
 | Capital-independent option prices | Calculates prices even with unavailable, zero, or insufficient capital; capital controls lots. The option R:R rejection has been removed. | [PR #141](https://github.com/Manmade-Anyme/ARES/pull/141), [PR #143](https://github.com/Manmade-Anyme/ARES/pull/143) |
 | Completed-candle inputs | Evaluates each selected completed bar once, rebuilds full-session VWAP, and preserves risk monitoring on polls with no new candle. | [PR #140](https://github.com/Manmade-Anyme/ARES/pull/140), [input contract](docs/completed-candle-inputs.md) |
+| Gated Trend Expansion | PR #157 adds the fifth strategy to the live detector path as manual bullish signal references. It requires a verified PDC, an uninterrupted candle stream from 09:15 through the 10:30 regime check, and a qualifying expansion regime; it sends no broker entry orders. | [PR #157](https://github.com/Manmade-Anyme/ARES/pull/157), [POC validation](docs/POC_Trend_Expansion_Strategy_Validation.md) |
 | Greeks-based option references | Uses current-expiry ATM-biased contract selection, Delta/Gamma projections, tick rounding, and nonnegative capped sizing. | [MANM-176](docs/MANM-176-options-entry-exit-sl-greeks-limit-orders.md) |
 | Jev and ML reliability | Includes first-ready OI-wall assessments, shared-process supervision, confidence calibration, missing-data preservation, and audited training/promotion. TypeSafe SDK is constrained to `>=0.7.5,<0.8.0`; the default model remains `jev-1.13.0`. | [OI watch](docs/OI%20Wall%20Watch%20Jev.md), [SDK decision](directives/adr/TASK-258_update-jev-to-latest-version.md), [ML module](ml_signal/README.md) |
 
@@ -113,14 +114,17 @@ Registered trades can carry across sessions without automatic end-of-day square-
 
 ## 🎯 Detection Strategies and Confidence
 
-The engine evaluates four detectors in short-circuit priority order. All signals remain subject to central setup geometry, R:R and cooldown checks. The startup-loaded calibration policy can downgrade an unsupported HIGH tier to MEDIUM; raw detector scores alone do not guarantee the emitted tier.
+The engine evaluates five strategies in short-circuit priority order. All signals remain subject to R:R and cooldown checks. The startup-loaded calibration policy can downgrade an unsupported HIGH tier to MEDIUM; raw detector scores alone do not guarantee the emitted tier.
 
 | Priority | Detector | Entry logic and scoring |
 |---|---|---|
 | 1 | Failed Breakout | Requires a close back inside a crossed structural level. Scores weak breakout volume, falling IV, active OI growth and a deep close-back. Minimum score is 2 of 4: raw MEDIUM at 2, HIGH at 3 or more. |
 | 2 | OI Wall Rejection | Separates wall bias/persistence from entry. Requires interaction, a later favourable excursion, then a secondary retest on a later candle. A qualifying defended-side retest enters immediately on its close when bullish for PE support or bearish for CE resistance. Scores wall magnitude, OI growth, penetration and wick rejection; wick rejection is not a hard gate. |
-| 3 | Trend Continuation | Establishes a VWAP/previous-day-level regime, then looks for a pullback and confirmed momentum resumption. Controlled by `continuation_enabled`. |
-| 4 | Exhaustion Reversal | Requires volume climax and a doji-like small body after its history minimum. IV expansion, structural proximity and stronger volume/body conditions contribute to confidence. Raw HIGH requires at least two scored conditions. |
+| 3 | Gated Trend Expansion | Requires a two-of-four expansion regime (overnight gap, opening range, VWAP dispersion, directional displacement), then checks the VWAP reclaim and afternoon breakout setups. Enabled by default on both profiles; controlled by `trend_expansion_enabled`. Requires verified prior close and an uninterrupted current-session candle stream from 09:15 through the 10:30 regime check; otherwise remains dormant for that session. |
+| 4 | Trend Continuation | Establishes a VWAP/previous-day-level regime, then looks for a pullback and confirmed momentum resumption. Controlled by `continuation_enabled`. |
+| 5 | Exhaustion Reversal | Requires volume climax and a doji-like small body after its history minimum. IV expansion, structural proximity and stronger volume/body conditions contribute to confidence. Raw HIGH requires at least two scored conditions. |
+
+Trend Expansion outputs manual spot-signal references through the existing signal, option-reference, persistence and alert path. The path does not submit broker entry orders. Its reclaim and breakout use their detector-computed structural stop/T1 geometry; T2 selects the nearest eligible structural level beyond T1 or uses a configured reference fallback.
 
 ### OI-wall watches and cancellation
 
@@ -142,6 +146,8 @@ The TASK-073 historical 18-trade replay gate was explicitly **skipped**, not pas
 | `FAILED_BREAKOUT` | 12 | 20 | 55 |
 
 T1 is a fixed per-setup distance. T2 selects the nearest eligible structural level beyond T1, or uses its fallback. T2 is displayed for reference; current post-T1 runners exit through ATR trailing.
+
+Trend Expansion is the exception to fixed per-type levels: reclaim SL is beneath the observed sweep and T1 is the morning high; breakout SL is based on the recent base and T1 is a configured reward distance. Both are bounded by configured stop limits. Their T2 remains a structural/reference target.
 
 <a name="option-pricing-and-lot-suggestions"></a>
 

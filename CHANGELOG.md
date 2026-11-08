@@ -4,6 +4,34 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **PR #157 promote Trend Expansion strategy to production and remove POC files (TASK-20261105):**
+  - Removed deprecated prototype modules and audit runners (`poc/trend_expansion_poc.py`, `poc/regime_gated_expansion_strategy.py`, `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, `poc/run_trend_expansion_backtest.py`, `poc/position_management.py`, and `tests/unit/test_poc_trend_expansion.py`).
+  - Promoted `TrendExpansionDetector` in `detectors/trend_expansion.py` as canonical production implementation wired into `AresEngine`.
+  - Hardened regime evaluation against sub-second timestamp jitter by checking `current_time >= REGIME_DISPERSION_TIME`.
+  - Replaced external candle VWAP dependency with internal volume-weighted session VWAP calculation (`_current_vwap`), eliminating silent failures when candles lack pre-calculated VWAP.
+  - Scoped 1-minute stream continuity requirement from 09:15 through regime evaluation (`not self._regime_evaluated`), ensuring gaps across 10:30 (e.g. 10:29 -> 10:31) disqualify the session while preserving sub-minute timestamp jitter tolerance and tolerating midday data drops after regime qualification.
+  - Added state reset for `_sweep_low` and `_dipped_below_vwap` when reclaim criteria are met under dormant regime conditions.
+  - Simplified price fetcher index lookup in `fetchers/price_fetcher.py`.
+  - Streamlined and condensed strategy documentation across repo (`docs/POC_Trend_Expansion_Strategy_Validation.md`) and Obsidian vault (`~/Documents/Obsidian/Projects/Ares/ARES 5th Strategy Gated Expansion Architecture.md`).
+  - Expanded production unit tests in `tests/unit/test_trend_expansion_detector.py` covering timestamp jitter, missing VWAP fallback, midday gaps, and dormant state resets.
+
+- **PR #157 live gated Trend Expansion signals:** Wire the regime-gated POC strategy into `AresEngine` as the fifth enabled-by-default detector. Emit manual signal references through the existing persistence/alert path only; no broker entry orders or Supabase migration. Require verified prior-day close and an uninterrupted completed-candle stream from 09:15 IST, fail closed when inputs are missing, preserve dynamic reclaim/breakout stop and T1 geometry, and expose regime/setup thresholds through both tuning profiles. Add setup reporting and focused detector, engine, configuration, and previous-day-context tests.
+
+- **PR #157 Review Hardening & Edge-Case Audit: Trend Expansion & 5th Strategy POC (TASK-20261105):**
+  - Resolved automated PR review findings on PR #157 (`feature/TASK-20261105-trend-expansion-poc`).
+  - Added typing imports (`Dict`, `List`, `Optional`) in `poc/run_90day_audit.py` to prevent `NameError` during annotation evaluation.
+  - Enforced volume participation confirmation (`volume >= min_volume_ratio * vol_sma20`) on raw afternoon breakouts in `poc/trend_expansion_poc.py`.
+  - Refactored session VWAP dispersion (`vwap_std`) in `poc/regime_gated_expansion_strategy.py` to compute running volume-weighted standard deviation around the current session VWAP mean ($E[TP^2] - (E[TP])^2$), correcting historical running mean distortion.
+  - Added Bollinger Bandwidth expansion verification (`bbw_expansion_ratio >= min_bbw_expansion`, default 1.0) before triggering gated afternoon breakout entries in `poc/regime_gated_expansion_strategy.py`.
+  - Bounded ARES Supabase benchmark queries to the audit window (`gte start_date` and `lte end_date` with in-memory exact date filtering) across `poc/run_90day_audit.py`, `poc/run_gated_90day_audit.py`, and `poc/run_trend_expansion_backtest.py`.
+  - Enforced 35%–68% Fibonacci retracement boundary (`min_retrace_ratio <= retrace_depth / impulse_len <= max_retrace_ratio`) across raw and gated VWAP reclaims to eliminate rogue trade triggers.
+  - Added state isolation resetting `sweep_low` and `dipped_below_vwap` on trade entries, SL hits, trailing exits, and morning low violations.
+  - Isolated prior-day context files from `sessions` and benchmark data in `load_cached_sessions_and_pdl`, ensuring exact 1-to-1 session alignment with the evaluated strategy window.
+  - Added division-by-zero guards for empty benchmark or zero-loss analytics outputs.
+  - Applied a conservative OHLC convention: the pre-candle stop is evaluated first and a T1 stop ratchet takes effect on the next candle. Both raw and gated engines now share the same position lifecycle and reclaim-state reset helper, including EMA20 trailing exits.
+  - Made gated regime factor thresholds configurable through `RegimeThresholds`, preserving defaults of 70/85/25/45 points; clarified in the POC validation document that option price changes are hypothetical reference-mark changes, not fills or realized P&L.
+  - Expanded `tests/unit/test_poc_trend_expansion.py` coverage for configurable regime thresholds and ambiguous same-candle T1/stop ordering; mocked parquet I/O so tests run in CI without optional binary engines (`pyarrow`/`fastparquet`).
+
 - **PR #156 pending paper exits use pinned quote depth:** Protective and selected-option quote observations retain validated bid/ask depth. Fresh, contract-matched positive bids now flow to paper execution and confirm `EXIT_PENDING` exits; crossed, stale, or mismatched observations are rejected. Restored terminal routes continue receiving pinned quotes.
 
 - **PR #156 v2 readiness requires ML-label access:** The option-premium protection capability check now requires `service_role` to have both `SELECT` and `UPDATE` on `public.ml_collection`. Terminal lifecycle transitions update outcome labels transactionally, so readiness fails closed if either privilege is absent. The isolated PostgreSQL regression revokes each privilege independently and checks that v2 is not ready.

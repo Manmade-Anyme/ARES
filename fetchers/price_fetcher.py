@@ -538,6 +538,15 @@ class PriceFetcher:
         @returns {Tuple[float, float]} (previous_day_high, previous_day_low)
         @throws {ValueError} If the API response is malformed or historical data is insufficient.
         """
+        pdh, pdl, _ = await self.fetch_previous_day_context()
+        return pdh, pdl
+
+    async def fetch_previous_day_context(self) -> Tuple[float, float, Optional[float]]:
+        """Return previous-day high, low, and close from one daily-history request.
+
+        The close is optional because some provider responses omit it. Callers
+        that need a close-based regime gate must remain dormant without it.
+        """
         loop = asyncio.get_running_loop()
         
         # Calculate dates for the last 7 days to ensure we capture the last trading session
@@ -601,5 +610,14 @@ class PriceFetcher:
             
         pdh = round_to_tick(float(highs[idx]))
         pdl = round_to_tick(float(lows[idx]))
-        
-        return pdh, pdl
+        pdc = None
+        closes = data.get("close", [])
+        if len(closes) == len(timestamps):
+            try:
+                close_value = float(closes[idx])
+                if isfinite(close_value) and close_value > 0:
+                    pdc = round_to_tick(close_value)
+            except (TypeError, ValueError, OverflowError, IndexError):
+                pdc = None
+
+        return pdh, pdl, pdc
