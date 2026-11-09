@@ -511,10 +511,12 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
         return "Target 2 touched! ATR runner remains active."
     if update_type == "STOPPED_OUT_AT_BE":
         if is_option_atr:
+            is_post_t2 = opt_ctx.get("highest_milestone", 0) >= 2 or opt_ctx.get("phase") == "POST_T2"
+            pct_closed = "Final 20% Runner Closed (Score: 2 retained)." if is_post_t2 else "Remaining 50% Closed (Score: 1 retained)."
             premium_domain = (opt_ctx.get("exit") or {}).get("stop_domain") == "OPTION_PREMIUM"
             if premium_domain:
-                return "Option-premium break-even stop hit. Remaining 50% Closed (Score: 1 retained)."
-            return "Trailing Stop Loss Hit at Entry. Remaining 50% Closed (Score: 1 retained)."
+                return f"Option-premium break-even stop hit. {pct_closed}"
+            return f"Trailing Stop Loss Hit at Entry. {pct_closed}"
         return "Trailing Stop Loss Hit at Entry. T1 Profit Locked; Trade Closed."
     if update_type == "SL_HIT":
         # Pre-TASK-198 rows can still reach here with a trailed stop; keep
@@ -563,6 +565,8 @@ def _option_lifecycle_estimate(trade, spot, update_type):
 
     exit_info = opt_ctx.get("exit") or {}
     exit_price = exit_info.get("reference_exit_price") or exit_info.get("option_close")
+    if exit_price is None:
+        exit_price = ((opt_ctx.get("accounting") or {}).get("legs") or {}).get("EXIT", {}).get("option_price")
     if exit_price is None:
         if update_type == "T1_HIT":
             exit_price = t1

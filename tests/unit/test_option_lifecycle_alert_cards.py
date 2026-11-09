@@ -249,3 +249,28 @@ def test_persistence_failed_alias_and_formatting():
         assert embed["color"] == 15158332
         assert "Database persistence failure. Memory state active; unconfirmed in database." in embed["description"]
         assert "Trade Closed" not in embed["description"]
+
+
+def test_stopped_out_at_be_post_t2_reports_runner_and_score_two():
+    """Post-T2 break-even exit reports final 20% runner closed with score 2 retained."""
+    snapshot = event("STOPPED_OUT_AT_BE", milestone=2)
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "Final 20% Runner Closed (Score: 2 retained)." in desc
+
+
+def test_option_estimate_uses_persisted_exit_leg_price():
+    """When exit.option_close is missing, use accounting.legs.EXIT.option_price before falling back."""
+    snapshot = event("STOPPED_OUT_AT_BE", milestone=1)
+    snapshot["option_trailing"]["phase"] = "POST_T1"
+    snapshot["trade"]["market_context"]["option_trailing"]["phase"] = "POST_T1"
+    snapshot["option_trailing"]["accounting"] = {
+        "legs": {
+            "EXIT": {"option_price": 90.0}
+        }
+    }
+    snapshot["trade"]["market_context"]["option_trailing"]["accounting"] = snapshot["option_trailing"]["accounting"]
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    # Entry is 139.25, exit should read 90.00 rather than falling back to 139.25 (₹0 pnl)
+    assert "Estimated Option Exit**: ₹ 90.00" in desc

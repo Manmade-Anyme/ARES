@@ -17,6 +17,8 @@ All notable changes to the ARES trading system will be documented in this file.
     - Displayed `Active Option SL` for `ATR_ACTIVE` lifecycle events without premature exit estimate.
     - Preserved `unavailable` timestamps for historical events with invalid dates without falling back to `now()`.
     - Normalized `PERSISTENCE_FAILED` event alias to retain database persistence warning.
+    - Supported post-T2 milestone state in `STOPPED_OUT_AT_BE` alerts (`Final 20% Runner Closed (Score: 2 retained)`).
+    - Read captured exit price from `accounting.legs.EXIT.option_price` for index-guard exits to prevent inaccurate break-even fallback.
   - Silenced `MONITORING_UNAVAILABLE` and `MONITORING_RESTORED` events on Discord to eliminate distraction during live market execution while preserving durable outbox delivery.
   - Removed blocking `RuntimeError` in `send_trade_update()` and `_option_lifecycle_estimate()` for versioned option ATR trades.
   - Refactored `test_option_lifecycle_alert_cards.py` to assert the clean trade update embed schema without Card artifacts.
