@@ -14,11 +14,25 @@ from config import settings
 from alerts import send_trade_update, send_option_lifecycle_event
 from atr_trailing import completed_atr_bars, completed_spot_minutes, calculate_option_atr_bars, ratchet_option_stop
 from options_candles import (load_option_candles, contiguous_option_candles,
-                             expected_completed_option_bar_end, parse_option_candle)
+                             expected_completed_option_bar_end, parse_option_candle, IST)
 from oi_watch_context import parse_candle_timestamp
 from storage import AnalyticsLogger
 
 _OPTION_POLICY_VERSIONS = {"option_atr_v1", "option_premium_protection_v2"}
+_OPTION_ATR_RELEVANT_EVENTS = frozenset({
+    "T1_HIT",
+    "OPTION_SL_RATCHETED",
+    "ATR_SL_UPDATED",
+    "ATR_ACTIVE",
+    "T2_HIT",
+    "STOPPED_OUT_AT_BE",
+    "SL_HIT",
+    "ATR_SL_HIT",
+    "OPTION_SL_FLOOR_HIT",
+    "MANUAL_EXIT",
+    "TIME_EXIT",
+    "EXPIRY_EXIT",
+})
 
 
 def _has_option_policy(opt):
@@ -1581,7 +1595,7 @@ class PositionManager:
                 (trade.get("market_context") or {}).get("option_reference_milestones")
             ) or None
             if atr_snapshot:
-                self.__dict__.setdefault("_pending_atr_trailing_context", {})[str(trade["id"])] = deepcopy(atr_snapshot)
+                self._pending_atr_trailing_context[str(trade["id"])] = deepcopy(atr_snapshot)
             if atr_snapshot or target_snapshot or reference_snapshot:
                 self._queue_trade_write(
                     trade["id"],
@@ -1609,7 +1623,7 @@ class PositionManager:
             atr.update(state=trade["state"], stop_loss=trade["stop_loss"])
         atr_snapshot = deepcopy(atr)
         if atr_snapshot:
-            self.__dict__.setdefault("_pending_atr_trailing_context", {})[str(trade["id"])] = deepcopy(atr_snapshot)
+            self._pending_atr_trailing_context[str(trade["id"])] = deepcopy(atr_snapshot)
         t2_snapshot = deepcopy((trade.get("market_context", {}).get("target_milestones") or {}).get("t2"))
         target_snapshot = deepcopy(trade.get("market_context", {}).get("target_milestones")) or None
         reference_snapshot = deepcopy(
@@ -2316,10 +2330,17 @@ class PositionManager:
 
     @staticmethod
     def _normalize_iso_timestamp(ts):
-        """Convert datetime or date timestamp to ISO string format."""
+        """Convert datetime or date timestamp to normalized ISO string format.
+
+        Guarantees naive datetimes are localized to exchange timezone (IST) before formatting.
+        """
         if ts is None:
             return None
-        if isinstance(ts, (datetime, date)):
+        if isinstance(ts, datetime):
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=IST)
+            return ts.isoformat()
+        if isinstance(ts, date):
             return ts.isoformat()
         return str(ts)
 
@@ -2355,21 +2376,7 @@ class PositionManager:
         else:
             current_status = phase
 
-        relevant_events = {
-            "T1_HIT",
-            "OPTION_SL_RATCHETED",
-            "ATR_SL_UPDATED",
-            "ATR_ACTIVE",
-            "T2_HIT",
-            "STOPPED_OUT_AT_BE",
-            "SL_HIT",
-            "ATR_SL_HIT",
-            "OPTION_SL_FLOOR_HIT",
-            "MANUAL_EXIT",
-            "TIME_EXIT",
-            "EXPIRY_EXIT",
-        }
-        is_relevant_event = update_type in relevant_events or terminal
+        is_relevant_event = update_type in _OPTION_ATR_RELEVANT_EVENTS or terminal
 
         # Pre-T1 trades do not emit atr_trailing unless an exit or terminal event occurred
         if phase == "PRE_T1" and not is_relevant_event and not existing:
@@ -2546,7 +2553,7 @@ class PositionManager:
                                         trade, update_type=persisted_opt.get("monitoring_status") or "CLOSED"
                                     )
                                     if reconciled_atr:
-                                        self.__dict__.setdefault("_pending_atr_trailing_context", {})[str(trade_id)] = deepcopy(reconciled_atr)
+                                        self._pending_atr_trailing_context[str(trade_id)] = deepcopy(reconciled_atr)
                                         self._queue_trade_write(
                                             trade_id,
                                             lambda t_id=trade_id, atr=deepcopy(reconciled_atr):
@@ -2785,7 +2792,7 @@ class PositionManager:
                                         trade["stop_loss"] = persisted.get("stop_loss", trade["stop_loss"])
                                     reconciled_atr = self._mirror_option_atr_trailing(trade)
                                     if reconciled_atr:
-                                        self.__dict__.setdefault("_pending_atr_trailing_context", {})[str(trade_id)] = deepcopy(reconciled_atr)
+                                        self._pending_atr_trailing_context[str(trade_id)] = deepcopy(reconciled_atr)
                                         self._queue_trade_write(
                                             trade_id,
                                             lambda t_id=trade_id, atr=deepcopy(reconciled_atr):

@@ -824,5 +824,86 @@ async def test_flush_pending_trade_updates_retries_pending_atr_trailing():
     assert trade_id not in pm._pending_atr_trailing_context
 
 
+def test_naive_datetime_localized_to_ist_in_iso_string():
+    """_normalize_iso_timestamp localizes naive datetimes to IST (+05:30)."""
+    naive_dt = datetime(2026, 10, 23, 9, 35)
+    normalized = PositionManager._normalize_iso_timestamp(naive_dt)
+    assert normalized == "2026-10-23T09:35:00+05:30"
+    assert "+05:30" in normalized
+
+
+@pytest.mark.asyncio
+async def test_dual_write_atr_trailing_on_t2_hit():
+    """On T2_HIT, market_context['atr_trailing']['status'] reflects T2_HIT."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    pm.active_trades = [trade]
+
+    # Reach T1 first
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events_t1 = await pm.update_trades(spot_price=22525.00)
+        assert ("trade-1950", "T1_HIT") in events_t1
+        assert trade["market_context"]["atr_trailing"]["status"] == "T1_HIT"
+
+    # Reach T2 (BEARISH target_2 is 22472.10, spot 22470.00)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events_t2 = await pm.update_trades(spot_price=22470.00)
+        assert ("trade-1950", "T2_HIT") in events_t2
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["status"] == "T2_HIT"
+        assert atr["trailing_mode"] == "OPTION_ATR"
+
+
+@pytest.mark.asyncio
+async def test_dual_write_atr_trailing_multiple_sequential_ratchets():
+    """Multiple sequential ratchets maintain valid stop_loss and previous_sl progression."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    trade["state"] = "T1_HIT"
+    opt = trade["market_context"]["option_trailing"]
+    opt["phase"] = "POST_T1"
+    opt["highest_milestone"] = 1
+    opt["t1_at"] = "2026-10-23T09:30:00+05:30"
+    opt["locked_option_sl"] = 139.25
+    opt["previous_locked_option_sl"] = 123.65
+    opt["protection_mode"] = "ATR"
+    pm.active_trades = [trade]
+
+    base = datetime(2026, 10, 23, 9, 35, tzinfo=IST)
+
+    # Ratchet 1: stop to 142.00
+    c1 = OptionCandle(start_time=base, end_time=base + timedelta(minutes=5), open=140.0, high=145.0, low=138.0, close=143.0, volume=1000.0, security_id="51333", complete=True)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")), \
+         patch("position_manager.ratchet_option_stop", return_value=(142.00, "ATR", True)):
+        await pm.update_option_atr_trailing([c1])
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["stop_loss"] == 142.00
+        assert atr["previous_sl"] == 139.25
+        assert atr["status"] == "OPTION_SL_RATCHETED"
+
+    # Ratchet 2: stop to 145.50 (pass cumulative candles [c1, c2])
+    c2 = OptionCandle(start_time=base + timedelta(minutes=5), end_time=base + timedelta(minutes=10), open=143.0, high=148.0, low=141.0, close=146.0, volume=1000.0, security_id="51333", complete=True)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")), \
+         patch("position_manager.ratchet_option_stop", return_value=(145.50, "ATR", True)):
+        await pm.update_option_atr_trailing([c1, c2])
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["stop_loss"] == 145.50
+        assert atr["previous_sl"] == 142.00
+        assert atr["status"] == "OPTION_SL_RATCHETED"
+
+    # Ratchet 3: stop to 149.00 (pass cumulative candles [c1, c2, c3])
+    c3 = OptionCandle(start_time=base + timedelta(minutes=10), end_time=base + timedelta(minutes=15), open=146.0, high=152.0, low=144.0, close=150.0, volume=1000.0, security_id="51333", complete=True)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")), \
+         patch("position_manager.ratchet_option_stop", return_value=(149.00, "ATR", True)):
+        await pm.update_option_atr_trailing([c1, c2, c3])
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["stop_loss"] == 149.00
+        assert atr["previous_sl"] == 145.50
+        assert atr["status"] == "OPTION_SL_RATCHETED"
+
+
+
 
 

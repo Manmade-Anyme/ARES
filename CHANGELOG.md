@@ -14,8 +14,9 @@ All notable changes to the ARES trading system will be documented in this file.
     - Rebuilt and persisted ATR mirror upon revision conflict reconciliation in `_flush_option_trade` across both active and closed trades.
     - Tracked unconfirmed writes in `_pending_atr_trailing_context`, retrying across `update_trades` ticks and shutdown drain (`flush_pending_trade_updates`), clearing only upon confirmed persistence.
     - Gated `last_bar` advancement to actual lifecycle events and stop adjustments, preventing false adjustment events on routine quotes or during `PRE_T1`.
-    - Normalized all `OptionCandle.end_time` datetimes to ISO strings via `_normalize_iso_timestamp`, preventing JSON serialization errors.
-  - Added comprehensive unit test coverage in `tests/unit/test_option_atr_lifecycle_comprehensive.py`.
+    - Normalized all `OptionCandle.end_time` datetimes to ISO strings via `_normalize_iso_timestamp` and guaranteed naive datetimes are localized to exchange timezone (`IST`) before formatting.
+    - Optimized transition hot paths with module-level `_OPTION_ATR_RELEVANT_EVENTS` frozenset and standardized direct `_pending_atr_trailing_context` attribute access.
+  - Added comprehensive unit test coverage in `tests/unit/test_option_atr_lifecycle_comprehensive.py` (25 tests covering T1/T2 milestones, ratchets, exits, retry drain, reconciliation, and timezone-aware ISO serialization).
 
 
 - **Remove Discord Lifecycle Cards & Restore Standard Trade Update Format (TASK-20261109):**

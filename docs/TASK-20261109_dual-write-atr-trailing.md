@@ -37,7 +37,7 @@ SpanQuant frontend polls `/api/ares` and parses `ExecutionTimelineEvent[]` from 
 ---
 
 ## 3. Verification & Test Evidence
-- Unit test suite: `tests/unit/test_option_atr_lifecycle_comprehensive.py` (22 tests)
+- Unit test suite: `tests/unit/test_option_atr_lifecycle_comprehensive.py` (25 tests)
   - `test_dual_write_atr_trailing_on_t1_hit`: asserts `atr_trailing["stop_loss"]` equals break-even cost basis and `last_bar` is set.
   - `test_dual_write_atr_trailing_on_option_sl_ratcheted`: asserts `atr_trailing["stop_loss"]` reflects ratcheted option SL and `previous_sl` is tracked.
   - `test_dual_write_atr_trailing_on_trade_exit`: asserts `status` reflects exit reason (`ATR_SL_HIT`).
@@ -49,4 +49,7 @@ SpanQuant frontend polls `/api/ares` and parses `ExecutionTimelineEvent[]` from 
   - `test_revision_conflict_reconciles_and_persists_atr_trailing_mirror`: asserts revision conflict adopts stronger stop in mirror and queues write.
   - `test_pending_atr_trailing_context_retained_on_failure_and_cleared_on_success`: asserts persistence failure retains pending state and clears on success.
   - `test_flush_pending_trade_updates_retries_pending_atr_trailing`: asserts shutdown drain retries unpersisted ATR trailing context.
-- Full unit test suite: **2,599 passed, 0 failed** in 68.33s.
+  - `test_naive_datetime_localized_to_ist_in_iso_string`: asserts `_normalize_iso_timestamp` localizes naive datetimes to IST (+05:30) before formatting.
+  - `test_dual_write_atr_trailing_on_t2_hit`: asserts on T2_HIT, `atr_trailing.status` reflects `T2_HIT`.
+  - `test_dual_write_atr_trailing_multiple_sequential_ratchets`: asserts multiple sequential stop ratchets maintain valid stop_loss and previous_sl progression.
+- Full unit test suite: **2,602 passed, 0 failed** in 78.86s.
