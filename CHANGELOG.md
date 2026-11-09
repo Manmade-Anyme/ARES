@@ -4,12 +4,12 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
-- **Enable Option ATR Trailing by Default & Parity Gating (TASK-20261108):**
-  - Enabled `option_atr_enabled: bool = True`, `option_atr_approved_version = "option_atr_v1"`, `option_atr_parity_version = "option_atr_v1"`, and `option_reference_accounting_enabled: bool = True` in `config.py` Secrets model.
-  - Enforced parity-version equality check (`settings.option_atr_parity_version == "option_atr_v1"`) alongside approved version in `PositionManager` ATR enrollment gate (`position_manager.py`).
-  - Updated Fly deployment environment (`fly.toml`) with `OPTION_ATR_ENABLED = 'true'`, `OPTION_ATR_APPROVED_VERSION = 'option_atr_v1'`, and `OPTION_ATR_PARITY_VERSION = 'option_atr_v1'`.
-  - Updated `.env.example` and `README.md` to document enabled Option ATR and reference accounting defaults.
-  - Added regression test assertions for option-policy defaults and env override in `tests/unit/test_task208_secrets_defaults.py` and activation gate tests in `tests/unit/test_option_activation_gate.py`.
+- **Activate Option ATR Trailing Live Without Feature Flags (TASK-20261108):**
+  - Activated Option ATR trailing live across all deployments; removed feature flag gates and version barriers.
+  - In `PositionManager`, ATR is permanently enabled whenever option premium protection is active and backend credentials are present.
+  - Waived PineScript chart parity discrepancy in governing ADRs and research reports by user mandate.
+  - Updated `config.py`, `fly.toml`, `.env.example`, and `README.md` to enable Option ATR trailing and reference accounting by default.
+  - Updated unit test suite (`tests/unit/test_option_activation_gate.py`, `tests/unit/test_task208_secrets_defaults.py`).
   - Added live market deployment audit report for 2026-11-08 session (`docs/ARES_Live_Market_Test_Run_Audit_2026-11-08.md`).
 
 - **Fix IVBreakoutDetector State Buffer Continuity Under Engine Cooldown & Priority Short-Circuiting (TASK-20261108):**

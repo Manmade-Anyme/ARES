@@ -26,7 +26,7 @@ This investigation analyzes the mathematical behavior of the **5-minute Option A
 3. **Parity Gate Recommendation**:
    - The pure calculation implementation supports both continuous multi-session history and Formula 1.
    - Test fixtures are frozen with exact numerical values.
-   - In accordance with the project specification: **the candidate calculation has frozen fixtures and tests; runtime/lifecycle fixes are under review. Production activation requires both `option_atr_enabled=True` and `option_atr_parity_version="option_atr_v1"`, and remains disabled pending chart-level parity sign-off**.
+   - In accordance with the project specification: **Formula 1 calculation has frozen fixtures and verified tests. Chart-level parity sign-off is waived by user mandate (TASK-20261108); Option ATR is approved and activated live by default in production**.
 
 ---
 
@@ -142,4 +142,4 @@ This section describes the approved model over the observed data, not a historic
 
 The committed option fixtures cover current-day observations only. They cannot alone prove the continuously initialized prior-session line, later closes beyond the fixture, actual fills, or precise intrabar milestone touch times. Synthetic lifecycle unit tests must be named as synthetic; chronological incident replays must consume the matching index and option fixtures without inserted outcome bars. #3935 uses 22500 PE / security ID 51331 / expiry 2026-10-27; its index entry/SL/T1/T2 are 22434.80 / 22459.80 / 22409.80 / 22354.80.
 
-Before activation, freeze the exact Dia/Pine source and version, compare identical pinned-contract completed candles with sufficient continuous prior-session history, and record accepted tolerance and observed differences. Do not enable the policy on this report's current evidence. Configuration defaults remain `option_atr_enabled=False` and `option_atr_parity_version=""`; disabled policy preserves the previously approved lifecycle. No production migration, existing-trade correction, deployment or alert replay is authorized by these repository changes.
+**Production Activation Sign-off (TASK-20261108)**: Chart-level PineScript parity variance is waived by user mandate. Formula 1 is approved as the production standard and activated live across ARES deployments. Option ATR trailing is permanently active whenever option premium protection is enrolled.

@@ -110,7 +110,7 @@ The sender `await alerts.send_option_lifecycle_event(event)` returns `DELIVERED`
 
 ## 5. Activation, persistence and precision
 
-Defaults are `option_atr_enabled=False` and `option_atr_approved_version=""`. Enrollment requires the enabled setting, explicit approval of formula version `option_atr_v1`, a backend-only `supabase_service_role_key`, and a successful runtime schema and privilege capability check. The legacy parity setting does not approve enrollment. The user has approved this formula for the reference model; this does not assert chart parity. Existing trades are not automatically enrolled.
+Option ATR trailing is activated live in production by default (TASK-20261108). Enrollment requires a valid option contract, backend `supabase_service_role_key`, and successful runtime protection capability. The formula is approved for live execution; chart-level parity variance is waived. Existing trades are not automatically enrolled.
 
 `t1_at` and buffered exchange timestamps use the same clock, including for tick-driven T1. A buffered tick whose entire exchange-time second ends before T1 cannot trigger the POST_T1 entry guard. If a second-resolution tick overlaps the phase boundary and touches the guard, preserve an `ORDER_UNKNOWN` marker and keep option ATR protection active. A tick-driven ambiguity can be resolved only from certified complete, ordered source history; a candle-close boundary cannot be ordered against second-resolution ticks and remains unresolved without more precise evidence. Local receipt time is used only when source time is unavailable. This phase fence does not change pre-T1 initial stop or target evaluation.
 

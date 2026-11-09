@@ -298,10 +298,8 @@ Populate `.env` from `.env.example`. Keep credentials outside source control.
 | `SUPABASE_URL` | String / empty | Database API URL; required for the engine and worker. |
 | `SUPABASE_KEY` | String / empty | Main engine persistence and Dhan credential lookup; permissions must match the deployed policies. |
 | `SUPABASE_SERVICE_ROLE_KEY` | String / empty | Required for Jev lifecycle tables/RPCs and ML prediction audit persistence. Backend only. |
-| `OPTION_REFERENCE_ACCOUNTING_ENABLED` | Boolean / `true` | Enables independent one-lot premium-mark capture. Does not enable option ATR or protection. |
-| `OPTION_ATR_ENABLED` | Boolean / `true` | Enables post-T1 Option ATR trailing when approved and parity versions match. |
-| `OPTION_ATR_APPROVED_VERSION` | String / `option_atr_v1` | Approved formula version for Option ATR trailing. |
-| `OPTION_ATR_PARITY_VERSION` | String / `option_atr_v1` | Verified parity formula version for Option ATR enrollment gate. |
+| `OPTION_REFERENCE_ACCOUNTING_ENABLED` | Boolean / `true` | Enables independent one-lot premium-mark capture. |
+| `OPTION_ATR_ENABLED` | Boolean / `true` | Enables post-T1 Option ATR trailing in live production. |
 | `TYPESAFE_API_KEY` | String / unset | Required for hosted Jev inference. |
 
 Dhan credentials are loaded at startup from the existing Supabase `api_keys` row with `provider = 'DHAN'`, using its `client_id` and `access_token` fields. Provision that row through the existing credential-management process; adding Dhan variables to `.env` alone does not replace this lookup.

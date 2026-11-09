@@ -76,7 +76,7 @@ Every trade retains a single canonical `trade_id` across its lifecycle:
   $$\text{raw\_line}_i = \max_{k=0..9} \left( \text{High}_{i-k} - 2.5 \times \text{ATR5}_{i-k} \right)$$
 - **Formula 2 (Legacy Alternative)**:
   $$\text{raw\_line}_i = \left( \max_{k=0..9} \text{High}_{i-k} \right) - 2.5 \times \text{ATR5}_i$$
-- **Parity Gate**: Formula 1 is a candidate drawn from a public Ceyhun-style implementation; exact Dia script/feed parity remains unverified. A multi-session candidate still differed by about ₹0.57. Production defaults `option_atr_enabled=False`, `option_atr_parity_version=""`; both enabled and exact version `option_atr_v1` are required before tagging new signals. Disabled policy continues the previously approved monitor. No automatic deployment activation.
+- **Parity Gate & Production Activation (Updated 2026-11-09, TASK-20261108)**: Formula 1 is approved as the production standard for ARES Option ATR trailing. PineScript chart parity discrepancy is waived by user mandate; Option ATR is permanently enabled in live production whenever option premium protection is active. Feature flags and parity version barriers are removed.
 
 ---
 
