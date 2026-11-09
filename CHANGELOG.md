@@ -4,6 +4,17 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Remove Discord Lifecycle Cards & Restore Standard Trade Update Format (TASK-20261109):**
+  - Removed all "Card A" through "Card L" branding, prefixes, and internal debug telemetry dumps from Discord embeds and alerts.
+  - Removed `🛡️ Card A — Reference lifecycle` field from initial signal alerts in `alerts.py:send_discord()`.
+  - Restored clean, standard `TRADE UPDATE` embed format matching production frontend and live trading channels:
+    - Status-specific icons: `🎯 🟢` for Target 1/2 Hit, `💥 🛑` for Stop Loss / Break-even Exit, `🚨 🐂 🟢` / `🚨 🐻 🔴` for active directional trailing.
+    - Clean body keys: Time (IST), Spot, Action, Entry, New SL, Status.
+    - Option trailing: clean line `🛡️ **Active Option SL**: ₹ [Option Premium SL]` on ATR tightening, and `💰 **Estimated Option Exit**: ₹ [Exit] (₹ [PnL] / lot)` on trade exit.
+  - Silenced `MONITORING_UNAVAILABLE` and `MONITORING_RESTORED` events on Discord to eliminate distraction during live market execution while preserving durable outbox delivery.
+  - Removed blocking `RuntimeError` in `send_trade_update()` and `_option_lifecycle_estimate()` for versioned option ATR trades.
+  - Refactored `test_option_lifecycle_alert_cards.py` to assert the clean trade update embed schema without Card artifacts.
+
 - **Activate Option ATR Trailing Live Without Feature Flags (TASK-20261108):**
   - Activated Option ATR trailing live across all deployments; removed feature flag gates and version barriers.
   - In `PositionManager`, ATR is permanently enabled whenever option premium protection is active and backend credentials are present.
