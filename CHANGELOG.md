@@ -4,6 +4,12 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Fix IVBreakoutDetector State Buffer Continuity Under Engine Cooldown & Priority Short-Circuiting (TASK-20261108):**
+  - Enforced unconditional observation in `AresEngine` Step 1 and update dispatch in Step 5 with `isinstance(candle, OHLCVCandle)` type guards, preventing skipped observations or mock object corruption across all execution branches.
+  - Hardened `IVBreakoutDetector.observe()` against duplicate candle registration by verifying both object identity and candle timestamp equality.
+  - Guarded `observe()` against non-datetime candle timestamps to prevent buffer corruption from malformed ticks.
+  - Added regression test suite verifying multi-candle cooldown buffer accumulation, dynamic base accuracy upon cooldown recovery, priority short-circuit continuity, timestamp deduplication, daily firing suppression, oversized base range rejection, and non-`OHLCVCandle` safety.
+
 - **Weekly & Monthly Performance Report Delivery Recovery (TASK-20261107):**
   - Handle SIGTERM gracefully and retry unsent reports after shutdown drains using a fresh cutoff, while preserving the after-hours cold-start guard. Redact webhook URLs from health-alert failure logs and retain successful weekly delivery state if cancellation interrupts the month-end report attempt.
   - Restored a best-effort session-end delivery fallback for weekly (Friday) and monthly (month-end) performance digests in `main.py` when the live `[15:28, 15:30)` window is missed or the session terminates early.
