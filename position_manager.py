@@ -1508,6 +1508,8 @@ class PositionManager:
         if (atr_snapshot is None and t2_snapshot is None and target_snapshot is None
                 and reference_milestone_snapshot is None):
             return
+        if getattr(self, "supabase", None) is None:
+            return
         with self._context_locks.setdefault(trade_id, threading.Lock()):
             response = self.supabase.table("trade_analytics").select("market_context").eq("id", trade_id).execute()
             if not response.data:
@@ -1550,15 +1552,16 @@ class PositionManager:
         opt = (trade.get("market_context") or {}).get("option_trailing")
         if _has_option_policy(opt):
             await self._record_option_transition(trade, event_price, update_type, event_ts)
+            atr_snapshot = deepcopy((trade.get("market_context") or {}).get("atr_trailing")) or None
             target_snapshot = deepcopy((trade.get("market_context") or {}).get("target_milestones")) or None
             reference_snapshot = deepcopy(
                 (trade.get("market_context") or {}).get("option_reference_milestones")
             ) or None
-            if target_snapshot or reference_snapshot:
+            if atr_snapshot or target_snapshot or reference_snapshot:
                 self._queue_trade_write(
                     trade["id"],
-                    lambda t_id=trade["id"], snapshot=target_snapshot, refs=reference_snapshot:
-                        self._persist_trade_context(t_id, target_snapshot=snapshot,
+                    lambda t_id=trade["id"], atr=atr_snapshot, snapshot=target_snapshot, refs=reference_snapshot:
+                        self._persist_trade_context(t_id, atr_snapshot=atr, target_snapshot=snapshot,
                                                     reference_milestone_snapshot=refs),
                 )
             return
@@ -2296,6 +2299,16 @@ class PositionManager:
                 opt.update(deferred_option_exit=None, pending_index_observations=[],
                            observed_index_guard_exit=None)
             self._cleanup_option_selection_if_terminal()
+
+        # Mirror active option ATR state for frontend timeline consumers (SpanQuant)
+        trade.setdefault("market_context", {})["atr_trailing"] = {
+            "last_bar": opt.get("last_processed_option_bar_end") or opt.get("t1_at") or event_ts,
+            "stop_loss": opt.get("locked_option_sl") or (opt.get("original_option_entry") if opt.get("phase") in {"POST_T1", "POST_T2"} else None) or opt.get("original_option_sl"),
+            "previous_sl": opt.get("previous_locked_option_sl"),
+            "trailing_mode": "OPTION_ATR",
+            "status": update_type or opt.get("phase"),
+        }
+
         reference_accounting = opt.get("accounting_formula_version") == "one_lot_reference_v1"
         accounting = self._enrich_reference_trade(trade) if reference_accounting else {}
         snapshot = deepcopy(opt)
