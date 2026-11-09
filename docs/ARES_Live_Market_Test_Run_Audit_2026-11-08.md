@@ -38,7 +38,7 @@ All code introduced in the last three merged pull requests (**PR #156**, **PR #1
 
 ## 3. Live Trade Forensics & Execution Analysis
 
-Two signals were generated during the session. Both were managed by the new PR #156 option trailing and stop-loss logic.
+Two signals were generated during the session. Both validated pre-T1 initial option SL protection coverage under PR #156 (exiting via INITIAL_OPTION_SL before Target 1 was reached; post-T1 option ATR trailing remained inactive prior to T1).
 
 ```mermaid
 sequenceDiagram
@@ -107,7 +107,7 @@ sequenceDiagram
 
 ### Finding 3: `IVBreakoutDetector` Buffer Continuity Verified in `engine.py`
 * **Observation:** Audit verified whether `IVBreakoutDetector` maintains continuous rolling 25-candle base buffers during active trades and cooldown periods.
-* **Verification:** Confirmed that in [`engine.py#L176-L181`](file:///Users/manmadeanyme/.gemini/antigravity/worktrees/ARES/audit_code_fly_deployment/engine.py#L176-L181), `self.iv_breakout_detector.observe(candle, ...)` executes unconditionally in Step 1 on every completed candle *before* the cooldown evaluation (line 185) and detector priority routing.
+* **Verification:** Confirmed that in `engine.py:176-181`, `self.iv_breakout_detector.observe(candle, ...)` executes unconditionally in Step 1 on every completed candle *before* the cooldown evaluation (line 185) and detector priority routing.
 * **Conclusion:** Buffer continuity is already fully preserved; no blind spot exists during cooldown or earlier detector branches.
 
 ---
