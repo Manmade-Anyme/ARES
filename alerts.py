@@ -565,13 +565,14 @@ def _option_lifecycle_estimate(trade, spot, update_type):
 
     exit_info = opt_ctx.get("exit") or {}
     exit_price = exit_info.get("reference_exit_price") or exit_info.get("option_close")
+    legs = (opt_ctx.get("accounting") or {}).get("legs") or {}
     if exit_price is None:
-        exit_price = ((opt_ctx.get("accounting") or {}).get("legs") or {}).get("EXIT", {}).get("option_price")
+        exit_price = legs.get("EXIT", {}).get("option_price")
     if exit_price is None:
         if update_type == "T1_HIT":
-            exit_price = t1
+            exit_price = legs.get("T1", {}).get("option_price") or t1
         elif update_type in ("T2_HIT", "T2_REACHED"):
-            exit_price = sizing.get("target_2")
+            exit_price = legs.get("T2", {}).get("option_price") or sizing.get("target_2")
         elif update_type == "STOPPED_OUT_AT_BE":
             exit_price = entry
         else:
@@ -597,9 +598,16 @@ def _option_lifecycle_estimate(trade, spot, update_type):
         text += f"\n🛡️ **SL Status**: Break-Even Spot {_number(trade.get('entry_price'))}; entry premium reference ₹ {_number(entry)}. 50% partial-booking model."
     if update_type == "STOPPED_OUT_AT_BE":
         lots = sizing.get("final_lots", sizing.get("lots", sizing.get("suggested_lots")))
-        if all(_number(value) != "unavailable" for value in (t1, entry, lots, lot_size)) and float(lots) > 0 and float(lot_size) > 0:
-            net = (float(t1) - float(entry)) * float(lot_size) * float(lots) * .5
-            text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (50% T1 booking model). Spot break-even does not guarantee option break-even."
+        is_versioned = opt_ctx.get("policy_version") in {"option_atr_v1", "option_premium_protection_v2"}
+        if is_versioned:
+            total_points = (opt_ctx.get("accounting") or {}).get("option_total_points")
+            if total_points is not None and all(_number(value) != "unavailable" for value in (lots, lot_size)) and float(lots) > 0 and float(lot_size) > 0:
+                net = float(total_points) * float(lot_size) * float(lots)
+                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (reference accounting). Spot break-even does not guarantee option break-even."
+        else:
+            if all(_number(value) != "unavailable" for value in (t1, entry, lots, lot_size)) and float(lots) > 0 and float(lot_size) > 0:
+                net = (float(t1) - float(entry)) * float(lot_size) * float(lots) * .5
+                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (50% T1 booking model). Spot break-even does not guarantee option break-even."
     return text
 
 

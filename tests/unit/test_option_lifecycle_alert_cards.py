@@ -274,3 +274,31 @@ def test_option_estimate_uses_persisted_exit_leg_price():
     desc = rendered["embeds"][0]["description"]
     # Entry is 139.25, exit should read 90.00 rather than falling back to 139.25 (₹0 pnl)
     assert "Estimated Option Exit**: ₹ 90.00" in desc
+
+
+def test_t1_t2_estimate_prefers_persisted_target_leg_option_price():
+    """T1/T2 alerts use actual captured leg option_price if present in accounting.legs."""
+    snapshot = event("T1_HIT", milestone=1)
+    snapshot["option_trailing"]["accounting"] = {
+        "legs": {"T1": {"option_price": 165.50}}
+    }
+    snapshot["trade"]["market_context"]["option_trailing"]["accounting"] = snapshot["option_trailing"]["accounting"]
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "Estimated Option Exit**: ₹ 165.50" in desc
+
+
+def test_stopped_out_at_be_uses_option_total_points_for_versioned_trade():
+    """Versioned trade at BE reports total PnL from accounting.option_total_points."""
+    snapshot = event("STOPPED_OUT_AT_BE", milestone=1)
+    snapshot["option_trailing"]["phase"] = "POST_T1"
+    snapshot["trade"]["market_context"]["option_trailing"]["phase"] = "POST_T1"
+    snapshot["option_trailing"]["accounting"] = {
+        "option_total_points": -4.50,
+        "legs": {"EXIT": {"option_price": 130.25}}
+    }
+    snapshot["trade"]["market_context"]["option_trailing"]["accounting"] = snapshot["option_trailing"]["accounting"]
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    # 1 lot of 25 * -4.50 = -112.50
+    assert "Estimated Trade PnL**: ₹ -112.50 (reference accounting)" in desc

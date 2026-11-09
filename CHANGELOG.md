@@ -19,6 +19,8 @@ All notable changes to the ARES trading system will be documented in this file.
     - Normalized `PERSISTENCE_FAILED` event alias to retain database persistence warning.
     - Supported post-T2 milestone state in `STOPPED_OUT_AT_BE` alerts (`Final 20% Runner Closed (Score: 2 retained)`).
     - Read captured exit price from `accounting.legs.EXIT.option_price` for index-guard exits to prevent inaccurate break-even fallback.
+    - Used captured `T1` / `T2` option prices from `accounting.legs` for milestone exit estimates before falling back to sizing targets.
+    - Calculated `Estimated Trade PnL` from persisted `accounting.option_total_points` for versioned break-even exits.
   - Silenced `MONITORING_UNAVAILABLE` and `MONITORING_RESTORED` events on Discord to eliminate distraction during live market execution while preserving durable outbox delivery.
   - Removed blocking `RuntimeError` in `send_trade_update()` and `_option_lifecycle_estimate()` for versioned option ATR trades.
   - Refactored `test_option_lifecycle_alert_cards.py` to assert the clean trade update embed schema without Card artifacts.

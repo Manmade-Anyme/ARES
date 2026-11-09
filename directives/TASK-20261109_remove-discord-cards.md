@@ -59,12 +59,13 @@ Remove all "Card A" through "Card L" branding, headers, and verbose internal tel
 - **Timestamp safety:** Preserved `unavailable` for unusable timestamps instead of replacing with current wall time.
 - **Normalized PERSISTENCE_FAILED:** Unified `PERSISTENCE_FAILED` with `PERSISTENCE_FAILURE` to retain warning banner and amber/red status.
 - **Post-T2 Break-Even Alerts:** Accurately announces `Final 20% Runner Closed (Score: 2 retained)` when `STOPPED_OUT_AT_BE` occurs post-T2.
-- **Persisted EXIT Leg Premium:** Reads `accounting.legs.EXIT.option_price` for index-guard exits before falling back to legacy estimates.
+- **Persisted Leg Premiums:** Reads `accounting.legs.T1/T2/EXIT.option_price` before falling back to legacy/sizing estimates.
+- **Break-Even PnL from Persisted Accounting:** Uses `accounting.option_total_points` for versioned trades instead of legacy 50% T1 formula.
 
 ## 7. Verification & QA Status
 - `tests/unit/test_alerts.py`: PASSED (17/17)
-- `tests/unit/test_option_lifecycle_alert_cards.py`: PASSED (23/23)
+- `tests/unit/test_option_lifecycle_alert_cards.py`: PASSED (25/25)
 - `tests/unit/test_options_alert_reporting.py`: PASSED (37/37)
 - `tests/unit/test_option_premium_protection_v2.py`: PASSED (106/106)
 - `tests/unit/test_option_conflict_recovery.py`: PASSED (41/41)
-- All 224 tests passing. Zero Card A-L strings. Clean standard format verified.
+- All 226 tests passing. Zero Card A-L strings. Clean standard format verified.
