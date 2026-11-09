@@ -20,6 +20,8 @@ class Secrets(BaseSettings):
 
     # Option ATR trailing and reference accounting are active by default.
     option_atr_enabled: bool = True
+    option_atr_parity_version: str = "option_atr_v1"
+    option_atr_approved_version: str = "option_atr_v1"
     option_reference_accounting_enabled: bool = True
 
     model_config = SettingsConfigDict(
