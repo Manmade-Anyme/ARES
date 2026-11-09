@@ -19,21 +19,15 @@ SpanQuant frontend polls `/api/ares` and parses `ExecutionTimelineEvent[]` from 
 ---
 
 ## 2. Solution & Architectural Invariants
-1. **In-Memory Dual-Writing (`position_manager.py::_record_option_transition`)**:
-   Whenever an option lifecycle event (`T1_HIT`, `OPTION_SL_RATCHETED`, `ATR_SL_UPDATED`, `T2_HIT`, `STOPPED_OUT_AT_BE`, `SL_HIT`, `ATR_SL_HIT`) is staged, mirror the trailing stop state into `trade.setdefault("market_context", {})["atr_trailing"]`:
-   ```python
-   # Mirror active option ATR state for frontend timeline consumers (SpanQuant)
-   trade.setdefault("market_context", {})["atr_trailing"] = {
-       "last_bar": opt.get("last_processed_option_bar_end") or opt.get("t1_at") or event_ts,
-       "stop_loss": opt.get("locked_option_sl") or (opt.get("original_option_entry") if opt.get("phase") in {"POST_T1", "POST_T2"} else None) or opt.get("original_option_sl"),
-       "previous_sl": opt.get("previous_locked_option_sl"),
-       "trailing_mode": "OPTION_ATR",
-       "status": update_type or opt.get("phase"),
-   }
-   ```
-2. **Supabase Persistence (`position_manager.py::_record_trade_update`)**:
-   - Queue `_persist_trade_context` with `atr_snapshot = deepcopy((trade.get("market_context") or {}).get("atr_trailing"))`.
-   - `_persist_trade_context` writes `context["atr_trailing"] = atr_snapshot` to Supabase `trade_analytics` table.
+1. **In-Memory Dual-Writing (`position_manager.py::_mirror_option_atr_trailing`)**:
+   Whenever an option lifecycle event (`T1_HIT`, `OPTION_SL_RATCHETED`, `ATR_SL_UPDATED`, `T2_HIT`, `STOPPED_OUT_AT_BE`, `SL_HIT`, `ATR_SL_HIT`) is staged or reconciled, mirrors the trailing stop state into `trade.setdefault("market_context", {})["atr_trailing"]`.
+   - **Timestamp Normalization**: Normalizes all `last_bar` timestamps to ISO strings (via `_normalize_iso_timestamp`) to ensure valid JSON serialization when `OptionCandle.end_time` contains datetime objects.
+   - **Lifecycle Gating**: Gated against `PRE_T1` routine quotes and non-adjusting quote watermarks to prevent SpanQuant from emitting false adjustment events before T1 or without an actual stop move.
+   - **Revision Conflict Reconciliation**: In `_flush_option_trade`, rebuilds the mirror upon conflict resolution and queues a context write so frontend consumers never retain a stale or lower stop than canonical `option_trailing`.
+2. **Supabase Persistence & Retries (`position_manager.py::_record_trade_update`, `_persist_trade_context`)**:
+   - Queues `_persist_trade_context` with `atr_snapshot = deepcopy((trade.get("market_context") or {}).get("atr_trailing"))`.
+   - Tracks pending writes in `self._pending_atr_trailing_context`.
+   - Retries pending ATR trailing context across `update_trades` ticks and shutdown drains (`flush_pending_trade_updates`), clearing only on confirmed DB persistence (`updated.data`).
    - Guarded with `if getattr(self, "supabase", None) is None: return` for clean offline unit test execution.
 3. **Preserved Invariants**:
    - Zero schema migrations. Zero database table alterations.
@@ -43,10 +37,16 @@ SpanQuant frontend polls `/api/ares` and parses `ExecutionTimelineEvent[]` from 
 ---
 
 ## 3. Verification & Test Evidence
-- Unit test suite: `tests/unit/test_option_atr_lifecycle_comprehensive.py`
+- Unit test suite: `tests/unit/test_option_atr_lifecycle_comprehensive.py` (22 tests)
   - `test_dual_write_atr_trailing_on_t1_hit`: asserts `atr_trailing["stop_loss"]` equals break-even cost basis and `last_bar` is set.
   - `test_dual_write_atr_trailing_on_option_sl_ratcheted`: asserts `atr_trailing["stop_loss"]` reflects ratcheted option SL and `previous_sl` is tracked.
   - `test_dual_write_atr_trailing_on_trade_exit`: asserts `status` reflects exit reason (`ATR_SL_HIT`).
   - `test_dual_write_atr_trailing_stopped_out_at_be`: asserts `status` reflects `STOPPED_OUT_AT_BE`.
   - `test_dual_write_atr_trailing_persists_to_supabase`: asserts `_persist_trade_context` persists `atr_trailing` to Supabase `trade_analytics.market_context`.
-- Full unit test suite: **2,593 passed, 0 failed** in 68.98s.
+  - `test_pre_t1_routine_quote_does_not_create_atr_trailing`: asserts PRE_T1 quotes do not create or emit ATR trailing context.
+  - `test_post_t1_routine_quote_does_not_advance_last_bar`: asserts routine quotes in POST_T1 do not advance `last_bar`.
+  - `test_option_candle_datetime_normalized_to_iso_string`: asserts `OptionCandle.end_time` (datetime) is converted to ISO string and JSON serializable.
+  - `test_revision_conflict_reconciles_and_persists_atr_trailing_mirror`: asserts revision conflict adopts stronger stop in mirror and queues write.
+  - `test_pending_atr_trailing_context_retained_on_failure_and_cleared_on_success`: asserts persistence failure retains pending state and clears on success.
+  - `test_flush_pending_trade_updates_retries_pending_atr_trailing`: asserts shutdown drain retries unpersisted ATR trailing context.
+- Full unit test suite: **2,599 passed, 0 failed** in 68.33s.
