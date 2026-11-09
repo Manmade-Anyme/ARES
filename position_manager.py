@@ -2,7 +2,7 @@ import asyncio
 import uuid
 import threading
 from copy import deepcopy
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, date, timezone, timedelta
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
@@ -14,11 +14,25 @@ from config import settings
 from alerts import send_trade_update, send_option_lifecycle_event
 from atr_trailing import completed_atr_bars, completed_spot_minutes, calculate_option_atr_bars, ratchet_option_stop
 from options_candles import (load_option_candles, contiguous_option_candles,
-                             expected_completed_option_bar_end, parse_option_candle)
+                             expected_completed_option_bar_end, parse_option_candle, IST)
 from oi_watch_context import parse_candle_timestamp
 from storage import AnalyticsLogger
 
 _OPTION_POLICY_VERSIONS = {"option_atr_v1", "option_premium_protection_v2"}
+_OPTION_ATR_RELEVANT_EVENTS = frozenset({
+    "T1_HIT",
+    "OPTION_SL_RATCHETED",
+    "ATR_SL_UPDATED",
+    "ATR_ACTIVE",
+    "T2_HIT",
+    "STOPPED_OUT_AT_BE",
+    "SL_HIT",
+    "ATR_SL_HIT",
+    "OPTION_SL_FLOOR_HIT",
+    "MANUAL_EXIT",
+    "TIME_EXIT",
+    "EXPIRY_EXIT",
+})
 
 
 def _has_option_policy(opt):
@@ -83,6 +97,7 @@ class PositionManager:
         self._execution_ml_bound = set()
         self._context_locks = {}
         self._pending_target_milestones = {}
+        self._pending_atr_trailing_context = {}
         self._pending_reference_registrations = {}
         self.is_initialized = False
         self._initialize_db()
@@ -150,17 +165,22 @@ class PositionManager:
         # Retry its frozen milestone once within the same shutdown deadline.
         milestones = getattr(self, "_pending_target_milestones", {})
         reference_contexts = getattr(self, "_pending_option_reference_context", {})
-        pending_context_ids = set(milestones) | set(reference_contexts)
+        atr_contexts = getattr(self, "_pending_atr_trailing_context", {})
+        pending_context_ids = set(milestones) | set(reference_contexts) | set(atr_contexts)
         if pending_context_ids and deadline > loop.time():
             for trade_id in tuple(pending_context_ids):
                 marker = milestones.get(trade_id)
+                if marker is None and isinstance(trade_id, str) and trade_id.isdigit():
+                    marker = milestones.get(int(trade_id))
                 refs = reference_contexts.get(str(trade_id))
+                atr_snap = atr_contexts.get(str(trade_id))
                 self._queue_trade_write(
                     trade_id,
-                    lambda t_id=trade_id, snapshot=deepcopy(marker), reference_snapshot=deepcopy(refs):
+                    lambda t_id=trade_id, snapshot=deepcopy(marker), reference_snapshot=deepcopy(refs), atr=deepcopy(atr_snap):
                         self._persist_trade_context(
                             t_id, t2_snapshot=snapshot,
                             reference_milestone_snapshot=reference_snapshot,
+                            atr_snapshot=atr,
                         ),
                 )
             tasks = set(self._trade_writes.values())
@@ -169,8 +189,8 @@ class PositionManager:
                 if pending:
                     print(f"Trade update shutdown drain timed out with {len(pending)} task(s) pending")
                     return False
-        if milestones or reference_contexts:
-            print("Trade update shutdown drain left target milestone context unpersisted")
+        if milestones or reference_contexts or atr_contexts:
+            print("Trade update shutdown drain left target milestone or ATR context unpersisted")
             return False
         pending_option = {trade_id: len(events) for trade_id, events in
                           getattr(self, "_option_pending", {}).items() if events}
@@ -788,16 +808,21 @@ class PositionManager:
         # A successful alert is not repeated while a failed context write retries.
         pending_t2 = getattr(self, "_pending_target_milestones", {})
         pending_reference = getattr(self, "_pending_option_reference_context", {})
-        for trade_id in set(pending_t2) | set(pending_reference):
+        pending_atr = getattr(self, "_pending_atr_trailing_context", {})
+        for trade_id in set(pending_t2) | set(pending_reference) | set(pending_atr):
             if trade_id not in self._trade_writes:
                 marker = pending_t2.get(trade_id)
+                if marker is None and isinstance(trade_id, str) and trade_id.isdigit():
+                    marker = pending_t2.get(int(trade_id))
                 refs = pending_reference.get(str(trade_id))
+                atr_snap = pending_atr.get(str(trade_id))
                 self._queue_trade_write(
                     trade_id,
-                    lambda t_id=trade_id, snapshot=deepcopy(marker), reference_snapshot=deepcopy(refs):
+                    lambda t_id=trade_id, snapshot=deepcopy(marker), reference_snapshot=deepcopy(refs), atr=deepcopy(atr_snap):
                         self._persist_trade_context(
                             t_id, t2_snapshot=snapshot,
                             reference_milestone_snapshot=reference_snapshot,
+                            atr_snapshot=atr,
                         ),
                 )
 
@@ -1508,6 +1533,8 @@ class PositionManager:
         if (atr_snapshot is None and t2_snapshot is None and target_snapshot is None
                 and reference_milestone_snapshot is None):
             return
+        if getattr(self, "supabase", None) is None:
+            return
         with self._context_locks.setdefault(trade_id, threading.Lock()):
             response = self.supabase.table("trade_analytics").select("market_context").eq("id", trade_id).execute()
             if not response.data:
@@ -1529,17 +1556,29 @@ class PositionManager:
                     **reference_milestone_snapshot,
                 }
             updated = self.supabase.table("trade_analytics").update({"market_context": context}).eq("id", trade_id).execute()
+            if atr_snapshot is not None:
+                if not updated.data:
+                    raise RuntimeError("ATR trailing context was not persisted")
+                pending = getattr(self, "_pending_atr_trailing_context", {})
+                if pending.get(str(trade_id)) == atr_snapshot:
+                    pending.pop(str(trade_id), None)
+                elif pending.get(trade_id) == atr_snapshot:
+                    pending.pop(trade_id, None)
             if t2_snapshot is not None:
                 if not updated.data:
                     raise RuntimeError("T2 milestone update was not persisted")
                 if self._pending_target_milestones.get(trade_id) == t2_snapshot:
                     self._pending_target_milestones.pop(trade_id, None)
+                elif self._pending_target_milestones.get(str(trade_id)) == t2_snapshot:
+                    self._pending_target_milestones.pop(str(trade_id), None)
             if isinstance(reference_milestone_snapshot, dict) and reference_milestone_snapshot:
                 if not updated.data:
                     raise RuntimeError("Option reference milestone context was not persisted")
                 pending = getattr(self, "_pending_option_reference_context", {})
                 if pending.get(str(trade_id)) == reference_milestone_snapshot:
                     pending.pop(str(trade_id), None)
+                elif pending.get(trade_id) == reference_milestone_snapshot:
+                    pending.pop(trade_id, None)
 
 
     async def _record_trade_update(self, trade, event_price, update_type, event_ts, pnl_points_override=None):
@@ -1550,15 +1589,18 @@ class PositionManager:
         opt = (trade.get("market_context") or {}).get("option_trailing")
         if _has_option_policy(opt):
             await self._record_option_transition(trade, event_price, update_type, event_ts)
+            atr_snapshot = deepcopy((trade.get("market_context") or {}).get("atr_trailing")) or None
             target_snapshot = deepcopy((trade.get("market_context") or {}).get("target_milestones")) or None
             reference_snapshot = deepcopy(
                 (trade.get("market_context") or {}).get("option_reference_milestones")
             ) or None
-            if target_snapshot or reference_snapshot:
+            if atr_snapshot:
+                self._pending_atr_trailing_context[str(trade["id"])] = deepcopy(atr_snapshot)
+            if atr_snapshot or target_snapshot or reference_snapshot:
                 self._queue_trade_write(
                     trade["id"],
-                    lambda t_id=trade["id"], snapshot=target_snapshot, refs=reference_snapshot:
-                        self._persist_trade_context(t_id, target_snapshot=snapshot,
+                    lambda t_id=trade["id"], atr=atr_snapshot, snapshot=target_snapshot, refs=reference_snapshot:
+                        self._persist_trade_context(t_id, atr_snapshot=atr, target_snapshot=snapshot,
                                                     reference_milestone_snapshot=refs),
                 )
             return
@@ -1580,6 +1622,8 @@ class PositionManager:
         if atr is not None:
             atr.update(state=trade["state"], stop_loss=trade["stop_loss"])
         atr_snapshot = deepcopy(atr)
+        if atr_snapshot:
+            self._pending_atr_trailing_context[str(trade["id"])] = deepcopy(atr_snapshot)
         t2_snapshot = deepcopy((trade.get("market_context", {}).get("target_milestones") or {}).get("t2"))
         target_snapshot = deepcopy(trade.get("market_context", {}).get("target_milestones")) or None
         reference_snapshot = deepcopy(
@@ -1779,7 +1823,8 @@ class PositionManager:
         for name, factory in (("_option_pending", dict), ("_option_locks", dict),
                               ("_option_revisions", dict), ("_option_history", dict),
                               ("_option_warning_sent", set), ("_option_confirmed_sessions", set),
-                              ("_option_flush_tasks", dict), ("_option_flush_followups", set)):
+                              ("_option_flush_tasks", dict), ("_option_flush_followups", set),
+                              ("_pending_atr_trailing_context", dict)):
             if not hasattr(self, name):
                 setattr(self, name, factory())
 
@@ -2283,6 +2328,85 @@ class PositionManager:
         remainder = 1 if milestone == 0 else .5 if milestone == 1 else .2
         return sign * (booked + remainder * (exit_price - entry))
 
+    @staticmethod
+    def _normalize_iso_timestamp(ts):
+        """Convert datetime or date timestamp to normalized ISO string format.
+
+        Guarantees naive datetimes are localized to exchange timezone (IST) before formatting.
+        """
+        if ts is None:
+            return None
+        if isinstance(ts, datetime):
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=IST)
+            return ts.isoformat()
+        if isinstance(ts, date):
+            return ts.isoformat()
+        return str(ts)
+
+    def _mirror_option_atr_trailing(self, trade, update_type=None, event_ts=None):
+        """Mirror active option trailing state into market_context.atr_trailing for SpanQuant.
+
+        Only advances last_bar when an actual trailing adjustment, milestone, or exit occurs.
+        Routine quotes and PRE_T1 states do not trigger adjustment events in the frontend.
+        All timestamps are guaranteed to be serialized as ISO strings.
+        """
+        opt = (trade.get("market_context") or {}).get("option_trailing")
+        if not _has_option_policy(opt):
+            return None
+
+        market_ctx = trade.setdefault("market_context", {})
+        existing = market_ctx.get("atr_trailing")
+        phase = opt.get("phase")
+        terminal = trade.get("state") in {"CLOSED", "STOPPED_OUT"} or phase == "CLOSED"
+
+        # Determine effective stop loss
+        stop_loss = opt.get("locked_option_sl")
+        if stop_loss is None and phase in {"POST_T1", "POST_T2"}:
+            stop_loss = opt.get("original_option_entry")
+        if stop_loss is None:
+            stop_loss = opt.get("original_option_sl")
+
+        prev_sl = opt.get("previous_locked_option_sl")
+
+        if update_type is not None:
+            current_status = update_type
+        elif existing and existing.get("status"):
+            current_status = existing["status"]
+        else:
+            current_status = phase
+
+        is_relevant_event = update_type in _OPTION_ATR_RELEVANT_EVENTS or terminal
+
+        # Pre-T1 trades do not emit atr_trailing unless an exit or terminal event occurred
+        if phase == "PRE_T1" and not is_relevant_event and not existing:
+            return None
+
+        sl_changed = existing is None or existing.get("stop_loss") != stop_loss
+        status_changed = existing is None or existing.get("status") != current_status
+
+        # If it's a routine quote / watermark without a stop or status change, preserve existing without advancing last_bar
+        if not is_relevant_event and not sl_changed and not status_changed and existing is not None:
+            return existing
+
+        # Advance last_bar on relevant events or stop changes; otherwise preserve existing last_bar if available
+        if is_relevant_event or sl_changed or existing is None or not existing.get("last_bar"):
+            raw_ts = opt.get("last_processed_option_bar_end") or opt.get("t1_at") or event_ts
+        else:
+            raw_ts = existing.get("last_bar")
+
+        last_bar = self._normalize_iso_timestamp(raw_ts)
+
+        mirror = {
+            "last_bar": last_bar,
+            "stop_loss": stop_loss,
+            "previous_sl": prev_sl,
+            "trailing_mode": "OPTION_ATR",
+            "status": current_status,
+        }
+        market_ctx["atr_trailing"] = mirror
+        return mirror
+
     async def _record_option_transition(self, trade, index_price, update_type, event_ts):
         """Keep observed protection while serializing immutable, retryable commits."""
         self._option_runtime()
@@ -2296,6 +2420,10 @@ class PositionManager:
                 opt.update(deferred_option_exit=None, pending_index_observations=[],
                            observed_index_guard_exit=None)
             self._cleanup_option_selection_if_terminal()
+
+        # Mirror active option ATR state for frontend timeline consumers (SpanQuant)
+        self._mirror_option_atr_trailing(trade, update_type, event_ts)
+
         reference_accounting = opt.get("accounting_formula_version") == "one_lot_reference_v1"
         accounting = self._enrich_reference_trade(trade) if reference_accounting else {}
         snapshot = deepcopy(opt)
@@ -2421,6 +2549,16 @@ class PositionManager:
                                     trade["state"] = "CLOSED"
                                     pending.clear()
                                     self._cleanup_option_selection_if_terminal()
+                                    reconciled_atr = self._mirror_option_atr_trailing(
+                                        trade, update_type=persisted_opt.get("monitoring_status") or "CLOSED"
+                                    )
+                                    if reconciled_atr:
+                                        self._pending_atr_trailing_context[str(trade_id)] = deepcopy(reconciled_atr)
+                                        self._queue_trade_write(
+                                            trade_id,
+                                            lambda t_id=trade_id, atr=deepcopy(reconciled_atr):
+                                                self._persist_trade_context(t_id, atr_snapshot=atr),
+                                        )
                                 else:
                                     # Drop observations superseded by a newer committed milestone/stop.
                                     kept = []
@@ -2652,6 +2790,14 @@ class PositionManager:
                                         opt.update(persisted_opt)
                                         trade["state"] = persisted.get("active_state", trade["state"])
                                         trade["stop_loss"] = persisted.get("stop_loss", trade["stop_loss"])
+                                    reconciled_atr = self._mirror_option_atr_trailing(trade)
+                                    if reconciled_atr:
+                                        self._pending_atr_trailing_context[str(trade_id)] = deepcopy(reconciled_atr)
+                                        self._queue_trade_write(
+                                            trade_id,
+                                            lambda t_id=trade_id, atr=deepcopy(reconciled_atr):
+                                                self._persist_trade_context(t_id, atr_snapshot=atr),
+                                        )
                                 continue
                         except Exception:
                             pass
@@ -2675,6 +2821,7 @@ class PositionManager:
                 pending.pop(0)
                 if opt.get("phase") == "CLOSED" or trade.get("state") in {"CLOSED", "STOPPED_OUT"}:
                     self._cleanup_option_selection_if_terminal()
+                self._mirror_option_atr_trailing(trade)
                 if opt.get("accounting_formula_version") == "one_lot_reference_v1":
                     try:
                         # The RPC may return evidence merged by another writer,

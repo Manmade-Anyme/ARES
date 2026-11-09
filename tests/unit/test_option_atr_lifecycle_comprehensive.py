@@ -3,6 +3,7 @@ Validates the full test matrix specified in TASK-20261023.
 """
 import pytest
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -101,6 +102,10 @@ def _make_pm():
     pm.active_trades = []
     pm._trade_writes = {}
     pm._context_locks = {}
+    pm._pending_target_milestones = {}
+    pm._pending_atr_trailing_context = {}
+    pm._pending_reference_registrations = {}
+    pm._option_runtime()
     pm.analytics = Ledger()
     # These isolated index lifecycle cases explicitly assume the premium clock
     # is caught up; outage ordering is exercised through real source histories.
@@ -450,3 +455,455 @@ async def test_discord_alert_deduplication(monkeypatch):
                trade["market_context"]["option_trailing"]["alert_events"].values())
     await pm.retry_option_lifecycle_writes()
     assert sender.await_count == 1
+
+
+# ==============================================================================
+# 5. Dual-Write atr_trailing Tests (SpanQuant Frontend Mirror)
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_dual_write_atr_trailing_on_t1_hit():
+    """On T1_HIT, market_context['atr_trailing']['stop_loss'] equals break-even cost basis and last_bar is set."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    pm.active_trades = [trade]
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_trades(spot_price=22525.00)
+        assert ("trade-1950", "T1_HIT") in events
+        assert "atr_trailing" in trade["market_context"]
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["stop_loss"] == 139.25  # Break-even cost basis
+        assert atr["last_bar"] is not None
+        assert atr["trailing_mode"] == "OPTION_ATR"
+        assert atr["status"] == "T1_HIT"
+
+
+@pytest.mark.asyncio
+async def test_dual_write_atr_trailing_on_option_sl_ratcheted():
+    """On OPTION_SL_RATCHETED, market_context['atr_trailing']['stop_loss'] reflects tightened option SL."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    trade["state"] = "T1_HIT"
+    opt = trade["market_context"]["option_trailing"]
+    opt["phase"] = "POST_T1"
+    opt["highest_milestone"] = 1
+    opt["t1_at"] = "2026-10-23T09:30:00+05:30"
+    opt["locked_option_sl"] = 139.25
+    opt["previous_locked_option_sl"] = 123.65
+    opt["protection_mode"] = "ATR"
+    pm.active_trades = [trade]
+
+    base = datetime(2026, 10, 23, 9, 35, tzinfo=IST)
+    # Candle that ratchets stop to 142.00
+    candle_ratchet = OptionCandle(
+        start_time=base,
+        end_time=base + timedelta(minutes=5),
+        open=140.0,
+        high=146.0,
+        low=138.0,
+        close=144.0,
+        volume=1000.0,
+        security_id="51333",
+        complete=True,
+    )
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")), \
+         patch("position_manager.ratchet_option_stop", return_value=(142.00, "ATR", True)):
+        events = await pm.update_option_atr_trailing([candle_ratchet])
+        assert ("trade-1950", "OPTION_SL_RATCHETED") in events
+        assert "atr_trailing" in trade["market_context"]
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["stop_loss"] == 142.00
+        assert atr["previous_sl"] == 139.25
+        assert atr["trailing_mode"] == "OPTION_ATR"
+        assert atr["status"] == "OPTION_SL_RATCHETED"
+
+
+@pytest.mark.asyncio
+async def test_dual_write_atr_trailing_on_trade_exit():
+    """On trade exit, status reflects exit reason."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    trade["state"] = "T1_HIT"
+    opt = trade["market_context"]["option_trailing"]
+    opt["phase"] = "POST_T1"
+    opt["highest_milestone"] = 1
+    opt["t1_at"] = "2026-10-23T09:30:00+05:30"
+    opt["locked_option_sl"] = 139.25
+    opt["protection_mode"] = "ATR"
+    pm.active_trades = [trade]
+
+    base = datetime(2026, 10, 23, 9, 35, tzinfo=IST)
+    candle_exit = OptionCandle(
+        start_time=base,
+        end_time=base + timedelta(minutes=5),
+        open=140.0,
+        high=141.0,
+        low=135.0,
+        close=138.0,  # Below 139.25 -> ATR_SL_HIT
+        volume=1000.0,
+        security_id="51333",
+        complete=True,
+    )
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_option_atr_trailing([candle_exit])
+        assert ("trade-1950", "ATR_SL_HIT") in events
+        assert trade["state"] == "CLOSED"
+        assert "atr_trailing" in trade["market_context"]
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["status"] == "ATR_SL_HIT"
+        assert atr["trailing_mode"] == "OPTION_ATR"
+
+
+@pytest.mark.asyncio
+async def test_dual_write_atr_trailing_stopped_out_at_be():
+    """On STOPPED_OUT_AT_BE exit, status reflects STOPPED_OUT_AT_BE."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    pm.active_trades = [trade]
+
+    # Reach T1
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        await pm.update_trades(spot_price=22525.00)
+
+    # Spot rallies back to entry (22552.10) -> STOPPED_OUT_AT_BE
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_trades(spot_price=22553.00)
+        assert ("trade-1950", "STOPPED_OUT_AT_BE") in events
+        assert trade["state"] == "CLOSED"
+        assert "atr_trailing" in trade["market_context"]
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["status"] == "STOPPED_OUT_AT_BE"
+        assert atr["trailing_mode"] == "OPTION_ATR"
+
+
+@pytest.mark.asyncio
+async def test_dual_write_atr_trailing_persists_to_supabase():
+    """_persist_trade_context writes atr_trailing snapshot to Supabase trade_analytics."""
+    pm = _make_pm()
+    mock_supabase = MagicMock()
+    pm.supabase = mock_supabase
+
+    trade_id = "trade-persist-1"
+    existing_context = {"option_trailing": {"phase": "POST_T1"}}
+    table_mock = MagicMock()
+    mock_supabase.table.return_value = table_mock
+    table_mock.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[{"market_context": existing_context}]
+    )
+    table_mock.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"id": trade_id}])
+
+    atr_snapshot = {
+        "last_bar": "2026-10-23T09:35:00+05:30",
+        "stop_loss": 142.0,
+        "previous_sl": 139.25,
+        "trailing_mode": "OPTION_ATR",
+        "status": "OPTION_SL_RATCHETED",
+    }
+
+    pm._persist_trade_context(trade_id, atr_snapshot=atr_snapshot)
+
+    mock_supabase.table.assert_called_with("trade_analytics")
+    expected_context = {
+        "option_trailing": {"phase": "POST_T1"},
+        "atr_trailing": atr_snapshot,
+    }
+    table_mock.update.assert_called_with({"market_context": expected_context})
+
+
+@pytest.mark.asyncio
+async def test_pre_t1_routine_quote_does_not_create_atr_trailing():
+    """In PRE_T1 phase, routine quotes without milestone hits do not create atr_trailing in market_context."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    pm.active_trades = [trade]
+
+    # Routine spot update that does NOT hit T1 (T1 is 22525.00, entry is 22552.10)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_trades(spot_price=22540.00)
+        assert len(events) == 0
+        assert "atr_trailing" not in trade.get("market_context", {})
+
+
+@pytest.mark.asyncio
+async def test_post_t1_routine_quote_does_not_advance_last_bar():
+    """In POST_T1 phase, routine quotes without stop raises preserve existing last_bar and do not advance it."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    pm.active_trades = [trade]
+
+    # Trigger T1_HIT
+    t1_time = "2026-10-23T09:30:00+05:30"
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_trades(spot_price=22525.00, event_time=t1_time)
+        assert ("trade-1950", "T1_HIT") in events
+        initial_atr = trade["market_context"]["atr_trailing"]
+        initial_last_bar = initial_atr["last_bar"]
+        assert initial_last_bar is not None
+
+    # Routine quote 2 minutes later without hitting T2 or stop
+    quote_time = "2026-10-23T09:32:00+05:30"
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events = await pm.update_trades(spot_price=22520.00, event_time=quote_time)
+        assert len(events) == 0
+        current_atr = trade["market_context"]["atr_trailing"]
+        # last_bar MUST remain initial_last_bar so SpanQuant does not synthesize false in-trade adjustments
+        assert current_atr["last_bar"] == initial_last_bar
+        assert current_atr["stop_loss"] == initial_atr["stop_loss"]
+
+
+@pytest.mark.asyncio
+async def test_option_candle_datetime_normalized_to_iso_string():
+    """OptionCandle.end_time (datetime) is converted to ISO string, ensuring JSON serializability."""
+    import json
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    trade["state"] = "T1_HIT"
+    opt = trade["market_context"]["option_trailing"]
+    opt["phase"] = "POST_T1"
+    opt["highest_milestone"] = 1
+    opt["t1_at"] = "2026-10-23T09:30:00+05:30"
+    opt["locked_option_sl"] = 139.25
+    opt["protection_mode"] = "ATR"
+    pm.active_trades = [trade]
+
+    base = datetime(2026, 10, 23, 9, 35, tzinfo=IST)
+    candle = OptionCandle(
+        start_time=base,
+        end_time=base + timedelta(minutes=5),  # datetime object
+        open=140.0,
+        high=146.0,
+        low=138.0,
+        close=144.0,
+        volume=1000.0,
+        security_id="51333",
+        complete=True,
+    )
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")), \
+         patch("position_manager.ratchet_option_stop", return_value=(144.00, "ATR", True)):
+        await pm.update_option_atr_trailing([candle])
+        atr = trade["market_context"]["atr_trailing"]
+        assert isinstance(atr["last_bar"], str)
+        # Verify JSON serializability without throwing TypeError
+        serialized = json.dumps(atr)
+        assert "2026-10-23T09:40:00" in serialized
+
+
+@pytest.mark.asyncio
+async def test_revision_conflict_reconciles_and_persists_atr_trailing_mirror():
+    """When _flush_option_trade encounters a revision conflict, atr_trailing is rebuilt from reconciled state."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    opt = trade["market_context"]["option_trailing"]
+    opt["phase"] = "POST_T1"
+    opt["revision"] = 1
+    opt["locked_option_sl"] = 139.25
+    trade["market_context"]["atr_trailing"] = {
+        "last_bar": "2026-10-23T09:30:00+05:30",
+        "stop_loss": 139.25,
+        "trailing_mode": "OPTION_ATR",
+        "status": "T1_HIT",
+    }
+
+    mock_analytics = MagicMock()
+    call_count = 0
+    def mock_apply(trade_id, rev, event_id, payload):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("Revision mismatch: expected 2, got 1")
+        return {"success": True, "revision": 3, "option_trailing": {"revision": 3}}
+
+    mock_analytics.apply_option_lifecycle_transition.side_effect = mock_apply
+    mock_analytics.get_option_lifecycle_state.return_value = {
+        "active_state": "T1_HIT",
+        "option_trailing": {
+            "revision": 2,
+            "phase": "POST_T1",
+            "highest_milestone": 1,
+            "locked_option_sl": 145.00,  # Stronger committed stop from concurrent writer
+            "previous_locked_option_sl": 139.25,
+            "last_processed_option_bar_end": "2026-10-23T09:35:00+05:30",
+        },
+    }
+    pm.analytics = mock_analytics
+
+    # Queue an event and flush
+    pm._option_pending[trade["id"]] = [
+        ("event-uuid", {
+            "option_trailing": deepcopy(opt),
+            "active_state": "T1_HIT",
+            "update_type": "OPTION_SL_RATCHETED",
+        })
+    ]
+
+    await pm._flush_option_trade(trade)
+
+    # atr_trailing mirror must be reconciled to the higher committed stop 145.00
+    atr = trade["market_context"]["atr_trailing"]
+    assert atr["stop_loss"] == 145.00
+    assert atr["last_bar"] == "2026-10-23T09:35:00+05:30"
+    assert pm._pending_atr_trailing_context[str(trade["id"])]["stop_loss"] == 145.00
+
+
+@pytest.mark.asyncio
+async def test_pending_atr_trailing_context_retained_on_failure_and_cleared_on_success():
+    """Failed atr_trailing write remains in _pending_atr_trailing_context and clears upon confirmed persistence."""
+    pm = _make_pm()
+    mock_supabase = MagicMock()
+    pm.supabase = mock_supabase
+    trade_id = "trade-retry-123"
+
+    table_mock = MagicMock()
+    mock_supabase.table.return_value = table_mock
+    table_mock.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[{"market_context": {}}]
+    )
+
+    atr_snapshot = {
+        "last_bar": "2026-10-23T09:35:00+05:30",
+        "stop_loss": 142.0,
+        "trailing_mode": "OPTION_ATR",
+        "status": "OPTION_SL_RATCHETED",
+    }
+    pm._pending_atr_trailing_context[trade_id] = deepcopy(atr_snapshot)
+
+    # 1. Simulate failed update (data=[])
+    table_mock.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+    with pytest.raises(RuntimeError, match="ATR trailing context was not persisted"):
+        pm._persist_trade_context(trade_id, atr_snapshot=atr_snapshot)
+
+    # It must remain in _pending_atr_trailing_context
+    assert trade_id in pm._pending_atr_trailing_context
+    assert pm._pending_atr_trailing_context[trade_id] == atr_snapshot
+
+    # 2. Simulate successful retry (data=[{"id": trade_id}])
+    table_mock.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"id": trade_id}])
+    pm._persist_trade_context(trade_id, atr_snapshot=atr_snapshot)
+
+    # It must now be cleared
+    assert trade_id not in pm._pending_atr_trailing_context
+
+
+@pytest.mark.asyncio
+async def test_flush_pending_trade_updates_retries_pending_atr_trailing():
+    """flush_pending_trade_updates retries unpersisted _pending_atr_trailing_context within deadline."""
+    pm = _make_pm()
+    mock_supabase = MagicMock()
+    pm.supabase = mock_supabase
+    trade_id = "trade-drain-456"
+
+    table_mock = MagicMock()
+    mock_supabase.table.return_value = table_mock
+    table_mock.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[{"market_context": {}}]
+    )
+    table_mock.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"id": trade_id}])
+
+    atr_snapshot = {
+        "last_bar": "2026-10-23T09:35:00+05:30",
+        "stop_loss": 142.0,
+        "trailing_mode": "OPTION_ATR",
+        "status": "OPTION_SL_RATCHETED",
+    }
+    pm._pending_atr_trailing_context[trade_id] = deepcopy(atr_snapshot)
+
+    success = await pm.flush_pending_trade_updates(timeout=2.0)
+    assert success is True
+    assert trade_id not in pm._pending_atr_trailing_context
+
+
+def test_naive_datetime_localized_to_ist_in_iso_string():
+    """_normalize_iso_timestamp localizes naive datetimes to IST (+05:30)."""
+    naive_dt = datetime(2026, 10, 23, 9, 35)
+    normalized = PositionManager._normalize_iso_timestamp(naive_dt)
+    assert normalized == "2026-10-23T09:35:00+05:30"
+    assert "+05:30" in normalized
+
+
+@pytest.mark.asyncio
+async def test_dual_write_atr_trailing_on_t2_hit():
+    """On T2_HIT, market_context['atr_trailing']['status'] reflects T2_HIT."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    pm.active_trades = [trade]
+
+    # Reach T1 first
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events_t1 = await pm.update_trades(spot_price=22525.00)
+        assert ("trade-1950", "T1_HIT") in events_t1
+        assert trade["market_context"]["atr_trailing"]["status"] == "T1_HIT"
+
+    # Reach T2 (BEARISH target_2 is 22472.10, spot 22470.00)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        events_t2 = await pm.update_trades(spot_price=22470.00)
+        assert ("trade-1950", "T2_HIT") in events_t2
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["status"] == "T2_HIT"
+        assert atr["trailing_mode"] == "OPTION_ATR"
+
+
+@pytest.mark.asyncio
+async def test_dual_write_atr_trailing_multiple_sequential_ratchets():
+    """Multiple sequential ratchets maintain valid stop_loss and previous_sl progression."""
+    pm = _make_pm()
+    sig = _make_signal(opt_premium=139.25, opt_sl=123.65)
+    trade = _mock_trade_from_signal(sig)
+    trade["state"] = "T1_HIT"
+    opt = trade["market_context"]["option_trailing"]
+    opt["phase"] = "POST_T1"
+    opt["highest_milestone"] = 1
+    opt["t1_at"] = "2026-10-23T09:30:00+05:30"
+    opt["locked_option_sl"] = 139.25
+    opt["previous_locked_option_sl"] = 123.65
+    opt["protection_mode"] = "ATR"
+    pm.active_trades = [trade]
+
+    base = datetime(2026, 10, 23, 9, 35, tzinfo=IST)
+
+    # Ratchet 1: stop to 142.00
+    c1 = OptionCandle(start_time=base, end_time=base + timedelta(minutes=5), open=140.0, high=145.0, low=138.0, close=143.0, volume=1000.0, security_id="51333", complete=True)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")), \
+         patch("position_manager.ratchet_option_stop", return_value=(142.00, "ATR", True)):
+        await pm.update_option_atr_trailing([c1])
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["stop_loss"] == 142.00
+        assert atr["previous_sl"] == 139.25
+        assert atr["status"] == "OPTION_SL_RATCHETED"
+
+    # Ratchet 2: stop to 145.50 (pass cumulative candles [c1, c2])
+    c2 = OptionCandle(start_time=base + timedelta(minutes=5), end_time=base + timedelta(minutes=10), open=143.0, high=148.0, low=141.0, close=146.0, volume=1000.0, security_id="51333", complete=True)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")), \
+         patch("position_manager.ratchet_option_stop", return_value=(145.50, "ATR", True)):
+        await pm.update_option_atr_trailing([c1, c2])
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["stop_loss"] == 145.50
+        assert atr["previous_sl"] == 142.00
+        assert atr["status"] == "OPTION_SL_RATCHETED"
+
+    # Ratchet 3: stop to 149.00 (pass cumulative candles [c1, c2, c3])
+    c3 = OptionCandle(start_time=base + timedelta(minutes=10), end_time=base + timedelta(minutes=15), open=146.0, high=152.0, low=144.0, close=150.0, volume=1000.0, security_id="51333", complete=True)
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")), \
+         patch("position_manager.ratchet_option_stop", return_value=(149.00, "ATR", True)):
+        await pm.update_option_atr_trailing([c1, c2, c3])
+        atr = trade["market_context"]["atr_trailing"]
+        assert atr["stop_loss"] == 149.00
+        assert atr["previous_sl"] == 145.50
+        assert atr["status"] == "OPTION_SL_RATCHETED"
+
+
+
+
+

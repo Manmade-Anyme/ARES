@@ -4,6 +4,21 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Dual-Write `market_context.atr_trailing` for SpanQuant Frontend Timeline Compatibility (TASK-20261109):**
+  - Implemented dual-writing in `position_manager.py::_record_option_transition`: whenever an Option ATR trailing event (`T1_HIT`, `OPTION_SL_RATCHETED`, `ATR_SL_UPDATED`, `T2_HIT`, `STOPPED_OUT_AT_BE`, `SL_HIT`, `ATR_SL_HIT`) is recorded or staged, mirrors the active trailing state into `trade["market_context"]["atr_trailing"]`.
+  - Staged fields include `last_bar` (normalized ISO string), `stop_loss` (reflecting break-even cost basis on T1, tightened option SL on ratchet, or initial option SL), `previous_sl`, `trailing_mode: OPTION_ATR`, and `status`.
+  - Updated `position_manager.py::_record_trade_update` to queue `_persist_trade_context` with `atr_snapshot`, persisting the mirrored `atr_trailing` object into `trade_analytics.market_context` in Supabase asynchronously under the per-trade context lock.
+  - Added graceful `getattr(self, "supabase", None)` guard in `_persist_trade_context` for offline test isolation.
+  - Preserved all database schemas, table definitions, and transactional RPC constraints (`apply_option_lifecycle_transition`).
+  - Addressed code review feedback and hardened mirror against race conditions:
+    - Rebuilt and persisted ATR mirror upon revision conflict reconciliation in `_flush_option_trade` across both active and closed trades.
+    - Tracked unconfirmed writes in `_pending_atr_trailing_context`, retrying across `update_trades` ticks and shutdown drain (`flush_pending_trade_updates`), clearing only upon confirmed persistence.
+    - Gated `last_bar` advancement to actual lifecycle events and stop adjustments, preventing false adjustment events on routine quotes or during `PRE_T1`.
+    - Normalized all `OptionCandle.end_time` datetimes to ISO strings via `_normalize_iso_timestamp` and guaranteed naive datetimes are localized to exchange timezone (`IST`) before formatting.
+    - Optimized transition hot paths with module-level `_OPTION_ATR_RELEVANT_EVENTS` frozenset and standardized direct `_pending_atr_trailing_context` attribute access.
+  - Added comprehensive unit test coverage in `tests/unit/test_option_atr_lifecycle_comprehensive.py` (25 tests covering T1/T2 milestones, ratchets, exits, retry drain, reconciliation, and timezone-aware ISO serialization).
+
+
 - **Remove Discord Lifecycle Cards & Restore Standard Trade Update Format (TASK-20261109):**
   - Removed all "Card A" through "Card L" branding, prefixes, and internal debug telemetry dumps from Discord embeds and alerts.
   - Removed `🛡️ Card A — Reference lifecycle` field from initial signal alerts in `alerts.py:send_discord()`.
