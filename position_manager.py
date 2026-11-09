@@ -422,6 +422,7 @@ class PositionManager:
                 logger.warning("Option premium protection capability check failed", exc_info=True)
         atr_enabled = (settings.option_atr_enabled
                        and settings.option_atr_approved_version == "option_atr_v1"
+                       and settings.option_atr_parity_version == "option_atr_v1"
                        and bool(settings.supabase_service_role_key))
         if contract is not None and protection_ready:
             execution = market_context.get("execution") or {}

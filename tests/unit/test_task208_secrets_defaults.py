@@ -27,22 +27,24 @@ def test_secrets_defaults_without_env(monkeypatch):
     assert secrets.discord_health_webhook_url is None
     assert secrets.supabase_url == ""
     assert secrets.supabase_key == ""
+    assert secrets.option_atr_enabled is True
+    assert secrets.option_atr_parity_version == "option_atr_v1"
+    assert secrets.option_atr_approved_version == "option_atr_v1"
+    assert secrets.option_reference_accounting_enabled is True
+
+
+def test_secrets_option_atr_env_override_to_disabled(monkeypatch):
+    """Option ATR and reference accounting can be overridden to false via environment variables."""
+    monkeypatch.setenv("OPTION_ATR_ENABLED", "false")
+    monkeypatch.setenv("OPTION_ATR_APPROVED_VERSION", "")
+    monkeypatch.setenv("OPTION_ATR_PARITY_VERSION", "")
+    monkeypatch.setenv("OPTION_REFERENCE_ACCOUNTING_ENABLED", "false")
+
+    secrets = Secrets(_env_file=None)
     assert secrets.option_atr_enabled is False
     assert secrets.option_atr_parity_version == ""
     assert secrets.option_atr_approved_version == ""
     assert secrets.option_reference_accounting_enabled is False
-
-
-def test_secrets_option_atr_env_activation(monkeypatch):
-    """Option ATR and reference accounting can be activated via environment variables."""
-    monkeypatch.setenv("OPTION_ATR_ENABLED", "true")
-    monkeypatch.setenv("OPTION_ATR_APPROVED_VERSION", "option_atr_v1")
-    monkeypatch.setenv("OPTION_REFERENCE_ACCOUNTING_ENABLED", "true")
-
-    secrets = Secrets(_env_file=None)
-    assert secrets.option_atr_enabled is True
-    assert secrets.option_atr_approved_version == "option_atr_v1"
-    assert secrets.option_reference_accounting_enabled is True
 
 
 def test_settings_instantiation_without_discord_webhook(monkeypatch):

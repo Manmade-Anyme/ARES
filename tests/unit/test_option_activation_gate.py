@@ -12,17 +12,23 @@ from tests.unit.test_manm176_review_persistence import MemoryDatabase, make_sign
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('enabled,approved,backend,protection_ready,enrolled,atr_on', [
-    (False, '', True, True, True, False), (True, '', True, True, True, False),
-    (True, 'unverified', True, True, True, False), (True, 'option_atr_v1', False, True, False, False),
-    (True, 'option_atr_v1', True, False, False, False), (False, '', True, False, False, False),
-    (True, 'option_atr_v1', True, True, True, True),
+@pytest.mark.parametrize('enabled,approved,parity,backend,protection_ready,enrolled,atr_on', [
+    (False, '', '', True, True, True, False),
+    (True, '', '', True, True, True, False),
+    (True, 'unverified', 'option_atr_v1', True, True, True, False),
+    (True, 'option_atr_v1', '', True, True, True, False),
+    (True, 'option_atr_v1', 'unverified', True, True, True, False),
+    (True, 'option_atr_v1', 'option_atr_v1', False, True, False, False),
+    (True, 'option_atr_v1', 'option_atr_v1', True, False, False, False),
+    (False, '', '', True, False, False, False),
+    (True, 'option_atr_v1', 'option_atr_v1', True, True, True, True),
 ])
 async def test_actual_entry_requires_protection_schema_and_keeps_atr_gate_independent(
-        monkeypatch, enabled, approved, backend, protection_ready, enrolled, atr_on):
+        monkeypatch, enabled, approved, parity, backend, protection_ready, enrolled, atr_on):
     database = MemoryDatabase()
     monkeypatch.setattr(settings, 'option_atr_enabled', enabled)
     monkeypatch.setattr(settings, 'option_atr_approved_version', approved)
+    monkeypatch.setattr(settings, 'option_atr_parity_version', parity)
     monkeypatch.setattr(settings, 'supabase_service_role_key', 'test-backend-only' if backend else '')
     signal = make_signal()
     signal.suggested_lots = signal.bracket.lots
