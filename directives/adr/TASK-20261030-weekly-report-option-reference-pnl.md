@@ -46,7 +46,7 @@ Introduce an accounting-only context and configuration gate, separate from `opti
 
 - `market_context.option_reference` is the canonical state for the new formula.
 - Formula version: `one_lot_hold_to_exit_v1`.
-- New configuration: `option_reference_accounting_enabled`, independent of all option ATR settings. It defaults to disabled until the additive schema is installed and the user separately authorizes activation.
+- New configuration: `option_reference_accounting_enabled`, independent of all option ATR settings. Activated live by default across deployments (TASK-20261108).
 - Enrollment requires a valid pinned option contract, a valid lot-size snapshot, backend service credentials, and the new capability check. Capital and suggested lot count do not determine this one-lot display reference.
 - The accounting capture path may read option prices, but it must never create `option_trailing`, call the option ATR transition writer, evaluate or ratchet an option stop, or change any protection flag.
 

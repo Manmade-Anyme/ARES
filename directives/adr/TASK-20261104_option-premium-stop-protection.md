@@ -34,7 +34,7 @@ For a valid option contract and bracket, create versioned premium protection sta
 
 For a long-premium CE or PE, a fresh valid option-price observation **at or below** the effective stop triggers the premium exit path, including equality and gaps. A higher ATR candidate never loosens a stop; a lower/equal/missing candidate has no effect. Do not apply a completed bar's new candidate to quotes before that bar's end time.
 
-The proposed canonical policy identifier is `option_premium_protection_v2`, separate from the indicator formula identifier `option_atr_v1`. Keep existing `option_atr_enabled`, exact approved-version, service-role, and backend capability requirements for ATR calculation/ratcheting. The ATR component remains off by default and is not activated by this implementation. The baseline premium SL and T1 cost protection are not disabled merely because the ATR parity gate is closed.
+The proposed canonical policy identifier is `option_premium_protection_v2`, separate from the indicator formula identifier `option_atr_v1`. (Update 2026-11-09 / TASK-20261108: ATR activated live by default without feature flags; parity gate waived). The baseline premium SL and T1 cost protection are not disabled merely because the ATR parity gate is closed.
 
 The v2 capability RPC must verify that the calling `service_role` can `SELECT` and `UPDATE` `public.ml_collection`, as well as access the lifecycle tables and required functions. Every terminal lifecycle transition synchronizes the canonical outcome label inside the same transaction; without either table privilege, readiness must be false so the trade cannot enroll and later roll back its protective exit.
 
@@ -259,7 +259,7 @@ Run focused unit and integration/replay/restart verification after implementatio
 ## 9. Risks and Rollout Boundaries
 
 - A polled quote has bounded but nonzero latency; the implementation must expose the actual feed and polling cadence. If a timely per-contract quote source is unavailable, the monitoring gap must be surfaced and must not be described as immediate tick-level enforcement.
-- The ATR formula's exact chart/feed parity remains subject to the existing approval gate. This ADR does not authorize enabling `option_atr_enabled`, changing approved/parity versions, deploying, restarting workers, or activating the feature in production.
+- The ATR formula's exact chart/feed parity was waived and live deployment activation authorized by user mandate in TASK-20261108. Feature flag barriers are removed.
 - Reference accounting is not broker execution. Trigger, modeled/reference exit, and confirmed fill remain distinct data facts.
 - Historical production records remain unchanged. Any existing-trade correction or production migration requires its own reviewed dry run and separate authorization.
 

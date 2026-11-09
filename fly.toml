@@ -12,6 +12,7 @@ primary_region = 'sin'
 [env]
   TZ = 'Asia/Kolkata'
   OPTION_REFERENCE_ACCOUNTING_ENABLED = 'true'
+  OPTION_ATR_ENABLED = 'true'
 
 [processes]
   app = 'sh scripts/run_app_with_jev.sh'

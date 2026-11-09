@@ -4,6 +4,14 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Activate Option ATR Trailing Live Without Feature Flags (TASK-20261108):**
+  - Activated Option ATR trailing live across all deployments; removed feature flag gates and version barriers.
+  - In `PositionManager`, ATR is permanently enabled whenever option premium protection is active and backend credentials are present.
+  - Waived PineScript chart parity discrepancy in governing ADRs and research reports by user mandate.
+  - Updated `config.py`, `fly.toml`, `.env.example`, and `README.md` to enable Option ATR trailing and reference accounting by default.
+  - Updated unit test suite (`tests/unit/test_option_activation_gate.py`, `tests/unit/test_task208_secrets_defaults.py`).
+  - Added live market deployment audit report for 2026-11-08 session (`docs/ARES_Live_Market_Test_Run_Audit_2026-11-08.md`).
+
 - **Fix IVBreakoutDetector State Buffer Continuity Under Engine Cooldown & Priority Short-Circuiting (TASK-20261108):**
   - Enforced unconditional observation in `AresEngine` Step 1 and update dispatch in Step 5 with `isinstance(candle, OHLCVCandle)` type guards, preventing skipped observations or mock object corruption across all execution branches.
   - Hardened `IVBreakoutDetector.observe()` against duplicate candle registration by verifying both object identity and candle timestamp equality.

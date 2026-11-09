@@ -18,11 +18,11 @@ class Secrets(BaseSettings):
     supabase_service_role_key: str = ""
     signal_schema_mode: str = "bridge"
 
-    # Explicit formula approval and installed backend capabilities are required.
-    option_atr_enabled: bool = False
-    option_atr_parity_version: str = ""
-    option_atr_approved_version: str = ""
-    option_reference_accounting_enabled: bool = False
+    # Option ATR trailing and reference accounting are active by default.
+    option_atr_enabled: bool = True
+    option_atr_parity_version: str = "option_atr_v1"
+    option_atr_approved_version: str = "option_atr_v1"
+    option_reference_accounting_enabled: bool = True
 
     model_config = SettingsConfigDict(
         env_file='.env', env_file_encoding='utf-8', extra='ignore'

@@ -65,4 +65,4 @@ Replace post-T1 spot-based ATR trailing with option-premium ATR trailing on comp
 
 ## PR #147 correction acceptance
 
-The implementation must satisfy the R1–R14 matrix and complete Cards A–L in [the detailed specification](../docs/TASK-20261023_option-atr-trailing-lifecycle.md). Parity remains unresolved, so new-policy tagging requires `option_atr_enabled=True` and exact `option_atr_parity_version="option_atr_v1"`; defaults preserve the existing approved lifecycle. Deliver tests and measured results, not inferred completion. Existing-trade migration is preview-only. This correction task does not authorize production SQL application, activation, deployment, restarts, broker orders, Discord test messages or PR merge.
+The implementation must satisfy the R1–R14 matrix and complete Cards A–L in [the detailed specification](../docs/TASK-20261023_option-atr-trailing-lifecycle.md). (Update 2026-11-09 / TASK-20261108): PineScript parity variance is waived by user mandate; Option ATR is approved and activated live by default without feature flags.
