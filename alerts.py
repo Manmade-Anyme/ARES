@@ -495,11 +495,17 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
         return "ATR trailing stop tightened."
     if update_type == "ATR_SL_HIT":
         if is_option_atr:
+            if opt_ctx.get("policy_version") == "option_premium_protection_v2":
+                if opt_ctx.get("highest_milestone", 0) >= 2 or opt_ctx.get("phase") == "POST_T2":
+                    return "Option Stop Loss Hit. Final 20% Runner Closed (Score: 2 retained)."
+                return "Option Stop Loss Hit. Remaining 50% Closed (Score: 1 retained)."
             if opt_ctx.get("highest_milestone", 0) >= 2 or opt_ctx.get("phase") == "POST_T2":
                 return "Option Stop Loss Hit on 5-Minute Close. Final 20% Runner Closed (Score: 2 retained)."
             return "Completed 5-minute close crossed Option ATR Stop. Remaining 50% Closed (Score: 1 retained)."
         return "5-minute close crossed ATR Stop Loss. Runner exit triggered."
     if update_type == "OPTION_SL_FLOOR_HIT":
+        if is_option_atr and opt_ctx.get("policy_version") == "option_premium_protection_v2":
+            return "Option SL Floor Hit. Final 20% Runner Closed (Score: 2 retained)."
         return "Option SL Floor Hit on 5-Minute Close. Final 20% Runner Closed (Score: 2 retained)."
     if update_type == "T2_TOUCHED":
         return "Target 2 touched! ATR runner remains active."
@@ -525,7 +531,7 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
         return "Option candle data feed delayed (> 60s past candle close). Retaining last locked stop."
     if update_type == "MONITORING_RESTORED":
         return "Option candle data feed restored. Resuming chronological processing."
-    if update_type == "PERSISTENCE_FAILURE":
+    if update_type in ("PERSISTENCE_FAILURE", "PERSISTENCE_FAILED"):
         return "Database persistence failure. Memory state active; unconfirmed in database."
     return f"Trade Closed ({update_type})."
 
@@ -543,7 +549,7 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     lot_size = sizing.get("lot_size", settings.nifty_lot_size)
     t1 = sizing.get("target_1") or sizing.get("option_target") or None
 
-    if update_type in ("ATR_SL_UPDATED", "OPTION_SL_RATCHETED"):
+    if update_type in ("ATR_ACTIVE", "ATR_SL_UPDATED", "OPTION_SL_RATCHETED"):
         locked_sl = opt_ctx.get("locked_option_sl")
         if locked_sl is not None:
             return f"\n🛡️ **Active Option SL**: ₹ {_number(locked_sl)}"
@@ -608,31 +614,39 @@ def format_trade_update_payload(trade: dict, spot: float, update_type: str, even
     """Renders the standard, clean Trade Update embed matching production UI & Discord."""
     is_bullish = trade.get("direction") == "BULLISH"
     color = 3066993 if is_bullish else 15158332  # Green or Red
+    if update_type in {"PERSISTENCE_FAILURE", "PERSISTENCE_FAILED"}:
+        color = 15158332
 
     if update_type in {"T1_HIT", "T2_HIT", "T2_REACHED"}:
         icon = "🎯 🟢"
     elif update_type in {"SL_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
         icon = "💥 🛑"
+    elif update_type in {"PERSISTENCE_FAILURE", "PERSISTENCE_FAILED"}:
+        icon = "⚠️"
     else:
         icon = "🚨 🐂 🟢" if is_bullish else "🚨 🐻 🔴"
 
     ist = timezone(timedelta(hours=5, minutes=30))
-    if event_time:
-        time_str = _lifecycle_event_time(event_time)
-        if time_str == "unavailable":
-            time_str = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S IST")
+    if event_time is not None:
+        display_time = _lifecycle_event_time(event_time)
     else:
-        time_str = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S IST")
+        display_time = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S IST")
 
-    display_time = time_str if "IST" in time_str else f"{time_str} IST"
     action_text = trade_update_action_text(update_type, trade)
+
+    spot_val = _number(spot)
+    spot_str = f"**{spot_val}**" if spot_val != "unavailable" else "unavailable"
+    entry_val = _number(trade.get("entry_price"))
+    entry_str = f"**{entry_val}**" if entry_val != "unavailable" else "unavailable"
+    sl_val = _number(trade.get("stop_loss"))
+    sl_str = f"**{sl_val}**" if sl_val != "unavailable" else "unavailable"
 
     description = f"""
 🕒 **Time**    : {display_time}
-📍 **Spot**    : **{float(spot):.2f}**
+📍 **Spot**    : {spot_str}
 ⚡ **Action**  : **{action_text}**
-✅ **Entry**   : **{float(trade.get('entry_price', 0.0)):.2f}**
-🛑 **New SL**  : **{float(trade.get('stop_loss', 0.0)):.2f}**
+✅ **Entry**   : {entry_str}
+🛑 **New SL**  : {sl_str}
 ⭐ **Status**  : **{trade.get('state', 'OPEN')}**
 """
     opt_trailing = (trade.get("market_context") or {}).get("option_trailing")
@@ -687,7 +701,7 @@ def render_option_lifecycle_event(event: dict) -> dict:
     if event.get("previous_stop") is not None and "previous_locked_option_sl" not in context:
         context["previous_locked_option_sl"] = event.get("previous_stop")
 
-    spot = float(event.get("index_price", trade.get("stop_loss", 0.0)))
+    spot = event.get("index_price")
     event_time = event.get("event_time") or (context.get("exit") or {}).get("event_at")
 
     return format_trade_update_payload(trade, spot, kind, event_time)

@@ -85,7 +85,7 @@ def test_clean_trade_update_format_has_no_cards_and_matches_spec(kind):
     assert "⭐ **Status**" in description
 
     # Specific option updates
-    if kind in {"OPTION_SL_RATCHETED", "ATR_SL_UPDATED"}:
+    if kind in {"ATR_ACTIVE", "OPTION_SL_RATCHETED", "ATR_SL_UPDATED"}:
         assert "🛡️ **Active Option SL**: ₹ 152.70" in description
 
     # Immutability check
@@ -177,3 +177,75 @@ async def test_initial_enrolled_signal_keeps_bracket_without_card_a():
     assert '📍 Spot' in field_names
     assert '⚡ Trade' in field_names
     assert '🛑 SL' in field_names
+
+
+def test_render_option_lifecycle_event_handles_none_index_price():
+    """Missing or None index_price renders 'unavailable' without raising TypeError."""
+    snapshot = event("ATR_ACTIVE")
+    snapshot["index_price"] = None
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "📍 **Spot**    : unavailable" in desc
+
+
+def test_v2_quote_exit_uses_source_neutral_action_text():
+    """V2 option premium exits don't falsely claim 5-minute candle closes."""
+    # V2 - source neutral (POST_T1, milestone 1)
+    snap_v2 = event("ATR_SL_HIT", milestone=1)
+    snap_v2["option_trailing"]["policy_version"] = "option_premium_protection_v2"
+    snap_v2["option_trailing"]["phase"] = "POST_T1"
+    snap_v2["trade"]["market_context"]["option_trailing"]["policy_version"] = "option_premium_protection_v2"
+    snap_v2["trade"]["market_context"]["option_trailing"]["phase"] = "POST_T1"
+    rendered_v2 = render_option_lifecycle_event(snap_v2)
+    desc_v2 = rendered_v2["embeds"][0]["description"]
+    assert "Option Stop Loss Hit. Remaining 50% Closed (Score: 1 retained)." in desc_v2
+    assert "5-minute close" not in desc_v2
+
+    # V2 - source neutral (POST_T2, milestone 2)
+    snap_v2_t2 = event("ATR_SL_HIT", milestone=2)
+    snap_v2_t2["option_trailing"]["policy_version"] = "option_premium_protection_v2"
+    snap_v2_t2["trade"]["market_context"]["option_trailing"]["policy_version"] = "option_premium_protection_v2"
+    rendered_v2_t2 = render_option_lifecycle_event(snap_v2_t2)
+    desc_v2_t2 = rendered_v2_t2["embeds"][0]["description"]
+    assert "Option Stop Loss Hit. Final 20% Runner Closed (Score: 2 retained)." in desc_v2_t2
+    assert "5-minute close" not in desc_v2_t2
+
+    # V1 - preserves 5-minute candle wording
+    snap_v1 = event("ATR_SL_HIT", milestone=1)
+    snap_v1["option_trailing"]["policy_version"] = "option_atr_v1"
+    snap_v1["option_trailing"]["phase"] = "POST_T1"
+    snap_v1["trade"]["market_context"]["option_trailing"]["policy_version"] = "option_atr_v1"
+    snap_v1["trade"]["market_context"]["option_trailing"]["phase"] = "POST_T1"
+    rendered_v1 = render_option_lifecycle_event(snap_v1)
+    desc_v1 = rendered_v1["embeds"][0]["description"]
+    assert "Completed 5-minute close crossed Option ATR Stop. Remaining 50% Closed (Score: 1 retained)." in desc_v1
+
+
+def test_atr_active_shows_locked_option_sl_and_no_exit_estimate():
+    """ATR_ACTIVE shows active premium SL and does not display premature exit estimate."""
+    snapshot = event("ATR_ACTIVE")
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "🛡️ **Active Option SL**: ₹ 152.70" in desc
+    assert "Estimated Option Exit" not in desc
+
+
+def test_event_time_unavailable_is_preserved_for_invalid_historical_timestamps():
+    """Invalid or naive timestamps on historical events render as 'unavailable', not now()."""
+    snapshot = event("T1_HIT")
+    snapshot["event_time"] = "invalid_timestamp"
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "🕒 **Time**    : unavailable" in desc
+
+
+def test_persistence_failed_alias_and_formatting():
+    """PERSISTENCE_FAILED / PERSISTENCE_FAILURE show database warning and warning icon."""
+    for kind in ("PERSISTENCE_FAILED", "PERSISTENCE_FAILURE"):
+        snapshot = event(kind)
+        rendered = render_option_lifecycle_event(snapshot)
+        embed = rendered["embeds"][0]
+        assert "⚠️" in embed["title"]
+        assert embed["color"] == 15158332
+        assert "Database persistence failure. Memory state active; unconfirmed in database." in embed["description"]
+        assert "Trade Closed" not in embed["description"]

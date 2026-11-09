@@ -11,6 +11,12 @@ All notable changes to the ARES trading system will be documented in this file.
     - Status-specific icons: `🎯 🟢` for Target 1/2 Hit, `💥 🛑` for Stop Loss / Break-even Exit, `🚨 🐂 🟢` / `🚨 🐻 🔴` for active directional trailing.
     - Clean body keys: Time (IST), Spot, Action, Entry, New SL, Status.
     - Option trailing: clean line `🛡️ **Active Option SL**: ₹ [Option Premium SL]` on ATR tightening, and `💰 **Estimated Option Exit**: ₹ [Exit] (₹ [PnL] / lot)` on trade exit.
+  - Hardened alert formatting against edge cases:
+    - Safely preserved missing/None index prices with `_number(spot)` without raising `TypeError`.
+    - Used source-neutral exit wording for v2 quote-triggered exits while keeping 5m candle wording for v1.
+    - Displayed `Active Option SL` for `ATR_ACTIVE` lifecycle events without premature exit estimate.
+    - Preserved `unavailable` timestamps for historical events with invalid dates without falling back to `now()`.
+    - Normalized `PERSISTENCE_FAILED` event alias to retain database persistence warning.
   - Silenced `MONITORING_UNAVAILABLE` and `MONITORING_RESTORED` events on Discord to eliminate distraction during live market execution while preserving durable outbox delivery.
   - Removed blocking `RuntimeError` in `send_trade_update()` and `_option_lifecycle_estimate()` for versioned option ATR trades.
   - Refactored `test_option_lifecycle_alert_cards.py` to assert the clean trade update embed schema without Card artifacts.

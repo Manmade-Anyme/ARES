@@ -51,3 +51,18 @@ Remove all "Card A" through "Card L" branding, headers, and verbose internal tel
 5. **Test Suite Alignment**:
    - Refactor `tests/unit/test_option_lifecycle_alert_cards.py` to test the clean trade update embed schema (removing assertions for "Card [A-L]").
    - Verify `tests/unit/test_alerts.py` and all alert tests pass cleanly with 100% adherence.
+
+## 6. Review Hardening & Edge Cases Addressed
+- **Preserve None spot:** Formatted missing/None `index_price` safely using `_number(spot)` without throwing `TypeError`.
+- **Source-neutral v2 exit phrasing:** Quote-triggered exits in v2 use source-neutral descriptions instead of claiming completed 5-minute candle closes.
+- **Active Option SL on ATR_ACTIVE:** Added `ATR_ACTIVE` to the stop-display branch so initial activation shows locked option SL without falling through to estimated trade exit.
+- **Timestamp safety:** Preserved `unavailable` for unusable timestamps instead of replacing with current wall time.
+- **Normalized PERSISTENCE_FAILED:** Unified `PERSISTENCE_FAILED` with `PERSISTENCE_FAILURE` to retain warning banner and amber/red status.
+
+## 7. Verification & QA Status
+- `tests/unit/test_alerts.py`: PASSED (17/17)
+- `tests/unit/test_option_lifecycle_alert_cards.py`: PASSED (21/21)
+- `tests/unit/test_options_alert_reporting.py`: PASSED (37/37)
+- `tests/unit/test_option_premium_protection_v2.py`: PASSED (106/106)
+- `tests/unit/test_option_conflict_recovery.py`: PASSED (41/41)
+- All 222 tests passing. Zero Card A-L strings. Clean standard format verified.
