@@ -4,12 +4,18 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
-- **Enable Option ATR Trailing by Default (TASK-20261108):**
-  - Enabled `option_atr_enabled: bool = True` in `config.py` Secrets model.
-  - Set `option_atr_approved_version = "option_atr_v1"` and `option_atr_parity_version = "option_atr_v1"` in `config.py`.
-  - Set `option_reference_accounting_enabled: bool = True` as default in `config.py`.
-  - Updated `fly.toml` environment configuration with `OPTION_ATR_ENABLED = 'true'` and `OPTION_ATR_APPROVED_VERSION = 'option_atr_v1'`.
+- **Fix IVBreakoutDetector State Buffer Continuity Under Engine Cooldown & Priority Short-Circuiting (TASK-20261108):**
+  - Enforced unconditional observation in `AresEngine` Step 1 and update dispatch in Step 5 with `isinstance(candle, OHLCVCandle)` type guards, preventing skipped observations or mock object corruption across all execution branches.
+  - Hardened `IVBreakoutDetector.observe()` against duplicate candle registration by verifying both object identity and candle timestamp equality.
+  - Guarded `observe()` against non-datetime candle timestamps to prevent buffer corruption from malformed ticks.
+  - Added regression test suite verifying multi-candle cooldown buffer accumulation, dynamic base accuracy upon cooldown recovery, priority short-circuit continuity, timestamp deduplication, daily firing suppression, oversized base range rejection, and non-`OHLCVCandle` safety.
 
+- **Weekly & Monthly Performance Report Delivery Recovery (TASK-20261107):**
+  - Handle SIGTERM gracefully and retry unsent reports after shutdown drains using a fresh cutoff, while preserving the after-hours cold-start guard. Redact webhook URLs from health-alert failure logs and retain successful weekly delivery state if cancellation interrupts the month-end report attempt.
+  - Restored a best-effort session-end delivery fallback for weekly (Friday) and monthly (month-end) performance digests in `main.py` when the live `[15:28, 15:30)` window is missed or the session terminates early.
+  - Added session cleanup drain invocation in `main.py`'s `finally:` block before attempting unsent digests during process scale-down.
+  - Added `alerts.send_error_alert` notification on report posting exceptions in `reports.py` to prevent silent delivery failure.
+  - Applied Ponytail engineering ladder: zero unnecessary abstraction, zero new dependencies, reusing existing report and alert primitives.
 - **IV-Gated Breakout Expansion Strategy & Signal Cooldown Reduction (TASK-20261106):**
   - Integrated 5th setup type `SetupType.IV_GATED_BREAKOUT` into core ARES detection engine (`detectors/iv_breakout.py`, `models.py`, `engine.py`).
   - Replaced static time barriers (12:30 anchor cutoff and 14:15 entry cutoff) with dynamic, time-agnostic consolidation base detection (`iv_breakout_lookback_candles=25`, `iv_breakout_max_base_range_pts=55.0`, `iv_breakout_volume_ratio=1.15`, `iv_breakout_buffer_pts=2.0`, `iv_breakout_min_zscore=0.8`). Allows immediate breakout entries across morning, midday, and afternoon regimes whenever tight consolidation base breaks out with volume and VWAP confirmation.
