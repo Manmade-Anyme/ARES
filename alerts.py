@@ -1,5 +1,6 @@
 import httpx
 import math
+from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from models import AresSignal, OIWallBias, OIWallWatchCancellation
 from config import settings, detector_names, SESSION_DISPLAY
@@ -196,30 +197,11 @@ async def send_discord(signal: AresSignal, spot: float) -> bool:
         fields.append({"name": "🎯 Option Target", "value": f"**₹ {_number(signal.option_target)}**", "inline": True})
 
     option_context = (getattr(signal, "market_context", None) or {}).get("option_trailing") or {}
-    if option_context.get("policy_version") == "option_atr_v1":
-        # Keep the original signal/bracket card; enrollment was committed before
-        # this initial delivery, so no duplicate lifecycle card is posted.
+    if option_context.get("policy_version") in {"option_atr_v1", "option_premium_protection_v2"}:
         signal_time = signal.timestamp
-        # Live detector signals inherit PriceFetcher's naive exchange-local candle time.
-        # Normalize only this boundary; durable lifecycle events require an offset.
         if isinstance(signal_time, datetime) and signal_time.tzinfo is None:
             signal_time = signal_time.replace(tzinfo=ist)
         fields[0]["value"] = _lifecycle_event_time(signal_time)
-        contract = option_context.get("contract") or {}
-        fields.append({
-            "name": "🛡️ Card A — Reference lifecycle",
-            "value": (
-                f"Pinned {contract.get('strike', 'unavailable')} {contract.get('option_type', 'unavailable')} | "
-                f"Expiry {contract.get('expiry', 'unavailable')} | Security ID {contract.get('security_id', 'unavailable')}\n"
-                f"Trade ID {getattr(signal, 'trade_id', None) or 'unavailable'} | Phase PRE_T1 / OPEN.\n"
-                f"Targets model-booked 0% | Remaining active 100% | Risk status {getattr(signal, 'options_sizing_status', 'unavailable')}.\n"
-                f"Original index guard: {_number(signal.stop_loss)} index points.\n"
-                "Option ATR begins after index T1; stop uses completed option 5m closes.\n"
-                "Reference/model tracking; allocations and candle closes are not broker fills. "
-                "Index break-even does not guarantee option break-even."
-            ),
-            "inline": False,
-        })
 
     # ML Prediction
     if hasattr(signal, "ml_prediction") and signal.ml_prediction:
@@ -495,7 +477,7 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
     in future degrades to a readable line instead of a blank one.
     """
     opt_ctx = (trade.get("market_context") or {}).get("option_trailing")
-    is_option_atr = opt_ctx is not None and opt_ctx.get("policy_version") == "option_atr_v1"
+    is_option_atr = opt_ctx is not None and opt_ctx.get("policy_version") in {"option_atr_v1", "option_premium_protection_v2"}
 
     if update_type == "T1_HIT":
         if is_option_atr:
@@ -513,17 +495,28 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
         return "ATR trailing stop tightened."
     if update_type == "ATR_SL_HIT":
         if is_option_atr:
+            if opt_ctx.get("policy_version") == "option_premium_protection_v2":
+                if opt_ctx.get("highest_milestone", 0) >= 2 or opt_ctx.get("phase") == "POST_T2":
+                    return "Option Stop Loss Hit. Final 20% Runner Closed (Score: 2 retained)."
+                return "Option Stop Loss Hit. Remaining 50% Closed (Score: 1 retained)."
             if opt_ctx.get("highest_milestone", 0) >= 2 or opt_ctx.get("phase") == "POST_T2":
                 return "Option Stop Loss Hit on 5-Minute Close. Final 20% Runner Closed (Score: 2 retained)."
             return "Completed 5-minute close crossed Option ATR Stop. Remaining 50% Closed (Score: 1 retained)."
         return "5-minute close crossed ATR Stop Loss. Runner exit triggered."
     if update_type == "OPTION_SL_FLOOR_HIT":
+        if is_option_atr and opt_ctx.get("policy_version") == "option_premium_protection_v2":
+            return "Option SL Floor Hit. Final 20% Runner Closed (Score: 2 retained)."
         return "Option SL Floor Hit on 5-Minute Close. Final 20% Runner Closed (Score: 2 retained)."
     if update_type == "T2_TOUCHED":
         return "Target 2 touched! ATR runner remains active."
     if update_type == "STOPPED_OUT_AT_BE":
         if is_option_atr:
-            return "Trailing Stop Loss Hit at Entry. Remaining 50% Closed (Score: 1 retained)."
+            is_post_t2 = opt_ctx.get("highest_milestone", 0) >= 2 or opt_ctx.get("phase") == "POST_T2"
+            pct_closed = "Final 20% Runner Closed (Score: 2 retained)." if is_post_t2 else "Remaining 50% Closed (Score: 1 retained)."
+            premium_domain = (opt_ctx.get("exit") or {}).get("stop_domain") == "OPTION_PREMIUM"
+            if premium_domain:
+                return f"Option-premium break-even stop hit. {pct_closed}"
+            return f"Trailing Stop Loss Hit at Entry. {pct_closed}"
         return "Trailing Stop Loss Hit at Entry. T1 Profit Locked; Trade Closed."
     if update_type == "SL_HIT":
         # Pre-TASK-198 rows can still reach here with a trailed stop; keep
@@ -531,52 +524,37 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
         if trade.get("state") == "T1_HIT" or trade.get("stop_loss") == trade.get("entry_price"):
             return "Trailing Stop Loss Hit at Entry. Trade Closed."
         if is_option_atr:
+            premium_domain = (opt_ctx.get("exit") or {}).get("stop_domain") == "OPTION_PREMIUM"
+            if premium_domain:
+                return "Initial option-premium SL hit. Trade Closed (Score: 0)."
             return "Index Stop Loss Hit before T1. 100% Closed (Score: 0)."
         return "Stop Loss Hit. Trade Closed."
     if update_type == "MONITORING_UNAVAILABLE":
         return "Option candle data feed delayed (> 60s past candle close). Retaining last locked stop."
     if update_type == "MONITORING_RESTORED":
         return "Option candle data feed restored. Resuming chronological processing."
-    if update_type == "PERSISTENCE_FAILURE":
+    if update_type in ("PERSISTENCE_FAILURE", "PERSISTENCE_FAILED"):
         return "Database persistence failure. Memory state active; unconfirmed in database."
     return f"Trade Closed ({update_type})."
 
 
 def _option_lifecycle_estimate(trade, spot, update_type):
     """Project option lifecycle outcomes without mislabelling spot events as fills."""
-    opt_ctx = (trade.get("market_context") or {}).get("option_trailing")
-    if opt_ctx and opt_ctx.get("policy_version") in {"option_atr_v1", "option_premium_protection_v2"}:
-        raise RuntimeError("Versioned lifecycle alerts require persisted immutable event snapshots")
-
+    opt_ctx = (trade.get("market_context") or {}).get("option_trailing") or {}
     sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
-    if not sizing:
+    if not sizing and not opt_ctx:
         return ""
     if update_type == "T2_TOUCHED":
         return (f"\n🎯 **Option T2 reference**: ₹ {_number(sizing.get('target_2'))}. "
                 "Reference only; not an observed premium touch or executed exit.")
-    entry = sizing.get("entry_limit") or sizing.get("premium") or None
+    entry = opt_ctx.get("original_option_entry") or sizing.get("entry_limit") or sizing.get("premium") or None
     lot_size = sizing.get("lot_size", settings.nifty_lot_size)
     t1 = sizing.get("target_1") or sizing.get("option_target") or None
-    exit_price = None
-    if update_type == "T1_HIT":
-        exit_price = t1
-    elif update_type in ("T2_HIT", "T2_REACHED"):
-        exit_price = sizing.get("target_2")
-    elif update_type == "STOPPED_OUT_AT_BE":
-        exit_price = entry
-    else:
-        greeks = sizing.get("greeks") or {}
-        delta, gamma = greeks.get("delta"), greeks.get("gamma")
-        values = (entry, delta, gamma, spot, trade.get("entry_price"))
-        if all(_number(value) != "unavailable" for value in values):
-            move = float(spot) - float(trade["entry_price"])
-            exit_price = float(entry) + float(delta) * move + .5 * float(gamma) * move * move
-            if exit_price <= 0:
-                exit_price = None
-    pnl_per_lot = None
-    if all(_number(value) != "unavailable" for value in (entry, exit_price, lot_size)) and float(lot_size) > 0:
-        pnl_per_lot = (float(exit_price) - float(entry)) * float(lot_size)
-    if update_type in ("ATR_SL_UPDATED", "OPTION_SL_RATCHETED"):
+
+    if update_type in ("ATR_ACTIVE", "ATR_SL_UPDATED", "OPTION_SL_RATCHETED"):
+        locked_sl = opt_ctx.get("locked_option_sl")
+        if locked_sl is not None:
+            return f"\n🛡️ **Active Option SL**: ₹ {_number(locked_sl)}"
         greeks = sizing.get("greeks") or {}
         values = (entry, greeks.get("delta"), greeks.get("gamma"), trade.get("stop_loss"), trade.get("entry_price"))
         option_sl = None
@@ -584,18 +562,52 @@ def _option_lifecycle_estimate(trade, spot, update_type):
             move = float(trade["stop_loss"]) - float(trade["entry_price"])
             option_sl = float(entry) + float(greeks["delta"]) * move + .5 * float(greeks["gamma"]) * move * move
         return f"\n🛡️ **Estimated Option SL**: ₹ {_number(option_sl)} (model estimate)"
+
+    exit_info = opt_ctx.get("exit") or {}
+    exit_price = exit_info.get("reference_exit_price") or exit_info.get("option_close")
+    legs = (opt_ctx.get("accounting") or {}).get("legs") or {}
+    if exit_price is None:
+        exit_price = legs.get("EXIT", {}).get("option_price")
+    if exit_price is None:
+        if update_type == "T1_HIT":
+            exit_price = legs.get("T1", {}).get("option_price") or t1
+        elif update_type in ("T2_HIT", "T2_REACHED"):
+            exit_price = legs.get("T2", {}).get("option_price") or sizing.get("target_2")
+        elif update_type == "STOPPED_OUT_AT_BE":
+            exit_price = entry
+        else:
+            greeks = sizing.get("greeks") or {}
+            delta, gamma = greeks.get("delta"), greeks.get("gamma")
+            values = (entry, delta, gamma, spot, trade.get("entry_price"))
+            if all(_number(value) != "unavailable" for value in values):
+                move = float(spot) - float(trade["entry_price"])
+                exit_price = float(entry) + float(delta) * move + .5 * float(gamma) * move * move
+                if exit_price <= 0:
+                    exit_price = None
+
+    pnl_per_lot = None
+    if all(_number(value) != "unavailable" for value in (entry, exit_price, lot_size)) and float(lot_size) > 0:
+        pnl_per_lot = (float(exit_price) - float(entry)) * float(lot_size)
+
     text = (
         f"\n💰 **Estimated Option Exit**: ₹ {_number(exit_price)} "
         f"(₹ {_number(pnl_per_lot, '+.2f')} / lot)\n"
         "Option figures are model estimates, not confirmed fills."
     )
     if update_type == "T1_HIT":
-        text += f"\n🛡️ **SL Status**: Break-Even Spot {_number(trade['entry_price'])}; entry premium reference ₹ {_number(entry)}. 50% partial-booking model."
+        text += f"\n🛡️ **SL Status**: Break-Even Spot {_number(trade.get('entry_price'))}; entry premium reference ₹ {_number(entry)}. 50% partial-booking model."
     if update_type == "STOPPED_OUT_AT_BE":
         lots = sizing.get("final_lots", sizing.get("lots", sizing.get("suggested_lots")))
-        if all(_number(value) != "unavailable" for value in (t1, entry, lots, lot_size)) and float(lots) > 0 and float(lot_size) > 0:
-            net = (float(t1) - float(entry)) * float(lot_size) * float(lots) * .5
-            text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (50% T1 booking model). Spot break-even does not guarantee option break-even."
+        is_versioned = opt_ctx.get("policy_version") in {"option_atr_v1", "option_premium_protection_v2"}
+        if is_versioned:
+            total_points = (opt_ctx.get("accounting") or {}).get("option_total_points")
+            if total_points is not None and all(_number(value) != "unavailable" for value in (lots, lot_size)) and float(lots) > 0 and float(lot_size) > 0:
+                net = float(total_points) * float(lot_size) * float(lots)
+                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (reference accounting). Spot break-even does not guarantee option break-even."
+        else:
+            if all(_number(value) != "unavailable" for value in (t1, entry, lots, lot_size)) and float(lots) > 0 and float(lot_size) > 0:
+                net = (float(t1) - float(entry)) * float(lot_size) * float(lots) * .5
+                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (50% T1 booking model). Spot break-even does not guarantee option break-even."
     return text
 
 
@@ -610,162 +622,112 @@ def _lifecycle_event_time(value):
         return "unavailable"
 
 
-def render_option_lifecycle_event(event: dict) -> dict:
-    """Render an immutable, committed lifecycle snapshot (or explicit DB warning).
+def format_trade_update_payload(trade: dict, spot: float, update_type: str, event_time=None) -> dict:
+    """Renders the standard, clean Trade Update embed matching production UI & Discord."""
+    is_bullish = trade.get("direction") == "BULLISH"
+    color = 3066993 if is_bullish else 15158332  # Green or Red
+    if update_type in {"PERSISTENCE_FAILURE", "PERSISTENCE_FAILED"}:
+        color = 15158332
 
-    Durable ownership, acknowledgements and retries belong to PositionManager's
-    persisted outbox. Rendering never reads mutable live trade state.
-    """
-    trade = event.get("trade") or {}
-    context = event.get("option_trailing") or (trade.get("market_context") or {}).get("option_trailing") or {}
-    contract = context.get("contract") or {}
-    kind = event.get("type") or event.get("update_type")
-    milestone = int(context.get("highest_milestone") or 0)
-    phase = context.get("phase", "unavailable")
-    exit_info = context.get("exit") or {}
-    candle = event.get("candle") or {}
-    persistence_failed = kind in {"PERSISTENCE_FAILURE", "PERSISTENCE_FAILED"}
-    terminal = kind in {"SL_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}
-    cards = {
-        "NEW_SIGNAL": ("A", "New reference signal"),
-        "T1_HIT": ("B", "T1 reached — 50% model-booked"),
-        "ATR_ACTIVE": ("C", "Option ATR protection activated"),
-        "OPTION_SL_RATCHETED": ("D", "Option SL raised"),
-        "ATR_SL_UPDATED": ("D", "Option SL raised"),
-        "T2_HIT": ("E", "T2 reached — 80% model-booked, 20% runner active"),
-        "T2_REACHED": ("E", "T2 reached — 80% model-booked, 20% runner active"),
-        "SL_HIT": ("F", "Initial index SL hit — reference closed"),
-        "STOPPED_OUT_AT_BE": ("G", "Index entry protection hit — reference closed"),
-        "ATR_SL_HIT": ("I" if milestone >= 2 else "H", "Option ATR close-through — reference closed"),
-        "OPTION_SL_FLOOR_HIT": ("I", "Original option SL floor close-through — reference closed"),
-        "MONITORING_UNAVAILABLE": ("J", "Option monitoring unavailable"),
-        "MONITORING_RESTORED": ("K", "Option monitoring restored"),
-        "PERSISTENCE_FAILURE": ("L", "Observed event — database pending"),
-        "PERSISTENCE_FAILED": ("L", "Observed event — database pending"),
-    }
-    if kind not in cards:
-        raise ValueError(f"Unsupported option lifecycle event: {kind}")
-    card, action = cards[kind]
-    premium_domain = exit_info.get("stop_domain") == "OPTION_PREMIUM"
-    if kind == "SL_HIT" and premium_domain:
-        action = "Initial option-premium SL hit — reference closed"
-    elif kind == "STOPPED_OUT_AT_BE" and premium_domain:
-        action = "Option-premium break-even stop hit — reference closed"
-    display_id = trade.get("display_id") or trade.get("signal_id") or trade.get("id", "unavailable")
-    target_booked = .8 if milestone >= 2 else .5 if milestone == 1 else 0.
-    remaining = context.get("remaining_fraction", 1. - target_booked)
-    target_leg = (context.get("accounting") or {}).get("legs", {}).get(
-        "T1" if kind == "T1_HIT" else "T2" if kind in {"T2_HIT", "T2_REACHED"} else "", {})
-    candle_touch = bool(target_leg.get("source_minute") and target_leg.get("event_at") is None)
-    time_label = "Detection candle close (exact touch time unavailable)" if candle_touch else "Event time"
-    lines = [
-        f"{time_label}: {_lifecycle_event_time(event.get('event_time') or exit_info.get('event_at'))}",
-        f"Trade ID: {trade.get('id', 'unavailable')} | Event ID: {event.get('event_id') or event.get('id', 'unavailable')}",
-        f"Contract: {contract.get('strike', 'unavailable')} {contract.get('option_type', 'unavailable')} | Expiry {contract.get('expiry', 'unavailable')} | {contract.get('exchange_segment', 'unavailable')} | Security ID {contract.get('security_id', 'unavailable')}",
-        f"Phase: {phase} | Lifecycle: {'CLOSED' if terminal or phase == 'CLOSED' else 'OPEN'}",
-        f"Index mark (points): {_number(event.get('index_price'))}",
-        f"Targets model-booked: {target_booked * 100:.0f}% | Remaining active: {float(remaining) * 100:.0f}%",
-    ]
-    if terminal:
-        lines.append(f"Remainder closed: {(1. - target_booked) * 100:.0f}%")
-    if persistence_failed:
-        lines += ["Database pending: observed state is protected in memory; recording is unconfirmed.",
-                  f"Observed event detail: {event.get('detail') or 'unavailable'}"]
-    elif kind != "NEW_SIGNAL":
-        lines.append(f"Score: {milestone}{' retained' if terminal else ' recorded'}")
-    accounting = context.get("accounting") or {}
-    if kind != "NEW_SIGNAL" and context.get("accounting_formula_version") == "one_lot_reference_v1":
-        points_kind = "total" if terminal else "booked"
-        spot_points = accounting.get(f"spot_{points_kind}_points")
-        option_points = accounting.get(f"option_{points_kind}_points")
-        legs = accounting.get("legs") or {}
-        spot_approximate = any(leg.get("spot_approximate") is True for leg in legs.values() if isinstance(leg, dict))
-        option_approximate = any(leg.get("approximate") is True for leg in legs.values() if isinstance(leg, dict))
-        spot_suffix = " (includes minute-close approximation)" if spot_points is not None and spot_approximate else ""
-        option_suffix = " (includes minute-close approximation)" if option_points is not None and option_approximate else ""
-        lines.append(f"Spot {points_kind} points (one-lot equivalent): {_number(spot_points)}{spot_suffix}")
-        lines.append(f"Option {points_kind} points (one-lot equivalent): {_number(option_points)}{option_suffix}")
-    guard_enabled = context.get("index_guard_enabled", milestone < 2)
-    if terminal or milestone >= 2 or not guard_enabled:
-        lines.append("Index guard: disabled")
+    if update_type in {"T1_HIT", "T2_HIT", "T2_REACHED"}:
+        icon = "🎯 🟢"
+    elif update_type in {"SL_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
+        icon = "💥 🛑"
+    elif update_type in {"PERSISTENCE_FAILURE", "PERSISTENCE_FAILED"}:
+        icon = "⚠️"
     else:
-        guard_stop = context.get("index_guard_stop")
-        if guard_stop is None:
-            guard_stop = trade.get("entry_price") if milestone else trade.get("stop_loss")
-        lines.append(f"Index guard: active at {_number(guard_stop)} index points")
-    original_sl = context.get("original_option_sl")
-    locked_sl = context.get("locked_option_sl")
-    mode = context.get("protection_mode", "NONE")
-    if context.get("entry_premium_basis_source"):
-        lines.append(f"Option entry premium basis: ₹ {_number(context.get('original_option_entry'))} ({context['entry_premium_basis_source']})")
-    lines.append(f"Original option SL: ₹ {_number(original_sl)} premium")
-    if locked_sl is not None and mode != "NONE":
-        source = context.get("premium_stop_source") or mode
-        lines.append(f"{'Last effective' if terminal else 'Active'} premium SL: ₹ {_number(locked_sl)} ({source})")
-    elif milestone >= 2:
-        lines.append(f"Active option SL: ₹ {_number(original_sl)} premium (ORIGINAL_OPTION_SL_FLOOR)")
+        icon = "🚨 🐂 🟢" if is_bullish else "🚨 🐻 🔴"
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    if event_time is not None:
+        display_time = _lifecycle_event_time(event_time)
     else:
-        lines.append("Option ATR: inactive before T1" if milestone == 0 else "Option ATR: waiting for confirmed raw line strictly above original option SL")
-    if kind == "NEW_SIGNAL":
-        sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
-        lines += [
-            f"Index entry / SL / T1 / T2 (points): {_number(trade.get('entry_price'))} / {_number(trade.get('stop_loss'))} / {_number(trade.get('target_1'))} / {_number(trade.get('target_2'))}",
-            f"Option entry / SL / T1 / T2 (₹ premium, Greeks bracket): {_number(context.get('original_option_entry'))} / {_number(original_sl)} / {_number(sizing.get('target_1'))} / {_number(sizing.get('target_2'))}",
-            f"Suggested lots: {_number(sizing.get('final_lots', sizing.get('lots', sizing.get('suggested_lots'))), '.0f')} | Risk status: {sizing.get('status', trade.get('options_sizing_status', 'unavailable'))}",
-            ("Initial option-premium SL protects before T1; T1 moves the premium stop to entry cost."
-             if context.get("policy_version") == "option_premium_protection_v2" else
-             "Option ATR begins after index T1; original index SL protects until then."),
+        display_time = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S IST")
+
+    action_text = trade_update_action_text(update_type, trade)
+
+    spot_val = _number(spot)
+    spot_str = f"**{spot_val}**" if spot_val != "unavailable" else "unavailable"
+    entry_val = _number(trade.get("entry_price"))
+    entry_str = f"**{entry_val}**" if entry_val != "unavailable" else "unavailable"
+    sl_val = _number(trade.get("stop_loss"))
+    sl_str = f"**{sl_val}**" if sl_val != "unavailable" else "unavailable"
+
+    description = f"""
+🕒 **Time**    : {display_time}
+📍 **Spot**    : {spot_str}
+⚡ **Action**  : **{action_text}**
+✅ **Entry**   : {entry_str}
+🛑 **New SL**  : {sl_str}
+⭐ **Status**  : **{trade.get('state', 'OPEN')}**
+"""
+    opt_trailing = (trade.get("market_context") or {}).get("option_trailing")
+    if update_type in {"ATR_SL_UPDATED", "ATR_SL_HIT"} and not (
+        opt_trailing and opt_trailing.get("policy_version") in {"option_atr_v1", "option_premium_protection_v2"}
+    ):
+        atr = (trade.get("market_context") or {}).get("atr_trailing") or {}
+        description += f"\n🛑 **Previous SL**: {_number(atr.get('previous_sl', trade.get('stop_loss')))}\n📐 **Method**: 5-minute ATR trailing"
+
+    if update_type == "T2_TOUCHED":
+        marker = ((trade.get("market_context") or {}).get("target_milestones") or {}).get("t2") or {}
+        touched_at = marker.get("touched_at")
+        try:
+            touch_time = datetime.fromisoformat(touched_at.replace("Z", "+00:00")).astimezone(ist).strftime("%d-%b-%Y %H:%M:%S IST")
+        except (AttributeError, TypeError, ValueError):
+            touch_time = "unavailable"
+        if marker.get("time_basis") == "candle_start":
+            touch_time += " (candle start; exact touch time unknown)"
+        elif marker.get("time_basis") == "entry_boundary":
+            touch_time += " (entry boundary; exact touch time unknown)"
+        description += (f"\n🎯 **Spot T2**: {_number(marker.get('target_spot', trade.get('target_2')))}"
+                        f"\n🕒 **Time reference**: {touch_time}"
+                        "\n🏃 **Runner**: Active under ATR; no exit or additional booking.")
+        if marker.get("spot_points_from_entry") is not None:
+            description += f"\n📈 **Spot move to T2**: {_number(marker['spot_points_from_entry'], '+.2f')} points (reference)."
+
+    description += _option_lifecycle_estimate(trade, spot, update_type)
+
+    display_id = trade.get("display_id") or trade.get("signal_id", "0000")
+    setup_type = trade.get("setup_type", "TRADE")
+    direction = trade.get("direction", "NEUTRAL")
+
+    return {
+        "embeds": [
+            {
+                "title": f"{icon} #{display_id} TRADE UPDATE: {setup_type} ({direction})",
+                "color": color,
+                "description": description.strip(),
+            }
         ]
-    if kind in {"T2_HIT", "T2_REACHED"}:
-        lines.append("Additional target allocation: 30% of original; cumulative 80%. Final 20% remains OPEN.")
-    if kind == "T1_HIT":
-        if context.get("policy_version") == "option_premium_protection_v2":
-            lines.append("Index SL moved to entry; premium SL moved to entry cost for the remaining 50%. ATR may tighten only above that cost.")
-        else:
-            lines.append("Index SL moved to entry; option ATR protects remaining 50% when eligible.")
-    if kind in {"OPTION_SL_RATCHETED", "ATR_SL_UPDATED"}:
-        previous = event.get("previous_stop", context.get("previous_locked_option_sl"))
-        lines.append(f"Option SL raised: ₹ {_number(previous)} → ₹ {_number(locked_sl)} premium")
-    if kind in {"ATR_ACTIVE", "OPTION_SL_RATCHETED", "ATR_SL_UPDATED", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
-        start = candle.get("start_time") or candle.get("start") or exit_info.get("candle_start")
-        end = candle.get("end_time") or candle.get("end") or exit_info.get("candle_end") or context.get("last_processed_option_bar_end")
-        lines.append(f"Source completed 5m candle: {_lifecycle_event_time(start)} → {_lifecycle_event_time(end)}")
-        if context.get("policy_version") == "option_premium_protection_v2":
-            lines.append("ATR candidates use completed, contract-pinned 5m option bars. A fresh premium quote at or below the effective SL triggers independently of the 5m cadence.")
-        else:
-            lines.append("Exit rule: completed option 5m close strictly below previously active SL; wick/equality ignored.")
-    if kind in {"ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
-        stop = exit_info.get("option_stop", event.get("previous_stop", locked_sl))
-        close = exit_info.get("option_close", candle.get("close"))
-        if premium_domain:
-            lines.append(f"Observed option premium exit mark: ₹ {_number(close)} | Previously active premium SL: ₹ {_number(stop)}")
-        else:
-            lines.append(f"Confirmed option close: ₹ {_number(close)} premium | Previously active SL: ₹ {_number(stop)} premium")
-    if premium_domain:
-        trigger = context.get("exit_trigger") or {}
-        source_at = trigger.get("event_at") or exit_info.get("event_at")
-        lines.append(f"Premium stop domain: OPTION_PREMIUM | Source: {trigger.get('source') or exit_info.get('trigger_source') or 'unavailable'}")
-        lines.append(f"Trigger mark: ₹ {_number(trigger.get('price', exit_info.get('trigger_price')))} at {_lifecycle_event_time(source_at)} | Effective stop: ₹ {_number(trigger.get('effective_stop', exit_info.get('option_stop')))}")
-        lines.append(f"Observed/reference exit: ₹ {_number(exit_info.get('reference_exit_price', exit_info.get('option_close')))} | Confirmed fill: {_number(exit_info.get('fill_price'))}")
-        if "runner_option_points" in exit_info:
-            lines.append(f"Runner stop-out points: {_number(exit_info.get('runner_option_points'), '+.2f')} (reference/model)")
-    if kind in {"MONITORING_UNAVAILABLE", "MONITORING_RESTORED"}:
-        lines += [f"Monitoring detail: {event.get('detail') or 'unavailable'}",
-                  f"Last valid option quote: {_lifecycle_event_time((context.get('last_option_quote') or {}).get('observed_at'))}",
-                  f"Last valid option candle end: {_lifecycle_event_time(context.get('last_valid_option_bar_end'))}",
-                  "Last effective stop retained; missing market data does not clear or lower protection."]
-    lines.append("Reference/model tracking; allocations and candle closes are not broker fills. Index break-even does not guarantee option break-even.")
-    return {"embeds": [{"title": f"#{display_id} · Card {card} · {action}",
-                         "color": 15158332 if terminal or persistence_failed else 3066993,
-                         "description": "\n".join(lines)}]}
+    }
+
+
+def render_option_lifecycle_event(event: dict) -> dict:
+    """Render an immutable, committed lifecycle snapshot in clean standard trade update format."""
+    trade = deepcopy(event.get("trade") or {})
+    context = deepcopy(event.get("option_trailing") or (trade.get("market_context") or {}).get("option_trailing") or {})
+    kind = event.get("type") or event.get("update_type") or "TRADE_UPDATE"
+
+    mc = trade.setdefault("market_context", {})
+    mc["option_trailing"] = context
+    if event.get("previous_stop") is not None and "previous_locked_option_sl" not in context:
+        context["previous_locked_option_sl"] = event.get("previous_stop")
+
+    spot = event.get("index_price")
+    event_time = event.get("event_time") or (context.get("exit") or {}).get("event_at")
+
+    return format_trade_update_payload(trade, spot, kind, event_time)
 
 
 async def send_option_lifecycle_event(event: dict) -> str:
     """Send once; caller durably acknowledges transport outcome.
 
-    Timeouts after connection/write may have delivered. Such outcomes require
-    reconciliation, never an automatic retry pretending webhook dedup exists.
+    Monitoring alerts are silenced on Discord per user configuration.
     """
+    kind = event.get("type") or event.get("update_type")
+    if kind in {"MONITORING_UNAVAILABLE", "MONITORING_RESTORED"}:
+        return "DELIVERED"
+
     if not settings.discord_webhook_url:
         return "FAILED"
     payload = render_option_lifecycle_event(event)
@@ -787,61 +749,7 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
     if not settings.discord_webhook_url:
         return
 
-    opt_trailing = (trade.get("market_context") or {}).get("option_trailing")
-    if opt_trailing and opt_trailing.get("policy_version") == "option_atr_v1":
-        raise RuntimeError("Versioned lifecycle alerts require persisted immutable event snapshots")
-
-    # Color code based on direction
-    is_bullish = trade.get("direction") == "BULLISH"
-    color = 3066993 if is_bullish else 15158332  # Green or Red
-    icon = "🚨 🐂 🟢" if is_bullish else "🚨 🐻 🔴"
-    
-    action_text = trade_update_action_text(update_type, trade)
-
-    # Get current IST time
-    ist = timezone(timedelta(hours=5, minutes=30))
-    now_ist = datetime.now(ist).strftime("%d-%b-%Y %H:%M:%S")
-
-    description = f"""
-🕒 **Time**    : {now_ist} IST
-📍 **Spot**    : **{spot:.2f}**
-⚡ **Action**  : **{action_text}**
-✅ **Entry**   : **{trade['entry_price']:.2f}**
-🛑 **New SL**  : **{trade['stop_loss']:.2f}**
-⭐ **Status**  : **{trade['state']}**
-"""
-    if update_type in {"ATR_SL_UPDATED", "ATR_SL_HIT"} and not (
-        opt_trailing and opt_trailing.get("policy_version") == "option_atr_v1"
-    ):
-        atr = (trade.get("market_context") or {}).get("atr_trailing") or {}
-        description += f"\n🛑 **Previous SL**: {_number(atr.get('previous_sl', trade['stop_loss']))}\n📐 **Method**: 5-minute ATR trailing"
-    if update_type == "T2_TOUCHED":
-        marker = ((trade.get("market_context") or {}).get("target_milestones") or {}).get("t2") or {}
-        touched_at = marker.get("touched_at")
-        try:
-            touch_time = datetime.fromisoformat(touched_at.replace("Z", "+00:00")).astimezone(ist).strftime("%d-%b-%Y %H:%M:%S IST")
-        except (AttributeError, TypeError, ValueError):
-            touch_time = "unavailable"
-        if marker.get("time_basis") == "candle_start":
-            touch_time += " (candle start; exact touch time unknown)"
-        elif marker.get("time_basis") == "entry_boundary":
-            touch_time += " (entry boundary; exact touch time unknown)"
-        description += (f"\n🎯 **Spot T2**: {_number(marker.get('target_spot', trade.get('target_2')))}"
-                        f"\n🕒 **Time reference**: {touch_time}"
-                        "\n🏃 **Runner**: Active under ATR; no exit or additional booking.")
-        if marker.get("spot_points_from_entry") is not None:
-            description += f"\n📈 **Spot move to T2**: {_number(marker['spot_points_from_entry'], '+.2f')} points (reference)."
-    description += _option_lifecycle_estimate(trade, spot, update_type)
-
-    payload = {
-        "embeds": [
-            {
-                "title": f"{icon} #{trade.get('display_id') or trade.get('signal_id', '0000')} TRADE UPDATE: {trade['setup_type']} ({trade['direction']})",
-                "color": color,
-                "description": description
-            }
-        ]
-    }
+    payload = format_trade_update_payload(trade, spot, update_type)
 
     async with httpx.AsyncClient() as client:
         try:
@@ -852,10 +760,10 @@ async def send_trade_update(trade: dict, spot: float, update_type: str) -> None:
 
 
 async def send_monitoring_alert(trade: dict, spot: float, status: str, detail: str = "") -> None:
-    """Sends Card J or Card K monitoring alert."""
+    """Sends monitoring alert."""
     await send_trade_update(trade, spot, f"MONITORING_{status}")
 
 
 async def send_persistence_alert(trade: dict, spot: float, error_msg: str) -> None:
-    """Sends Card L persistence failure alert."""
+    """Sends persistence failure alert."""
     await send_trade_update(trade, spot, "PERSISTENCE_FAILURE")

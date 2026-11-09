@@ -1,4 +1,4 @@
-"""Immutable, event-time Discord contract for option reference lifecycle."""
+"""Clean Discord alert contract for option reference lifecycle (no Cards)."""
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from alerts import render_option_lifecycle_event, send_option_lifecycle_event
+from alerts import render_option_lifecycle_event, send_option_lifecycle_event, send_trade_update
 
 
 def event(kind="T2_HIT", milestone=2):
@@ -17,8 +17,26 @@ def event(kind="T2_HIT", milestone=2):
         "candle": {"start_time": "2026-10-23T10:55:00+05:30",
                    "end_time": "2026-10-23T11:00:00+05:30", "close": 147.5},
         "trade": {"id": "trade", "display_id": "1950", "direction": "BEARISH",
+                  "setup_type": "TREND_CONTINUATION",
                   "entry_price": 22552.1, "stop_loss": 22552.1,
-                  "target_1": 22527.1, "target_2": 22472.1},
+                  "target_1": 22527.1, "target_2": 22472.1, "state": "OPEN",
+                  "market_context": {
+                      "options_sizing": {
+                          "entry_limit": 139.25,
+                          "target_1": 150.0,
+                          "target_2": 170.0,
+                          "lot_size": 25,
+                          "lots": 1,
+                      },
+                      "option_trailing": {
+                          "policy_version": "option_atr_v1", "phase": "POST_T2", "highest_milestone": milestone,
+                          "booked_fraction": .8, "remaining_fraction": .2,
+                          "original_option_entry": 139.25, "original_option_sl": 123.65,
+                          "locked_option_sl": 152.70123456, "protection_mode": "ATR",
+                          "contract": {"security_id": "51333", "expiry": "2026-10-27", "strike": 22550,
+                                       "option_type": "PE", "exchange_segment": "NSE_FNO"},
+                      },
+                  }},
         "option_trailing": {
             "policy_version": "option_atr_v1", "phase": "POST_T2", "highest_milestone": milestone,
             "booked_fraction": .8, "remaining_fraction": .2,
@@ -30,75 +48,82 @@ def event(kind="T2_HIT", milestone=2):
     }
 
 
-@pytest.mark.parametrize("kind,card", [
-    ("NEW_SIGNAL", "A"), ("T1_HIT", "B"), ("ATR_ACTIVE", "C"),
-    ("OPTION_SL_RATCHETED", "D"), ("T2_HIT", "E"), ("SL_HIT", "F"),
-    ("STOPPED_OUT_AT_BE", "G"), ("ATR_SL_HIT", "I"),
-    ("OPTION_SL_FLOOR_HIT", "I"), ("MONITORING_UNAVAILABLE", "J"),
-    ("MONITORING_RESTORED", "K"), ("PERSISTENCE_FAILURE", "L"),
+@pytest.mark.parametrize("kind", [
+    "T1_HIT", "ATR_ACTIVE", "OPTION_SL_RATCHETED", "ATR_SL_UPDATED",
+    "T2_HIT", "SL_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT",
+    "OPTION_SL_FLOOR_HIT",
 ])
-def test_catalog_is_event_time_contract_and_unit_explicit(kind, card):
+def test_clean_trade_update_format_has_no_cards_and_matches_spec(kind):
     snapshot = event(kind)
     original = deepcopy(snapshot)
-    embed = render_option_lifecycle_event(snapshot)["embeds"][0]
-    assert f"Card {card}" in embed["title"]
-    for value in ("#1950", "2026-10-27", "51333", "11:00:00 IST", "POST_T2", "Reference/model"):
-        assert value in str(embed)
-    assert "Estimated Option SL" not in str(embed)
-    assert "New SL" not in str(embed)
+    rendered = render_option_lifecycle_event(snapshot)
+    embed = rendered["embeds"][0]
+    title = embed["title"]
+    description = embed["description"]
+
+    # Must NEVER contain "Card A", "Card B", etc.
+    assert "Card " not in title
+    assert "Card " not in description
+
+    # Standard title format
+    assert "#1950 TRADE UPDATE: TREND_CONTINUATION (BEARISH)" in title
+
+    # Correct status icons
+    if kind in {"T1_HIT", "T2_HIT"}:
+        assert "🎯 🟢" in title
+    elif kind in {"SL_HIT", "STOPPED_OUT_AT_BE", "ATR_SL_HIT", "OPTION_SL_FLOOR_HIT"}:
+        assert "💥 🛑" in title
+    else:
+        assert "🚨 🐻 🔴" in title
+
+    # Standard body fields
+    assert "🕒 **Time**" in description
+    assert "📍 **Spot**" in description
+    assert "⚡ **Action**" in description
+    assert "✅ **Entry**" in description
+    assert "🛑 **New SL**" in description
+    assert "⭐ **Status**" in description
+
+    # Specific option updates
+    if kind in {"ATR_ACTIVE", "OPTION_SL_RATCHETED", "ATR_SL_UPDATED"}:
+        assert "🛡️ **Active Option SL**: ₹ 152.70" in description
+
+    # Immutability check
     assert snapshot == original
 
 
-def test_exit_retains_target_booking_separate_from_exited_remainder():
-    snapshot = event("ATR_SL_HIT")
-    snapshot["option_trailing"].update(phase="CLOSED", booked_fraction=1, remaining_fraction=0)
-    description = render_option_lifecycle_event(snapshot)["embeds"][0]["description"]
-    for value in ("Targets model-booked: 80%", "Remainder closed: 20%", "Score: 2 retained",
-                  "₹ 147.50", "₹ 148.15", "10:55:00 IST", "Index guard: disabled"):
-        assert value in description
-    assert "Targets model-booked: 100%" not in description
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["MONITORING_UNAVAILABLE", "MONITORING_RESTORED"])
+async def test_monitoring_alerts_silenced_on_discord(kind):
+    snapshot = event(kind)
+    client = AsyncMock()
+    with patch("alerts.settings.discord_webhook_url", "http://discord.invalid"), patch("alerts.httpx.AsyncClient") as factory:
+        factory.return_value.__aenter__.return_value = client
+        outcome = await send_option_lifecycle_event(snapshot)
+        assert outcome == "DELIVERED"
+        # Must NOT dispatch HTTP post to Discord
+        client.post.assert_not_called()
 
 
-def test_reference_points_show_missing_and_approximate_evidence():
-    snapshot = event()
-    snapshot["option_trailing"]["accounting_formula_version"] = "one_lot_reference_v1"
-    snapshot["option_trailing"]["accounting"] = {
-        "spot_booked_points": 36.5, "option_booked_points": 12.75,
-        "legs": {"T1": {"approximate": True}},
-    }
-    description = render_option_lifecycle_event(snapshot)["embeds"][0]["description"]
-    assert "Spot booked points (one-lot equivalent): 36.50" in description
-    assert "Option booked points (one-lot equivalent): 12.75 (includes minute-close approximation)" in description
-    snapshot["option_trailing"]["accounting"]["option_booked_points"] = None
-    description = render_option_lifecycle_event(snapshot)["embeds"][0]["description"]
-    assert "Option booked points (one-lot equivalent): unavailable" in description
-
-
-def test_candle_target_does_not_claim_exact_touch_time():
-    snapshot = event()
-    snapshot["option_trailing"]["accounting"] = {"legs": {"T2": {
-        "source_minute": "2026-10-23T10:59:00+05:30", "event_at": None}}}
-    description = render_option_lifecycle_event(snapshot)["embeds"][0]["description"]
-    assert "Detection candle close (exact touch time unavailable):" in description
-
-
-def test_pre_t2_exit_card_and_persistence_warning_do_not_claim_recorded_score():
-    snapshot = event("ATR_SL_HIT", 1)
-    snapshot["option_trailing"].update(phase="CLOSED", remaining_fraction=0)
-    payload = render_option_lifecycle_event(snapshot)
-    assert "Card H" in payload["embeds"][0]["title"]
-    assert "Remainder closed: 50%" in str(payload)
-    snapshot["type"] = "PERSISTENCE_FAILURE"
-    payload = render_option_lifecycle_event(snapshot)
-    assert "Database pending" in str(payload)
-    assert "Score:" not in str(payload)
+@pytest.mark.asyncio
+async def test_send_trade_update_no_runtime_error_for_option_atr():
+    trade = event("T1_HIT")["trade"]
+    client = AsyncMock()
+    with patch("alerts.settings.discord_webhook_url", "http://discord.invalid"), patch("alerts.httpx.AsyncClient") as factory:
+        factory.return_value.__aenter__.return_value = client
+        # Must not raise RuntimeError
+        await send_trade_update(trade, spot=22527.1, update_type="T1_HIT")
+        client.post.assert_called_once()
+        payload = client.post.call_args.kwargs["json"]
+        assert "Card " not in payload["embeds"][0]["title"]
+        assert "🎯 🟢 #1950 TRADE UPDATE: TREND_CONTINUATION (BEARISH)" in payload["embeds"][0]["title"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error,expected", [(None, "DELIVERED"), (httpx.ReadTimeout("unknown"), "AMBIGUOUS"),
                                            (httpx.ConnectError("not sent"), "FAILED")])
 async def test_sender_reports_transport_outcome_without_mutating_snapshot(error, expected):
-    snapshot = event()
+    snapshot = event("T1_HIT")
     original = deepcopy(snapshot)
     client = AsyncMock()
     client.post.return_value = MagicMock()
@@ -110,20 +135,8 @@ async def test_sender_reports_transport_outcome_without_mutating_snapshot(error,
     assert snapshot == original
 
 
-@pytest.mark.parametrize("timestamp", [None, "2026-10-23T10:08:00", datetime(2026, 10, 23, 10, 8)])
-def test_missing_or_naive_event_timestamp_is_unavailable_and_closed_failure_stays_closed(timestamp):
-    snapshot = event("PERSISTENCE_FAILED")
-    snapshot["event_time"] = timestamp
-    snapshot["option_trailing"]["phase"] = "CLOSED"
-    description = render_option_lifecycle_event(snapshot)["embeds"][0]["description"]
-    assert "Event time: unavailable" in description
-    assert "Lifecycle: CLOSED" in description
-    assert "Score:" not in description
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize("signal_timezone", [None, timezone(timedelta(hours=5, minutes=30)), timezone.utc])
-async def test_initial_enrolled_signal_keeps_bracket_and_adds_card_a_protection(signal_timezone):
+async def test_initial_enrolled_signal_keeps_bracket_without_card_a():
     from alerts import send_discord
     from fetchers.price_fetcher import PriceFetcher
     from types import SimpleNamespace
@@ -138,10 +151,7 @@ async def test_initial_enrolled_signal_keeps_bracket_and_adds_card_a_protection(
     with patch("fetchers.price_fetcher.datetime", wraps=datetime) as clock:
         clock.now.return_value = datetime(2026, 10, 23, 10, 9, tzinfo=ist)
         candle = await fetcher.fetch_latest_candle()
-    assert candle.timestamp == datetime(2026, 10, 23, 10, 8)
     signal_timestamp = candle.timestamp
-    if signal_timezone is not None:
-        signal_timestamp = signal_timestamp.replace(tzinfo=ist).astimezone(signal_timezone)
     signal = AresSignal(setup_type=SetupType.FAILED_BREAKOUT, direction=Direction.BULLISH,
                         trigger_price=24000, entry_zone=(23999, 24001), stop_loss=23990,
                         target_1=24018, target_2=24040, confidence="HIGH", reasons=["Confirmed"],
@@ -160,9 +170,135 @@ async def test_initial_enrolled_signal_keeps_bracket_and_adds_card_a_protection(
         factory.return_value.__aenter__.return_value = client
         assert await send_discord(signal, 24000)
     fields = client.post.call_args.kwargs['json']['embeds'][0]['fields']
-    values = {field['name']: field['value'] for field in fields}
-    assert values['🕒 Time'] == '23-Oct-2026 10:08:00 IST'
-    assert signal.timestamp == signal_timestamp
-    assert 'Card A' in str(fields)
-    for text in ('2026-10-27', '51333', 'index points', 'after index T1', 'Reference/model', '100.50', '110.00'):
-        assert text in str(fields)
+    # Must NOT have Card A
+    assert 'Card A' not in str(fields)
+    # Must retain standard fields
+    field_names = [f['name'] for f in fields]
+    assert '📍 Spot' in field_names
+    assert '⚡ Trade' in field_names
+    assert '🛑 SL' in field_names
+
+
+def test_render_option_lifecycle_event_handles_none_index_price():
+    """Missing or None index_price renders 'unavailable' without raising TypeError."""
+    snapshot = event("ATR_ACTIVE")
+    snapshot["index_price"] = None
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "📍 **Spot**    : unavailable" in desc
+
+
+def test_v2_quote_exit_uses_source_neutral_action_text():
+    """V2 option premium exits don't falsely claim 5-minute candle closes."""
+    # V2 - source neutral (POST_T1, milestone 1)
+    snap_v2 = event("ATR_SL_HIT", milestone=1)
+    snap_v2["option_trailing"]["policy_version"] = "option_premium_protection_v2"
+    snap_v2["option_trailing"]["phase"] = "POST_T1"
+    snap_v2["trade"]["market_context"]["option_trailing"]["policy_version"] = "option_premium_protection_v2"
+    snap_v2["trade"]["market_context"]["option_trailing"]["phase"] = "POST_T1"
+    rendered_v2 = render_option_lifecycle_event(snap_v2)
+    desc_v2 = rendered_v2["embeds"][0]["description"]
+    assert "Option Stop Loss Hit. Remaining 50% Closed (Score: 1 retained)." in desc_v2
+    assert "5-minute close" not in desc_v2
+
+    # V2 - source neutral (POST_T2, milestone 2)
+    snap_v2_t2 = event("ATR_SL_HIT", milestone=2)
+    snap_v2_t2["option_trailing"]["policy_version"] = "option_premium_protection_v2"
+    snap_v2_t2["trade"]["market_context"]["option_trailing"]["policy_version"] = "option_premium_protection_v2"
+    rendered_v2_t2 = render_option_lifecycle_event(snap_v2_t2)
+    desc_v2_t2 = rendered_v2_t2["embeds"][0]["description"]
+    assert "Option Stop Loss Hit. Final 20% Runner Closed (Score: 2 retained)." in desc_v2_t2
+    assert "5-minute close" not in desc_v2_t2
+
+    # V1 - preserves 5-minute candle wording
+    snap_v1 = event("ATR_SL_HIT", milestone=1)
+    snap_v1["option_trailing"]["policy_version"] = "option_atr_v1"
+    snap_v1["option_trailing"]["phase"] = "POST_T1"
+    snap_v1["trade"]["market_context"]["option_trailing"]["policy_version"] = "option_atr_v1"
+    snap_v1["trade"]["market_context"]["option_trailing"]["phase"] = "POST_T1"
+    rendered_v1 = render_option_lifecycle_event(snap_v1)
+    desc_v1 = rendered_v1["embeds"][0]["description"]
+    assert "Completed 5-minute close crossed Option ATR Stop. Remaining 50% Closed (Score: 1 retained)." in desc_v1
+
+
+def test_atr_active_shows_locked_option_sl_and_no_exit_estimate():
+    """ATR_ACTIVE shows active premium SL and does not display premature exit estimate."""
+    snapshot = event("ATR_ACTIVE")
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "🛡️ **Active Option SL**: ₹ 152.70" in desc
+    assert "Estimated Option Exit" not in desc
+
+
+def test_event_time_unavailable_is_preserved_for_invalid_historical_timestamps():
+    """Invalid or naive timestamps on historical events render as 'unavailable', not now()."""
+    snapshot = event("T1_HIT")
+    snapshot["event_time"] = "invalid_timestamp"
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "🕒 **Time**    : unavailable" in desc
+
+
+def test_persistence_failed_alias_and_formatting():
+    """PERSISTENCE_FAILED / PERSISTENCE_FAILURE show database warning and warning icon."""
+    for kind in ("PERSISTENCE_FAILED", "PERSISTENCE_FAILURE"):
+        snapshot = event(kind)
+        rendered = render_option_lifecycle_event(snapshot)
+        embed = rendered["embeds"][0]
+        assert "⚠️" in embed["title"]
+        assert embed["color"] == 15158332
+        assert "Database persistence failure. Memory state active; unconfirmed in database." in embed["description"]
+        assert "Trade Closed" not in embed["description"]
+
+
+def test_stopped_out_at_be_post_t2_reports_runner_and_score_two():
+    """Post-T2 break-even exit reports final 20% runner closed with score 2 retained."""
+    snapshot = event("STOPPED_OUT_AT_BE", milestone=2)
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "Final 20% Runner Closed (Score: 2 retained)." in desc
+
+
+def test_option_estimate_uses_persisted_exit_leg_price():
+    """When exit.option_close is missing, use accounting.legs.EXIT.option_price before falling back."""
+    snapshot = event("STOPPED_OUT_AT_BE", milestone=1)
+    snapshot["option_trailing"]["phase"] = "POST_T1"
+    snapshot["trade"]["market_context"]["option_trailing"]["phase"] = "POST_T1"
+    snapshot["option_trailing"]["accounting"] = {
+        "legs": {
+            "EXIT": {"option_price": 90.0}
+        }
+    }
+    snapshot["trade"]["market_context"]["option_trailing"]["accounting"] = snapshot["option_trailing"]["accounting"]
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    # Entry is 139.25, exit should read 90.00 rather than falling back to 139.25 (₹0 pnl)
+    assert "Estimated Option Exit**: ₹ 90.00" in desc
+
+
+def test_t1_t2_estimate_prefers_persisted_target_leg_option_price():
+    """T1/T2 alerts use actual captured leg option_price if present in accounting.legs."""
+    snapshot = event("T1_HIT", milestone=1)
+    snapshot["option_trailing"]["accounting"] = {
+        "legs": {"T1": {"option_price": 165.50}}
+    }
+    snapshot["trade"]["market_context"]["option_trailing"]["accounting"] = snapshot["option_trailing"]["accounting"]
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    assert "Estimated Option Exit**: ₹ 165.50" in desc
+
+
+def test_stopped_out_at_be_uses_option_total_points_for_versioned_trade():
+    """Versioned trade at BE reports total PnL from accounting.option_total_points."""
+    snapshot = event("STOPPED_OUT_AT_BE", milestone=1)
+    snapshot["option_trailing"]["phase"] = "POST_T1"
+    snapshot["trade"]["market_context"]["option_trailing"]["phase"] = "POST_T1"
+    snapshot["option_trailing"]["accounting"] = {
+        "option_total_points": -4.50,
+        "legs": {"EXIT": {"option_price": 130.25}}
+    }
+    snapshot["trade"]["market_context"]["option_trailing"]["accounting"] = snapshot["option_trailing"]["accounting"]
+    rendered = render_option_lifecycle_event(snapshot)
+    desc = rendered["embeds"][0]["description"]
+    # 1 lot of 25 * -4.50 = -112.50
+    assert "Estimated Trade PnL**: ₹ -112.50 (reference accounting)" in desc

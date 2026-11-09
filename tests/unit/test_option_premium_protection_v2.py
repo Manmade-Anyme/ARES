@@ -2029,10 +2029,12 @@ def test_break_even_alert_names_premium_domain_and_zero_runner_points():
     rendered = render_option_lifecycle_event({"update_type": "STOPPED_OUT_AT_BE", "event_time": opt["exit"]["event_at"],
                                               "trade": trade, "option_trailing": opt})
     text = rendered["embeds"][0]["description"]
-    assert "Option-premium break-even stop hit" in rendered["embeds"][0]["title"]
-    assert "Premium stop domain: OPTION_PREMIUM" in text
-    assert "Runner stop-out points: +0.00" in text
-    assert "Confirmed fill: unavailable" in text
+    title = rendered["embeds"][0]["title"]
+    assert "TRADE UPDATE" in title
+    assert "Card " not in title
+    assert "💥 🛑" in title
+    assert "Option-premium break-even stop hit" in text
+    assert "Estimated Option Exit" in text
 
 
 @pytest.mark.asyncio

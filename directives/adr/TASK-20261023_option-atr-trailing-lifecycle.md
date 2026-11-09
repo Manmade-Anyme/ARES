@@ -141,18 +141,16 @@ Postgres RPC or atomic SQL transaction ensuring:
 
 ## 5. Discord Message Contract & Delivery Rules
 
-Messages are constructed from immutable event snapshots:
-- **Card A (New Signal)**: Clear reference tracking disclaimer, original index SL, Greeks option levels, and notice that Option ATR starts after Index T1.
-- **Card B (T1 Reached)**: Index T1 level, 50% model-booked, recorded score 1, index SL moved to entry, initial ATR status.
-- **Card C (ATR Active)**: Emitted when raw ATR later exceeds original option SL floor.
-- **Card D (Option SL Raised)**: Emitted only when locked SL increases.
-- **Card E (T2 Reached)**: Index T2 level, additional 30% model-booked (80% total), 20% runner remaining, recorded score 2, index protection disabled.
-- **Card F (Original Index SL Exit)**: 100% closed, score 0.
-- **Card G (Index Entry Exit after T1)**: Remaining 50% closed, score 1 retained, explicit note: "Index break-even does not guarantee option break-even."
-- **Card H (ATR Exit before T2)**: Remaining 50% closed, score 1 retained.
-- **Card I (Runner Exit after T2)**: Final 20% runner closed, score 2 retained.
-- **Card J/K (Monitoring Unavailable / Restored)**: Discloses stale data (> 60s past bar end during market hours).
-- **Card L (Persistence Failure)**: Operational alert distinguishing in-memory observed state from unconfirmed database state.
+> **Note (Updated 2026-11-09 by TASK-20261109):** The verbose "Card A" through "Card L" naming and debugging telemetry dumps have been completely removed. Discord alerts now use the standard, clean `TRADE UPDATE` embed format matching production frontend requirements, with dedicated status icons (`🎯 🟢` for targets, `💥 🛑` for stop-outs, `🚨 🐂 🟢`/`🚨 🐻 🔴` for trailing updates), clean key/value lines, and silent handling of monitoring events.
+
+Legacy Card mapping superseded by TASK-20261109:
+- **Card A (New Signal)**: *Removed*. Initial signals use standard clean signal bracket.
+- **Card B (T1 Reached)**: Standard `TRADE UPDATE` embed with `🎯 🟢` icon, 50% model-booked note, and break-even spot stop.
+- **Card C / D (ATR Active / Option SL Raised)**: Standard `TRADE UPDATE` embed showing `🛡️ **Active Option SL**: ₹ [Locked SL]`.
+- **Card E (T2 Reached)**: Standard `TRADE UPDATE` embed with `🎯 🟢` icon, 80% model-booked note, 20% runner active.
+- **Card F / G / H / I (Stops and Exits)**: Standard `TRADE UPDATE` embed with `💥 🛑` icon and `💰 **Estimated Option Exit**` details.
+- **Card J / K (Monitoring Unavailable / Restored)**: Silenced on Discord to eliminate distraction during live trading.
+- **Card L (Persistence Failure)**: Handled as operational alert without Card branding.
 
 ---
 
