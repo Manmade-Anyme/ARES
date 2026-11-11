@@ -482,6 +482,9 @@ def run() -> None:
         format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+    # Keep high-frequency Supabase/Jev polling requests from evicting Fly log buffers.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     logger.info("Starting Jev consumer (id=%s, poll=%ss, age=%ss)",
                 CONSUMER_ID, POLL_INTERVAL, MAX_SIGNAL_AGE)

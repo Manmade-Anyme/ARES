@@ -8,6 +8,7 @@ On live trade `#3574` (`25400 CE`, `security_id=45406`, `2026-11-11`), spot reac
 2. Because `legs.T1.option_price` was `None`, `alerts.py` (`_option_lifecycle_estimate`) fell back to pre-trade projected `options_sizing.target_1` (`243.10`), reporting `Estimated Option Exit: ₹ 243.10 (+₹ 711.75 / lot)` on Discord instead of `237.50`.
 3. Background `execution/reference_recovery.py` skipped `fetch_option_observation` after 5s and permanently froze DB `legs.T1.option_price = 239.00` (`11:16–11:17` `completed_1m_close`), booking `option_total_points = +2.975` after `STOPPED_OUT_AT_BE` (`231.25`) instead of `+2.225`.
 4. `alerts.py` suppressed `Estimated Trade PnL` on `STOPPED_OUT_AT_BE` whenever `suggested_lots == 0`.
+5. On live trade `#7258` (`25450 CE`, `security_id=45408`, `2026-11-11`), a transient Supabase/HTTP/2 transport error triggered `Database persistence failure. Memory state active; unconfirmed in database.` without retry or exception logging (and `position_manager.py` called `logger.*` without defining `logger`), while `[httpx]` `INFO` polling logs flooded container output.
 
 ## Approved Behavior & Scope
 1. **Option Quote Reference Capture (`±10s`)**:
@@ -19,6 +20,10 @@ On live trade `#3574` (`25400 CE`, `security_id=45406`, `2026-11-11`), spot reac
    - `Estimated Trade PnL` calculation: if `lots > 0`, multiply by `lots`; if `lots == 0` (or unavailable), compute reference PnL on a `1 lot` basis labeled clearly `(1-lot reference accounting; 0 lots suggested)` across `STOPPED_OUT_AT_BE` and closed multi-leg exits with `option_total_points`.
 3. **Audited Backfill for `#3574`**:
    - Update closed trade `#3574` (`4fd271bf-ce10-5fa3-84d1-d116edefcbc4`) in Supabase `trade_analytics` (`legs.T1` `239.0 -> 237.5`, `option_source='dhan_last_trade'`, `approximate=false`, `option_booked_points=2.675`, `option_total_points=2.225`, `option_pnl_points=2.225`).
+4. **Persistence Failure Hardening (`#7258`)**:
+   - Disable HTTP/2 (`http2=False`, `httpx.Timeout(30.0, connect=10.0)`) on real Supabase clients in `storage.py`, serialize `AnalyticsLogger` PostgREST calls under `threading.RLock`, and retry transient transport/timeout/gateway errors (up to 3 attempts, releasing the lock during backoff) on idempotent option lifecycle/reference RPCs and state reads while failing non-transient errors (e.g. `40001` revision conflict) immediately.
+   - Define module `logger` in `position_manager.py` and log `_flush_option_trade` persistence/conflict-reload failures via `logger.warning(...)`.
+   - Suppress high-frequency `httpx`/`httpcore` `INFO` logs to `WARNING` in `system_one/consumer.py`.
 
 ## Acceptance Criteria
 - Failing TDD tests reproduce `#3574` before fixes and pass after implementation.

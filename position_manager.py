@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 import threading
 from copy import deepcopy
@@ -17,6 +18,8 @@ from options_candles import (load_option_candles, contiguous_option_candles,
                              expected_completed_option_bar_end, parse_option_candle, IST)
 from oi_watch_context import parse_candle_timestamp
 from storage import AnalyticsLogger
+
+logger = logging.getLogger(__name__)
 
 _OPTION_POLICY_VERSIONS = {"option_atr_v1", "option_premium_protection_v2"}
 _OPTION_ATR_RELEVANT_EVENTS = frozenset({
@@ -2847,8 +2850,15 @@ class PositionManager:
                                                 self._persist_trade_context(t_id, atr_snapshot=atr),
                                         )
                                 continue
-                        except Exception:
-                            pass
+                        except Exception as reload_exc:
+                            logger.warning(
+                                "Option lifecycle conflict reload failed for %s (event %s, rev %s): %s",
+                                trade_id, event_id, revision, reload_exc, exc_info=True,
+                            )
+                    logger.warning(
+                        "Option lifecycle persistence failed for %s (event %s, rev %s): %s",
+                        trade_id, event_id, revision, exc, exc_info=exc,
+                    )
                     if trade_id not in self._option_warning_sent:
                         self._option_warning_sent.add(trade_id)
                         try:

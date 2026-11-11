@@ -24,5 +24,13 @@ On live trade `#3574` (`25400 CE`, `security_id=45406`):
 3. **Supabase Historical Backfill (`#3574`)**:
    - Updated `trade_analytics` row `4fd271bf-ce10-5fa3-84d1-d116edefcbc4`: `legs.T1.option_price` `239.0 -> 237.5`, `option_source = "dhan_last_trade"`, `option_observed_at = "2026-11-11T11:16:29+05:30"`, `approximate = false`, `option_booked_points = 2.675`, `option_total_points = 2.225`, `option_pnl_points = 2.225` (`option_reference_pnl_points = 0.25` unchanged).
 
-## 3. Separate Open Scope (`#7258`)
-- Database persistence-failure hardening from trade `#7258` (`_flush_option_trade` exception logging, Supabase RPC retry/HTTP/2 locking, `[httpx]` INFO log suppression) is **not** included in this change set and remains separate.
+## 3. Persistence Failure Hardening (`#7258`)
+- **Root Cause**:
+  - `supabase-py` defaults `SyncPostgrestClient` to `httpx.Client(http2=True, timeout=120)` and only retries idempotent `GET`/`HEAD` `503`/`520` responses — never `POST` RPCs (`apply_option_lifecycle_transition`) or `httpx.TransportError`, even though `apply_option_lifecycle_transition` is idempotent on `p_event_id` (`migrations/20261104_option_premium_protection_v2.sql`).
+  - Concurrent schedulers shared `AnalyticsLogger` across worker threads over a single HTTP/2 connection without serialization, while `position_manager.py` called `logger.*` without defining `logger` and `_flush_option_trade` dropped exception context before emitting `PERSISTENCE_FAILED`.
+  - `system_one/consumer.py` enabled root `INFO` logging without dampening `httpx`/`httpcore`.
+- **Changes Implemented**:
+  - `storage.py`: Added `_configure_http1_client` (`http2=False`, `httpx.Timeout(30.0, connect=10.0)` on real `SyncSupabaseClient` instances across `get_supabase_client`, `Storage`, `AnalyticsLogger`, `PredictionLogger`), `_is_transient_rpc_error` (`httpx.TransportError`, `ConnectionError`, `TimeoutError`, and gateway HTTP statuses `408, 429, 500, 502, 503, 504, 520-524`), `AnalyticsLogger._supabase_lock` (`threading.RLock`), `_execute_with_retry` (up to 3 attempts, lock released during `0.15s * (attempt + 1)` backoff), `_rpc_execute`, and `_option_capability_ready` across option lifecycle/reference RPCs and `get_option_lifecycle_state`. Non-transient errors (`40001` revision conflict, `PermissionError`, `ValueError`, `RuntimeError`) fail immediately without retry.
+  - `position_manager.py`: Added `import logging` + `logger = logging.getLogger(__name__)` and `logger.warning(...)` in `_flush_option_trade` on persistence failures and conflict reload errors.
+  - `system_one/consumer.py`: Set `httpx` and `httpcore` loggers to `logging.WARNING` inside `run()`.
+  - `tests/unit/test_persistence_failure_resilience.py`: Added 17 unit tests covering HTTP/1.1 client configuration, transient retries vs immediate non-transient failures, lock release during sleep, `position_manager` logger & `_flush_option_trade` warnings, and `system_one.consumer` logger suppression.
