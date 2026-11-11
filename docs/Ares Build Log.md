@@ -2,6 +2,17 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-11-11 · Live Option Price Capture on T1/T2 & 1-Lot Zero-Budget PnL (TASK-20261111)
+
+Investigated live trade `#3574` (`25400 CE`, `security_id=45406`): when spot hit `T1` (`25390.15`) at `11:16:29.311 IST`, `last_option_quote` held `237.50` (`dhan_last_trade`, `11:16:29+05:30`), yet `accounting.legs.T1.option_price` stayed `None`, `alerts.py` fell back to synthetic `options_sizing.target_1` (`243.10`), background recovery later froze `completed_1m_close` (`239.00`), and `Estimated Trade PnL` was omitted for `lots=0`.
+
+**Decisions & Changes**
+- Added `PositionManager.record_reference_option_quote` (`[-200:]` per `security_id`) fed by validated post-entry quotes in `update_option_market_events` before timeline replay.
+- Widened live option quote capture matching to `±10s` in `_enrich_reference_trade` (`option_target_evidence(..., max_delta_seconds=10)` plus `last_option_quote`) and `execution/reference_recovery.py` (`<= 10s`), while preserving `max_delta_seconds=5` default on `option_target_evidence`.
+- Stopped versioned `T1_HIT` / `T2_HIT` / `T2_REACHED` alerts from falling back to projected `options_sizing.target_1` / `target_2`; added 30s `last_option_quote` `(stale quote)` fallback (`_stale_quote_option_price`), else `unavailable`.
+- Computed `Estimated Trade PnL` on `1 lot` when suggested/final `lots == 0` (`(1-lot reference accounting; 0 lots suggested)`) and scaled by `lots` when `> 0`.
+- Corrected closed `#3574` (`4fd271bf-ce10-5fa3-84d1-d116edefcbc4`) in Supabase `trade_analytics` (`legs.T1`: `237.5` `dhan_last_trade`, `option_booked_points=2.675`, `option_total_points=2.225`, `option_pnl_points=2.225`).
+
 ## 2026-11-03 · Tuesday Expiry Profile Sensitivity Tuning (TASK-20261103)
 
 Applied the approved 16-value expiry-only configuration bundle in `config_profiles.py`. The non-expiry profile, expiry candle-body ratio, persistence count, and per-setup SL/T1/T2 remain unchanged. Existing detector and level-fetcher code consumes these settings; no detector logic changed.

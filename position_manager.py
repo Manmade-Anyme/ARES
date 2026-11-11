@@ -1838,28 +1838,68 @@ class PositionManager:
                 cache[key] = deepcopy(value)
         self._reference_price_evidence = cache
 
-    def record_reference_spot_quote(self, price, observed_at, source):
-        """Keep a bounded cache of timestamped live spot quotes for exit recovery."""
+    @staticmethod
+    def _normalize_reference_quote(price, observed_at, source):
+        if isinstance(price, bool) or not isinstance(source, str) or not source.strip():
+            return None
+        if isinstance(observed_at, datetime) and observed_at.tzinfo is None:
+            return None
         try:
             value = float(price)
             at = parse_candle_timestamp(observed_at)
         except (TypeError, ValueError, OverflowError, OSError):
+            return None
+        if not isfinite(value) or value <= 0 or at.tzinfo is None:
+            return None
+        return value, at, source.strip()
+
+    @staticmethod
+    def _safe_quote_sort_key(item):
+        try:
+            return (0, parse_candle_timestamp(item["observed_at"]))
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            return (1, datetime.min.replace(tzinfo=timezone.utc))
+
+    def record_reference_spot_quote(self, price, observed_at, source):
+        """Keep a bounded cache of timestamped live spot quotes for exit recovery."""
+        parsed = self._normalize_reference_quote(price, observed_at, source)
+        if parsed is None:
             return False
-        if not isfinite(value) or value <= 0 or not isinstance(source, str) or not source.strip():
-            return False
+        value, at, clean_source = parsed
         cache = getattr(self, "_reference_price_evidence", {})
         quotes = list(cache.get("spot_quotes") or [])
-        quote = {"price": value, "observed_at": at.isoformat(), "source": source.strip()}
+        quote = {"price": value, "observed_at": at.isoformat(), "source": clean_source}
         if quote not in quotes:
             quotes.append(quote)
-        quotes.sort(key=lambda item: parse_candle_timestamp(item["observed_at"]))
+        quotes.sort(key=self._safe_quote_sort_key)
         cache["spot_quotes"] = quotes[-1000:]
         self._reference_price_evidence = cache
         try:
             from quote_service import get_quote_service
-            get_quote_service().record_spot_quote(value, at, source=source.strip())
+            get_quote_service().record_spot_quote(value, at, source=clean_source)
         except Exception:
             pass
+        return True
+
+    def record_reference_option_quote(self, security_id, price, observed_at, source):
+        """Keep a bounded cache of timestamped live option quotes for target/exit recovery."""
+        if not isinstance(security_id, str) or not security_id.strip():
+            return False
+        parsed = self._normalize_reference_quote(price, observed_at, source)
+        if parsed is None:
+            return False
+        sec = security_id.strip()
+        value, at, clean_source = parsed
+        cache = getattr(self, "_reference_price_evidence", {})
+        by_security = {k: list(v) for k, v in (cache.get("option_quotes") or {}).items()}
+        quotes = by_security.get(sec, [])
+        quote = {"price": value, "observed_at": at.isoformat(), "source": clean_source}
+        if quote not in quotes:
+            quotes.append(quote)
+        quotes.sort(key=self._safe_quote_sort_key)
+        by_security[sec] = quotes[-200:]
+        cache["option_quotes"] = by_security
+        self._reference_price_evidence = cache
         return True
 
     def get_selected_option_contract(self) -> Optional[dict]:
@@ -1978,11 +2018,19 @@ class PositionManager:
         cache = getattr(self, "_reference_price_evidence", {})
         security = str((opt.get("contract") or {}).get("security_id", ""))
         minutes = cache.get("option_minutes", {}).get(security, [])
-        quotes = cache.get("option_quotes", {}).get(security, [])
+        quotes = list(cache.get("option_quotes", {}).get(security, []))
+        last_quote = opt.get("last_option_quote")
+        if isinstance(last_quote, dict) and last_quote not in quotes:
+            quotes.append(last_quote)
         for name, leg in legs.items():
             if leg.get("option_price") is None:
-                evidence = option_target_evidence(leg.get("event_at"), observations=quotes,
-                    option_minutes=minutes, source_minute=leg.get("source_minute"))
+                evidence = option_target_evidence(
+                    leg.get("event_at"),
+                    observations=quotes,
+                    option_minutes=minutes,
+                    source_minute=leg.get("source_minute"),
+                    max_delta_seconds=10,
+                )
                 if evidence:
                     leg.update(option_price=evidence["price"], option_source=evidence["source"],
                                option_observed_at=evidence["observed_at"], approximate=evidence["approximate"])
@@ -4135,6 +4183,7 @@ class PositionManager:
                 "option_type": raw_contract.get("option_type"),
             }
             matching = []
+            post_entry_match = False
             for trade in option_trades:
                 opt = (trade.get("market_context") or {}).get("option_trailing") or {}
                 if opt.get("policy_version") != "option_premium_protection_v2":
@@ -4150,6 +4199,10 @@ class PositionManager:
                 }
                 if incoming_contract != expected_contract:
                     continue
+                raw_entry_at = opt.get("activated_at") or trade.get("entry_timestamp")
+                entry_at = parse_candle_timestamp(raw_entry_at) if raw_entry_at is not None else None
+                if entry_at is not None and observed_at > entry_at:
+                    post_entry_match = True
                 if self._option_quote_is_replay(opt, observed_at, value):
                     if await self._retain_fill_overlapping_quote_ambiguity(
                             trade, observed_at, received_at, value, quote.get("source")):
@@ -4165,10 +4218,16 @@ class PositionManager:
                         trade, observed_at, received_at, price=value,
                         source=quote.get("source"), events=events):
                     continue
-                entry_at = parse_candle_timestamp(opt.get("activated_at") or trade.get("entry_timestamp"))
-                if observed_at <= entry_at:
+                if entry_at is None or observed_at <= entry_at:
                     continue
                 matching.append(trade)
+            if post_entry_match:
+                self.record_reference_option_quote(
+                    incoming_contract["security_id"],
+                    value,
+                    observed_at,
+                    quote.get("source") or "OPTION_QUOTE",
+                )
             if not matching:
                 continue
             # A shared contract quote can be valid for one trade but stale for

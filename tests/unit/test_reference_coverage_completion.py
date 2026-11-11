@@ -961,3 +961,51 @@ async def test_position_manager_flush_option_trade_committed_conflict_logged(mon
 
     await pm._flush_option_trade(trade)
 
+
+@pytest.mark.asyncio
+async def test_reference_recovery_fetches_live_option_quote_within_ten_seconds():
+    """Background reference recovery should request live quotes up to 10s past event time."""
+    pm = _make_pm()
+    now = datetime.now(timezone.utc)
+    exact_eight_seconds = now - timedelta(seconds=8)
+
+    trade = _mock_trade_from_signal(_make_signal(), trade_id="quote-trade-10s")
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(
+        policy_version="option_atr_v1",
+        accounting_formula_version="one_lot_reference_v1",
+        contract={
+            "security_id": "9999",
+            "exchange_segment": "NSE_FNO",
+            "expiry_date": _TEST_OPTION_EXPIRY,
+            "strike": 24000.0,
+            "option_type": "CE",
+        },
+        accounting={
+            "legs": {
+                "T1": {
+                    "source_minute": None,
+                    "event_at": exact_eight_seconds.isoformat(),
+                    "option_price": None,
+                    "spot_price": 24000.0,
+                }
+            }
+        },
+    )
+    pm.active_trades = [trade]
+    analytics = SimpleNamespace(list_incomplete_option_accounting=Mock(return_value=[]))
+    fetcher = SimpleNamespace(
+        fetch_option_observation=AsyncMock(return_value={
+            "price": 152.5,
+            "observed_at": (exact_eight_seconds + timedelta(seconds=1)).isoformat(),
+            "source": "dhan_last_trade",
+        }),
+        fetch_option_minutes=AsyncMock(return_value=[]),
+        fetch_spot_minutes=AsyncMock(return_value=[]),
+    )
+
+    await run_reference_recovery(pm, fetcher, analytics)
+    fetcher.fetch_option_observation.assert_awaited_once()
+    assert opt["accounting"]["legs"]["T1"]["option_price"] == 152.5
+    assert opt["accounting"]["legs"]["T1"]["approximate"] is False
+
