@@ -17,10 +17,12 @@ import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from dateutil.parser import isoparse
+import httpx
 from threading import Event, Thread
 from typing import Any, Dict, List, Optional
 
 from supabase import create_client, Client as SupabaseClient
+from supabase._sync.client import Client as SyncSupabaseClient
 from typesafe_sdk import TypeSafeError, TypeSafeAPIError, TypeSafeAPIConnectionError
 
 from . import CONTEXT_VERSION, QUESTION_VERSION
@@ -55,7 +57,15 @@ def _create_supabase_client() -> SupabaseClient:
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
     if not url or not key:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
-    return create_client(url, key)
+    client = create_client(url, key)
+    # Match storage.py HTTP/1.1 settings locally without cross-importing storage.py.
+    if isinstance(client, SyncSupabaseClient):
+        client.options.httpx_client = httpx.Client(
+            http2=False,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            follow_redirects=True,
+        )
+    return client
 
 
 # ---------------------------------------------------------------------------

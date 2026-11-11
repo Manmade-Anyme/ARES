@@ -1,5 +1,6 @@
 import httpx
 import math
+import re
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from models import AresSignal, OIWallBias, OIWallWatchCancellation
@@ -54,14 +55,31 @@ def _option_bracket_fields(signal, *, for_discord=False):
 
 
 
+def _parse_alert_timestamp(value):
+    """Parse a datetime or ISO timestamp only if timezone-aware (Python 3.10 safe)."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    # PostgreSQL emits 1-5 fractional digits or +00 offsets; Python 3.10 requires 3/6 digits and ±HH:MM.
+    text = re.sub(r"\.(\d+)(?=[+-]|$)", lambda match: "." + match.group(1)[:6].ljust(6, "0"), text)
+    text = re.sub(r"([+-]\d{2})$", r"\1:00", text)
+    text = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def _format_wall_event_time(raw_timestamp):
     if not isinstance(raw_timestamp, str):
         return None
-    try:
-        event_time = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if event_time.tzinfo is None:
+    event_time = _parse_alert_timestamp(raw_timestamp)
+    if event_time is None:
         return None
     return event_time.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%d-%b-%Y %H:%M IST")
 
@@ -538,19 +556,6 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
     return f"Trade Closed ({update_type})."
 
 
-def _parse_alert_timestamp(value):
-    """Parse a datetime or ISO timestamp only if timezone-aware."""
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else None
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else None
-
-
 def _stale_quote_option_price(opt_ctx, legs, leg_key, event_time=None):
     """Option B fallback: use opt_ctx['last_option_quote'] only if <= 30s old at the target event."""
     quote = opt_ctx.get("last_option_quote")
@@ -634,11 +639,11 @@ def _option_lifecycle_estimate(trade, spot, update_type, event_time=None):
     legs = (opt_ctx.get("accounting") or {}).get("legs") or {}
     stale_quote = False
     if exit_price is None:
-        exit_price = legs.get("EXIT", {}).get("option_price")
+        exit_price = (legs.get("EXIT") or {}).get("option_price")
     if exit_price is None:
         if update_type in ("T1_HIT", "T2_HIT", "T2_REACHED"):
             leg_key = "T1" if update_type == "T1_HIT" else "T2"
-            exit_price = legs.get(leg_key, {}).get("option_price")
+            exit_price = (legs.get(leg_key) or {}).get("option_price")
             if exit_price is None:
                 if is_versioned:
                     exit_price = _stale_quote_option_price(opt_ctx, legs, leg_key, event_time=event_time)
@@ -685,9 +690,10 @@ def _option_lifecycle_estimate(trade, spot, update_type, event_time=None):
                 text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} {lot_label}.{be_note}"
         else:
             if all(_number(value) != "unavailable" for value in (t1, entry, lot_size)) and float(lot_size) > 0:
-                effective_lots, _ = _reference_pnl_lots(sizing)
+                effective_lots, lot_label = _reference_pnl_lots(sizing)
                 net = (float(t1) - float(entry)) * float(lot_size) * effective_lots * .5
-                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (50% T1 booking model). Spot break-even does not guarantee option break-even."
+                model_label = "(1-lot reference accounting; 0 lots suggested; 50% T1 booking model)" if "0 lots suggested" in lot_label else "(50% T1 booking model)"
+                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} {model_label}. Spot break-even does not guarantee option break-even."
     return text
 
 

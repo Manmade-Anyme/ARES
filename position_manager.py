@@ -17,6 +17,7 @@ from atr_trailing import completed_atr_bars, completed_spot_minutes, calculate_o
 from options_candles import (load_option_candles, contiguous_option_candles,
                              expected_completed_option_bar_end, parse_option_candle, IST)
 from oi_watch_context import parse_candle_timestamp
+import storage as _storage
 from storage import AnalyticsLogger
 
 logger = logging.getLogger(__name__)
@@ -81,10 +82,11 @@ class PositionManager:
     it will retry connecting during the update loop until successful.
     """
     def __init__(self):
-        self.supabase: Client = create_client(
+        self.supabase: Client = _storage._configure_http1_client(create_client(
             settings.supabase_url,
             settings.supabase_key
-        )
+        ))
+        self._supabase_lock = threading.RLock()
         try:
             from quote_service import get_quote_service
             get_quote_service()
@@ -122,6 +124,14 @@ class PositionManager:
                     self._trade_writes.pop(trade_id, None)
 
         self._trade_writes[trade_id] = loop.create_task(_write_after_previous())
+
+    def _supabase_call(self, op: Callable[[], Any], *, max_attempts: int = 3) -> Any:
+        """Serialize PositionManager PostgREST calls and retry idempotent transient failures."""
+        lock = getattr(self, "_supabase_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._supabase_lock = lock
+        return _storage.execute_with_retry(op, lock=lock, max_attempts=max_attempts)
 
     def _queue_trade_alert(self, trade, price, update_type):
         """Keep a slow T2 webhook off the protective path and preserve order."""
@@ -567,6 +577,8 @@ class PositionManager:
         trade_data = deepcopy(trade_data)
         def _insert():
             rpc_name = f"create_trade_entry_{mode}"
+            # `_persist_trade_entry` owns retries (3 attempts); keep concurrent entry RPCs
+            # unlocked over the HTTP/1.1 pool so Postgres handles idempotency directly.
             response = self.supabase.rpc(rpc_name, deepcopy(payload)).execute()
             persisted_id = getattr(response, "data", None)
             if isinstance(persisted_id, list) and len(persisted_id) == 1:
@@ -639,29 +651,37 @@ class PositionManager:
         def persist():
             if snapshot is not None and self._execution_snapshots.get(trade_id) != snapshot:
                 with self._context_locks.setdefault(trade_id, threading.Lock()):
-                    response = self.supabase.table("trade_analytics").select(
-                        "market_context"
-                    ).eq("id", trade_id).execute()
+                    response = self._supabase_call(
+                        lambda: self.supabase.table("trade_analytics").select(
+                            "market_context"
+                        ).eq("id", trade_id).execute()
+                    )
                     if not response.data:
                         raise RuntimeError("Paper trade analytics row is unavailable")
                     context = dict(response.data[0].get("market_context") or {})
                     context["execution"] = snapshot
-                    updated = self.supabase.table("trade_analytics").update(
-                        {"market_context": context}
-                    ).eq("id", trade_id).execute()
+                    updated = self._supabase_call(
+                        lambda: self.supabase.table("trade_analytics").update(
+                            {"market_context": context}
+                        ).eq("id", trade_id).execute()
+                    )
                     if not updated.data:
                         raise RuntimeError("Paper execution update was not persisted")
                 self._execution_snapshots[trade_id] = snapshot
             if trade_id not in self._execution_ml_bound:
-                updated = self.supabase.table("ml_collection").update({
-                    "trade_id": trade_id, "trade_binding_status": "BOUND",
-                }).eq(signal_column, str(signal.id)).is_("trade_id", "null").execute()
+                updated = self._supabase_call(
+                    lambda: self.supabase.table("ml_collection").update({
+                        "trade_id": trade_id, "trade_binding_status": "BOUND",
+                    }).eq(signal_column, str(signal.id)).is_("trade_id", "null").execute()
+                )
                 if updated.data:
                     self._execution_ml_bound.add(trade_id)
                 else:
-                    existing = self.supabase.table("ml_collection").select("trade_id").eq(
-                        signal_column, str(signal.id)
-                    ).eq("trade_id", trade_id).execute()
+                    existing = self._supabase_call(
+                        lambda: self.supabase.table("ml_collection").select("trade_id").eq(
+                            signal_column, str(signal.id)
+                        ).eq("trade_id", trade_id).execute()
+                    )
                     if existing.data:
                         self._execution_ml_bound.add(trade_id)
 
@@ -1539,7 +1559,9 @@ class PositionManager:
         if getattr(self, "supabase", None) is None:
             return
         with self._context_locks.setdefault(trade_id, threading.Lock()):
-            response = self.supabase.table("trade_analytics").select("market_context").eq("id", trade_id).execute()
+            response = self._supabase_call(
+                lambda: self.supabase.table("trade_analytics").select("market_context").eq("id", trade_id).execute()
+            )
             if not response.data:
                 raise RuntimeError("ATR trade analytics row is unavailable")
             context = dict(response.data[0].get("market_context") or {})
@@ -1558,7 +1580,9 @@ class PositionManager:
                     **(context.get("option_reference_milestones") or {}),
                     **reference_milestone_snapshot,
                 }
-            updated = self.supabase.table("trade_analytics").update({"market_context": context}).eq("id", trade_id).execute()
+            updated = self._supabase_call(
+                lambda: self.supabase.table("trade_analytics").update({"market_context": context}).eq("id", trade_id).execute()
+            )
             if atr_snapshot is not None:
                 if not updated.data:
                     raise RuntimeError("ATR trailing context was not persisted")
@@ -1640,11 +1664,15 @@ class PositionManager:
                     milestone=t2_snapshot, target=target_snapshot, refs=reference_snapshot):
             terminal = data["state"] in ["CLOSED", "STOPPED_OUT"]
             if terminal:
-                self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                self._supabase_call(
+                    lambda: self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                )
                 self._cleanup_option_selection_if_terminal()
             self._persist_trade_context(t_id, snapshot, milestone, target, refs)
             if not terminal:
-                self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                self._supabase_call(
+                    lambda: self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                )
 
         def _log_exit(
             t_id=trade["id"],

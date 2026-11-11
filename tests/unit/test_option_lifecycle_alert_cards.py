@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from alerts import render_option_lifecycle_event, send_option_lifecycle_event, send_trade_update
+from alerts import (
+    _format_wall_event_time,
+    _parse_alert_timestamp,
+    render_option_lifecycle_event,
+    send_option_lifecycle_event,
+    send_trade_update,
+)
 
 
 def event(kind="T2_HIT", milestone=2):
@@ -399,3 +405,58 @@ def test_reference_pnl_lots_and_stale_quote_edge_cases():
     snap_wall["trade"]["market_context"]["option_trailing"]["last_option_quote"] = snap_wall["option_trailing"]["last_option_quote"]
     desc_wall = render_option_lifecycle_event(snap_wall)["embeds"][0]["description"]
     assert "Estimated Option Exit**: ₹ 146.50 (₹ +181.25 / lot) (stale quote)" in desc_wall
+
+
+def test_parse_alert_timestamp_handles_postgres_variable_precision_for_python310(monkeypatch):
+    """Simulate Python 3.10 strictness: only 3/6 fractional digits and ±HH:MM offsets accepted."""
+    import alerts as alerts_module
+    real_datetime = datetime
+
+    class StrictPy310Datetime(datetime):
+        @classmethod
+        def fromisoformat(cls, date_string):
+            # Reject 1/2/4/5 fractional digits or +00 without :00 like Python 3.10
+            import re as _re
+            if "+" in date_string or "-" in date_string[10:]:
+                tz_match = _re.search(r"([+-]\d+(?::\d+)?)$", date_string)
+                if tz_match and ":" not in tz_match.group(1):
+                    raise ValueError(f"Invalid py310 offset: {date_string}")
+            frac_match = _re.search(r"\.(\d+)", date_string)
+            if frac_match and len(frac_match.group(1)) not in (3, 6):
+                raise ValueError(f"Invalid py310 fraction: {date_string}")
+            return real_datetime.fromisoformat(date_string)
+
+    monkeypatch.setattr(alerts_module, "datetime", StrictPy310Datetime)
+    for raw in (
+        "2026-11-11T05:46:29.31103+00",
+        "2026-11-11T11:16:29.5+05:30",
+        "2026-11-11T11:16:29.1234Z",
+        "2026-11-11T11:16:29.12+0530",
+    ):
+        parsed = _parse_alert_timestamp(raw)
+        assert parsed is not None and parsed.tzinfo is not None
+    assert _parse_alert_timestamp("2026-11-11T11:16:29.31103") is None
+    assert _format_wall_event_time("2026-11-11T05:46:29.31103+00") == "11-Nov-2026 11:16 IST"
+
+
+def test_legacy_stopped_out_at_be_zero_lots_and_null_legs_guards():
+    legacy_zero = {
+        "display_id": "3000", "setup_type": "TREND_CONTINUATION", "direction": "BULLISH",
+        "entry_price": 25000.0, "stop_loss": 25000.0, "state": "CLOSED",
+        "market_context": {
+            "options_sizing": {
+                "entry_limit": 200.0, "target_1": 220.0, "lot_size": 65, "lots": 0,
+            },
+            "option_trailing": {
+                "accounting": {"legs": {"T1": None, "EXIT": None}},
+            },
+        },
+    }
+    rendered = render_option_lifecycle_event({
+        "type": "STOPPED_OUT_AT_BE",
+        "event_time": "2026-11-11T05:46:29+00:00",
+        "index_price": 25000.0,
+        "trade": legacy_zero,
+        "option_trailing": legacy_zero["market_context"]["option_trailing"],
+    })["embeds"][0]["description"]
+    assert "Estimated Trade PnL**: ₹ +650.00 (1-lot reference accounting; 0 lots suggested; 50% T1 booking model)" in rendered

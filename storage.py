@@ -76,6 +76,31 @@ def _configure_http1_client(client: Any) -> Any:
     return client
 
 
+def execute_with_retry(
+    op,
+    *,
+    lock: Optional[threading.RLock] = None,
+    max_attempts: int = 3,
+    base_delay: float = 0.15,
+):
+    """Execute a blocking Supabase call with optional serialization and transient retries."""
+    for attempt in range(max_attempts):
+        try:
+            if lock is None:
+                return op()
+            with lock:
+                return op()
+        except Exception as exc:
+            if not _is_transient_rpc_error(exc) or attempt >= max_attempts - 1:
+                raise
+            delay = base_delay * (attempt + 1)
+            logger.warning(
+                "Transient Supabase RPC error (attempt %d/%d, retrying in %.2fs): %s",
+                attempt + 1, max_attempts, delay, exc,
+            )
+            time.sleep(delay)
+
+
 
 def to_utc_iso(ts: Any) -> str:
     """
@@ -210,19 +235,7 @@ class AnalyticsLogger:
             # Support instances constructed via AnalyticsLogger.__new__ in offline tests.
             lock = threading.RLock()
             self._supabase_lock = lock
-        for attempt in range(max_attempts):
-            try:
-                with lock:
-                    return op()
-            except Exception as exc:
-                if not _is_transient_rpc_error(exc) or attempt >= max_attempts - 1:
-                    raise
-                delay = base_delay * (attempt + 1)
-                logger.warning(
-                    "Transient Supabase RPC error (attempt %d/%d, retrying in %.2fs): %s",
-                    attempt + 1, max_attempts, delay, exc,
-                )
-                time.sleep(delay)
+        return execute_with_retry(op, lock=lock, max_attempts=max_attempts, base_delay=base_delay)
 
     def _rpc_execute(self, fn_name: str, params: Dict[str, Any]) -> Any:
         """Execute an idempotent Supabase RPC under client lock with short transient retries."""
@@ -308,7 +321,10 @@ class AnalyticsLogger:
         data.update(signal_fields)
 
         def _insert():
-            self.supabase.table("trade_analytics").insert(data).execute()
+            self._execute_with_retry(
+                lambda: self.supabase.table("trade_analytics").insert(data).execute(),
+                max_attempts=1,
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -350,9 +366,10 @@ class AnalyticsLogger:
             else:
                 fields = "entry_price,direction,signal_id,setup_type,entry_timestamp,score"
                 
-            import time
             for _ in range(3):
-                response = self.supabase.table("trade_analytics").select(fields).eq("id", trade_id).execute()
+                response = self._execute_with_retry(
+                    lambda: self.supabase.table("trade_analytics").select(fields).eq("id", trade_id).execute()
+                )
                 if response.data:
                     break
                 time.sleep(0.1)
@@ -414,7 +431,9 @@ class AnalyticsLogger:
             if time_metrics_excluded:
                 update_data["time_metrics_excluded"] = True
 
-            self.supabase.table("trade_analytics").update(update_data).eq("id", trade_id).execute()
+            self._execute_with_retry(
+                lambda: self.supabase.table("trade_analytics").update(update_data).eq("id", trade_id).execute()
+            )
 
             # Back-fill the ml_collection label columns. schema.sql always said
             # "Trade outcomes are back-filled when trades close" — the code to do
@@ -436,27 +455,29 @@ class AnalyticsLogger:
                 if signal_id is None:
                     return
                 try:
-                    res = self.supabase.table("ml_collection").update({
+                    res = self._execute_with_retry(lambda: self.supabase.table("ml_collection").update({
                         "trade_id": trade_id,
                         "trade_outcome": final_state,
                         "trade_pnl": pnl,
                         "trade_score": score,
-                    }).eq("signal_id", str(signal_id)).execute()
+                    }).eq("signal_id", str(signal_id)).execute())
                     if not res.data:
                         print(f"Storage: zero rows updated in ml_collection for signal_id {signal_id}")
                 except Exception as ml_err:
                     print(f"Failed to back-fill ml_collection label: {ml_err}")
                 return
             # Retry logic for ML outcome binding
-            import time
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    res = self.supabase.table("ml_collection").update({
-                        "trade_outcome": final_state,
-                        "trade_pnl": pnl,
-                        "trade_score": score,
-                    }).eq("trade_id", trade_id).eq(signal_col, str(signal_val)).execute()
+                    res = self._execute_with_retry(
+                        lambda: self.supabase.table("ml_collection").update({
+                            "trade_outcome": final_state,
+                            "trade_pnl": pnl,
+                            "trade_score": score,
+                        }).eq("trade_id", trade_id).eq(signal_col, str(signal_val)).execute(),
+                        max_attempts=1,
+                    )
                     if res.data:
                         break
                     else:
@@ -635,9 +656,9 @@ class AnalyticsLogger:
                 raise ValueError("Every weekly backfill row requires a contract, both marks and terminal event")
         if not self.option_reference_capture_ready():
             raise RuntimeError("Weekly option-reference backfill migration/capability is not ready")
-        response = self.supabase.rpc(
+        response = self._rpc_execute(
             "apply_option_reference_weekly_backfill", {"p_rows": rows},
-        ).execute()
+        )
         result = getattr(response, "data", None)
         if (not isinstance(result, dict) or result.get("success") is not True
                 or result.get("backfilled") != 16):
@@ -743,7 +764,7 @@ def load_dhan_credentials_from_supabase() -> None:
     from config import settings
 
     print("[+] Connecting to Supabase to fetch Dhan credentials...")
-    supabase = create_client(settings.supabase_url, settings.supabase_key)
+    supabase = _configure_http1_client(create_client(settings.supabase_url, settings.supabase_key))
     response = supabase.table("api_keys").select("client_id, access_token").eq("provider", "DHAN").execute()
     if not response.data:
         raise ValueError("No DHAN credentials found in Supabase api_keys table")
