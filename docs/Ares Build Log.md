@@ -2,6 +2,22 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-11-11 · Live Option Price Capture on T1/T2, 1-Lot Zero-Budget PnL & Persistence Hardening (TASK-20261111)
+
+Investigated live trade `#3574` (`25400 CE`, `security_id=45406`) and trade `#7258` (`25450 CE`, `security_id=45408`):
+- For `#3574`, when spot hit `T1` (`25390.15`) at `11:16:29.311 IST`, `last_option_quote` held `237.50` (`dhan_last_trade`, `11:16:29+05:30`), yet `accounting.legs.T1.option_price` stayed `None`, `alerts.py` fell back to synthetic `options_sizing.target_1` (`243.10`), background recovery later froze `completed_1m_close` (`239.00`), and `Estimated Trade PnL` was omitted for `lots=0`.
+- For `#7258`, an unretried Supabase/HTTP/2 transport error triggered `Database persistence failure. Memory state active; unconfirmed in database.` while `_flush_option_trade` swallowed exception details (`position_manager.py` also lacked a module `logger`), and `[httpx]` `INFO` logs flooded `system_one.consumer`.
+
+**Decisions & Changes**
+- Added `PositionManager.record_reference_option_quote` (`[-200:]` per `security_id`) fed by validated post-entry quotes in `update_option_market_events` before timeline replay.
+- Widened live option quote capture matching to `±10s` in `_enrich_reference_trade` (`option_target_evidence(..., max_delta_seconds=10)` plus `last_option_quote`) and `execution/reference_recovery.py` (`<= 10s`), while preserving `max_delta_seconds=5` default on `option_target_evidence`.
+- Stopped versioned `T1_HIT` / `T2_HIT` / `T2_REACHED` alerts from falling back to projected `options_sizing.target_1` / `target_2`; added 30s `last_option_quote` `(stale quote)` fallback (`_stale_quote_option_price`), else `unavailable`.
+- Computed `Estimated Trade PnL` on `1 lot` when suggested/final `lots == 0` (`(1-lot reference accounting; 0 lots suggested)`) and scaled by `lots` when `> 0`.
+- Corrected closed `#3574` (`4fd271bf-ce10-5fa3-84d1-d116edefcbc4`) in Supabase `trade_analytics` (`legs.T1`: `237.5` `dhan_last_trade`, `option_booked_points=2.675`, `option_total_points=2.225`, `option_pnl_points=2.225`).
+- Hardened Supabase PostgREST persistence across `storage.py`, `position_manager.py`, and `system_one/consumer.py`: disabled HTTP/2 (`http2=False`, `httpx.Timeout(30.0, connect=10.0)`) on all live `SyncSupabaseClient` instances (including `PositionManager.supabase`, `load_dhan_credentials_from_supabase`, and `system_one/consumer.py::_create_supabase_client` without cross-importing `storage.py`), extracted shared `execute_with_retry` with `threading.RLock` serialization (released during `0.15s * (attempt + 1)` backoff) covering option lifecycle/reference RPCs, `apply_option_reference_weekly_backfill`, `AnalyticsLogger.log_exit`, `PositionManager._persist_trade_context`, `PositionManager.sync_execution`, and `PositionManager._record_trade_update` (while keeping concurrent `create_trade_entry_*` RPCs unlocked over HTTP/1.1 under `_persist_trade_entry`'s outer 3-attempt loop), and failing non-transient errors immediately.
+- Added missing `logger` in `position_manager.py`, logged `_flush_option_trade` persistence/conflict-reload warnings, and raised `httpx`/`httpcore` loggers to `WARNING` in `system_one/consumer.py`.
+- Normalized `alerts.py::_parse_alert_timestamp` (shared with `_format_wall_event_time`) for Python 3.10 variable fractional digits / `+00` offsets, added `None`-safe `legs` lookups, and disclosed `1-lot reference accounting; 0 lots suggested` in the legacy `STOPPED_OUT_AT_BE` branch.
+
 ## 2026-11-03 · Tuesday Expiry Profile Sensitivity Tuning (TASK-20261103)
 
 Applied the approved 16-value expiry-only configuration bundle in `config_profiles.py`. The non-expiry profile, expiry candle-body ratio, persistence count, and per-setup SL/T1/T2 remain unchanged. Existing detector and level-fetcher code consumes these settings; no detector logic changed.

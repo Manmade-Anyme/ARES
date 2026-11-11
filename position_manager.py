@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 import threading
 from copy import deepcopy
@@ -16,7 +17,10 @@ from atr_trailing import completed_atr_bars, completed_spot_minutes, calculate_o
 from options_candles import (load_option_candles, contiguous_option_candles,
                              expected_completed_option_bar_end, parse_option_candle, IST)
 from oi_watch_context import parse_candle_timestamp
+import storage as _storage
 from storage import AnalyticsLogger
+
+logger = logging.getLogger(__name__)
 
 _OPTION_POLICY_VERSIONS = {"option_atr_v1", "option_premium_protection_v2"}
 _OPTION_ATR_RELEVANT_EVENTS = frozenset({
@@ -78,10 +82,11 @@ class PositionManager:
     it will retry connecting during the update loop until successful.
     """
     def __init__(self):
-        self.supabase: Client = create_client(
+        self.supabase: Client = _storage._configure_http1_client(create_client(
             settings.supabase_url,
             settings.supabase_key
-        )
+        ))
+        self._supabase_lock = threading.RLock()
         try:
             from quote_service import get_quote_service
             get_quote_service()
@@ -119,6 +124,14 @@ class PositionManager:
                     self._trade_writes.pop(trade_id, None)
 
         self._trade_writes[trade_id] = loop.create_task(_write_after_previous())
+
+    def _supabase_call(self, op: Callable[[], Any], *, max_attempts: int = 3) -> Any:
+        """Serialize PositionManager PostgREST calls and retry idempotent transient failures."""
+        lock = getattr(self, "_supabase_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._supabase_lock = lock
+        return _storage.execute_with_retry(op, lock=lock, max_attempts=max_attempts)
 
     def _queue_trade_alert(self, trade, price, update_type):
         """Keep a slow T2 webhook off the protective path and preserve order."""
@@ -564,6 +577,8 @@ class PositionManager:
         trade_data = deepcopy(trade_data)
         def _insert():
             rpc_name = f"create_trade_entry_{mode}"
+            # `_persist_trade_entry` owns retries (3 attempts); keep concurrent entry RPCs
+            # unlocked over the HTTP/1.1 pool so Postgres handles idempotency directly.
             response = self.supabase.rpc(rpc_name, deepcopy(payload)).execute()
             persisted_id = getattr(response, "data", None)
             if isinstance(persisted_id, list) and len(persisted_id) == 1:
@@ -636,29 +651,37 @@ class PositionManager:
         def persist():
             if snapshot is not None and self._execution_snapshots.get(trade_id) != snapshot:
                 with self._context_locks.setdefault(trade_id, threading.Lock()):
-                    response = self.supabase.table("trade_analytics").select(
-                        "market_context"
-                    ).eq("id", trade_id).execute()
+                    response = self._supabase_call(
+                        lambda: self.supabase.table("trade_analytics").select(
+                            "market_context"
+                        ).eq("id", trade_id).execute()
+                    )
                     if not response.data:
                         raise RuntimeError("Paper trade analytics row is unavailable")
                     context = dict(response.data[0].get("market_context") or {})
                     context["execution"] = snapshot
-                    updated = self.supabase.table("trade_analytics").update(
-                        {"market_context": context}
-                    ).eq("id", trade_id).execute()
+                    updated = self._supabase_call(
+                        lambda: self.supabase.table("trade_analytics").update(
+                            {"market_context": context}
+                        ).eq("id", trade_id).execute()
+                    )
                     if not updated.data:
                         raise RuntimeError("Paper execution update was not persisted")
                 self._execution_snapshots[trade_id] = snapshot
             if trade_id not in self._execution_ml_bound:
-                updated = self.supabase.table("ml_collection").update({
-                    "trade_id": trade_id, "trade_binding_status": "BOUND",
-                }).eq(signal_column, str(signal.id)).is_("trade_id", "null").execute()
+                updated = self._supabase_call(
+                    lambda: self.supabase.table("ml_collection").update({
+                        "trade_id": trade_id, "trade_binding_status": "BOUND",
+                    }).eq(signal_column, str(signal.id)).is_("trade_id", "null").execute()
+                )
                 if updated.data:
                     self._execution_ml_bound.add(trade_id)
                 else:
-                    existing = self.supabase.table("ml_collection").select("trade_id").eq(
-                        signal_column, str(signal.id)
-                    ).eq("trade_id", trade_id).execute()
+                    existing = self._supabase_call(
+                        lambda: self.supabase.table("ml_collection").select("trade_id").eq(
+                            signal_column, str(signal.id)
+                        ).eq("trade_id", trade_id).execute()
+                    )
                     if existing.data:
                         self._execution_ml_bound.add(trade_id)
 
@@ -1536,7 +1559,9 @@ class PositionManager:
         if getattr(self, "supabase", None) is None:
             return
         with self._context_locks.setdefault(trade_id, threading.Lock()):
-            response = self.supabase.table("trade_analytics").select("market_context").eq("id", trade_id).execute()
+            response = self._supabase_call(
+                lambda: self.supabase.table("trade_analytics").select("market_context").eq("id", trade_id).execute()
+            )
             if not response.data:
                 raise RuntimeError("ATR trade analytics row is unavailable")
             context = dict(response.data[0].get("market_context") or {})
@@ -1555,7 +1580,9 @@ class PositionManager:
                     **(context.get("option_reference_milestones") or {}),
                     **reference_milestone_snapshot,
                 }
-            updated = self.supabase.table("trade_analytics").update({"market_context": context}).eq("id", trade_id).execute()
+            updated = self._supabase_call(
+                lambda: self.supabase.table("trade_analytics").update({"market_context": context}).eq("id", trade_id).execute()
+            )
             if atr_snapshot is not None:
                 if not updated.data:
                     raise RuntimeError("ATR trailing context was not persisted")
@@ -1637,11 +1664,15 @@ class PositionManager:
                     milestone=t2_snapshot, target=target_snapshot, refs=reference_snapshot):
             terminal = data["state"] in ["CLOSED", "STOPPED_OUT"]
             if terminal:
-                self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                self._supabase_call(
+                    lambda: self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                )
                 self._cleanup_option_selection_if_terminal()
             self._persist_trade_context(t_id, snapshot, milestone, target, refs)
             if not terminal:
-                self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                self._supabase_call(
+                    lambda: self.supabase.table("active_trades").update(data).eq("id", t_id).execute()
+                )
 
         def _log_exit(
             t_id=trade["id"],
@@ -1838,28 +1869,68 @@ class PositionManager:
                 cache[key] = deepcopy(value)
         self._reference_price_evidence = cache
 
-    def record_reference_spot_quote(self, price, observed_at, source):
-        """Keep a bounded cache of timestamped live spot quotes for exit recovery."""
+    @staticmethod
+    def _normalize_reference_quote(price, observed_at, source):
+        if isinstance(price, bool) or not isinstance(source, str) or not source.strip():
+            return None
+        if isinstance(observed_at, datetime) and observed_at.tzinfo is None:
+            return None
         try:
             value = float(price)
             at = parse_candle_timestamp(observed_at)
         except (TypeError, ValueError, OverflowError, OSError):
+            return None
+        if not isfinite(value) or value <= 0 or at.tzinfo is None:
+            return None
+        return value, at, source.strip()
+
+    @staticmethod
+    def _safe_quote_sort_key(item):
+        try:
+            return (0, parse_candle_timestamp(item["observed_at"]))
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            return (1, datetime.min.replace(tzinfo=timezone.utc))
+
+    def record_reference_spot_quote(self, price, observed_at, source):
+        """Keep a bounded cache of timestamped live spot quotes for exit recovery."""
+        parsed = self._normalize_reference_quote(price, observed_at, source)
+        if parsed is None:
             return False
-        if not isfinite(value) or value <= 0 or not isinstance(source, str) or not source.strip():
-            return False
+        value, at, clean_source = parsed
         cache = getattr(self, "_reference_price_evidence", {})
         quotes = list(cache.get("spot_quotes") or [])
-        quote = {"price": value, "observed_at": at.isoformat(), "source": source.strip()}
+        quote = {"price": value, "observed_at": at.isoformat(), "source": clean_source}
         if quote not in quotes:
             quotes.append(quote)
-        quotes.sort(key=lambda item: parse_candle_timestamp(item["observed_at"]))
+        quotes.sort(key=self._safe_quote_sort_key)
         cache["spot_quotes"] = quotes[-1000:]
         self._reference_price_evidence = cache
         try:
             from quote_service import get_quote_service
-            get_quote_service().record_spot_quote(value, at, source=source.strip())
+            get_quote_service().record_spot_quote(value, at, source=clean_source)
         except Exception:
             pass
+        return True
+
+    def record_reference_option_quote(self, security_id, price, observed_at, source):
+        """Keep a bounded cache of timestamped live option quotes for target/exit recovery."""
+        if not isinstance(security_id, str) or not security_id.strip():
+            return False
+        parsed = self._normalize_reference_quote(price, observed_at, source)
+        if parsed is None:
+            return False
+        sec = security_id.strip()
+        value, at, clean_source = parsed
+        cache = getattr(self, "_reference_price_evidence", {})
+        by_security = {k: list(v) for k, v in (cache.get("option_quotes") or {}).items()}
+        quotes = by_security.get(sec, [])
+        quote = {"price": value, "observed_at": at.isoformat(), "source": clean_source}
+        if quote not in quotes:
+            quotes.append(quote)
+        quotes.sort(key=self._safe_quote_sort_key)
+        by_security[sec] = quotes[-200:]
+        cache["option_quotes"] = by_security
+        self._reference_price_evidence = cache
         return True
 
     def get_selected_option_contract(self) -> Optional[dict]:
@@ -1978,11 +2049,19 @@ class PositionManager:
         cache = getattr(self, "_reference_price_evidence", {})
         security = str((opt.get("contract") or {}).get("security_id", ""))
         minutes = cache.get("option_minutes", {}).get(security, [])
-        quotes = cache.get("option_quotes", {}).get(security, [])
+        quotes = list(cache.get("option_quotes", {}).get(security, []))
+        last_quote = opt.get("last_option_quote")
+        if isinstance(last_quote, dict) and last_quote not in quotes:
+            quotes.append(last_quote)
         for name, leg in legs.items():
             if leg.get("option_price") is None:
-                evidence = option_target_evidence(leg.get("event_at"), observations=quotes,
-                    option_minutes=minutes, source_minute=leg.get("source_minute"))
+                evidence = option_target_evidence(
+                    leg.get("event_at"),
+                    observations=quotes,
+                    option_minutes=minutes,
+                    source_minute=leg.get("source_minute"),
+                    max_delta_seconds=10,
+                )
                 if evidence:
                     leg.update(option_price=evidence["price"], option_source=evidence["source"],
                                option_observed_at=evidence["observed_at"], approximate=evidence["approximate"])
@@ -2799,8 +2878,15 @@ class PositionManager:
                                                 self._persist_trade_context(t_id, atr_snapshot=atr),
                                         )
                                 continue
-                        except Exception:
-                            pass
+                        except Exception as reload_exc:
+                            logger.warning(
+                                "Option lifecycle conflict reload failed for %s (event %s, rev %s): %s",
+                                trade_id, event_id, revision, reload_exc, exc_info=True,
+                            )
+                    logger.warning(
+                        "Option lifecycle persistence failed for %s (event %s, rev %s): %s",
+                        trade_id, event_id, revision, exc, exc_info=exc,
+                    )
                     if trade_id not in self._option_warning_sent:
                         self._option_warning_sent.add(trade_id)
                         try:
@@ -4135,6 +4221,7 @@ class PositionManager:
                 "option_type": raw_contract.get("option_type"),
             }
             matching = []
+            post_entry_match = False
             for trade in option_trades:
                 opt = (trade.get("market_context") or {}).get("option_trailing") or {}
                 if opt.get("policy_version") != "option_premium_protection_v2":
@@ -4150,6 +4237,10 @@ class PositionManager:
                 }
                 if incoming_contract != expected_contract:
                     continue
+                raw_entry_at = opt.get("activated_at") or trade.get("entry_timestamp")
+                entry_at = parse_candle_timestamp(raw_entry_at) if raw_entry_at is not None else None
+                if entry_at is not None and observed_at > entry_at:
+                    post_entry_match = True
                 if self._option_quote_is_replay(opt, observed_at, value):
                     if await self._retain_fill_overlapping_quote_ambiguity(
                             trade, observed_at, received_at, value, quote.get("source")):
@@ -4165,10 +4256,16 @@ class PositionManager:
                         trade, observed_at, received_at, price=value,
                         source=quote.get("source"), events=events):
                     continue
-                entry_at = parse_candle_timestamp(opt.get("activated_at") or trade.get("entry_timestamp"))
-                if observed_at <= entry_at:
+                if entry_at is None or observed_at <= entry_at:
                     continue
                 matching.append(trade)
+            if post_entry_match:
+                self.record_reference_option_quote(
+                    incoming_contract["security_id"],
+                    value,
+                    observed_at,
+                    quote.get("source") or "OPTION_QUOTE",
+                )
             if not matching:
                 continue
             # A shared contract quote can be valid for one trade but stale for

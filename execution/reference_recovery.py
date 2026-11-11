@@ -165,7 +165,7 @@ async def run_reference_recovery(manager, fetcher, analytics, *, limit=100, offs
                 required_option_minutes.setdefault(security, set()).add(
                     event.replace(second=0, microsecond=0))
                 exact = _stamp(leg.get("event_at")) if not leg.get("source_minute") else None
-                if exact is not None and 0 <= (now - exact).total_seconds() <= 5:
+                if exact is not None and 0 <= (now - exact).total_seconds() <= 10:
                     quote_requests[key[:-1]] = contract
             if (name == "EXIT" and leg.get("spot_price") is None
                     and (leg.get("option_source") == "completed_5m_close" or is_premium_trigger_exit(opt, leg))):

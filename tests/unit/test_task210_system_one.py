@@ -753,3 +753,20 @@ def test_run_non_trading_session(mock_bootstrap, mock_create):
         # We need time.sleep to raise KeyboardInterrupt to exit the loop
         with patch('system_one.consumer.time.sleep', side_effect=[None, KeyboardInterrupt()]):
             run()
+
+
+def test_jev_create_supabase_client_configures_http1_on_real_client(monkeypatch):
+    import httpx
+    from supabase._sync.client import create_client as real_create_client
+    monkeypatch.setenv("SUPABASE_URL", "http://db.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "dedicated-worker-key")
+    monkeypatch.setattr("system_one.consumer.create_client", real_create_client)
+
+    client = _create_supabase_client()
+    session = client.postgrest.session
+    try:
+        assert isinstance(session, httpx.Client)
+        assert session._transport._pool._http2 is False
+        assert session.timeout == httpx.Timeout(30.0, connect=10.0)
+    finally:
+        session.close()

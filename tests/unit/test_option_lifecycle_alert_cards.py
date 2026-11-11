@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from alerts import render_option_lifecycle_event, send_option_lifecycle_event, send_trade_update
+from alerts import (
+    _format_wall_event_time,
+    _parse_alert_timestamp,
+    render_option_lifecycle_event,
+    send_option_lifecycle_event,
+    send_trade_update,
+)
 
 
 def event(kind="T2_HIT", milestone=2):
@@ -302,3 +308,155 @@ def test_stopped_out_at_be_uses_option_total_points_for_versioned_trade():
     desc = rendered["embeds"][0]["description"]
     # 1 lot of 25 * -4.50 = -112.50
     assert "Estimated Trade PnL**: ₹ -112.50 (reference accounting)" in desc
+
+
+def test_t1_t2_versioned_alerts_never_show_projected_targets_and_use_stale_quote_up_to_30s():
+    """Versioned T1/T2 alerts use <=30s last_option_quote marked '(stale quote)' or 'unavailable', never sizing.target_1/2."""
+    for kind, milestone, bad_target in [("T1_HIT", 1, "150.00"), ("T2_HIT", 2, "170.00")]:
+        event_at = datetime(2026, 10, 23, 11, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        snap_stale = event(kind, milestone=milestone)
+        snap_stale["event_time"] = event_at.isoformat()
+        snap_stale["option_trailing"]["last_option_quote"] = {
+            "price": 146.50,
+            "observed_at": (event_at - timedelta(seconds=25)).isoformat(),
+            "source": "dhan_last_trade",
+        }
+        snap_stale["trade"]["market_context"]["option_trailing"]["last_option_quote"] = snap_stale["option_trailing"]["last_option_quote"]
+        desc_stale = render_option_lifecycle_event(snap_stale)["embeds"][0]["description"]
+        assert "Estimated Option Exit**: ₹ 146.50 (₹ +181.25 / lot) (stale quote)" in desc_stale
+        assert bad_target not in desc_stale
+
+        snap_expired = deepcopy(snap_stale)
+        expired_quote = {
+            "price": 146.50,
+            "observed_at": (event_at - timedelta(seconds=35)).isoformat(),
+            "source": "dhan_last_trade",
+        }
+        snap_expired["option_trailing"]["last_option_quote"] = expired_quote
+        snap_expired["trade"]["market_context"]["option_trailing"]["last_option_quote"] = expired_quote
+        desc_expired = render_option_lifecycle_event(snap_expired)["embeds"][0]["description"]
+        assert "Estimated Option Exit**: ₹ unavailable (₹ unavailable / lot)" in desc_expired
+        assert bad_target not in desc_expired
+
+
+def test_closed_multi_leg_alerts_compute_1_lot_when_suggested_lots_zero_and_scale_when_positive():
+    """When suggested/final lots is 0, compute Estimated Trade PnL on 1 lot; when >0, multiply by lots."""
+    for kind in ("STOPPED_OUT_AT_BE", "ATR_SL_HIT"):
+        snap_zero = event(kind, milestone=1)
+        snap_zero["option_trailing"]["phase"] = "CLOSED"
+        snap_zero["trade"]["market_context"]["option_trailing"]["phase"] = "CLOSED"
+        snap_zero["trade"]["market_context"]["options_sizing"].update(lot_size=65, lots=0)
+        snap_zero["option_trailing"]["accounting"] = {
+            "option_total_points": 2.225,
+            "legs": {"EXIT": {"option_price": 231.25}},
+        }
+        snap_zero["trade"]["market_context"]["option_trailing"]["accounting"] = snap_zero["option_trailing"]["accounting"]
+        desc_zero = render_option_lifecycle_event(snap_zero)["embeds"][0]["description"]
+        assert "Estimated Trade PnL**: ₹ +144.62 (1-lot reference accounting; 0 lots suggested)" in desc_zero
+
+        snap_multi = deepcopy(snap_zero)
+        snap_multi["trade"]["market_context"]["options_sizing"]["lots"] = 3
+        desc_multi = render_option_lifecycle_event(snap_multi)["embeds"][0]["description"]
+        assert "Estimated Trade PnL**: ₹ +433.88 (reference accounting; 3 lots)" in desc_multi
+
+
+def test_reference_pnl_lots_and_stale_quote_edge_cases():
+    """Cover final_lots=None fallbacks, missing lot keys, and stale-quote guard branches."""
+    # final_lots=None falls back to lots=2, lots=0, or generic 1-lot accounting
+    base = event("STOPPED_OUT_AT_BE", milestone=1)
+    base["option_trailing"]["phase"] = "CLOSED"
+    base["trade"]["market_context"]["option_trailing"]["phase"] = "CLOSED"
+    base["option_trailing"]["accounting"] = {"option_total_points": 2.225, "legs": {"EXIT": {"option_price": 231.25}}}
+    base["trade"]["market_context"]["option_trailing"]["accounting"] = base["option_trailing"]["accounting"]
+
+    snap_two = deepcopy(base)
+    snap_two["trade"]["market_context"]["options_sizing"] = {"lot_size": 65, "final_lots": None, "lots": 2}
+    assert "₹ +289.25 (reference accounting; 2 lots)" in render_option_lifecycle_event(snap_two)["embeds"][0]["description"]
+
+    snap_zero = deepcopy(base)
+    snap_zero["trade"]["market_context"]["options_sizing"] = {"lot_size": 65, "final_lots": None, "lots": 0}
+    assert "₹ +144.62 (1-lot reference accounting; 0 lots suggested)" in render_option_lifecycle_event(snap_zero)["embeds"][0]["description"]
+
+    snap_missing = deepcopy(base)
+    snap_missing["trade"]["market_context"]["options_sizing"] = {"lot_size": 65}
+    assert "₹ +144.62 (1-lot reference accounting)" in render_option_lifecycle_event(snap_missing)["embeds"][0]["description"]
+
+    # Stale quote guard branches: zero price, naive timestamp, invalid event_time, and None event_time wall fallback
+    t1_base = event("T1_HIT", milestone=1)
+    t1_base.pop("event_time", None)
+    t1_base["option_trailing"].pop("t1_at", None)
+    t1_base["trade"]["market_context"]["option_trailing"].pop("t1_at", None)
+    now_iso = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+
+    for bad_quote, ev_time in [
+        ({"price": 0, "observed_at": now_iso}, "2026-10-23T11:00:00+05:30"),
+        ({"price": 146.50, "observed_at": "2026-10-23T11:00:00"}, "2026-10-23T11:00:00+05:30"),
+        ({"price": 146.50, "observed_at": now_iso}, "not-a-timestamp"),
+    ]:
+        snap = deepcopy(t1_base)
+        snap["event_time"] = ev_time
+        snap["option_trailing"]["last_option_quote"] = bad_quote
+        snap["trade"]["market_context"]["option_trailing"]["last_option_quote"] = bad_quote
+        desc = render_option_lifecycle_event(snap)["embeds"][0]["description"]
+        assert "Estimated Option Exit**: ₹ unavailable (₹ unavailable / lot)" in desc
+
+    snap_wall = deepcopy(t1_base)
+    snap_wall["option_trailing"]["last_option_quote"] = {"price": 146.50, "observed_at": now_iso}
+    snap_wall["trade"]["market_context"]["option_trailing"]["last_option_quote"] = snap_wall["option_trailing"]["last_option_quote"]
+    desc_wall = render_option_lifecycle_event(snap_wall)["embeds"][0]["description"]
+    assert "Estimated Option Exit**: ₹ 146.50 (₹ +181.25 / lot) (stale quote)" in desc_wall
+
+
+def test_parse_alert_timestamp_handles_postgres_variable_precision_for_python310(monkeypatch):
+    """Simulate Python 3.10 strictness: only 3/6 fractional digits and ±HH:MM offsets accepted."""
+    import alerts as alerts_module
+    real_datetime = datetime
+
+    class StrictPy310Datetime(datetime):
+        @classmethod
+        def fromisoformat(cls, date_string):
+            # Reject 1/2/4/5 fractional digits or +00 without :00 like Python 3.10
+            import re as _re
+            if "+" in date_string or "-" in date_string[10:]:
+                tz_match = _re.search(r"([+-]\d+(?::\d+)?)$", date_string)
+                if tz_match and ":" not in tz_match.group(1):
+                    raise ValueError(f"Invalid py310 offset: {date_string}")
+            frac_match = _re.search(r"\.(\d+)", date_string)
+            if frac_match and len(frac_match.group(1)) not in (3, 6):
+                raise ValueError(f"Invalid py310 fraction: {date_string}")
+            return real_datetime.fromisoformat(date_string)
+
+    monkeypatch.setattr(alerts_module, "datetime", StrictPy310Datetime)
+    for raw in (
+        "2026-11-11T05:46:29.31103+00",
+        "2026-11-11T11:16:29.5+05:30",
+        "2026-11-11T11:16:29.1234Z",
+        "2026-11-11T11:16:29.12+0530",
+    ):
+        parsed = _parse_alert_timestamp(raw)
+        assert parsed is not None and parsed.tzinfo is not None
+    assert _parse_alert_timestamp("2026-11-11T11:16:29.31103") is None
+    assert _format_wall_event_time("2026-11-11T05:46:29.31103+00") == "11-Nov-2026 11:16 IST"
+
+
+def test_legacy_stopped_out_at_be_zero_lots_and_null_legs_guards():
+    legacy_zero = {
+        "display_id": "3000", "setup_type": "TREND_CONTINUATION", "direction": "BULLISH",
+        "entry_price": 25000.0, "stop_loss": 25000.0, "state": "CLOSED",
+        "market_context": {
+            "options_sizing": {
+                "entry_limit": 200.0, "target_1": 220.0, "lot_size": 65, "lots": 0,
+            },
+            "option_trailing": {
+                "accounting": {"legs": {"T1": None, "EXIT": None}},
+            },
+        },
+    }
+    rendered = render_option_lifecycle_event({
+        "type": "STOPPED_OUT_AT_BE",
+        "event_time": "2026-11-11T05:46:29+00:00",
+        "index_price": 25000.0,
+        "trade": legacy_zero,
+        "option_trailing": legacy_zero["market_context"]["option_trailing"],
+    })["embeds"][0]["description"]
+    assert "Estimated Trade PnL**: ₹ +650.00 (1-lot reference accounting; 0 lots suggested; 50% T1 booking model)" in rendered

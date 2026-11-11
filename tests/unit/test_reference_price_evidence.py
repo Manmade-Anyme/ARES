@@ -208,3 +208,27 @@ def test_intraminute_premium_exit_prefers_quote_and_labels_completed_close_appro
     evidence = spot_exit_evidence(event, spot_minutes=[minute()], observed_at=later, allow_intraminute=True)
     assert evidence['price'] == 105 and evidence['approximate'] is True
     assert spot_exit_evidence(event, spot_minutes=[minute()], observed_at=event, allow_intraminute=True) is None
+
+
+def test_option_target_evidence_respects_custom_ten_second_window():
+    event = START + timedelta(seconds=30)
+    within_ten = quote(event - timedelta(seconds=9), 106.5)
+    after_ten = quote(event + timedelta(seconds=11), 109.0)
+    evidence = option_target_evidence(
+        event,
+        observations=[within_ten, after_ten],
+        observed_at=START + timedelta(minutes=2),
+        max_delta_seconds=10,
+    )
+    assert evidence == {
+        "price": 106.5,
+        "observed_at": (event - timedelta(seconds=9)).isoformat(),
+        "source": "test_quote",
+        "approximate": False,
+    }
+    assert option_target_evidence(
+        event,
+        observations=[after_ten],
+        observed_at=START + timedelta(minutes=2),
+        max_delta_seconds=10,
+    ) is None

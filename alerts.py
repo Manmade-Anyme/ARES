@@ -1,5 +1,6 @@
 import httpx
 import math
+import re
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from models import AresSignal, OIWallBias, OIWallWatchCancellation
@@ -54,14 +55,31 @@ def _option_bracket_fields(signal, *, for_discord=False):
 
 
 
+def _parse_alert_timestamp(value):
+    """Parse a datetime or ISO timestamp only if timezone-aware (Python 3.10 safe)."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    # PostgreSQL emits 1-5 fractional digits or +00 offsets; Python 3.10 requires 3/6 digits and ±HH:MM.
+    text = re.sub(r"\.(\d+)(?=[+-]|$)", lambda match: "." + match.group(1)[:6].ljust(6, "0"), text)
+    text = re.sub(r"([+-]\d{2})$", r"\1:00", text)
+    text = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def _format_wall_event_time(raw_timestamp):
     if not isinstance(raw_timestamp, str):
         return None
-    try:
-        event_time = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if event_time.tzinfo is None:
+    event_time = _parse_alert_timestamp(raw_timestamp)
+    if event_time is None:
         return None
     return event_time.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%d-%b-%Y %H:%M IST")
 
@@ -538,7 +556,59 @@ def trade_update_action_text(update_type: str, trade: dict) -> str:
     return f"Trade Closed ({update_type})."
 
 
-def _option_lifecycle_estimate(trade, spot, update_type):
+def _stale_quote_option_price(opt_ctx, legs, leg_key, event_time=None):
+    """Option B fallback: use opt_ctx['last_option_quote'] only if <= 30s old at the target event."""
+    quote = opt_ctx.get("last_option_quote")
+    if not isinstance(quote, dict) or isinstance(quote.get("price"), bool) or _number(quote.get("price")) == "unavailable":
+        return None
+    price = float(quote["price"])
+    if price <= 0:
+        return None
+    quote_at = _parse_alert_timestamp(quote.get("observed_at"))
+    if quote_at is None:
+        return None
+    opt_time_key = "t1_at" if leg_key == "T1" else "t2_at"
+    ref_candidates = (
+        (legs.get(leg_key) or {}).get("event_at"),
+        opt_ctx.get(opt_time_key),
+        event_time,
+    )
+    ref_at = None
+    for candidate in ref_candidates:
+        ref_at = _parse_alert_timestamp(candidate)
+        if ref_at is not None:
+            break
+    if ref_at is None:
+        if event_time is not None:
+            return None
+        ref_at = datetime.now(timezone.utc)
+    delta = (ref_at - quote_at).total_seconds()
+    return price if -10 <= delta <= 30 else None
+
+
+def _reference_pnl_lots(sizing):
+    """Return effective lot multiplier (1 lot when suggested/final lots is 0 or missing) and label."""
+    raw_lots = next(
+        (
+            sizing.get(key)
+            for key in ("final_lots", "lots", "suggested_lots")
+            if not isinstance(sizing.get(key), bool) and _number(sizing.get(key)) != "unavailable"
+        ),
+        None,
+    )
+    if raw_lots is not None:
+        lots_val = float(raw_lots)
+        if lots_val > 0:
+            if lots_val == 1:
+                return 1.0, "(reference accounting)"
+            lot_text = int(lots_val) if lots_val.is_integer() else lots_val
+            return lots_val, f"(reference accounting; {lot_text} lots)"
+        if lots_val == 0:
+            return 1.0, "(1-lot reference accounting; 0 lots suggested)"
+    return 1.0, "(1-lot reference accounting)"
+
+
+def _option_lifecycle_estimate(trade, spot, update_type, event_time=None):
     """Project option lifecycle outcomes without mislabelling spot events as fills."""
     opt_ctx = (trade.get("market_context") or {}).get("option_trailing") or {}
     sizing = (trade.get("market_context") or {}).get("options_sizing") or {}
@@ -550,6 +620,7 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     entry = opt_ctx.get("original_option_entry") or sizing.get("entry_limit") or sizing.get("premium") or None
     lot_size = sizing.get("lot_size", settings.nifty_lot_size)
     t1 = sizing.get("target_1") or sizing.get("option_target") or None
+    is_versioned = opt_ctx.get("policy_version") in {"option_atr_v1", "option_premium_protection_v2"}
 
     if update_type in ("ATR_ACTIVE", "ATR_SL_UPDATED", "OPTION_SL_RATCHETED"):
         locked_sl = opt_ctx.get("locked_option_sl")
@@ -566,13 +637,19 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     exit_info = opt_ctx.get("exit") or {}
     exit_price = exit_info.get("reference_exit_price") or exit_info.get("option_close")
     legs = (opt_ctx.get("accounting") or {}).get("legs") or {}
+    stale_quote = False
     if exit_price is None:
-        exit_price = legs.get("EXIT", {}).get("option_price")
+        exit_price = (legs.get("EXIT") or {}).get("option_price")
     if exit_price is None:
-        if update_type == "T1_HIT":
-            exit_price = legs.get("T1", {}).get("option_price") or t1
-        elif update_type in ("T2_HIT", "T2_REACHED"):
-            exit_price = legs.get("T2", {}).get("option_price") or sizing.get("target_2")
+        if update_type in ("T1_HIT", "T2_HIT", "T2_REACHED"):
+            leg_key = "T1" if update_type == "T1_HIT" else "T2"
+            exit_price = (legs.get(leg_key) or {}).get("option_price")
+            if exit_price is None:
+                if is_versioned:
+                    exit_price = _stale_quote_option_price(opt_ctx, legs, leg_key, event_time=event_time)
+                    stale_quote = exit_price is not None
+                else:
+                    exit_price = t1 if leg_key == "T1" else sizing.get("target_2")
         elif update_type == "STOPPED_OUT_AT_BE":
             exit_price = entry
         else:
@@ -589,37 +666,43 @@ def _option_lifecycle_estimate(trade, spot, update_type):
     if all(_number(value) != "unavailable" for value in (entry, exit_price, lot_size)) and float(lot_size) > 0:
         pnl_per_lot = (float(exit_price) - float(entry)) * float(lot_size)
 
+    stale_suffix = " (stale quote)" if stale_quote else ""
     text = (
         f"\n💰 **Estimated Option Exit**: ₹ {_number(exit_price)} "
-        f"(₹ {_number(pnl_per_lot, '+.2f')} / lot)\n"
+        f"(₹ {_number(pnl_per_lot, '+.2f')} / lot){stale_suffix}\n"
         "Option figures are model estimates, not confirmed fills."
     )
     if update_type == "T1_HIT":
         text += f"\n🛡️ **SL Status**: Break-Even Spot {_number(trade.get('entry_price'))}; entry premium reference ₹ {_number(entry)}. 50% partial-booking model."
-    if update_type == "STOPPED_OUT_AT_BE":
-        lots = sizing.get("final_lots", sizing.get("lots", sizing.get("suggested_lots")))
-        is_versioned = opt_ctx.get("policy_version") in {"option_atr_v1", "option_premium_protection_v2"}
+    show_blended_pnl = update_type == "STOPPED_OUT_AT_BE" or (
+        is_versioned
+        and opt_ctx.get("phase") == "CLOSED"
+        and (opt_ctx.get("highest_milestone") or 0) >= 1
+        and update_type in {"ATR_SL_HIT", "OPTION_SL_FLOOR_HIT", "SL_HIT"}
+    )
+    if show_blended_pnl:
         if is_versioned:
             total_points = (opt_ctx.get("accounting") or {}).get("option_total_points")
-            if total_points is not None and all(_number(value) != "unavailable" for value in (lots, lot_size)) and float(lots) > 0 and float(lot_size) > 0:
-                net = float(total_points) * float(lot_size) * float(lots)
-                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (reference accounting). Spot break-even does not guarantee option break-even."
+            if total_points is not None and _number(lot_size) != "unavailable" and float(lot_size) > 0:
+                effective_lots, lot_label = _reference_pnl_lots(sizing)
+                net = float(total_points) * float(lot_size) * effective_lots
+                be_note = " Spot break-even does not guarantee option break-even." if update_type == "STOPPED_OUT_AT_BE" else ""
+                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} {lot_label}.{be_note}"
         else:
-            if all(_number(value) != "unavailable" for value in (t1, entry, lots, lot_size)) and float(lots) > 0 and float(lot_size) > 0:
-                net = (float(t1) - float(entry)) * float(lot_size) * float(lots) * .5
-                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} (50% T1 booking model). Spot break-even does not guarantee option break-even."
+            if all(_number(value) != "unavailable" for value in (t1, entry, lot_size)) and float(lot_size) > 0:
+                effective_lots, lot_label = _reference_pnl_lots(sizing)
+                net = (float(t1) - float(entry)) * float(lot_size) * effective_lots * .5
+                model_label = "(1-lot reference accounting; 0 lots suggested; 50% T1 booking model)" if "0 lots suggested" in lot_label else "(50% T1 booking model)"
+                text += f"\n💰 **Estimated Trade PnL**: ₹ {_number(net, '+.2f')} {model_label}. Spot break-even does not guarantee option break-even."
     return text
 
 
 def _lifecycle_event_time(value):
     """Never substitute detection/wall time for a historical event timestamp."""
-    try:
-        timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if timestamp.tzinfo is None:
-            return "unavailable"
-        return timestamp.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%d-%b-%Y %H:%M:%S IST")
-    except (ValueError, TypeError):
+    timestamp = _parse_alert_timestamp(value)
+    if timestamp is None:
         return "unavailable"
+    return timestamp.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%d-%b-%Y %H:%M:%S IST")
 
 
 def format_trade_update_payload(trade: dict, spot: float, update_type: str, event_time=None) -> dict:
@@ -685,7 +768,7 @@ def format_trade_update_payload(trade: dict, spot: float, update_type: str, even
         if marker.get("spot_points_from_entry") is not None:
             description += f"\n📈 **Spot move to T2**: {_number(marker['spot_points_from_entry'], '+.2f')} points (reference)."
 
-    description += _option_lifecycle_estimate(trade, spot, update_type)
+    description += _option_lifecycle_estimate(trade, spot, update_type, event_time=event_time)
 
     display_id = trade.get("display_id") or trade.get("signal_id", "0000")
     setup_type = trade.get("setup_type", "TRADE")

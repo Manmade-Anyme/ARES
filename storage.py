@@ -23,12 +23,17 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+import httpx
 import logging
 import math
 import re
+import threading
+import time
 from typing import Any, Dict, List, Optional, Union
 import numpy as np
+from postgrest.exceptions import APIError
 from supabase import create_client, Client
+from supabase._sync.client import Client as SyncSupabaseClient
 
 from options_math import option_sizing_context, option_sizing_summary
 from models import AresSignal
@@ -37,6 +42,63 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
+_TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
+
+
+def _is_transient_rpc_error(exc: Exception) -> bool:
+    """Return True only for transient transport errors or retryable gateway HTTP statuses."""
+    if isinstance(exc, (httpx.TransportError, ConnectionError, TimeoutError)):
+        return True
+    if isinstance(exc, APIError):
+        raw_error = getattr(exc, "_raw_error", None)
+        raw_code = exc.code if exc.code is not None else (raw_error.get("code") if isinstance(raw_error, dict) else None)
+        if isinstance(raw_code, bool):
+            return False
+        try:
+            return int(str(raw_code).strip()) in _TRANSIENT_HTTP_STATUS_CODES
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def _configure_http1_client(client: Any) -> Any:
+    """Use an HTTP/1.1 httpx.Client on real Supabase clients to avoid shared-HTTP/2 stream resets."""
+    if (
+        isinstance(client, SyncSupabaseClient)
+        and getattr(client, "_postgrest", None) is None
+        and getattr(getattr(client, "options", None), "httpx_client", None) is None
+    ):
+        client.options.httpx_client = httpx.Client(
+            http2=False,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            follow_redirects=True,
+        )
+    return client
+
+
+def execute_with_retry(
+    op,
+    *,
+    lock: Optional[threading.RLock] = None,
+    max_attempts: int = 3,
+    base_delay: float = 0.15,
+):
+    """Execute a blocking Supabase call with optional serialization and transient retries."""
+    for attempt in range(max_attempts):
+        try:
+            if lock is None:
+                return op()
+            with lock:
+                return op()
+        except Exception as exc:
+            if not _is_transient_rpc_error(exc) or attempt >= max_attempts - 1:
+                raise
+            delay = base_delay * (attempt + 1)
+            logger.warning(
+                "Transient Supabase RPC error (attempt %d/%d, retrying in %.2fs): %s",
+                attempt + 1, max_attempts, delay, exc,
+            )
+            time.sleep(delay)
 
 
 
@@ -63,7 +125,7 @@ def get_supabase_client() -> Client:
     key = getattr(settings, "supabase_service_role_key", "") or getattr(settings, "supabase_key", "")
     if not url or not key:
         raise ValueError("Supabase URL and Key must be configured.")
-    return create_client(url, key)
+    return _configure_http1_client(create_client(url, key))
 
 
 class Storage:
@@ -76,10 +138,10 @@ class Storage:
         """
         Initialize the Supabase client using credentials from settings.
         """
-        self.supabase: Client = create_client(
+        self.supabase: Client = _configure_http1_client(create_client(
             settings.supabase_url,
             settings.supabase_key
-        )
+        ))
 
     async def log_signal(self, signal: AresSignal, spot: float) -> bool:
         """
@@ -160,10 +222,24 @@ class AnalyticsLogger:
         """
         service_key = getattr(settings, "supabase_service_role_key", "")
         self._option_backend_configured = bool(service_key)
-        self.supabase: Client = create_client(
+        self.supabase: Client = _configure_http1_client(create_client(
             settings.supabase_url, service_key or settings.supabase_key,
-        )
+        ))
         self._entry_futures = {}
+        self._supabase_lock = threading.RLock()
+
+    def _execute_with_retry(self, op, *, max_attempts: int = 3, base_delay: float = 0.15):
+        """Serialize PostgREST calls on the shared client and retry transient transport/5xx errors."""
+        lock = getattr(self, "_supabase_lock", None)
+        if lock is None:
+            # Support instances constructed via AnalyticsLogger.__new__ in offline tests.
+            lock = threading.RLock()
+            self._supabase_lock = lock
+        return execute_with_retry(op, lock=lock, max_attempts=max_attempts, base_delay=base_delay)
+
+    def _rpc_execute(self, fn_name: str, params: Dict[str, Any]) -> Any:
+        """Execute an idempotent Supabase RPC under client lock with short transient retries."""
+        return self._execute_with_retry(lambda: self.supabase.rpc(fn_name, params).execute())
 
     def log_entry(self, trade_id: str, signal: AresSignal, spot: float, atm: Any = None) -> None:
         """
@@ -245,7 +321,10 @@ class AnalyticsLogger:
         data.update(signal_fields)
 
         def _insert():
-            self.supabase.table("trade_analytics").insert(data).execute()
+            self._execute_with_retry(
+                lambda: self.supabase.table("trade_analytics").insert(data).execute(),
+                max_attempts=1,
+            )
 
         try:
             loop = asyncio.get_running_loop()
@@ -287,9 +366,10 @@ class AnalyticsLogger:
             else:
                 fields = "entry_price,direction,signal_id,setup_type,entry_timestamp,score"
                 
-            import time
             for _ in range(3):
-                response = self.supabase.table("trade_analytics").select(fields).eq("id", trade_id).execute()
+                response = self._execute_with_retry(
+                    lambda: self.supabase.table("trade_analytics").select(fields).eq("id", trade_id).execute()
+                )
                 if response.data:
                     break
                 time.sleep(0.1)
@@ -351,7 +431,9 @@ class AnalyticsLogger:
             if time_metrics_excluded:
                 update_data["time_metrics_excluded"] = True
 
-            self.supabase.table("trade_analytics").update(update_data).eq("id", trade_id).execute()
+            self._execute_with_retry(
+                lambda: self.supabase.table("trade_analytics").update(update_data).eq("id", trade_id).execute()
+            )
 
             # Back-fill the ml_collection label columns. schema.sql always said
             # "Trade outcomes are back-filled when trades close" — the code to do
@@ -373,27 +455,29 @@ class AnalyticsLogger:
                 if signal_id is None:
                     return
                 try:
-                    res = self.supabase.table("ml_collection").update({
+                    res = self._execute_with_retry(lambda: self.supabase.table("ml_collection").update({
                         "trade_id": trade_id,
                         "trade_outcome": final_state,
                         "trade_pnl": pnl,
                         "trade_score": score,
-                    }).eq("signal_id", str(signal_id)).execute()
+                    }).eq("signal_id", str(signal_id)).execute())
                     if not res.data:
                         print(f"Storage: zero rows updated in ml_collection for signal_id {signal_id}")
                 except Exception as ml_err:
                     print(f"Failed to back-fill ml_collection label: {ml_err}")
                 return
             # Retry logic for ML outcome binding
-            import time
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    res = self.supabase.table("ml_collection").update({
-                        "trade_outcome": final_state,
-                        "trade_pnl": pnl,
-                        "trade_score": score,
-                    }).eq("trade_id", trade_id).eq(signal_col, str(signal_val)).execute()
+                    res = self._execute_with_retry(
+                        lambda: self.supabase.table("ml_collection").update({
+                            "trade_outcome": final_state,
+                            "trade_pnl": pnl,
+                            "trade_score": score,
+                        }).eq("trade_id", trade_id).eq(signal_col, str(signal_val)).execute(),
+                        max_attempts=1,
+                    )
                     if res.data:
                         break
                     else:
@@ -453,7 +537,7 @@ class AnalyticsLogger:
             raise ValueError("event_id must identify a stable source event")
         if not getattr(self, "_option_backend_configured", False):
             raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
-        response = self.supabase.rpc(
+        response = self._rpc_execute(
             "apply_option_lifecycle_transition",
             {
                 "p_trade_id": str(trade_id),
@@ -461,7 +545,7 @@ class AnalyticsLogger:
                 "p_event_id": event_id,
                 "p_transition": transition_payload,
             },
-        ).execute()
+        )
         result = getattr(response, "data", None)
         if not isinstance(result, dict) or result.get("success") is not True:
             raise RuntimeError("Option lifecycle transaction did not confirm a commit")
@@ -475,11 +559,11 @@ class AnalyticsLogger:
             raise ValueError("Unsupported lifecycle alert acknowledgement")
         if not getattr(self, "_option_backend_configured", False):
             raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
-        response = self.supabase.rpc(
+        response = self._rpc_execute(
             "acknowledge_option_lifecycle_alert",
             {"p_trade_id": str(trade_id), "p_event_id": event_id,
              "p_status": status, "p_detail": detail},
-        ).execute()
+        )
         result = getattr(response, "data", None)
         if not isinstance(result, dict) or result.get("success") is not True:
             raise RuntimeError("Option alert acknowledgement did not confirm a commit")
@@ -491,53 +575,44 @@ class AnalyticsLogger:
             raise ValueError("Unsupported option execution route reason")
         if not getattr(self, "_option_backend_configured", False):
             raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
-        response = self.supabase.rpc(
+        response = self._rpc_execute(
             "acknowledge_option_execution_route",
             {"p_trade_id": str(trade_id), "p_reason": reason},
-        ).execute()
+        )
         result = getattr(response, "data", None)
         if not isinstance(result, dict) or result.get("success") is not True:
             raise RuntimeError("Option execution route acknowledgement did not confirm a commit")
         return result
 
-    def option_reference_accounting_ready(self) -> bool:
-        """Check the installed schema and backend privileges before enrollment."""
+    def _option_capability_ready(self, rpc_name: str, schema_version: str, label: str) -> bool:
         if not getattr(self, "_option_backend_configured", False):
             return False
         try:
-            response = self.supabase.rpc("option_reference_accounting_capabilities", {}).execute()
+            response = self._rpc_execute(rpc_name, {})
             result = getattr(response, "data", None)
             return (isinstance(result, dict) and result.get("ready") is True
-                    and result.get("schema_version") == "option_reference_accounting_v1")
+                    and result.get("schema_version") == schema_version)
         except Exception:
-            logger.warning("Option reference accounting capability check failed", exc_info=True)
+            logger.warning("%s capability check failed", label, exc_info=True)
             return False
+
+    def option_reference_accounting_ready(self) -> bool:
+        """Check the installed schema and backend privileges before enrollment."""
+        return self._option_capability_ready(
+            "option_reference_accounting_capabilities", "option_reference_accounting_v1", "Option reference accounting"
+        )
 
     def option_premium_protection_ready(self) -> bool:
         """Check the dedicated v2 stop lifecycle contract before enrollment."""
-        if not getattr(self, "_option_backend_configured", False):
-            return False
-        try:
-            response = self.supabase.rpc("option_premium_protection_capabilities", {}).execute()
-            result = getattr(response, "data", None)
-            return (isinstance(result, dict) and result.get("ready") is True
-                    and result.get("schema_version") == "option_premium_protection_v2")
-        except Exception:
-            logger.warning("Option premium protection capability check failed", exc_info=True)
-            return False
+        return self._option_capability_ready(
+            "option_premium_protection_capabilities", "option_premium_protection_v2", "Option premium protection"
+        )
 
     def option_reference_capture_ready(self) -> bool:
         """Check the independent hold-to-exit capture schema and backend privileges."""
-        if not getattr(self, "_option_backend_configured", False):
-            return False
-        try:
-            response = self.supabase.rpc("option_reference_capture_capabilities", {}).execute()
-            result = getattr(response, "data", None)
-            return (isinstance(result, dict) and result.get("ready") is True
-                    and result.get("schema_version") == "one_lot_hold_to_exit_v1")
-        except Exception:
-            logger.warning("Option reference capture capability check failed", exc_info=True)
-            return False
+        return self._option_capability_ready(
+            "option_reference_capture_capabilities", "one_lot_hold_to_exit_v1", "Option reference capture"
+        )
 
     def apply_option_reference_capture(
         self, trade_id: str, expected_revision: int, event_id: str, event: Dict[str, Any],
@@ -551,11 +626,11 @@ class AnalyticsLogger:
             raise ValueError("event must be a JSON object")
         if not getattr(self, "_option_backend_configured", False):
             raise RuntimeError("Option reference capture requires SUPABASE_SERVICE_ROLE_KEY")
-        response = self.supabase.rpc(
+        response = self._rpc_execute(
             "apply_option_reference_capture",
             {"p_trade_id": str(trade_id), "p_expected_revision": expected_revision,
              "p_event_id": event_id, "p_event": event},
-        ).execute()
+        )
         result = getattr(response, "data", None)
         if not isinstance(result, dict) or result.get("success") is not True:
             raise RuntimeError("Option reference capture transaction did not confirm a commit")
@@ -581,9 +656,9 @@ class AnalyticsLogger:
                 raise ValueError("Every weekly backfill row requires a contract, both marks and terminal event")
         if not self.option_reference_capture_ready():
             raise RuntimeError("Weekly option-reference backfill migration/capability is not ready")
-        response = self.supabase.rpc(
+        response = self._rpc_execute(
             "apply_option_reference_weekly_backfill", {"p_rows": rows},
-        ).execute()
+        )
         result = getattr(response, "data", None)
         if (not isinstance(result, dict) or result.get("success") is not True
                 or result.get("backfilled") != 16):
@@ -598,9 +673,9 @@ class AnalyticsLogger:
             raise ValueError("offset must be a non-negative integer")
         if not getattr(self, "_option_backend_configured", False):
             raise RuntimeError("Option reference capture requires SUPABASE_SERVICE_ROLE_KEY")
-        response = self.supabase.rpc(
+        response = self._rpc_execute(
             "list_incomplete_option_reference", {"p_limit": limit, "p_offset": offset},
-        ).execute()
+        )
         result = getattr(response, "data", None)
         if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
             raise RuntimeError("Option reference recovery scan returned invalid data")
@@ -614,9 +689,9 @@ class AnalyticsLogger:
             raise ValueError("offset must be a non-negative integer")
         if not getattr(self, "_option_backend_configured", False):
             raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
-        response = self.supabase.rpc(
+        response = self._rpc_execute(
             "list_incomplete_option_accounting", {"p_limit": limit, "p_offset": offset},
-        ).execute()
+        )
         result = getattr(response, "data", None)
         if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
             raise RuntimeError("Option accounting recovery scan returned invalid data")
@@ -626,7 +701,7 @@ class AnalyticsLogger:
         """Retry a closed trade's exact-bound ML label without changing its lifecycle."""
         if not getattr(self, "_option_backend_configured", False):
             raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
-        response = self.supabase.rpc("sync_option_reference_ml_label", {"p_trade_id": str(trade_id)}).execute()
+        response = self._rpc_execute("sync_option_reference_ml_label", {"p_trade_id": str(trade_id)})
         result = getattr(response, "data", None)
         if not isinstance(result, dict) or result.get("success") is not True:
             raise RuntimeError("Option reference ML label sync did not confirm a commit")
@@ -646,13 +721,13 @@ class AnalyticsLogger:
             raise ValueError("accounting must be an object")
         if not getattr(self, "_option_backend_configured", False):
             raise RuntimeError("Option lifecycle requires SUPABASE_SERVICE_ROLE_KEY")
-        response = self.supabase.rpc(
+        response = self._rpc_execute(
             "apply_option_accounting_correction",
             {"p_trade_id": str(trade_id), "p_expected_revision": expected_revision,
              "p_event_id": event_id, "p_accounting": accounting,
              "p_spot_pnl_points": spot_pnl_points,
              "p_option_pnl_points": option_pnl_points},
-        ).execute()
+        )
         result = getattr(response, "data", None)
         if not isinstance(result, dict) or result.get("success") is not True:
             raise RuntimeError("Option accounting correction did not confirm a commit")
@@ -660,12 +735,16 @@ class AnalyticsLogger:
 
     def get_option_lifecycle_state(self, trade_id: str) -> Dict[str, Any]:
         """Read committed canonical state after a revision conflict or restart."""
-        analytics = self.supabase.table("trade_analytics").select(
-            "market_context,result_state,score,exit_price,pnl_points,exit_timestamp"
-        ).eq("id", str(trade_id)).execute()
-        active = self.supabase.table("active_trades").select(
-            "state,stop_loss"
-        ).eq("id", str(trade_id)).execute()
+        def _select():
+            analytics = self.supabase.table("trade_analytics").select(
+                "market_context,result_state,score,exit_price,pnl_points,exit_timestamp"
+            ).eq("id", str(trade_id)).execute()
+            active = self.supabase.table("active_trades").select(
+                "state,stop_loss"
+            ).eq("id", str(trade_id)).execute()
+            return analytics, active
+
+        analytics, active = self._execute_with_retry(_select)
         if not analytics.data or not active.data:
             raise RuntimeError(f"Missing lifecycle rows for trade {trade_id}")
         row = analytics.data[0]
@@ -685,7 +764,7 @@ def load_dhan_credentials_from_supabase() -> None:
     from config import settings
 
     print("[+] Connecting to Supabase to fetch Dhan credentials...")
-    supabase = create_client(settings.supabase_url, settings.supabase_key)
+    supabase = _configure_http1_client(create_client(settings.supabase_url, settings.supabase_key))
     response = supabase.table("api_keys").select("client_id, access_token").eq("provider", "DHAN").execute()
     if not response.data:
         raise ValueError("No DHAN credentials found in Supabase api_keys table")
@@ -853,7 +932,7 @@ class PredictionLogger:
                 raise ValueError(
                     "PredictionLogger requires supabase_service_role_key; anon key is not permitted."
                 )
-            self.supabase = create_client(url, service_key)
+            self.supabase = _configure_http1_client(create_client(url, service_key))
 
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,

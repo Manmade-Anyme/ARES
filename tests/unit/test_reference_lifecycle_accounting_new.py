@@ -1214,3 +1214,206 @@ def test_delayed_premium_minute_fallback_uses_original_source_minute():
     assert leg["option_price"] == 155
     assert leg["option_source"] == "completed_1m_close"
     assert leg["approximate"] is True
+
+
+def test_record_reference_option_quote_validates_deduplicates_and_bounds():
+    pm = _make_pm()
+    base = datetime(2026, 11, 11, 11, 15, tzinfo=IST)
+    pm.record_reference_option_quote("", 237.5, base, "dhan_last_trade")
+    pm.record_reference_option_quote("45406", True, base, "dhan_last_trade")
+    pm.record_reference_option_quote("45406", -1, base, "dhan_last_trade")
+    pm.record_reference_option_quote("45406", 237.5, datetime(2026, 11, 11, 11, 15), "dhan_last_trade")
+    pm.record_reference_option_quote("45406", 237.5, base, " ")
+    assert getattr(pm, "_reference_price_evidence", {}).get("option_quotes") in (None, {})
+
+    for idx in range(210):
+        ts = base + timedelta(seconds=210 - idx)
+        pm.record_reference_option_quote("45406", 230.0 + idx * 0.1, ts, "dhan_last_trade")
+    # Duplicate entry must not create duplicate record
+    pm.record_reference_option_quote("45406", 230.0, base + timedelta(seconds=210), "dhan_last_trade")
+
+    quotes = pm._reference_price_evidence["option_quotes"]["45406"]
+    assert len(quotes) == 200
+    assert quotes[0]["observed_at"] < quotes[-1]["observed_at"]
+
+
+@pytest.mark.asyncio
+async def test_t1_hit_captures_live_option_quote_and_dispatches_exact_exit_price():
+    """Reproduce #3574: live quote present around T1 must fill legs.T1 and Discord exit instead of model target_1."""
+    from copy import deepcopy
+    from alerts import render_option_lifecycle_event
+
+    pm = _make_pm()
+    entry_at = datetime(2026, 11, 11, 10, 45, tzinfo=IST)
+    t1_at = datetime(2026, 11, 11, 11, 16, 29, 311037, tzinfo=IST)
+    quote_at = datetime(2026, 11, 11, 11, 16, 29, tzinfo=IST)
+    quote_received = datetime(2026, 11, 11, 11, 16, 29, 803485, tzinfo=IST)
+    be_at = datetime(2026, 11, 11, 11, 18, 41, tzinfo=IST)
+    be_received = datetime(2026, 11, 11, 11, 18, 41, 200000, tzinfo=IST)
+
+    contract = {
+        "security_id": "45406", "exchange_segment": "NSE_FNO",
+        "expiry": "2026-11-17", "strike": 25400, "option_type": "CE",
+    }
+    trade = {
+        "id": "trade-3574", "display_id": "3574", "signal_id": "629",
+        "setup_type": "TREND_CONTINUATION", "direction": "BULLISH",
+        "entry_price": 25365.15, "stop_loss": 25365.15,
+        "target_1": 25390.15, "target_2": 25445.15, "state": "OPEN",
+        "entry_timestamp": entry_at.isoformat(),
+        "created_at": entry_at.isoformat(),
+        "market_context": {
+            "options_sizing": {
+                "entry_limit": 232.15, "option_sl": 217.5,
+                "target_1": 243.10, "target_2": 273.25,
+                "lot_size": 65, "lots": 0, "final_lots": 0,
+            },
+            "option_trailing": {
+                "policy_version": "option_premium_protection_v2",
+                "accounting_formula_version": "one_lot_reference_v1",
+                "revision": 1, "phase": "PRE_T1", "highest_milestone": 0,
+                "booked_fraction": 0.0, "remaining_fraction": 1.0,
+                "original_option_entry": 232.15, "original_option_sl": 217.5,
+                "locked_option_sl": 217.5, "protection_mode": "INITIAL",
+                "activated_at": (entry_at + timedelta(minutes=1, seconds=23)).isoformat(),
+                "monitoring_status": "ACTIVE",
+                "contract": deepcopy(contract),
+                "accounting": {"legs": {}},
+                "alert_events": {},
+            },
+        },
+    }
+    pm.active_trades = [trade]
+    pm._reference_price_evidence = {}
+
+    sent = []
+
+    async def fake_send(event):
+        sent.append(event)
+        return "DELIVERED"
+
+    with patch("position_manager.send_option_lifecycle_event", side_effect=fake_send):
+        # 1) Live option quote arrives right before / alongside T1 spot tick
+        await pm.update_option_market_events(
+            [], {}, current_time=quote_received, quote_freshness_at=quote_received,
+            option_quotes=[{
+                "price": 237.50, "observed_at": quote_at.isoformat(),
+                "received_at": quote_received.isoformat(), "source": "dhan_last_trade",
+                "contract": deepcopy(contract),
+            }],
+        )
+        events = await pm.update_option_market_events(
+            [], {}, current_time=t1_at, quote_freshness_at=t1_at,
+            index_ticks=[{
+                "price": 25391.3, "exchange_at": None,
+                "received_at": t1_at.isoformat(), "source": "dhan_websocket_receipt",
+            }],
+        )
+        assert ("trade-3574", "T1_HIT") in events
+        t1_leg = trade["market_context"]["option_trailing"]["accounting"]["legs"]["T1"]
+        assert t1_leg["option_price"] == 237.50
+        assert t1_leg["option_source"] == "dhan_last_trade"
+        assert t1_leg["approximate"] is False
+        assert trade["market_context"]["option_trailing"]["accounting"]["option_booked_points"] == pytest.approx(2.675)
+
+        t1_alert = next(ev for ev in sent if (ev.get("type") or ev.get("update_type")) == "T1_HIT")
+        t1_desc = render_option_lifecycle_event(t1_alert)["embeds"][0]["description"]
+        assert "Estimated Option Exit**: ₹ 237.50 (₹ +347.75 / lot)" in t1_desc
+        assert "243.10" not in t1_desc
+
+        # 2) Remaining 50% stopped out at break-even premium quote 231.25
+        pm.record_reference_spot_quote(25379.2, be_at - timedelta(milliseconds=10), "dhan_websocket_receipt")
+        close_events = await pm.update_option_market_events(
+            [], {}, current_time=be_received, quote_freshness_at=be_received,
+            option_quotes=[{
+                "price": 231.25, "observed_at": be_at.isoformat(),
+                "received_at": be_received.isoformat(), "source": "dhan_last_trade",
+                "contract": deepcopy(contract),
+            }],
+        )
+        assert ("trade-3574", "STOPPED_OUT_AT_BE") in close_events
+        acct = trade["market_context"]["option_trailing"]["accounting"]
+        assert acct["option_total_points"] == pytest.approx(2.225)
+        be_alert = next(ev for ev in sent if (ev.get("type") or ev.get("update_type")) == "STOPPED_OUT_AT_BE")
+        be_desc = render_option_lifecycle_event(be_alert)["embeds"][0]["description"]
+        assert "Estimated Trade PnL**: ₹ +144.62 (1-lot reference accounting; 0 lots suggested)" in be_desc
+
+
+@pytest.mark.asyncio
+async def test_same_batch_quote_up_to_ten_seconds_captures_t1_and_t2_legs():
+    """A quote within ±10s in the same update_option_market_events batch must enrich T1 & T2 even if slightly after spot tick."""
+    pm = _make_pm()
+    trade = reference_trade()
+    opt = trade["market_context"]["option_trailing"]
+    contract = {
+        "security_id": "51333", "exchange_segment": "NSE_FNO",
+        "expiry": "2026-10-27", "strike": 22550, "option_type": "PE",
+    }
+    opt.update(
+        policy_version="option_premium_protection_v2",
+        activated_at="2026-10-23T09:30:30+05:30",
+        contract=contract,
+    )
+    pm.active_trades = [trade]
+
+    t1_at = datetime(2026, 10, 23, 9, 31, 0, tzinfo=IST)
+    t1_quote_at = t1_at + timedelta(seconds=8)
+    t1_now = t1_quote_at + timedelta(seconds=1)
+    t2_at = datetime(2026, 10, 23, 9, 33, 0, tzinfo=IST)
+    t2_quote_at = t2_at + timedelta(seconds=9)
+    t2_now = t2_quote_at + timedelta(seconds=1)
+
+    with patch("position_manager.send_option_lifecycle_event", new=AsyncMock(return_value="DELIVERED")):
+        t1_events = await pm.update_option_market_events(
+            [], {}, current_time=t1_now, quote_freshness_at=t1_now,
+            index_ticks=[{
+                "price": trade["target_1"], "exchange_at": t1_at.isoformat(),
+                "received_at": t1_at.isoformat(), "source": "dhan_websocket_tick",
+            }],
+            option_quotes=[{
+                "price": 158.75, "observed_at": t1_quote_at.isoformat(),
+                "received_at": t1_now.isoformat(), "source": "dhan_last_trade",
+                "contract": dict(contract),
+            }],
+        )
+        t2_events = await pm.update_option_market_events(
+            [], {}, current_time=t2_now, quote_freshness_at=t2_now,
+            index_ticks=[{
+                "price": trade["target_2"], "exchange_at": t2_at.isoformat(),
+                "received_at": t2_at.isoformat(), "source": "dhan_websocket_tick",
+            }],
+            option_quotes=[{
+                "price": 192.50, "observed_at": t2_quote_at.isoformat(),
+                "received_at": t2_now.isoformat(), "source": "dhan_last_trade",
+                "contract": dict(contract),
+            }],
+        )
+    assert (trade["id"], "T1_HIT") in t1_events
+    assert (trade["id"], "T2_HIT") in t2_events
+    assert opt["accounting"]["legs"]["T1"]["option_price"] == 158.75
+    assert opt["accounting"]["legs"]["T1"]["option_source"] == "dhan_last_trade"
+    assert opt["accounting"]["legs"]["T2"]["option_price"] == 192.50
+    assert opt["accounting"]["legs"]["T2"]["option_source"] == "dhan_last_trade"
+
+
+def test_enrich_reference_trade_falls_back_to_last_option_quote_within_ten_seconds():
+    pm = _make_pm()
+    trade = reference_trade()
+    event_at = datetime(2026, 10, 23, 9, 35, 20, tzinfo=IST)
+    quote_at = event_at - timedelta(seconds=8)
+    opt = trade["market_context"]["option_trailing"]
+    opt.update(
+        highest_milestone=1,
+        last_option_quote={
+            "price": 151.25, "observed_at": quote_at.isoformat(),
+            "received_at": quote_at.isoformat(), "source": "dhan_last_trade",
+        },
+        accounting={"legs": {
+            "T1": {"event_at": event_at.isoformat(), "spot_price": 22527.1, "source_minute": None},
+        }},
+    )
+    pm._reference_price_evidence = {}
+    acct = pm._enrich_reference_trade(trade)
+    assert acct["legs"]["T1"]["option_price"] == 151.25
+    assert acct["legs"]["T1"]["option_source"] == "dhan_last_trade"
+    assert acct["legs"]["T1"]["approximate"] is False

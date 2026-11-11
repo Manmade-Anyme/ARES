@@ -85,8 +85,10 @@ def _minute_close(candles, minute, observed_at):
     return selected
 
 
-def _nearest_observation(observations, event, observed_at):
+def _nearest_observation(observations, event, observed_at, *, max_delta_seconds=5):
     candidates = []
+    if max_delta_seconds is None or max_delta_seconds < 0:
+        return None
     for row in observations or ():
         if not isinstance(row, dict):
             continue
@@ -94,7 +96,7 @@ def _nearest_observation(observations, event, observed_at):
         source = row.get("source")
         if at is None or price is None or not isinstance(source, str) or not source.strip():
             continue
-        if at > observed_at or abs((at - event).total_seconds()) > 5:
+        if at > observed_at or abs((at - event).total_seconds()) > max_delta_seconds:
             continue
         candidates.append((abs((at - event).total_seconds()), at,
                            {"price": price, "observed_at": at.isoformat(),
@@ -102,7 +104,8 @@ def _nearest_observation(observations, event, observed_at):
     return min(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
 
 
-def option_target_evidence(event_at, *, observations=(), option_minutes=(), source_minute=None, observed_at=None):
+def option_target_evidence(event_at, *, observations=(), option_minutes=(), source_minute=None,
+                           observed_at=None, max_delta_seconds=5):
     """Select a nearby quote, or the matching complete option-minute close.
 
     Set event_at to None for wick-only detection, supplying the source minute's
@@ -118,7 +121,9 @@ def option_target_evidence(event_at, *, observations=(), option_minutes=(), sour
             return None
         if minute is not None and not minute <= event < minute + timedelta(minutes=1):
             return None
-        quote = _nearest_observation(observations, event, now)
+        quote = _nearest_observation(
+            observations, event, now, max_delta_seconds=max_delta_seconds
+        )
         if quote:
             return quote
         if minute is None:
