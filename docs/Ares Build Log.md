@@ -2,6 +2,16 @@
 
 A chronological log of session updates, technical decisions, and validation steps for the ARES Nifty 50 options trading system.
 
+## 2026-11-12 11:52 · Supabase Pre-Today Backup & Clean-Slate Purge (TASK-20261112)
+
+Exported all historical ARES Supabase records (`< 2026-11-12 00:00 IST`) and today's (`2026-11-12 IST`) snapshot locally, verified 100% row-count parity, and purged pre-today (`< 2026-11-12T00:00:00+05:30`) rows across all 8 ARES event/log tables so only today's post-update data remains in Supabase for clean analysis without mixed legacy values.
+
+**Decisions**
+- Backed up both pre-today (`<= 2026-11-11 IST`) and today's (`2026-11-12 IST`) datasets to `reports/backups/2026-11-12/` (`ares_backup_pre_2026-11-12.xlsx`, `ares_backup_today_2026-11-12.xlsx`, plus lossless CSVs for `ml_collection` and `trade_analytics.market_context` exceeding Excel's 32,767-char cell limit), and archived/indexed the lossless CSVs in Obsidian (`Projects/Ares/Backups/Supabase Backups Index.md`).
+- Deleted pre-today rows strictly by primary-key batch in FK-safe order (`llm_prediction_jobs` -> `llm_predictions` -> `oi_watch_predictions` -> `ml_predictions` -> `active_trades` -> `trade_analytics` -> `ml_collection` -> `ares_signals`, respecting `fk_ml_collection_signal_uuid`).
+- Left operational state/keys (`llm_consumer_state`, `oi_watch_producer_state`, `latest_quotes`, `api_keys`), shared apps (`gb_*`, Kronos, Phantom, Sniper, Order Flow), and all `2026-11-12` records (`#1627` + live `ml_collection`) untouched.
+- Added `reports/backups/` to `.gitignore` and documented full rationale, counts, and locations in `docs/TASK-20261112_supabase-backup-and-reset.md`, `README.md`, and `CHANGELOG.md`.
+
 ## 2026-11-11 · Live Option Price Capture on T1/T2, 1-Lot Zero-Budget PnL & Persistence Hardening (TASK-20261111)
 
 Investigated live trade `#3574` (`25400 CE`, `security_id=45406`) and trade `#7258` (`25450 CE`, `security_id=45408`):
