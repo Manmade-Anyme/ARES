@@ -49,6 +49,7 @@ This README describes the source in this checkout through **30 October 2026**, w
 | Gated Trend Expansion | Evaluates a rolling regime and rolling reclaim/breakout setups on every completed candle through regular market hours (09:15–15:30 IST), with no 10:30 or afternoon-only gate. It requires verified PDC and sends manual signal references only. | [PR #157](https://github.com/Manmade-Anyme/ARES/pull/157), [production spec](docs/POC_Trend_Expansion_Strategy_Validation.md) |
 | Greeks-based option references | Uses current-expiry ATM-biased contract selection, Delta/Gamma projections, tick rounding, and nonnegative capped sizing. | [MANM-176](docs/MANM-176-options-entry-exit-sl-greeks-limit-orders.md) |
 | Jev and ML reliability | Includes first-ready OI-wall assessments, shared-process supervision, confidence calibration, missing-data preservation, and audited training/promotion. TypeSafe SDK is constrained to `>=0.7.5,<0.8.0`; the default model remains `jev-1.13.0`. | [OI watch](docs/OI%20Wall%20Watch%20Jev.md), [SDK decision](directives/adr/TASK-258_update-jev-to-latest-version.md), [ML module](ml_signal/README.md) |
+| Supabase historical backup & clean-slate reset (2026-11-12) | Backed up all pre-`2026-11-12 IST` records (plus a `2026-11-12` snapshot) to Excel/lossless CSV and purged pre-`2026-11-12 00:00 IST` rows across all 8 ARES event/log tables so post-update live analysis starts free of legacy mixed values. Operational state/keys and shared apps remain untouched. | [TASK-20261112 record](docs/TASK-20261112_supabase-backup-and-reset.md) |
 
 </details>
 
@@ -321,6 +322,9 @@ Use the maintained SQL files instead of copying a partial schema from this READM
 For a new installation, start with the core and ML schemas, then review the upgrades required by the selected runtime. For an existing installation, apply the appropriate reviewed migrations rather than rerunning clean-install DDL. The default `signal_schema_mode` is **`bridge`**; the canonical-UUID cutover is a separate, guarded operation, not an instruction to bulk-run every migration.
 
 The TASK-210 initial migration also requires a separately reviewed upgrade if an earlier version was already deployed. Jev and `ml_predictions` require backend service-role permissions. Preserve their service-role-only policies when provisioning access.
+
+> [!NOTE]
+> **Historical Data Cutoff (`2026-11-12 IST`):** Live Supabase currently retains ARES event/log data from **`2026-11-12 00:00 IST` onward** so post-update signals, trades, option ATR trailing, and ML/Jev records can be analyzed without legacy mixed values. All pre-`2026-11-12` data was backed up before purging — see [TASK-20261112_supabase-backup-and-reset.md](docs/TASK-20261112_supabase-backup-and-reset.md) for exact table counts, backup locations, and FK-safe reset details.
 
 ### 4. Run locally
 

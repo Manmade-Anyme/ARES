@@ -4,6 +4,12 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Supabase Historical Backup & Clean-Slate Reset (`TASK-20261112`):**
+  - Exported all pre-`2026-11-12 00:00 IST` ARES Supabase data and a `2026-11-12 IST` session snapshot to local Excel workbooks (`ares_backup_pre_2026-11-12.xlsx`, `ares_backup_today_2026-11-12.xlsx`) and lossless CSVs (`ml_collection_*.csv`, `trade_analytics_*_lossless.csv` where `market_context` exceeds Excel's 32,767-char cell limit), with verified 100% row-count parity.
+  - Purged all pre-`2026-11-12 00:00 IST` rows across the 8 ARES event/log tables (`ares_signals`: 401, `active_trades`: 399, `trade_analytics`: 399, `ml_collection`: 23,691, `ml_predictions`: 91, `llm_predictions`: 89, `llm_prediction_jobs`: 91, `oi_watch_predictions`: 9) in FK-safe order (`fk_ml_collection_signal_uuid` cleared prior to `ares_signals`), clearing legacy mixed values so post-update system behavior can be analyzed cleanly from `2026-11-12` onward while preserving today's live data (`#1627` + 145 `ml_collection` ticks), operational state (`llm_consumer_state`, `oi_watch_producer_state`, `latest_quotes`, `api_keys`), and shared-database apps.
+  - Added `reports/backups/` to `.gitignore` so local backup exports (including large `ml_collection` CSVs and `llm_prediction_jobs.alert_destination` webhook URLs) are not committed to Git.
+  - Documented rationale, backup locations, and verification results in [docs/TASK-20261112_supabase-backup-and-reset.md](docs/TASK-20261112_supabase-backup-and-reset.md), [README.md](README.md), [docs/Ares Build Log.md](docs/Ares%20Build%20Log.md), [directives/briefs/TASK-20261112_supabase-backup-and-reset_problem-brief.md](directives/briefs/TASK-20261112_supabase-backup-and-reset_problem-brief.md), and Obsidian (`Supabase Backups Index.md` + `Ares Build Log.md`).
+
 - **Live Option Price Capture at T1/T2 & 1-Lot Zero-Budget Reference PnL (TASK-20261111):**
   - Added `PositionManager.record_reference_option_quote` (bounded to 200 quotes per `security_id`, deduplicated and safely sorted alongside `record_reference_spot_quote` via `_normalize_reference_quote` and `_safe_quote_sort_key`).
   - Wired `PositionManager.update_option_market_events` to record validated post-entry matching option quotes before timeline replay so `T1`/`T2` events capture live `dhan_last_trade` prices even when `T1_HIT`/`T2_HIT` fires in the same batch or within `±10s`.

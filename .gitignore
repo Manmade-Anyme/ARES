@@ -39,6 +39,7 @@ share/python-wheels/
 # Local scratch work (audits, debug scripts, throwaway notes) — never push
 scratch/
 data/
+reports/backups/
 
 # Logs
 *.log
