@@ -4,6 +4,15 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
+- **Guaranteed In-Session Weekly & Monthly Performance Report Delivery (`TASK-20261114`):**
+  - Resolved 3-week recurring delivery failure where performance digests were skipped due to unhandled Dhan API transport freezes (which hung the trading loop indefinitely during normal hours), narrow report windows, and premature container SIGKILL on Fly machine shutdown.
+  - Added a dedicated concurrent in-session background scheduler `_run_in_session_report_scheduler` in `main.py` that runs during active market hours (09:07–15:30 IST) and triggers at exactly 15:28:00 IST without being blocked by candle fetching or poll sleeps.
+  - Added a 20-second timeout guard on `_fetch_candle_with_protection` in `main.py`, preventing transient Dhan API freezes from blocking the engine loop.
+  - Hardened Fly container lifecycle in `fly.toml` by configuring `kill_timeout = '30s'` to give graceful process drains, cleanups, and report fallback hooks adequate time before container termination.
+  - Created standalone dispatch CLI `scripts/send_weekly_report.py` with support for `--period {weekly,monthly,both}`, `--date YYYY-MM-DD`, `--dry-run`, `--check-day`, and `--force`, including automatic error escalation to `DISCORD_HEALTH_WEBHOOK_URL`.
+  - Delivered missing weekly performance digest for `09 Nov – 13 Nov 2026` (3 closed trades, 33% win rate, -15.0 spot pts, -₹1,800 option reference P&L, 100% option price coverage).
+  - Added unit test suite in `tests/unit/test_send_weekly_report_script.py` and `tests/unit/test_main.py` covering in-session scheduler triggering, post-close bounds, CLI parsing, dry-run, live execution, day eligibility checks, and failure alerting.
+
 - **Supabase Historical Backup & Clean-Slate Reset (`TASK-20261112`):**
   - Exported all pre-`2026-11-12 00:00 IST` ARES Supabase data and a `2026-11-12 IST` session snapshot to local Excel workbooks (`ares_backup_pre_2026-11-12.xlsx`, `ares_backup_today_2026-11-12.xlsx`) and lossless CSVs (`ml_collection_*.csv`, `trade_analytics_*_lossless.csv` where `market_context` exceeds Excel's 32,767-char cell limit), with verified 100% row-count parity.
   - Purged all pre-`2026-11-12 00:00 IST` rows across the 8 ARES event/log tables (`ares_signals`: 401, `active_trades`: 399, `trade_analytics`: 399, `ml_collection`: 23,691, `ml_predictions`: 91, `llm_predictions`: 89, `llm_prediction_jobs`: 91, `oi_watch_predictions`: 9) in FK-safe order (`fk_ml_collection_signal_uuid` cleared prior to `ares_signals`), clearing legacy mixed values so post-update system behavior can be analyzed cleanly from `2026-11-12` onward while preserving today's live data (`#1627` + 145 `ml_collection` ticks), operational state (`llm_consumer_state`, `oi_watch_producer_state`, `latest_quotes`, `api_keys`), and shared-database apps.

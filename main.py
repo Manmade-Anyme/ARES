@@ -525,6 +525,36 @@ async def _ensure_performance_reports_sent(supabase, now, report_sent: dict[str,
         report_sent["monthly"] = await send_performance_report(supabase, now, "monthly")
 
 
+async def _run_in_session_report_scheduler(supabase, report_sent: dict[str, bool]) -> None:
+    """
+    Dedicated in-session background task for weekly & monthly performance reports.
+    Runs concurrently while the Fly machine is activated by the 09:07–15:30 cron job.
+    Guarantees trigger at 15:28:00 IST without being blocked by candle fetching or poll sleeps.
+    """
+    try:
+        now = _session_now()
+        target = now.replace(hour=15, minute=28, second=0, microsecond=0)
+        delay = (target - now).total_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        active_now = _session_now()
+        if time(15, 28) <= active_now.time() < time(15, 30):
+            await _ensure_performance_reports_sent(supabase, active_now, report_sent)
+            # If report failed due to transient error, retry once after 5s before session close
+            needs_weekly = active_now.weekday() == 4 and not report_sent.get("weekly", False)
+            needs_monthly = is_last_trading_day_of_month(active_now.date()) and not report_sent.get("monthly", False)
+            if needs_weekly or needs_monthly:
+                await asyncio.sleep(5.0)
+                retry_now = _session_now()
+                if time(15, 28) <= retry_now.time() < time(15, 30):
+                    await _ensure_performance_reports_sent(supabase, retry_now, report_sent)
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.warning("In-session report scheduler encountered error: %s", exc)
+
+
 def _mark_signal_session_closed(signal):
     signal.bracket = None
     signal.suggested_lots = 0
@@ -924,7 +954,12 @@ async def _fetch_candle_with_protection(price_fetcher, position_manager, dispatc
     candle = None
     try:
         request = price_fetcher.fetch_latest_candle(auto_ack=False)
-        candle = await asyncio.wait_for(request, timeout=10) if finalizing else await request
+        timeout = 10 if finalizing else 20
+        try:
+            candle = await asyncio.wait_for(request, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Price fetcher candle request timed out after %ds", timeout)
+            candle = None
         return candle
     finally:
         if candle is not None:
@@ -1149,6 +1184,11 @@ async def run(shutdown_started=None):
     last_error_msg = None
     last_heartbeat_time = None
     report_sent = {"weekly": False, "monthly": False}
+    report_scheduler_task = None
+    if _session_now().time() < time(15, 30):
+        report_scheduler_task = asyncio.create_task(
+            _run_in_session_report_scheduler(storage.supabase, report_sent)
+        )
 
     try:
         while True:
@@ -1579,6 +1619,12 @@ async def run(shutdown_started=None):
                     await watch_outbox.close()
             finally:
                 try:
+                    if report_scheduler_task is not None and not report_scheduler_task.done():
+                        report_scheduler_task.cancel()
+                        try:
+                            await report_scheduler_task
+                        except asyncio.CancelledError:
+                            pass
                     recovery_task = getattr(position_manager, "_reference_recovery_task", None)
                     if isinstance(recovery_task, asyncio.Task) and not recovery_task.done():
                         recovery_task.cancel()
