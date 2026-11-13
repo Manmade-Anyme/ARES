@@ -18,12 +18,12 @@ Trace the full historical evolution of the weekly performance digest from incept
 
 | Dimension | Original Implementation (`d6e66f1` / `a430140`, 24 Jul 2026) | Intermediate Broken State (`eab96ea`, 30 Oct – 07 Nov 2026) | Permanent Architecture (`TASK-20261114`, 14 Nov 2026) |
 |---|---|---|---|
-| **Trigger Point** | `if current_time >= time(15, 30):` (session break) -> shifted to `if current_time >= time(15, 29) and not report_sent:` | Gated strictly inside `is_performance_report_window` (`[15:28, 15:30)` IST) | **Decoupled:** GitHub Actions cron at **15:45 IST** (15 min post-close) + fallback in `main.py` |
-| **Upper Bound Gate** | **None.** Open-ended `>= 15:29` until process exit. | **Strict `< 15:30`**. Excluded if 15:30 reached. | None on cron; independent batch query from Supabase. |
-| **Loop Latency** | 1–2 seconds per cycle (3 simple detectors, no ML, no Jev, no option ATR). | 15–75 seconds per cycle (50+ ML features, Jev IPC, option chains, Greek sizing). | Zero impact; runs outside the trading loop. |
-| **Container Lifecycle** | Simple single-process container; manual or loose scaling. | Fly machine scaled via external `cron-job.com` POST to `/stop` with **5-second kill timeout** (`SIGKILL`). | GitHub Actions runner (independent) + Fly `kill_timeout = '30s'`. |
-| **Shutdown Drain Hooks** | Zero drain hooks before report. Fired directly before `break`. | Heavy async drains (`capture_task` 5s timeout, quote flushes) ran before fallback. | Standalone runner requires zero drains; queries committed DB rows. |
-| **Failure Isolation** | Live container failure killed report. | Live container failure / Dhan freeze killed report. | **100% isolated:** Database retains trades; GitHub Actions sends even if Fly machine crashed hours earlier. |
+| **Trigger Point** | `if current_time >= time(15, 30):` (session break) -> shifted to `if current_time >= time(15, 29) and not report_sent:` | Gated strictly inside `is_performance_report_window` (`[15:28, 15:30)` IST) | **Concurrent In-Session Scheduler:** `_run_in_session_report_scheduler` wakes at **15:28:00 IST** concurrently while machine is active. |
+| **Upper Bound Gate** | **None.** Open-ended `>= 15:29` until process exit. | **Strict `< 15:30`**. Excluded if 15:30 reached. | Bounded `[15:28, 15:30)` with in-window 5s retry and shutdown fallback in `finally:`. |
+| **Loop Latency** | 1–2 seconds per cycle (3 simple detectors, no ML, no Jev, no option ATR). | 15–75 seconds per cycle (50+ ML features, Jev IPC, option chains, Greek sizing). | **Decoupled Task:** Background coroutine fires at 15:28:00 independently of candle/ML loop latency. |
+| **Container Lifecycle** | Simple single-process container; manual or loose scaling. | Fly machine scaled via external `cron-job.com` POST to `/stop` with **5-second kill timeout** (`SIGKILL`). | Machine runs 09:07–15:30 via cron-job.com; `fly.toml` sets **`kill_timeout = '30s'`** for full drain & fallback margin. |
+| **Shutdown Drain Hooks** | Zero drain hooks before report. Fired directly before `break`. | Heavy async drains (`capture_task` 5s timeout, quote flushes) ran before fallback. | 30s kill timeout gives ample room for all drains plus `finally:` report delivery. |
+| **Network Resilience** | No API hang guard. | Unbounded `await request` on Dhan candle fetch froze loop for 42m on 13 Nov. | **20s Timeout Guard:** `asyncio.wait_for(request, timeout=20)` prevents provider hangs from stalling the loop. |
 
 ---
 
@@ -45,9 +45,9 @@ Trace the full historical evolution of the weekly performance digest from incept
 ---
 
 ## 6. How the Current Solution Guarantees It Will Trigger
-1. **Batch Decoupling:** Performance reporting is a post-market summary of Supabase `trade_analytics`. It does not belong inside an active 1-minute execution loop.
-2. **Scheduled GitHub Actions Cron:** Runs every weekday at 15:45 IST (10:15 UTC). At 15:45 IST, all trades are committed and settled in Supabase. The job runs in a dedicated runner with zero timeout pressure.
-3. **Container Lifeline:** `fly.toml` now specifies `kill_timeout = '30s'` so even local in-process drains have adequate time.
-4. **On-Demand Dispatch:** `scripts/send_weekly_report.py` allows immediate manual dispatch or backfill via CLI or GitHub `workflow_dispatch`.
+1. **Concurrent In-Session Trigger at 15:28:00 IST:** `_run_in_session_report_scheduler` is spawned at startup when the machine boots via cron-job.com (09:07). It sleeps directly until 15:28:00 IST and fires concurrently, completely immune to 60s candle sleeps, ML snapshots, or Dhan delays.
+2. **Dhan Network Timeout Guard:** Added 20s timeout in `_fetch_candle_with_protection` so hung HTTP sockets never freeze the main loop again.
+3. **Container Lifeline:** `fly.toml` now specifies `kill_timeout = '30s'` so process shutdown and fallback drains have full 30 seconds before any SIGKILL.
+4. **On-Demand Dispatch:** `scripts/send_weekly_report.py` allows immediate manual dispatch or backfill via CLI with `--dry-run` and `--force`.
 
 [[TASK-20261114_guaranteed-weekly-performance-report]] [[Ares Build Log]]

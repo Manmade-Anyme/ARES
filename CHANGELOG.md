@@ -4,13 +4,14 @@ All notable changes to the ARES trading system will be documented in this file.
 
 ## [Unreleased]
 
-- **Guaranteed Weekly & Monthly Performance Report Dispatch via GitHub Actions & Standalone CLI (`TASK-20261114`):**
-  - Resolved 3-week recurring delivery failure where performance digests were skipped due to premature Fly machine shutdown, network dropouts, or tight shutdown kill timeouts (Fly 5s default SIGKILL).
+- **Guaranteed In-Session Weekly & Monthly Performance Report Delivery (`TASK-20261114`):**
+  - Resolved 3-week recurring delivery failure where performance digests were skipped due to unhandled Dhan API transport freezes (which hung the trading loop indefinitely during normal hours), narrow report windows, and premature container SIGKILL on Fly machine shutdown.
+  - Added a dedicated concurrent in-session background scheduler `_run_in_session_report_scheduler` in `main.py` that runs during active market hours (09:07–15:30 IST) and triggers at exactly 15:28:00 IST without being blocked by candle fetching or poll sleeps.
+  - Added a 20-second timeout guard on `_fetch_candle_with_protection` in `main.py`, preventing transient Dhan API freezes from blocking the engine loop.
+  - Hardened Fly container lifecycle in `fly.toml` by configuring `kill_timeout = '30s'` to give graceful process drains, cleanups, and report fallback hooks adequate time before container termination.
   - Created standalone dispatch CLI `scripts/send_weekly_report.py` with support for `--period {weekly,monthly,both}`, `--date YYYY-MM-DD`, `--dry-run`, `--check-day`, and `--force`, including automatic error escalation to `DISCORD_HEALTH_WEBHOOK_URL`.
-  - Added automated scheduled GitHub Actions workflow `.github/workflows/weekly_performance_report.yml` triggering every weekday at 10:15 UTC (15:45 IST, 15 minutes post-market close) using `--check-day` and repository secrets, completely decoupling batch performance reporting from the live trading loop. Added `workflow_dispatch` for manual on-demand execution and historical backfilling.
-  - Hardened Fly container lifecycle in `fly.toml` by configuring `kill_timeout = '30s'` to give graceful process drains and shutdown hooks adequate time before container termination.
   - Delivered missing weekly performance digest for `09 Nov – 13 Nov 2026` (3 closed trades, 33% win rate, -15.0 spot pts, -₹1,800 option reference P&L, 100% option price coverage).
-  - Added unit test suite in `tests/unit/test_send_weekly_report_script.py` covering CLI parsing, dry-run, live execution, day eligibility checks, and failure alerting.
+  - Added unit test suite in `tests/unit/test_send_weekly_report_script.py` and `tests/unit/test_main.py` covering in-session scheduler triggering, post-close bounds, CLI parsing, dry-run, live execution, day eligibility checks, and failure alerting.
 
 - **Supabase Historical Backup & Clean-Slate Reset (`TASK-20261112`):**
   - Exported all pre-`2026-11-12 00:00 IST` ARES Supabase data and a `2026-11-12 IST` session snapshot to local Excel workbooks (`ares_backup_pre_2026-11-12.xlsx`, `ares_backup_today_2026-11-12.xlsx`) and lossless CSVs (`ml_collection_*.csv`, `trade_analytics_*_lossless.csv` where `market_context` exceeds Excel's 32,767-char cell limit), with verified 100% row-count parity.

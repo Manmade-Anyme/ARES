@@ -21,24 +21,25 @@ Coupling batch analytics reporting to the live 1-minute trading loop within an i
 
 ## 2. Implemented Architecture
 
-### 2.1 Decoupled GitHub Actions Cron (`.github/workflows/weekly_performance_report.yml`)
-- Scheduled via cron at `10:15 UTC` (`15:45 IST`), Monday to Friday (15 minutes after NSE market close).
-- Completely independent of Fly.io machine lifecycle, market data feed health, or local trading engine status.
-- Evaluates `--check-day`:
-  - **Fridays:** Dispatches the weekly performance digest (and monthly if month-end).
-  - **Month-End Weekdays:** Dispatches the monthly performance digest.
-  - **Regular Mon–Thu:** Safely exits in seconds without dispatching.
-- Includes `workflow_dispatch` with input dropdowns (`period`, `target_date`, `dry_run`, `force`) for instant manual triggering or historical backfilling.
+### 2.1 Dedicated In-Session Background Scheduler (`_run_in_session_report_scheduler`)
+- Operates concurrently within `main.py` while the Fly machine is activated by the 09:07–15:30 IST cron job.
+- Triggers at exactly 15:28:00 IST in the middle of the active session, completely decoupled from candle polling intervals, option chain REST requests, or ML snapshot latency.
+- Bounded to `[15:28, 15:30)` IST. If an initial delivery attempt fails due to a transient network blip, automatically retries once after 5s before session close.
+- Cleanly cancels during session scale-down or termination without blocking shutdown handlers.
 
-### 2.2 Standalone Dispatch CLI (`scripts/send_weekly_report.py`)
+### 2.2 Network Timeout Guard in `main.py` (`_fetch_candle_with_protection`)
+- Replaced unbounded `await request` with `await asyncio.wait_for(request, timeout=20)`.
+- Prevents dropped Dhan API connections from hanging the single-threaded asyncio event loop for 42 minutes (the root cause of the 13 Nov stall at 14:48 IST).
+
+### 2.3 Fly Machine Lifecycle Hardening (`fly.toml`)
+- Configured `kill_timeout = '30s'` under root configuration.
+- Fly now grants up to 30 seconds for graceful shutdown drains before issuing `SIGKILL`, allowing `main.py` to complete trade flushes and shutdown fallback hooks safely.
+
+### 2.4 Standalone Dispatch CLI (`scripts/send_weekly_report.py`)
 - Direct Python CLI with zero extra dependencies beyond existing repository packages (`reports.py`, `supabase`, `httpx`).
 - Supports `--dry-run` to calculate and inspect metrics without Discord posting.
 - Supports `--force` to bypass schedule guards.
 - Automatically routes unhandled exceptions to `DISCORD_HEALTH_WEBHOOK_URL` (redacting secrets).
-
-### 2.3 Fly Machine Lifecycle Hardening (`fly.toml`)
-- Configured `kill_timeout = '30s'` under root configuration.
-- Fly now grants up to 30 seconds for graceful shutdown drains before issuing `SIGKILL`, allowing `main.py` to complete trade flushes safely.
 
 ---
 
