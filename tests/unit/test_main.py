@@ -646,6 +646,33 @@ async def test_run_in_session_report_scheduler_triggers_at_1528(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_in_session_report_scheduler_sleeps_until_1528(monkeypatch):
+    from datetime import datetime
+    times = [
+        datetime(2026, 11, 6, 9, 15, 0),
+        datetime(2026, 11, 6, 15, 28, 0),
+        datetime(2026, 11, 6, 15, 28, 0),
+    ]
+    monkeypatch.setattr(main, "_session_now", lambda: times.pop(0) if times else datetime(2026, 11, 6, 15, 28, 0))
+    monkeypatch.setattr(main, "is_last_trading_day_of_month", lambda _: False)
+
+    mock_sleep = AsyncMock()
+    monkeypatch.setattr(main.asyncio, "sleep", mock_sleep)
+
+    mock_supabase = MagicMock()
+    with patch("main.send_performance_report", new_callable=AsyncMock) as mock_send:
+        mock_send.return_value = True
+        report_sent = {"weekly": False, "monthly": False}
+
+        await main._run_in_session_report_scheduler(mock_supabase, report_sent)
+
+        # 15:28:00 - 09:15:00 = 6h 13m = 22,380 seconds
+        mock_sleep.assert_awaited_once_with(22380.0)
+        mock_send.assert_awaited_once_with(mock_supabase, datetime(2026, 11, 6, 15, 28, 0), "weekly")
+        assert report_sent == {"weekly": True, "monthly": False}
+
+
+@pytest.mark.asyncio
 async def test_run_in_session_report_scheduler_exits_after_1530(monkeypatch):
     from datetime import datetime
     now_past_close = datetime(2026, 11, 6, 15, 30, 30)

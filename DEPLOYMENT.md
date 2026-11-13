@@ -269,12 +269,12 @@ fly tokens create deploy -a ares-xzy-gq
 
 ### 4.3 Guaranteed Performance Reporting Architecture
 
-Performance reporting is decoupled from the live trading loop to avoid relying on container uptime:
-1. **GitHub Actions Cron (`.github/workflows/weekly_performance_report.yml`):**
-   - Runs Monday–Friday at 15:45 IST (10:15 UTC, 15 minutes after market close).
-   - Evaluates `--check-day`: automatically dispatches the weekly digest on Fridays and the monthly digest on month-end trading days.
-   - Runs on an independent runner, completely unaffected by Fly machine scaling or local process exit.
+Performance reporting runs in-session during active market hours:
+1. **Concurrent In-Session Scheduler (`_run_in_session_report_scheduler` in `main.py`):**
+   - Activated automatically when the machine boots (09:07 IST via cron-job.com) and fires at **15:28:00 IST** in the middle of the active session.
+   - Operates as a concurrent background task completely immune to candle poll sleeps, slow REST calls, or ML snapshot delays.
+   - Includes in-window retry after 5s on transient error and bounded to `[15:28, 15:30)` IST.
 2. **Fly Machine Kill Timeout:**
-   - `fly.toml` specifies `kill_timeout = '30s'` to give `main.py` adequate shutdown drain time before container scaling.
+   - `fly.toml` specifies `kill_timeout = '30s'` to give `main.py` adequate shutdown drain time and report fallback execution before container scaling.
 3. **Manual / Backfill Execution:**
    - Run `python -m scripts.send_weekly_report --period weekly|monthly|both [--date YYYY-MM-DD] [--force]`.
