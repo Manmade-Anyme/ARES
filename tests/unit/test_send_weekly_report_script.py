@@ -37,7 +37,7 @@ def test_parse_args_custom():
 def test_get_target_datetime_with_string():
     dt = send_weekly_report.get_target_datetime("2026-11-13")
     assert dt.date() == date(2026, 11, 13)
-    assert dt.time() == time(15, 30)
+    assert dt.time() == time(23, 59, 59)
     assert dt.tzinfo == reports.IST
 
 

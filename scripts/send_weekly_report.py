@@ -80,8 +80,8 @@ def get_target_datetime(target_date_str: Optional[str]) -> datetime:
     """Return an IST-aware datetime for the target date or current time."""
     if target_date_str:
         d = date.fromisoformat(target_date_str)
-        # End of market session on target date (15:30 IST)
-        return datetime.combine(d, time(15, 30), tzinfo=IST)
+        # End of day on target date (23:59:59 IST) so any post-15:30 drain trades are safely captured
+        return datetime.combine(d, time(23, 59, 59), tzinfo=IST)
     return datetime.now(IST)
 
 
@@ -137,7 +137,8 @@ async def dispatch_report(
 
     except Exception as exc:
         exc_name = type(exc).__name__
-        print(f"[-] {period_label} performance report delivery failed: {exc_name} - {exc}")
+        # Redact exc string to prevent leaking webhook tokens via httpx HTTPStatusError
+        print(f"[-] {period_label} performance report delivery failed: {exc_name}")
 
         if health_webhook_url and not dry_run:
             try:
