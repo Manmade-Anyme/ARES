@@ -1,0 +1,89 @@
+name: Weekly & Monthly Performance Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      period:
+        description: "Report period (weekly, monthly, or both)"
+        required: true
+        default: "weekly"
+        type: choice
+        options:
+          - weekly
+          - monthly
+          - both
+      target_date:
+        description: "Target date in YYYY-MM-DD format (leave empty for current IST date)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Dry run (calculate metrics without posting to Discord)"
+        required: false
+        default: false
+        type: boolean
+      force:
+        description: "Force report dispatch regardless of day schedule guards"
+        required: false
+        default: false
+        type: boolean
+
+  schedule:
+    # 10:15 UTC = 15:45 IST (Monday to Friday, 15 minutes after NSE market close)
+    # The script uses --check-day so:
+    # - On Friday: sends weekly report (and monthly if month-end)
+    # - On month-end (if Mon-Thu): sends monthly report
+    # - On normal Mon-Thu: safely exits in seconds without posting
+    - cron: "15 10 * * 1-5"
+
+concurrency:
+  group: performance-report
+  cancel-in-progress: false
+
+jobs:
+  dispatch_report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Dispatch Performance Report
+        id: dispatch
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_HEALTH_WEBHOOK_URL: ${{ secrets.DISCORD_HEALTH_WEBHOOK_URL }}
+        run: |
+          ARGS=()
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARGS+=("--period" "${{ inputs.period }}")
+            if [ -n "${{ inputs.target_date }}" ]; then
+              ARGS+=("--date" "${{ inputs.target_date }}")
+            fi
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              ARGS+=("--dry-run")
+            fi
+            if [ "${{ inputs.force }}" = "true" ]; then
+              ARGS+=("--force")
+            else
+              ARGS+=("--check-day")
+            fi
+          else
+            # Scheduled cron run: evaluate both weekly and monthly with schedule guards
+            ARGS+=("--period" "both" "--check-day")
+          fi
+
+          python -m scripts.send_weekly_report "${ARGS[@]}"

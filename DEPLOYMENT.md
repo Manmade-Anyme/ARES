@@ -266,3 +266,15 @@ fly tokens create deploy -a ares-xzy-gq
    - `Authorization` : `Bearer <YOUR_FLY_DEPLOY_TOKEN>`
    - `Content-Type` : `application/json`
 4. Click **Create**.
+
+### 4.3 Guaranteed Performance Reporting Architecture
+
+Performance reporting is decoupled from the live trading loop to avoid relying on container uptime:
+1. **GitHub Actions Cron (`.github/workflows/weekly_performance_report.yml`):**
+   - Runs Monday–Friday at 15:45 IST (10:15 UTC, 15 minutes after market close).
+   - Evaluates `--check-day`: automatically dispatches the weekly digest on Fridays and the monthly digest on month-end trading days.
+   - Runs on an independent runner, completely unaffected by Fly machine scaling or local process exit.
+2. **Fly Machine Kill Timeout:**
+   - `fly.toml` specifies `kill_timeout = '30s'` to give `main.py` adequate shutdown drain time before container scaling.
+3. **Manual / Backfill Execution:**
+   - Run `python -m scripts.send_weekly_report --period weekly|monthly|both [--date YYYY-MM-DD] [--force]`.
